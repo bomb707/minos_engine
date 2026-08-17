@@ -1,6 +1,6 @@
 {
-  "created_at": "2026-08-17T08:56:00.489168+00:00",
-  "engine_git_sha": "0066a302c3a281f94714d832f95cd27b138fce7a",
+  "created_at": "2026-08-17T09:19:41.516285+00:00",
+  "engine_git_sha": "4a5a14d47f198a214e4dff8da2c4466e5fc7a425",
   "evidence": [
     {
       "description": "reports/STAGE0_PREIMPLEMENTATION_AUDIT.md",
@@ -27,21 +27,21 @@
       "description": "src/minos_engine",
       "kind": "directory",
       "path": "src/minos_engine",
-      "sha256": "e2e03eaffdae1bc3267bdfc7d2d9deb875cc497363cdf77a424ba97041b5e5a3",
+      "sha256": "0b868438096a1bff28e9fbc7b1d5db3fb872737ed083790eb06c9229683b5efb",
       "size_bytes": null
     },
     {
       "description": "tests",
       "kind": "directory",
       "path": "tests",
-      "sha256": "4c206282fa0c4cfc5ae1fa579ee39e8c1330064788479ea623e679f6a2a0dd1a",
+      "sha256": "61df379cdae7c72656bab46e41e1e773277dc5cb46af85200c6986722bc003e9",
       "size_bytes": null
     },
     {
       "description": "docs",
       "kind": "directory",
       "path": "docs",
-      "sha256": "2425ee5bfd6962da42ec4aea1679cb8ff6a898a387665f88a053045a42909ae3",
+      "sha256": "15045d8f44562fa2ba215efe9becac38deadeb74c0dd265615ffc2bb2c668de7",
       "size_bytes": null
     },
     {
@@ -73,7 +73,7 @@
       "size_bytes": 1763
     }
   ],
-  "gate_hash": "377ae61aa4241f69662efcc19e12041312c007790c2dc3ac8b3095805a0e4170",
+  "gate_hash": "b9cda0bab329b36a0a62b4b7e9ba9b797fc22b46c1055f76db26b591311a1675",
   "gate_name": "PROTOCOL-READY",
   "input_hashes": {
     "default_config_hash": "4251cb85e5cd58b7eabfe530b9df23ea7d1d14fd882114b488d67cbd81b751b8",
@@ -97,15 +97,17 @@
     "no_truth_or_locked_test_access": true,
     "qualified_source_clean": true,
     "required_identity_fails_closed": true,
+    "required_source_tracked": true,
     "ruff_check_pass": true,
     "ruff_format_pass": true,
     "six_schemas_present": true,
     "specifications_present": true,
-    "tests_collected_nonzero": true
+    "tests_collected_nonzero": true,
+    "worktree_matches_head": true
   },
   "qualification_tool_version": "stage0-qualifier-v2",
-  "qualified_source_git_sha": "0066a302c3a281f94714d832f95cd27b138fce7a",
-  "qualified_source_tree_sha": "49d77ce49efed73ae149ea9463ded7b2be14f053",
+  "qualified_source_git_sha": "4a5a14d47f198a214e4dff8da2c4466e5fc7a425",
+  "qualified_source_tree_sha": "f248480a5dd43c277e493155a31a9a289a2ce31e",
   "schema_version": "gate-artifact-v1",
   "status": "PASS"
 }
