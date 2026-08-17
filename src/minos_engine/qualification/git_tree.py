@@ -69,12 +69,51 @@ def is_git_repo(root: Path) -> bool:
     return proc.returncode == 0 and proc.stdout.strip() == "true"
 
 
+def object_exists(root: Path, sha: str) -> bool:
+    """True iff ``sha`` names an object (commit/tree/blob) in the local repo."""
+    if not sha:
+        return False
+    return _run_text(root, ["cat-file", "-e", sha]).returncode == 0
+
+
+def commit_tree_sha(root: Path, commit_sha: str) -> str | None:
+    """Return the tree SHA of ``commit_sha``, or None if unavailable."""
+    proc = _run_text(root, ["rev-parse", f"{commit_sha}^{{tree}}"])
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def repo_root(start: Path | None = None) -> Path | None:
+    """Discover the git working-tree root from ``start`` (default: cwd)."""
+    base = start or Path.cwd()
+    proc = _run_text(base, ["rev-parse", "--show-toplevel"])
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    return Path(proc.stdout.strip())
+
+
 def list_tracked(root: Path, *pathspec: str) -> list[str]:
     """Return tracked paths (POSIX, repo-root-relative), optionally under pathspec."""
     args = ["ls-files", "-z", "--", *pathspec] if pathspec else ["ls-files", "-z"]
     proc = _run_bytes(root, args)
     if proc.returncode != 0:
         raise GitUnavailableError(f"git ls-files failed: {proc.stderr!r}")
+    raw = proc.stdout.decode("utf-8")
+    return [p for p in raw.split("\0") if p]
+
+
+def list_tree(root: Path, ref: str, *pathspec: str) -> list[str]:
+    """Return file paths present in the tree of ``ref`` (optionally under pathspec).
+
+    Uses ``git ls-tree`` at the given ref, so the file set reflects the committed
+    tree of ``ref`` regardless of the current HEAD/index. This is what evidence
+    rehashing must use to reproduce a gate's digests from its qualified commit.
+    """
+    args = ["ls-tree", "-r", "-z", "--name-only", ref, "--", *pathspec]
+    proc = _run_bytes(root, args)
+    if proc.returncode != 0:
+        raise GitUnavailableError(f"git ls-tree failed for {ref}: {proc.stderr!r}")
     raw = proc.stdout.decode("utf-8")
     return [p for p in raw.split("\0") if p]
 
@@ -116,13 +155,14 @@ def sha256_git_file(root: Path, relpath: str, ref: str = "HEAD") -> tuple[str, i
 def sha256_git_directory(
     root: Path, reldir: str, ref: str = "HEAD"
 ) -> tuple[str, list[FileDigest]]:
-    """Deterministic digest over the *tracked* files under ``reldir`` at ``ref``.
+    """Deterministic digest over the files under ``reldir`` in the tree of ``ref``.
 
-    Ordering is by POSIX path relative to ``reldir``; only committed blobs are
-    hashed, so untracked/ignored files are never included.
+    The file set comes from ``git ls-tree`` at ``ref`` (not the current index), so
+    the digest reproduces from the qualified commit regardless of HEAD. Ordering
+    is by POSIX path relative to ``reldir``; only committed blobs are hashed.
     """
     prefix = reldir.rstrip("/") + "/"
-    tracked = list_tracked(root, reldir)
+    tracked = list_tree(root, ref, reldir)
     digests: list[FileDigest] = []
     for path in tracked:
         rel = path[len(prefix) :] if path.startswith(prefix) else path
@@ -134,10 +174,10 @@ def sha256_git_directory(
 
 
 def hash_git_path(root: Path, relpath: str, ref: str = "HEAD") -> str:
-    """Hash a tracked file or directory from the committed tree at ``ref``."""
-    if list_tracked(root, relpath) == [relpath]:
+    """Hash a file or directory from the committed tree of ``ref``."""
+    in_tree = list_tree(root, ref, relpath)
+    if in_tree == [relpath]:
         return sha256_git_file(root, relpath, ref)[0]
-    # Treat as a directory (or a prefix matching multiple tracked files).
-    if list_tracked(root, relpath):
+    if in_tree:
         return sha256_git_directory(root, relpath, ref)[0]
-    raise GitUnavailableError(f"no tracked content at {relpath!r} for ref {ref}")
+    raise GitUnavailableError(f"no content at {relpath!r} in ref {ref}")

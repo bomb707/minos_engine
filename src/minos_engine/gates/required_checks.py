@@ -42,8 +42,9 @@ REQUIRED_CHECKS: dict[str, frozenset[str]] = {
     ),
     "TWIN-READY": frozenset(
         {
-            # Stage 0 prerequisite
-            "protocol_ready_prerequisite_valid",
+            # Stage 0 prerequisite (accepted identity + evidence + promotion)
+            "protocol_ready_identity_accepted",
+            "protocol_ready_evidence_verified",
             "protocol_ready_promotion_authorized",
             # Twin behavior
             "twin_contracts_schema_valid",
@@ -70,6 +71,7 @@ REQUIRED_CHECKS: dict[str, frozenset[str]] = {
             "worktree_matches_head",
             "evidence_hashes_complete",
             "qualified_source_clean",
+            "qualified_source_present",
             # Documentation + stage gating
             "stage1_documentation_complete",
             "layer1_not_implemented",

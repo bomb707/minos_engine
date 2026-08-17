@@ -8,6 +8,7 @@ production prediction features (enforced by leakage/architecture tests).
 
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -17,6 +18,8 @@ from minos_engine.common.errors import ComparisonError, UnavailableError
 from minos_engine.twin.unavailable import ReasonCode
 
 __all__ = [
+    "SUPPLIED_METRIC_ALLOWLIST",
+    "TOP_LEVEL_KEYS",
     "RawComparison",
     "parse_raw_result",
     "HappyRunResult",
@@ -27,6 +30,20 @@ __all__ = [
 
 _CLASSES = ("snp", "indel")
 _COUNTS = ("tp", "fp", "fn")
+TOP_LEVEL_KEYS = frozenset({"snp", "indel", "ti_tv", "het_hom", "supplied"})
+# The only supplied metric names the authoritative raw format permits. Each is a
+# recomputable rate in [0, 1]; unknown names are rejected.
+SUPPLIED_METRIC_ALLOWLIST = frozenset(
+    {"snp_precision", "snp_recall", "snp_f1", "indel_precision", "indel_recall", "indel_f1"}
+)
+
+
+def _finite_number(value: Any, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ComparisonError(f"{name} must be a number, got {type(value).__name__}")
+    if not math.isfinite(value):
+        raise ComparisonError(f"{name} must be finite (no NaN/Infinity)")
+    return float(value)
 
 
 class RawComparison(BaseModel):
@@ -60,25 +77,50 @@ def _counts(raw: dict[str, Any], klass: str) -> dict[str, int]:
 
 
 def parse_raw_result(raw: dict[str, Any]) -> RawComparison:
-    """Parse a raw hap.py-style result, failing closed on malformed input."""
+    """Parse a raw hap.py-style result, failing closed on any malformed input.
+
+    Every rejection raises the typed :class:`ComparisonError` — never a bare
+    ValueError/OverflowError/JSON/hashing exception.
+    """
     if not isinstance(raw, dict):
         raise ComparisonError("raw comparison result must be a JSON object")
+    unknown_top = set(raw) - TOP_LEVEL_KEYS
+    if unknown_top:
+        raise ComparisonError(f"unknown top-level keys: {sorted(unknown_top)}")
+
     snp = _counts(raw, "snp")
     indel = _counts(raw, "indel")
+
     ti_tv = raw.get("ti_tv")
     het_hom = raw.get("het_hom")
+    parsed: dict[str, float | None] = {"ti_tv": None, "het_hom": None}
     for name, val in (("ti_tv", ti_tv), ("het_hom", het_hom)):
-        if val is not None and (not isinstance(val, (int, float)) or isinstance(val, bool)):
-            raise ComparisonError(f"{name} must be a number or null")
-    supplied = raw.get("supplied", {})
-    if not isinstance(supplied, dict):
+        if val is None:
+            continue
+        num = _finite_number(val, name)
+        if num < 0:
+            raise ComparisonError(f"{name} must be >= 0")
+        parsed[name] = num
+
+    supplied_raw = raw.get("supplied", {})
+    if not isinstance(supplied_raw, dict):
         raise ComparisonError("'supplied' must be an object of metric->value")
+    unknown_supplied = set(supplied_raw) - SUPPLIED_METRIC_ALLOWLIST
+    if unknown_supplied:
+        raise ComparisonError(f"unknown supplied metric(s): {sorted(unknown_supplied)}")
+    supplied: dict[str, float] = {}
+    for key, val in supplied_raw.items():
+        num = _finite_number(val, f"supplied.{key}")
+        if not (0.0 <= num <= 1.0):
+            raise ComparisonError(f"supplied.{key} must be a rate in [0, 1]")
+        supplied[key] = num
+
     return RawComparison(
         snp=snp,
         indel=indel,
-        ti_tv=None if ti_tv is None else float(ti_tv),
-        het_hom=None if het_hom is None else float(het_hom),
-        supplied={k: float(v) for k, v in supplied.items()},
+        ti_tv=parsed["ti_tv"],
+        het_hom=parsed["het_hom"],
+        supplied=supplied,
     )
 
 

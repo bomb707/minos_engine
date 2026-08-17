@@ -68,8 +68,14 @@ jobs:
           --expected tests/fixtures/twin/parity/expectation.json
           --observed tests/fixtures/twin/parity/observation_match.json
 
-      - name: Prerequisite gate — PROTOCOL-READY promotion
-        run: minos-engine gate require-pass --gate gates/protocol-ready.json
+      - name: Gate — PROTOCOL-READY (git-bound evidence)
+        run: minos-engine gate require-pass --gate gates/protocol-ready.json --base-dir .
+
+      - name: Gate — TWIN-READY (accepted prerequisite + git-bound evidence)
+        run: minos-engine twin gate require-pass --gate gates/twin-ready.json --base-dir .
+
+      - name: Gate — TWIN-READY non-mutating check (Commit A evidence + descent)
+        run: minos-engine twin qualify --check --gate gates/twin-ready.json --base-dir .
 
       - name: Upload test & coverage reports
         if: always()

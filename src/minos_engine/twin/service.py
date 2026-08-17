@@ -40,7 +40,12 @@ from .fixtures import TwinReplayFixture
 from .identities import ToolIdentity
 from .scoring import build_score_inputs, compute_score
 
-__all__ = ["TwinRunResult", "TwinService", "default_protocol_ready_check"]
+__all__ = [
+    "TwinRunResult",
+    "TwinService",
+    "default_protocol_ready_check",
+    "make_protocol_ready_check",
+]
 
 
 class TwinRunResult(BaseModel):
@@ -52,21 +57,35 @@ class TwinRunResult(BaseModel):
     manifest: TwinRunManifest
 
 
-def default_protocol_ready_check() -> str | None:
-    """Return the accepted PROTOCOL-READY gate hash when it authorizes promotion.
+def make_protocol_ready_check(root: Path) -> Callable[[], str | None]:
+    """Build a prerequisite check bound to a specific repository root.
 
-    Reads the repository gate file and requires a valid PASS (integrity + status
-    + required checks). Returns ``None`` when the prerequisite is not satisfied.
+    The returned callable verifies the accepted Stage 0 PROTOCOL-READY identity,
+    rehashes its Stage 0 evidence from the qualified commit, and requires PASS
+    promotion — returning the accepted gate hash only when all hold, else None.
     """
-    from minos_engine.gates.verifier import load_gate, require_gate_pass
+    from minos_engine.twin.prerequisites import protocol_ready_gate_hash
 
-    gate_path = Path(__file__).resolve().parents[3] / "gates" / "protocol-ready.json"
-    try:
-        gate = load_gate(gate_path)
-    except Exception:  # noqa: BLE001 - any load/parse failure means 'not satisfied'
+    def _check() -> str | None:
+        return protocol_ready_gate_hash(root)
+
+    return _check
+
+
+def default_protocol_ready_check() -> str | None:
+    """Discover the repository root from the current directory and verify.
+
+    Prefer injecting an explicit verifier (``make_protocol_ready_check(root)`` or
+    a fake in tests). This default discovers the repo via git and fails closed
+    (returns ``None``) when no repository / accepted prerequisite is available —
+    it never hard-codes a package-relative path that would break installed use.
+    """
+    from minos_engine.qualification.git_tree import repo_root
+
+    root = repo_root()
+    if root is None:
         return None
-    result = require_gate_pass(gate)
-    return gate.gate_hash if result.ok else None
+    return make_protocol_ready_check(root)()
 
 
 class TwinService:

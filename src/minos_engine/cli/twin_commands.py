@@ -58,14 +58,18 @@ def _cmd_twin_plan(args: argparse.Namespace) -> int:
 
 def _cmd_twin_replay(args: argparse.Namespace) -> int:
     from minos_engine.common.hashing import sha256_hex
+    from minos_engine.qualification.git_tree import repo_root
     from minos_engine.schema_registry import validate_against
     from minos_engine.twin.fixtures import load_replay_fixture
-    from minos_engine.twin.service import TwinService
+    from minos_engine.twin.service import TwinService, make_protocol_ready_check
 
     fixture = load_replay_fixture(args.fixture)
     fixture_hash = sha256_hex(Path(args.fixture).read_bytes())
     now_iso = datetime.now(UTC).isoformat()
-    service = TwinService()
+    # Resolve the repository root and inject a repo-bound accepted-prerequisite
+    # verifier (works for source and installed execution; fails closed otherwise).
+    root = repo_root() or Path.cwd()
+    service = TwinService(protocol_ready_check=make_protocol_ready_check(root))
     result = service.replay_fixture(fixture, now_iso=now_iso, fixture_hash=fixture_hash)
 
     comparison = result.comparison.model_dump(mode="json")
@@ -124,25 +128,50 @@ def _cmd_twin_parity(args: argparse.Namespace) -> int:
     return EXIT_OK if report.matched else EXIT_VERIFY_FAILED
 
 
+def _cmd_twin_gate_require_pass(args: argparse.Namespace) -> int:
+    from minos_engine.qualification.twin_runner import verify_twin_ready
+
+    base = Path(args.base_dir).resolve() if args.base_dir else Path.cwd()
+    result = verify_twin_ready(base, Path(args.gate), require_descends=False)
+    out = result.model_dump(mode="json")
+    _emit(out, args.json, json.dumps(out, indent=2, sort_keys=True))
+    return EXIT_OK if result.ok else EXIT_VERIFY_FAILED
+
+
 def _cmd_twin_qualify(args: argparse.Namespace) -> int:
     from minos_engine.gates.contracts import GateStatus
-    from minos_engine.qualification.twin_runner import qualify_twin, write_twin_outputs
+    from minos_engine.qualification.twin_runner import (
+        qualify_twin,
+        verify_twin_ready,
+        write_twin_outputs,
+    )
 
     root = Path(args.root).resolve() if args.root else Path.cwd()
-    result = qualify_twin(root)
-    gate_path, report_path = write_twin_outputs(result, root)
+
+    # Non-mutating check mode: verify a committed TWIN-READY gate without
+    # regenerating it (used in CI from a clean checkout).
+    if args.check:
+        base = Path(args.base_dir).resolve() if args.base_dir else root
+        gate = Path(args.gate) if args.gate else (base / "gates" / "twin-ready.json")
+        result = verify_twin_ready(base, gate, require_descends=True)
+        out = result.model_dump(mode="json")
+        _emit(out, args.json, json.dumps(out, indent=2, sort_keys=True))
+        return EXIT_OK if result.ok else EXIT_VERIFY_FAILED
+
+    qresult = qualify_twin(root)
+    gate_path, report_path = write_twin_outputs(qresult, root)
     summary = {
-        "status": result.gate.status.value,
-        "gate_hash": result.gate.gate_hash,
-        "declared_parity_level": result.declared_parity_level.value,
-        "prerequisite_gate_hash": result.prerequisite_gate_hash,
+        "status": qresult.gate.status.value,
+        "gate_hash": qresult.gate.gate_hash,
+        "declared_parity_level": qresult.declared_parity_level.value,
+        "prerequisite_gate_hash": qresult.prerequisite_gate_hash,
         "gate_path": str(gate_path.relative_to(root)),
         "report_path": str(report_path.relative_to(root)),
-        "coverage_percent": result.coverage.line_coverage_percent,
-        "tests": result.accounting.as_report_row(),
+        "coverage_percent": qresult.coverage.line_coverage_percent,
+        "tests": qresult.accounting.as_report_row(),
     }
     _emit(summary, args.json, json.dumps(summary, indent=2, sort_keys=True))
-    return EXIT_OK if result.gate.status is GateStatus.PASS else EXIT_VERIFY_FAILED
+    return EXIT_OK if qresult.gate.status is GateStatus.PASS else EXIT_VERIFY_FAILED
 
 
 def add_twin_subparser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -178,8 +207,24 @@ def add_twin_subparser(sub: argparse._SubParsersAction[argparse.ArgumentParser])
     p_parity.set_defaults(func=_cmd_twin_parity)
 
     p_qualify = twin_sub.add_parser(
-        "qualify", help="run TWIN-READY qualification and write gate + report"
+        "qualify", help="run TWIN-READY qualification (or --check to verify only)"
     )
     p_qualify.add_argument("--root", default=None)
+    p_qualify.add_argument(
+        "--check", action="store_true", help="non-mutating verify of a committed gate"
+    )
+    p_qualify.add_argument("--gate", default=None, help="gate path for --check")
+    p_qualify.add_argument("--base-dir", default=None, help="repo root for --check evidence")
     p_qualify.add_argument("--json", action="store_true")
     p_qualify.set_defaults(func=_cmd_twin_qualify)
+
+    p_gate = twin_sub.add_parser("gate", help="TWIN-READY gate verification")
+    gate_sub = p_gate.add_subparsers(dest="twin_gate_command", required=True)
+    p_require = gate_sub.add_parser(
+        "require-pass",
+        help="verify TWIN-READY integrity + evidence + accepted prerequisite + promotion",
+    )
+    p_require.add_argument("--gate", required=True)
+    p_require.add_argument("--base-dir", default=None)
+    p_require.add_argument("--json", action="store_true")
+    p_require.set_defaults(func=_cmd_twin_gate_require_pass)

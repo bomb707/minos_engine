@@ -129,18 +129,28 @@ def _tool_ok(cmd: list[str], root: Path) -> bool:  # pragma: no cover - subproce
     return proc.returncode == 0
 
 
-def gather_source_integrity(root: Path, ref: str = "HEAD") -> SourceIntegrity:
+def gather_source_integrity(
+    root: Path,
+    ref: str = "HEAD",
+    *,
+    evidence_spec: tuple[tuple[str, EvidenceKind], ...] = _EVIDENCE,
+    required_files: tuple[str, ...] = REQUIRED_TRACKED_FILES,
+    spec_manifest_path: str = SPEC_MANIFEST,
+) -> SourceIntegrity:
     """Build git-tree-bound evidence + source-tracking results for ``ref``.
 
-    Evidence hashes come from committed blobs (``git cat-file``), so untracked,
-    ignored, or working-tree-drifted content can never be counted as evidence.
-    Fail-closed: if ``root`` is not a git repo, nothing is tracked.
+    Evidence file sets and blobs come from the tree of ``ref`` (``git ls-tree`` +
+    ``git cat-file``), so untracked, ignored, or working-tree-drifted content can
+    never be counted as evidence. ``required_files`` must be tracked AND match the
+    committed blob of ``ref``. Fail-closed: if ``root`` is not a git repo, nothing
+    is tracked. The evidence/required sets are parameterized so each stage
+    provides its own (Stage 0 defaults preserved).
     """
     root = root.resolve()
     if not G.is_git_repo(root):
         empty = tuple(
             EvidenceItem(description=rel, path=rel, kind=kind, sha256=None)
-            for rel, kind in _EVIDENCE
+            for rel, kind in evidence_spec
         )
         return SourceIntegrity(
             evidence=empty,
@@ -152,16 +162,14 @@ def gather_source_integrity(root: Path, ref: str = "HEAD") -> SourceIntegrity:
 
     items: list[EvidenceItem] = []
     complete = True
-    for rel, kind in _EVIDENCE:
+    for rel, kind in evidence_spec:
         try:
             if kind is EvidenceKind.DIRECTORY:
-                if not G.list_tracked(root, rel):
-                    raise G.GitUnavailableError(f"no tracked files under {rel}")
+                if not G.list_tree(root, ref, rel):
+                    raise G.GitUnavailableError(f"no files under {rel} in {ref}")
                 digest, _ = G.sha256_git_directory(root, rel, ref)
                 items.append(EvidenceItem(description=rel, path=rel, kind=kind, sha256=digest))
             else:
-                if not G.is_tracked(root, rel):
-                    raise G.GitUnavailableError(f"{rel} is not tracked")
                 sha, size = G.sha256_git_file(root, rel, ref)
                 items.append(
                     EvidenceItem(description=rel, path=rel, kind=kind, sha256=sha, size_bytes=size)
@@ -170,16 +178,13 @@ def gather_source_integrity(root: Path, ref: str = "HEAD") -> SourceIntegrity:
             complete = False
             items.append(EvidenceItem(description=rel, path=rel, kind=kind, sha256=None))
 
-    required_tracked = all(G.is_tracked(root, f) for f in REQUIRED_TRACKED_FILES)
-    worktree_matches = all(
-        G.worktree_matches_ref(root, f, ref)
-        for f in REQUIRED_TRACKED_FILES
-        if G.is_tracked(root, f)
-    )
+    required_tracked = all(G.is_tracked(root, f) for f in required_files)
+    # A required file must be tracked AND its working-tree bytes must equal ref.
+    worktree_matches = all(G.worktree_matches_ref(root, f, ref) for f in required_files)
     try:
         spec_hash = (
-            G.sha256_git_file(root, SPEC_MANIFEST, ref)[0]
-            if G.is_tracked(root, SPEC_MANIFEST)
+            G.sha256_git_file(root, spec_manifest_path, ref)[0]
+            if G.is_tracked(root, spec_manifest_path)
             else canonical_hash({"status": "missing"})
         )
     except G.GitUnavailableError:

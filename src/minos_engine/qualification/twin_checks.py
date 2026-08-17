@@ -49,7 +49,6 @@ __all__ = [
     "architecture_boundaries_ok",
     "no_hidden_network_dependency",
     "stage1_documentation_complete",
-    "protocol_ready_prerequisite",
 ]
 
 _H = "a" * 64
@@ -274,17 +273,3 @@ def no_hidden_network_dependency(src_dir: Path) -> bool:
 
 def stage1_documentation_complete(root: Path) -> bool:
     return all((root / d).exists() for d in TWIN_DOCS)
-
-
-def protocol_ready_prerequisite(root: Path) -> tuple[bool, bool, str | None]:
-    """Return (integrity_valid, promotion_authorized, gate_hash)."""
-    from minos_engine.gates.verifier import load_gate, require_gate_pass, verify_gate_integrity
-
-    gate_path = root / "gates" / "protocol-ready.json"
-    try:
-        gate = load_gate(gate_path)
-    except Exception:  # noqa: BLE001
-        return (False, False, None)
-    integrity = verify_gate_integrity(gate)
-    promotion = require_gate_pass(gate)
-    return (integrity.ok, promotion.ok, gate.gate_hash if promotion.ok else None)

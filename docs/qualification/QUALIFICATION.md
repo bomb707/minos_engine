@@ -3,6 +3,36 @@
 This document defines how the PROTOCOL-READY gate is produced and verified, the
 exact (non-cyclic) hashing procedure, and the integrity-vs-promotion split.
 
+## Stage 1 (TWIN-READY) qualification
+
+TWIN-READY reuses the git-tree-bound, two-commit machinery with Stage-1 specifics:
+
+- **Accepted prerequisite (pinned).** `twin/prerequisites.py` pins the accepted
+  Stage 0 identity (gate hash `b9cda0ba…`, source `4a5a14d…`, tree `f248480…`).
+  Verification returns three *separate* results — `protocol_ready_identity_accepted`,
+  `protocol_ready_evidence_verified` (Stage 0 evidence rehashed from the qualified
+  commit), and `protocol_ready_promotion_authorized`. A different, locally
+  regenerated PROTOCOL-READY gate can never authorize Stage 1. Fails closed if the
+  repository, accepted commit, tree, evidence, or identity is unavailable.
+- **Stage 1 evidence set** (`twin_runner.STAGE1_EVIDENCE`): `src/minos_engine`,
+  `schemas`, `configs`, `tests`, `docs`, `.github/workflows/ci.yml`,
+  `pyproject.toml`, `Makefile`, the Stage 1 preimplementation audit, and the
+  prerequisite `gates/protocol-ready.json` — hashed from the qualified Commit A
+  tree (`git ls-tree` + `git cat-file`). It **excludes** `gates/twin-ready.json`
+  and the Stage 1 report (no circular evidence).
+- **Coherent source integrity**: evidence completeness, all Stage 1 required
+  files tracked, all required working-tree files equal to the committed blob,
+  qualified commit/tree present, worktree clean — one `SourceIntegrity` result.
+- **Qualifier identity**: `stage1-twin-qualifier-v1` (distinct from Stage 0).
+- **Non-mutating check mode**: `minos-engine twin qualify --check` and
+  `minos-engine twin gate require-pass` verify a committed TWIN-READY gate
+  (integrity, required checks, Stage 1 evidence from Commit A, qualifier identity,
+  accepted prerequisite + its evidence, promotion, and Commit-B-descends-Commit-A)
+  without regenerating artifacts. CI runs both, so a tampered gate fails CI.
+- **Evidence rehashing** (Stage 0 and Stage 1) enumerates files from the *tree of
+  the qualified ref* (`git ls-tree <ref>`), so digests reproduce from the
+  qualified commit regardless of the current HEAD.
+
 ## Two-commit qualification (provenance)
 
 The gate must attest the *complete* source tree it qualifies. To avoid a gate

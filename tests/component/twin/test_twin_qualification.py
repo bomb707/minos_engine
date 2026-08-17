@@ -1,4 +1,4 @@
-"""Test group I — TWIN-READY qualification assembly and gate enforcement."""
+"""Test group I — TWIN-READY qualification assembly, gate enforcement, identity."""
 
 from __future__ import annotations
 
@@ -7,12 +7,15 @@ from pydantic import ValidationError
 
 from minos_engine.gates.contracts import EvidenceItem, GateArtifact, GateStatus
 from minos_engine.gates.required_checks import required_checks_for
-from minos_engine.gates.verifier import require_gate_pass, verify_gate_integrity
 from minos_engine.qualification.coverage import CoverageResult
 from minos_engine.qualification.provenance import GitProvenance
 from minos_engine.qualification.pytest_accounting import PytestAccounting
-from minos_engine.qualification.runner import _EVIDENCE, SourceIntegrity
-from minos_engine.qualification.twin_runner import assemble_twin_result
+from minos_engine.qualification.runner import SourceIntegrity
+from minos_engine.qualification.twin_runner import (
+    STAGE1_EVIDENCE,
+    STAGE1_TWIN_QUALIFIER_VERSION,
+    assemble_twin_result,
+)
 from tests.conftest import REPO_ROOT
 
 _TS = "2026-08-17T12:00:00+00:00"
@@ -35,7 +38,7 @@ _TOOLS = {"ruff_check": True, "ruff_format": True, "mypy": True}
 def _si(**over) -> SourceIntegrity:
     evidence = tuple(
         EvidenceItem(description=rel, path=rel, kind=kind, sha256="a" * 64)
-        for rel, kind in _EVIDENCE
+        for rel, kind in STAGE1_EVIDENCE
     )
     kw = {
         "evidence": evidence,
@@ -55,7 +58,6 @@ def _assemble(**over):
         "tools": dict(_TOOLS),
         "provenance": _PROV,
         "source_integrity": _si(),
-        "twin_required_tracked": True,
         "created_at": _TS,
     }
     kw.update(over)
@@ -67,10 +69,20 @@ def test_twin_qualification_pass_on_clean_repo():
     gate = result.gate
     assert gate.status is GateStatus.PASS, [k for k, v in gate.mandatory_checks.items() if not v]
     assert gate.gate_name == "TWIN-READY"
-    assert result.declared_parity_level.value == "FIXTURE_REPLAY"
+    assert gate.qualification_tool_version == STAGE1_TWIN_QUALIFIER_VERSION
     assert gate.input_hashes["declared_parity_level"] == "FIXTURE_REPLAY"
-    assert require_gate_pass(gate).ok
-    assert verify_gate_integrity(gate).ok
+    assert gate.input_hashes["prerequisite_protocol_ready_gate_hash"].startswith("b9cda0ba")
+    assert gate.mandatory_checks["protocol_ready_identity_accepted"] is True
+    assert gate.mandatory_checks["protocol_ready_evidence_verified"] is True
+
+
+def test_stage1_qualifier_identity_changes_gate_hash():
+    result = _assemble()
+    base = result.gate.model_dump(mode="json")
+    base.pop("gate_hash")
+    base["qualification_tool_version"] = "stage0-qualifier-v2"
+    altered = GateArtifact.model_validate(base)
+    assert altered.gate_hash != result.gate.gate_hash
 
 
 def test_reject_when_tool_fails():
@@ -79,10 +91,15 @@ def test_reject_when_tool_fails():
     assert result.gate.mandatory_checks["mypy_pass"] is False
 
 
-def test_reject_when_twin_source_untracked():
-    result = _assemble(twin_required_tracked=False)
+def test_reject_when_required_source_untracked():
+    result = _assemble(source_integrity=_si(required_source_tracked=False))
     assert result.gate.status is GateStatus.REJECT
     assert result.gate.mandatory_checks["required_source_tracked"] is False
+
+
+def test_reject_when_worktree_drifts():
+    result = _assemble(source_integrity=_si(worktree_matches_head=False))
+    assert result.gate.status is GateStatus.REJECT
 
 
 def test_reject_when_tests_fail():
@@ -101,9 +118,8 @@ def _pass_checks(**over):
 
 def test_twin_gate_required_checks_enforced():
     ev = (EvidenceItem(description="e", path="reports/x.md", sha256="a" * 64),)
-    # Missing a required check cannot construct a PASS gate.
     checks = _pass_checks()
-    checks.pop("truth_isolation_ok")
+    checks.pop("protocol_ready_identity_accepted")
     with pytest.raises(ValidationError):
         GateArtifact(
             gate_name="TWIN-READY",
