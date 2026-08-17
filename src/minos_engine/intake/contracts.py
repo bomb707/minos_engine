@@ -18,8 +18,11 @@ __all__ = ["CoordinateSystem", "Region", "ArtifactIdentity"]
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _CONTIG_RE = re.compile(r"^(chr([1-9]|1[0-9]|2[0-2]|X|Y|M))$")
+_REGION_RE = re.compile(r"^(chr([1-9]|1[0-9]|2[0-2]|X|Y|M)):(\d+)-(\d+)$")
 
 CoordinateSystem = str  # "zero_based_half_open" | "one_based_inclusive"
+ONE_BASED_INCLUSIVE = "one_based_inclusive"
+ZERO_BASED_HALF_OPEN = "zero_based_half_open"
 
 
 class Region(BaseModel):
@@ -48,6 +51,42 @@ class Region(BaseModel):
         if not _CONTIG_RE.match(v):
             raise ValueError(f"unsupported contig identifier: {v!r}")
         return v
+
+    @classmethod
+    def from_source(
+        cls, source: str, coordinate_system: str, *, verified: bool = False
+    ) -> Region:
+        """Parse a ``chrN:start-end`` region string under an explicit convention.
+
+        Conversion to zero-based half-open happens exactly once. M/k abbreviations
+        are not accepted. Raises ``ValueError`` on any ambiguity or bad shape
+        (Layer 1 spec §5: ambiguity is a hard failure, never silently adjusted).
+        """
+        m = _REGION_RE.match(source.strip())
+        if not m:
+            raise ValueError(f"malformed region string: {source!r}")
+        contig = m.group(1)
+        start = int(m.group(3))
+        end = int(m.group(4))
+        if coordinate_system == ONE_BASED_INCLUSIVE:
+            start0 = start - 1
+            end0_exclusive = end
+        elif coordinate_system == ZERO_BASED_HALF_OPEN:
+            start0 = start
+            end0_exclusive = end
+        else:
+            raise ValueError(f"unknown coordinate convention: {coordinate_system!r}")
+        if start0 < 0:
+            raise ValueError(f"region start underflows to negative: {source!r}")
+        return cls(
+            source=source,
+            source_coordinate_system=coordinate_system,
+            contig=contig,
+            start0=start0,
+            end0_exclusive=end0_exclusive,
+            length_bp=end0_exclusive - start0,
+            verified=verified,
+        )
 
     @model_validator(mode="after")
     def _check_interval(self) -> Region:
