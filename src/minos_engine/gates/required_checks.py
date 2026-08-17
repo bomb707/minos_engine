@@ -125,6 +125,34 @@ REQUIRED_CHECKS: dict[str, frozenset[str]] = {
             "layer2_blocked",
         }
     ),
+    # DB-READY — Layer 2 stage L2-B PostgreSQL storage foundation.
+    "DB-READY": frozenset(
+        {
+            "l2a_entry_passed",
+            "postgres_16_verified",
+            "seven_schemas_created",
+            "five_roles_created",
+            "migration_upgrade_passed",
+            "migration_downgrade_passed",
+            "migration_reupgrade_passed",
+            "constraint_tests_passed",
+            "foreign_keys_passed",
+            "append_only_passed",
+            "least_privilege_passed",
+            "live_evaluation_denied",
+            "trainer_evaluation_denied",
+            "worker_claim_concurrency_passed",
+            "artifact_policy_passed",
+            "service_still_blocked",
+            "split_manifest_absent",
+            "full_tests_passed",
+            "coverage_passed",
+            "ruff_passed",
+            "format_passed",
+            "mypy_passed",
+            "accepted_prerequisites_unchanged",
+        }
+    ),
 }
 
 

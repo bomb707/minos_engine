@@ -21,6 +21,10 @@ dependencies = [
     "pysam>=0.22,<0.23",
     "pyarrow>=16,<18",
     "numpy>=1.26,<3",
+    # Layer 2 (L2-B) — PostgreSQL 16 storage foundation.
+    "SQLAlchemy>=2,<3",
+    "alembic>=1.13,<2",
+    "psycopg[binary]>=3.1,<4",
 ]
 
 [project.optional-dependencies]
@@ -31,6 +35,9 @@ dev = [
     "mypy>=1.10",
     "types-PyYAML",
     "types-jsonschema",
+    # Local, root-free ephemeral PostgreSQL 16 for L2-B integration tests. CI uses a
+    # PostgreSQL 16 service container instead (MINOS_DATABASE_URL).
+    "pgserver>=0.1.4",
 ]
 
 [project.scripts]
@@ -70,7 +77,7 @@ packages = ["minos_engine"]
 exclude = ['(^|/)(\.venv|build|dist)(/|$)']
 
 [[tool.mypy.overrides]]
-module = ["yaml", "jsonschema", "jsonschema.*", "pysam", "pysam.*", "pyarrow", "pyarrow.*", "numpy", "numpy.*"]
+module = ["yaml", "jsonschema", "jsonschema.*", "pysam", "pysam.*", "pyarrow", "pyarrow.*", "numpy", "numpy.*", "alembic", "alembic.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

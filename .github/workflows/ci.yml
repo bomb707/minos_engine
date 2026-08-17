@@ -10,6 +10,26 @@ jobs:
     name: quality (python-3.12)
     runs-on: ubuntu-latest
 
+    # PostgreSQL 16 service for L2-B integration tests (real DB, never SQLite).
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: minos_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      # Credentials are confined to CI test configuration; never committed.
+      MINOS_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/minos_ci
+
     steps:
       # Full history: qualification verifies historical commits/trees/blobs
       # (the accepted Stage 0 commit 4a5a14d and its evidence). A shallow clone
@@ -102,6 +122,54 @@ jobs:
 
       - name: Gate — L1-READY non-mutating check (Commit A evidence + descent)
         run: minos-engine layer1 qualify --check --gate gates/l1-ready.json --base-dir .
+
+      # --- L2-B PostgreSQL 16 storage foundation ---------------------------------
+      - name: Wait for PostgreSQL 16
+        run: |
+          for i in $(seq 1 30); do
+            pg_isready -h localhost -p 5432 -U postgres && break
+            sleep 2
+          done
+          psql "$MINOS_DATABASE_URL" -c "SELECT version();"
+
+      - name: Alembic upgrade head
+        run: alembic upgrade head
+
+      - name: Confirm migration head revision
+        run: alembic current | grep 0001_l2b_initial
+
+      - name: Alembic downgrade base (verify stage-owned removal)
+        run: |
+          alembic downgrade base
+          python - <<'PY'
+          from sqlalchemy import create_engine, text
+          from minos_engine.storage.constants import SCHEMAS
+          from minos_engine.storage.database import database_url
+          e = create_engine(database_url())
+          with e.connect() as c:
+              n = c.execute(
+                  text("SELECT count(*) FROM pg_namespace WHERE nspname = ANY(:s)"),
+                  {"s": list(SCHEMAS)},
+              ).scalar()
+          assert n == 0, f"stage schemas not removed: {n}"
+          PY
+
+      - name: Alembic re-upgrade + confirm head
+        run: |
+          alembic upgrade head
+          alembic current | grep 0001_l2b_initial
+
+      - name: L2-B PostgreSQL integration tests (must not skip in CI)
+        run: pytest tests/integration/layer2_db -q
+
+      - name: Gate — DB-READY (if present)
+        run: |
+          if [ -f gates/db-ready.json ]; then
+            minos-engine layer2 db gate require-pass --gate gates/db-ready.json --base-dir .
+            minos-engine layer2 db qualify --check --gate gates/db-ready.json --base-dir .
+          else
+            echo "gates/db-ready.json not present (DB-READY evidence lives in Commit P)"
+          fi
 
       - name: Upload test & coverage reports
         if: always()

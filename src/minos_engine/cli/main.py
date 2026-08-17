@@ -282,6 +282,10 @@ def build_parser() -> argparse.ArgumentParser:
     add_layer1_subparser(sub)
     add_profile_command(sub)
 
+    from .layer2_db_commands import add_layer2_subparser
+
+    add_layer2_subparser(sub)
+
     return parser
 
 
