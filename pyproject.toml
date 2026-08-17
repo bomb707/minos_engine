@@ -46,7 +46,9 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "W", "C4", "SIM"]
-ignore = ["E501"]
+# E501: long lines are acceptable in tables/messages (line-length guides formatting).
+# UP042: we intentionally use (str, Enum) rather than StrEnum for broad compatibility.
+ignore = ["E501", "UP042"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["minos_engine"]

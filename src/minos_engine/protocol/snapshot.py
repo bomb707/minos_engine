@@ -108,9 +108,7 @@ def _artifact(section: dict[str, Any], name: str, observed_at: str) -> Any:
     )
 
 
-def build_round_context(
-    raw: RawProtocolResponse, snapshot: RoundProtocolSnapshot
-) -> RoundContext:
+def build_round_context(raw: RawProtocolResponse, snapshot: RoundProtocolSnapshot) -> RoundContext:
     payload = raw.payload
     artifacts = _require(payload, "artifacts")
     round_section = _require(payload, "round")
@@ -122,6 +120,8 @@ def build_round_context(
         time_remaining_seconds=time_remaining,
         bam_artifact=_artifact(_require(artifacts, "bam"), "bam", raw.retrieved_at),
         bai_artifact=_artifact(_require(artifacts, "bai"), "bai", raw.retrieved_at),
-        reference_artifact=_artifact(_require(artifacts, "reference"), "reference", raw.retrieved_at),
+        reference_artifact=_artifact(
+            _require(artifacts, "reference"), "reference", raw.retrieved_at
+        ),
         protocol_snapshot_id=snapshot.snapshot_id,
     )

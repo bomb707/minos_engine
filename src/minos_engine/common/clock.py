@@ -106,9 +106,7 @@ class Deadline:
         """
         remaining = self.remaining_seconds()
         if remaining <= 0.0:
-            raise DeadlineExpiredError(
-                f"deadline expired ({remaining:.3f}s past due)"
-            )
+            raise DeadlineExpiredError(f"deadline expired ({remaining:.3f}s past due)")
         if remaining < minimum_seconds:
             raise InsufficientTimeError(
                 f"insufficient time: {remaining:.3f}s remaining < {minimum_seconds:.3f}s required"

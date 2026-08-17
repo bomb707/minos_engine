@@ -58,9 +58,7 @@ def _effective_range(
     return param.documented_range()
 
 
-def _coerce_and_check(
-    name: str, param: GatkParameter, value: Any, rng: ParameterRange
-) -> Any:
+def _coerce_and_check(name: str, param: GatkParameter, value: Any, rng: ParameterRange) -> Any:
     ptype = param.type
     if ptype is ParameterType.BOOL:
         if not isinstance(value, bool):

@@ -50,7 +50,9 @@ def parse_parameter_space(
     """
     caller = raw.get("caller", ACTIVE_CALLER)
     if caller != ACTIVE_CALLER:
-        raise ParameterSpaceError(f"parameter space caller must be '{ACTIVE_CALLER}', got {caller!r}")
+        raise ParameterSpaceError(
+            f"parameter space caller must be '{ACTIVE_CALLER}', got {caller!r}"
+        )
     source = raw.get("source")
     if not source:
         raise ParameterSpaceError("parameter space payload is missing a non-empty 'source'")

@@ -8,7 +8,7 @@ contract modules to avoid duplicating the parse rule.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 __all__ = ["parse_iso8601_utc", "is_iso8601_utc", "normalize_iso8601_utc"]
 
@@ -26,7 +26,7 @@ def parse_iso8601_utc(value: str) -> datetime:
     parsed = datetime.fromisoformat(text)
     if parsed.tzinfo is None:
         raise ValueError(f"timestamp must be timezone-aware: {value!r}")
-    return parsed.astimezone(timezone.utc)
+    return parsed.astimezone(UTC)
 
 
 def is_iso8601_utc(value: str) -> bool:

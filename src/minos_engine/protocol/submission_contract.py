@@ -16,8 +16,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from minos_engine.common.hashing import canonical_hash
 from minos_engine.callers.contracts import ACTIVE_CALLER
+from minos_engine.common.hashing import canonical_hash
 
 __all__ = ["INFRA_KEYS", "SubmissionEnvelope", "build_submission_envelope"]
 
@@ -50,7 +50,9 @@ class SubmissionEnvelope(BaseModel):
         return canonical_hash(self.model_dump(mode="json"))
 
 
-def build_submission_envelope(effective_config: dict[str, Any], *, version: str) -> SubmissionEnvelope:
+def build_submission_envelope(
+    effective_config: dict[str, Any], *, version: str
+) -> SubmissionEnvelope:
     """Wrap an effective GATK CONFIG in a submission envelope, stripping infra keys.
 
     ``effective_config`` is expected to be an already-validated, canonicalized

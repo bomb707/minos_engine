@@ -35,7 +35,9 @@ class Region(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    source: str = Field(min_length=1, description="Original region string, e.g. 'chr19:13000000-23000000'")
+    source: str = Field(
+        min_length=1, description="Original region string, e.g. 'chr19:13000000-23000000'"
+    )
     source_coordinate_system: str = Field(
         description="Convention of the source string (e.g. one_based_inclusive)"
     )
@@ -53,9 +55,7 @@ class Region(BaseModel):
         return v
 
     @classmethod
-    def from_source(
-        cls, source: str, coordinate_system: str, *, verified: bool = False
-    ) -> Region:
+    def from_source(cls, source: str, coordinate_system: str, *, verified: bool = False) -> Region:
         """Parse a ``chrN:start-end`` region string under an explicit convention.
 
         Conversion to zero-based half-open happens exactly once. M/k abbreviations

@@ -76,11 +76,7 @@ class ParameterRange(BaseModel):
         else:
             if self.enum_values is not None:
                 raise ValueError("enum_values only valid for enum parameters")
-        if (
-            self.minimum is not None
-            and self.maximum is not None
-            and self.minimum > self.maximum
-        ):
+        if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
             raise ValueError(f"minimum {self.minimum} > maximum {self.maximum}")
         return self
 

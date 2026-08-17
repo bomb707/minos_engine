@@ -20,9 +20,9 @@ __all__ = ["VerificationStrength", "build_artifact_identity"]
 class VerificationStrength(str, Enum):
     """How strongly an artifact identity was established."""
 
-    DECLARED = "declared"          # hash supplied by an authority (e.g. protocol snapshot)
+    DECLARED = "declared"  # hash supplied by an authority (e.g. protocol snapshot)
     CONTENT_HASHED = "content_hashed"  # engine streamed and hashed the bytes (later stages)
-    UNVERIFIED = "unverified"      # only a filename/URI is known — NOT a valid identity
+    UNVERIFIED = "unverified"  # only a filename/URI is known — NOT a valid identity
 
 
 def build_artifact_identity(

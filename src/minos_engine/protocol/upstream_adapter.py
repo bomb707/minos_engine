@@ -44,7 +44,9 @@ def extract_provenance(raw: dict[str, Any]) -> dict[str, UpstreamIdentity]:
     for key in REQUIRED_PROVENANCE_KEYS:
         value = raw.get(key)
         if isinstance(value, str) and value.strip():
-            out[key] = UpstreamIdentity(name=key, status=IdentityStatus.AVAILABLE, value=value.strip())
+            out[key] = UpstreamIdentity(
+                name=key, status=IdentityStatus.AVAILABLE, value=value.strip()
+            )
         else:
             out[key] = UpstreamIdentity(name=key, status=IdentityStatus.UNAVAILABLE, value=None)
     return out

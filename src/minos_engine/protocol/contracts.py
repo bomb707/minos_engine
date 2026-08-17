@@ -130,9 +130,7 @@ class RoundProtocolSnapshot(BaseModel):
         if self.snapshot_id == "":
             object.__setattr__(self, "snapshot_id", expected)
         elif self.snapshot_id != expected:
-            raise ValueError(
-                f"snapshot_id does not match canonical content (expected {expected})"
-            )
+            raise ValueError(f"snapshot_id does not match canonical content (expected {expected})")
         return self
 
 
