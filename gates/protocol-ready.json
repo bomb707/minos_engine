@@ -1,0 +1,51 @@
+{
+  "created_at": "2026-08-17T08:23:19.198136+00:00",
+  "engine_git_sha": "3bad9bf5f4f24a4653b0faed3c48bbc4d19fb0b5",
+  "evidence": [
+    {
+      "description": "Pre-implementation audit",
+      "path": "reports/STAGE0_PREIMPLEMENTATION_AUDIT.md",
+      "sha256": null
+    },
+    {
+      "description": "Stage 0 qualification report",
+      "path": "reports/STAGE0_QUALIFICATION_REPORT.md",
+      "sha256": null
+    },
+    {
+      "description": "JSON schemas",
+      "path": "schemas/",
+      "sha256": null
+    },
+    {
+      "description": "Architecture & truth-isolation tests",
+      "path": "tests/leakage/",
+      "sha256": null
+    }
+  ],
+  "gate_hash": "1b73311b9a064c6191e52cee1c60358ef518841ee313a119e9adb4518b9de00b",
+  "gate_name": "PROTOCOL-READY",
+  "input_hashes": {
+    "default_config_hash": "4251cb85e5cd58b7eabfe530b9df23ea7d1d14fd882114b488d67cbd81b751b8",
+    "engine_config_hash": "5fa0920e9d6d2f4d5345c4fdcd41def247e5564c07a295e3942d70972338cc7b",
+    "gatk_registry_hash": "e4000cf700781bf11f3b3db081d1a5de1a05f297441e7e3eeb095f29bc7ce1c6",
+    "protocol_contract_hash": "adf21a59de1165a08a7d9b88bbe72fffd64fd5fc9496f4255b8a0612403e93ab"
+  },
+  "mandatory_checks": {
+    "all_tests_pass": true,
+    "canonical_determinism": true,
+    "documentation_complete": true,
+    "engine_git_sha_available": true,
+    "gatk_only_policy": true,
+    "gatk_registry_has_25_params": true,
+    "layer1_not_implemented_and_layer2_blocked": true,
+    "mypy_pass": true,
+    "no_truth_or_locked_test_access": true,
+    "required_identity_fails_closed": true,
+    "ruff_check_pass": true,
+    "ruff_format_pass": true,
+    "six_schemas_present": true
+  },
+  "schema_version": "gate-artifact-v1",
+  "status": "PASS"
+}
