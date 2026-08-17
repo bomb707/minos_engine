@@ -14,7 +14,7 @@ Immutable, self-identifying snapshot of live round state + provenance.
 | `round_id` | non-empty (subnet uses an ISO-8601 timestamp id) |
 | `round_status` | `pending`/`open`/`scoring`/`completed`/`unknown` |
 | `exact_region` | `Region` (zero-based half-open) |
-| `commit_reveal_state` | explicit; `available:false` on the current platform (no crypto commit-reveal) — never fabricated |
+| `commit_reveal_state` | explicit, fail-closed; owner-reported as enabled (score delayed ~2 epochs) but not yet verified through the integrated protocol source, so `available:false` until confirmed — enabled state/phase/timing never fabricated |
 | `parameter_ranges_raw`, `network_config_raw` | verbatim raw payloads (raw and parsed kept separate) |
 | `parameter_space_hash` | 64-hex; identifies the legal-range content |
 | `minos_upstream_commit`, `scorer_hash`, `gatk_image_digest`, `happy_image_digest` | **required, non-empty** — unknown ⇒ fail closed |

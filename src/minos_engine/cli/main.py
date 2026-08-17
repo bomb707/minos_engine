@@ -132,13 +132,56 @@ def _cmd_manifest_build(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def _cmd_gate_verify(args: argparse.Namespace) -> int:
+def _cmd_gate_verify_integrity(args: argparse.Namespace) -> int:
     from minos_engine.gates.verifier import verify_gate_file
 
-    result = verify_gate_file(args.gate)
+    result = verify_gate_file(args.gate, base_dir=args.base_dir)
     out = result.model_dump(mode="json")
     _print(out, args.json, json.dumps(out, indent=2, sort_keys=True))
     return EXIT_OK if result.ok else EXIT_VERIFY_FAILED
+
+
+def _cmd_gate_require_pass(args: argparse.Namespace) -> int:
+    from minos_engine.gates.contracts import GateStatus
+    from minos_engine.gates.verifier import GateVerification, load_gate, require_gate_pass
+
+    try:
+        gate = load_gate(args.gate)
+    except Exception as exc:  # noqa: BLE001 - a missing/invalid gate cannot be promoted
+        result = GateVerification(
+            ok=False,
+            gate_name="<unloadable>",
+            status=GateStatus.REJECT,
+            gate_hash="",
+            mode="promotion",
+            reasons=(str(exc),),
+        )
+    else:
+        result = require_gate_pass(gate, base_dir=args.base_dir)
+    out = result.model_dump(mode="json")
+    _print(out, args.json, json.dumps(out, indent=2, sort_keys=True))
+    return EXIT_OK if result.ok else EXIT_VERIFY_FAILED
+
+
+def _cmd_qualify(args: argparse.Namespace) -> int:  # pragma: no cover - subprocess orchestration
+    from pathlib import Path
+
+    from minos_engine.gates.contracts import GateStatus
+    from minos_engine.qualification.runner import qualify, write_outputs
+
+    root = Path(args.root).resolve() if args.root else Path.cwd()
+    result = qualify(root)
+    gate_path, report_path = write_outputs(result, root)
+    summary = {
+        "status": result.gate.status.value,
+        "gate_hash": result.gate.gate_hash,
+        "gate_path": str(gate_path.relative_to(root)),
+        "report_path": str(report_path.relative_to(root)),
+        "tests": result.accounting.as_report_row(),
+        "coverage_percent": result.coverage.line_coverage_percent,
+    }
+    _print(summary, args.json, json.dumps(summary, indent=2, sort_keys=True))
+    return EXIT_OK if result.gate.status is GateStatus.PASS else EXIT_VERIFY_FAILED
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -176,10 +219,29 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_gate = sub.add_parser("gate", help="stage-gate operations")
     gate_sub = p_gate.add_subparsers(dest="gate_command", required=True)
-    p_gverify = gate_sub.add_parser("verify", help="verify a gate artifact")
-    p_gverify.add_argument("--gate", required=True)
-    p_gverify.add_argument("--json", action="store_true")
-    p_gverify.set_defaults(func=_cmd_gate_verify)
+    # `verify` is an ALIAS for integrity verification (structural soundness only;
+    # a valid HOLD/REJECT passes). Use `require-pass` to authorize promotion.
+    for name, helptext in (
+        ("verify", "integrity verification (alias of verify-integrity)"),
+        ("verify-integrity", "verify schema, canonical hash, and evidence hashes"),
+    ):
+        p = gate_sub.add_parser(name, help=helptext)
+        p.add_argument("--gate", required=True)
+        p.add_argument("--base-dir", default=None, help="root for re-hashing evidence")
+        p.add_argument("--json", action="store_true")
+        p.set_defaults(func=_cmd_gate_verify_integrity)
+    p_require = gate_sub.add_parser(
+        "require-pass", help="require integrity AND status PASS AND required checks"
+    )
+    p_require.add_argument("--gate", required=True)
+    p_require.add_argument("--base-dir", default=None, help="root for re-hashing evidence")
+    p_require.add_argument("--json", action="store_true")
+    p_require.set_defaults(func=_cmd_gate_require_pass)
+
+    p_qualify = sub.add_parser("qualify", help="run Stage 0 qualification and write gate + report")
+    p_qualify.add_argument("--root", default=None, help="repository root (default: cwd)")
+    p_qualify.add_argument("--json", action="store_true")
+    p_qualify.set_defaults(func=_cmd_qualify)
 
     return parser
 

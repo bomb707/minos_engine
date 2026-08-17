@@ -62,6 +62,16 @@ def test_live_package_cannot_import_evaluator_happy_or_scoring():
     assert _violations(_all_source_files(), forbidden) == {}
 
 
+def test_production_code_never_imports_tests():
+    # Production qualification/engine code must not depend on test helpers.
+    offenders: dict[str, set[str]] = {}
+    for f in _all_source_files():
+        bad = {m for m in _imports(f) if m == "tests" or m.startswith("tests.") or m == "conftest"}
+        if bad:
+            offenders[str(f.relative_to(SRC))] = bad
+    assert offenders == {}, offenders
+
+
 def test_domain_modules_do_not_parse_cli_args():
     # Only cli/* may import argparse (Overall spec §6: domain has no argparse).
     for f in _all_source_files():

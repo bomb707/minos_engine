@@ -40,7 +40,7 @@ def test_gate_hash_excludes_creation_time():
             status=GateStatus.PASS,
             engine_git_sha="sha",
             mandatory_checks={"a": True},
-            evidence=(EvidenceItem(description="r", path="reports/r.md"),),
+            evidence=(EvidenceItem(description="r", path="reports/r.md", sha256="a" * 64),),
             created_at=created_at,
         )
 

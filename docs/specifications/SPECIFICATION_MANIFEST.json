@@ -1,0 +1,33 @@
+{
+  "documents": [
+    {
+      "added_at": "2026-08-17T00:00:00+00:00",
+      "authority": "owner-provided authoritative build specification",
+      "description": "Overall engine build specification (protocol fidelity, stage chain, live operation)",
+      "document_role": "overall",
+      "filename": "MINOS_ENGINE_Overall_Exact_Build_Specification_v2.docx",
+      "sha256": "843e6c3a9a879f3edbffda600f7d37037dcbc8c5a3eb4c81c0aa88abc4c03a73",
+      "size_bytes": 45862
+    },
+    {
+      "added_at": "2026-08-17T00:00:00+00:00",
+      "authority": "owner-provided authoritative build specification",
+      "description": "Layer 1 truth-free BAM measurement specification",
+      "document_role": "layer1",
+      "filename": "MINOS_ENGINE_Layer1_Exact_Build_Specification_v2.docx",
+      "sha256": "84c9056be6b228e80a25a51bd2c34b018f6a53377d9bec88ab29a25c25ce4d80",
+      "size_bytes": 48059
+    },
+    {
+      "added_at": "2026-08-17T00:00:00+00:00",
+      "authority": "owner-provided authoritative build specification",
+      "description": "Layer 2 PostgreSQL experiment system and GATK controller specification",
+      "document_role": "layer2",
+      "filename": "MINOS_ENGINE_Layer2_Exact_Build_Specification_v2.docx",
+      "sha256": "66bc10c16fad06b4a569fd7637658f39aa38aa38e39298b2ce550b8cefd5c17b",
+      "size_bytes": 52259
+    }
+  ],
+  "note": "Authoritative build specifications; added verbatim, never regenerated or modified.",
+  "schema_version": "specification-manifest-v1"
+}

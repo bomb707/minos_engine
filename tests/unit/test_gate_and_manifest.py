@@ -19,9 +19,21 @@ def _pass_gate(created_at: str = _TS1) -> GateArtifact:
         status=GateStatus.PASS,
         engine_git_sha="sha",
         mandatory_checks={"a": True, "b": True},
-        evidence=(EvidenceItem(description="r", path="reports/r.md"),),
+        evidence=(EvidenceItem(description="r", path="reports/r.md", sha256="a" * 64),),
         created_at=created_at,
     )
+
+
+def test_pass_gate_evidence_requires_sha256():
+    with pytest.raises(ValidationError):
+        GateArtifact(
+            gate_name="TEST",
+            status=GateStatus.PASS,
+            engine_git_sha="sha",
+            mandatory_checks={"a": True},
+            evidence=(EvidenceItem(description="r", path="reports/r.md"),),  # no sha256
+            created_at=_TS1,
+        )
 
 
 def test_pass_gate_requires_true_checks():
@@ -58,7 +70,7 @@ def test_gate_hash_tamper_detected():
             status=GateStatus.PASS,
             engine_git_sha="sha",
             mandatory_checks={"a": True, "b": True},
-            evidence=(EvidenceItem(description="r", path="reports/r.md"),),
+            evidence=(EvidenceItem(description="r", path="reports/r.md", sha256="a" * 64),),
             created_at=_TS1,
             gate_hash="0" * 64,
         )

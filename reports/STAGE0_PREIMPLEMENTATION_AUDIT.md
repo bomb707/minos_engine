@@ -49,7 +49,7 @@ This is the live Subnet-107 miner/validator codebase. It is **not** imported or 
 | GATK image | `templates/gatk.py` (≈71) | `broadinstitute/gatk:4.5.0.0` (tag, not digest). |
 | Reference | `datasets/reference/<chrom>/<chrom>.fa(.fai/.dict/.sdf)` | GRCh38; provisioned by `setup.py` from `api.theminos.ai/reference`. |
 | Other callers | `templates/{deepvariant,bcftools,freebayes}.py` | deepvariant & bcftools active in subnet; freebayes deprecated. Engine policy: **GATK-only** (others neither executable nor selectable). |
-| Commit-reveal | grep | **No cryptographic commit-reveal scheme exists.** Only submission/scoring time windows. |
+| Commit-reveal | grep | Owner-reports commit-reveal is enabled with score visibility delayed ~2 epochs; the accessible protocol representation is **not yet verified through the integrated source**. Modeled as typed-unavailable (fail closed). |
 
 ### 1.3 Local auto-memory context
 
@@ -75,7 +75,7 @@ Session memory references prior Minos work (`per-round config optimization`, `Mi
 Because the target repo is empty, there are **no code-level conflicts**. The only reconciliations required are between the specs and the *observed live subnet*, and among the specs themselves:
 
 1. **Parameter ranges: spec §6 (documented) vs live subnet (runtime).** Several parameters differ (§6 table below). The Layer 2 spec's **DYNAMIC RANGE RULE** resolves this: the static registry encodes the documented 2026-08-09 ranges; a versioned runtime *ParameterSpaceSnapshot* may override them, creating a new compatibility domain. Stage 0 implements both layers and the override seam. **We do not silently adopt live ranges into the static registry.**
-2. **Commit-reveal.** Overall spec §1 says "commit-reveal enabled"; the live subnet has no such cryptographic scheme. Stage 0 models `commit_reveal_state` as an explicit typed value that may be `unavailable` with a reason; a *required* identity that is unknown fails closed. We do **not** fabricate a commit-reveal payload.
+2. **Commit-reveal.** Overall spec §1 says "commit-reveal enabled" (score visibility delayed ~2 epochs, owner-reported). The precise accessible protocol representation is not yet verified through the integrated protocol source. Stage 0 models `commit_reveal_state` as an explicit typed value that is `available:false` (typed-unavailable) until the authoritative runtime source, fields, and timing semantics are confirmed; a *required* identity that is unknown fails closed. We do **not** fabricate the enabled state, phase, block/epoch timing, or reveal timestamp.
 3. **Repository tree: assignment §3 vs Overall spec §5.** The Overall spec's tree includes later-stage packages (`twin/`, `storage/`, `experiments/`, `models/`, `feedback/`, `observability/`). The assignment §3 gives the *Stage-0* subset. Stage 0 follows the assignment §3 tree and leaves later-stage packages unbuilt. Documented in ADR-0001.
 4. **CONFIG envelope.** Live CONFIG is `{tool,version,gatk_options}`. The specs' canonicalization operates on the GATK parameter mapping. Stage 0 canonicalizes the GATK parameter mapping and models the submission envelope (`{tool:"gatk",version,gatk_options}`, infra keys stripped) in `protocol/submission_contract.py`. CONFIG generation and submission are kept as separate operations (assignment rule 10).
 

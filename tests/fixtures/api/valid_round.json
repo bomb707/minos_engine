@@ -194,7 +194,7 @@
     "round": {
       "commit_reveal": {
         "available": false,
-        "detail": "platform has no cryptographic commit-reveal"
+        "detail": "owner-reported (enabled; score delayed ~2 epochs) but not yet verified through the integrated protocol source"
       },
       "coordinate_system": "one_based_inclusive",
       "deadline_at": "2026-08-17T13:12:00+00:00",

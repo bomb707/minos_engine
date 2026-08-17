@@ -1,8 +1,15 @@
 """Load, verify, and write stage-gate artifacts.
 
-Verification re-parses the artifact through the :class:`GateArtifact` contract
-(which recomputes and checks ``gate_hash`` and enforces the PASS invariant) and
-validates it against the JSON Schema.
+Two explicit operations (assignment §7):
+
+  * ``verify_gate_integrity`` — the artifact is structurally sound: schema valid,
+    canonical ``gate_hash`` matches, and (when a ``base_dir`` is given) every
+    evidence hash still matches the referenced file/directory bytes. This says
+    nothing about promotion; a valid HOLD/REJECT passes integrity.
+  * ``require_gate_pass`` — integrity holds AND ``status == PASS`` AND the
+    required-check set is present and true. Only this authorizes promotion.
+
+The legacy ``verify_gate_file`` performs *integrity* verification only.
 """
 
 from __future__ import annotations
@@ -13,11 +20,20 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict
 
 from minos_engine.common.errors import GateError
+from minos_engine.qualification.evidence import hash_path
 from minos_engine.schema_registry import validate_against
 
 from .contracts import GateArtifact, GateStatus
+from .required_checks import required_checks_for
 
-__all__ = ["GateVerification", "verify_gate_file", "load_gate", "write_gate"]
+__all__ = [
+    "GateVerification",
+    "load_gate",
+    "write_gate",
+    "verify_gate_integrity",
+    "require_gate_pass",
+    "verify_gate_file",
+]
 
 
 class GateVerification(BaseModel):
@@ -27,6 +43,7 @@ class GateVerification(BaseModel):
     gate_name: str
     status: GateStatus
     gate_hash: str
+    mode: str  # "integrity" | "promotion"
     reasons: tuple[str, ...] = ()
 
 
@@ -39,9 +56,75 @@ def load_gate(path: str | Path) -> GateArtifact:
     return GateArtifact.model_validate(raw)
 
 
-def verify_gate_file(path: str | Path) -> GateVerification:
-    """Verify a gate file. A parse/hash/PASS-invariant failure is reported, not raised."""
+def write_gate(gate: GateArtifact, path: str | Path) -> Path:
+    payload = gate.model_dump(mode="json")
+    validate_against("gate-artifact-v1", payload)
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return p
+
+
+def _integrity_reasons(gate: GateArtifact, base_dir: Path | None) -> list[str]:
     reasons: list[str] = []
+    if gate.gate_hash != gate.compute_hash():
+        reasons.append("gate_hash does not match canonical content")
+    if base_dir is not None:
+        for item in gate.evidence:
+            if item.sha256 is None:
+                continue
+            target = base_dir / item.path
+            if not target.exists():
+                reasons.append(f"evidence path missing: {item.path}")
+                continue
+            actual = hash_path(target)
+            if actual != item.sha256:
+                reasons.append(f"evidence hash mismatch: {item.path}")
+    return reasons
+
+
+def verify_gate_integrity(
+    gate: GateArtifact, *, base_dir: str | Path | None = None
+) -> GateVerification:
+    base = Path(base_dir) if base_dir is not None else None
+    reasons = _integrity_reasons(gate, base)
+    return GateVerification(
+        ok=not reasons,
+        gate_name=gate.gate_name,
+        status=gate.status,
+        gate_hash=gate.gate_hash,
+        mode="integrity",
+        reasons=tuple(reasons),
+    )
+
+
+def require_gate_pass(
+    gate: GateArtifact, *, base_dir: str | Path | None = None
+) -> GateVerification:
+    reasons = list(_integrity_reasons(gate, Path(base_dir) if base_dir is not None else None))
+    if gate.status is not GateStatus.PASS:
+        reasons.append(f"status is {gate.status.value}, not PASS")
+    required = required_checks_for(gate.gate_name)
+    if required:
+        present = set(gate.mandatory_checks)
+        absent = sorted(required - present)
+        if absent:
+            reasons.append(f"missing required checks: {absent}")
+        not_true = sorted(n for n in required if gate.mandatory_checks.get(n) is not True)
+        if not_true:
+            reasons.append(f"required checks not true: {not_true}")
+    return GateVerification(
+        ok=not reasons,
+        gate_name=gate.gate_name,
+        status=gate.status,
+        gate_hash=gate.gate_hash,
+        mode="promotion",
+        reasons=tuple(reasons),
+    )
+
+
+def verify_gate_file(path: str | Path, *, base_dir: str | Path | None = None) -> GateVerification:
+    """Integrity verification of a gate file (parse failures reported, not raised)."""
     try:
         gate = load_gate(path)
     except Exception as exc:  # noqa: BLE001 - report any failure as a reason
@@ -50,30 +133,7 @@ def verify_gate_file(path: str | Path) -> GateVerification:
             gate_name="<unloadable>",
             status=GateStatus.REJECT,
             gate_hash="",
+            mode="integrity",
             reasons=(str(exc),),
         )
-
-    if gate.gate_hash != gate.compute_hash():
-        reasons.append("gate_hash does not match canonical content")
-    if gate.status is GateStatus.PASS:
-        failing = [k for k, ok in gate.mandatory_checks.items() if not ok]
-        if failing:
-            reasons.append(f"PASS gate has failing checks: {failing}")
-
-    return GateVerification(
-        ok=not reasons,
-        gate_name=gate.gate_name,
-        status=gate.status,
-        gate_hash=gate.gate_hash,
-        reasons=tuple(reasons),
-    )
-
-
-def write_gate(gate: GateArtifact, path: str | Path) -> Path:
-    """Write a gate artifact as pretty JSON (schema-validated first)."""
-    payload = gate.model_dump(mode="json")
-    validate_against("gate-artifact-v1", payload)
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return p
+    return verify_gate_integrity(gate, base_dir=base_dir)

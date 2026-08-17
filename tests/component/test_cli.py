@@ -78,3 +78,43 @@ def test_gate_verify_missing_returns_verify_failed(capsys):
 def test_no_subcommand_errors():
     with pytest.raises(SystemExit):
         main([])
+
+
+def test_human_output_branches(capsys):
+    # Exercise the non-JSON (human) rendering paths.
+    assert main(["doctor"]) == 0
+    assert "overall health" in capsys.readouterr().out
+    assert main(["protocol", "snapshot", "--fixture", str(API_FIXTURES / "valid_round.json")]) == 0
+    assert "snapshot_id" in capsys.readouterr().out
+    assert main(["config", "validate", "--config", str(GATK_FIXTURES / "default_config.json")]) == 0
+    assert "CONFIG valid" in capsys.readouterr().out
+
+
+def _write_pass_gate(tmp_path):
+    from minos_engine.gates.contracts import EvidenceItem, GateArtifact, GateStatus
+    from minos_engine.gates.verifier import write_gate
+
+    gate = GateArtifact(
+        gate_name="TEST",
+        status=GateStatus.PASS,
+        engine_git_sha="abc",
+        mandatory_checks={"a": True},
+        evidence=(EvidenceItem(description="e", path="reports/x.md", sha256="a" * 64),),
+        created_at="2026-08-17T12:00:00+00:00",
+    )
+    p = tmp_path / "gate.json"
+    write_gate(gate, p)
+    return p
+
+
+def test_gate_verify_integrity_and_require_pass(tmp_path, capsys):
+    p = _write_pass_gate(tmp_path)
+    assert main(["gate", "verify-integrity", "--gate", str(p), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["mode"] == "integrity"
+    # TEST is an unregistered gate name, so require-pass succeeds on a PASS gate.
+    assert main(["gate", "require-pass", "--gate", str(p), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["mode"] == "promotion"
+
+
+def test_gate_require_pass_missing_returns_verify_failed():
+    assert main(["gate", "require-pass", "--gate", "/nonexistent/gate.json"]) == 1

@@ -38,11 +38,15 @@ class RoundStatus(str, Enum):
 
 
 class CommitRevealState(BaseModel):
-    """Commit-reveal state, modeled explicitly.
+    """Commit-reveal state, modeled explicitly and fail-closed.
 
-    The live Subnet-107 platform has no cryptographic commit-reveal scheme, so
-    ``available`` defaults to ``False`` with a reason rather than fabricating a
-    payload. When a future protocol version exposes it, populate the fields.
+    Commit-reveal behavior is owner-reported (enabled; score visibility delayed
+    ~two epochs) but not yet verified through the integrated protocol source.
+    Stage 0 represents it as typed-unavailable (``available`` defaults to
+    ``False`` with a reason) until the authoritative runtime source, fields, and
+    timing semantics are confirmed. We never fabricate the enabled state, phase,
+    block/epoch timing, or a reveal timestamp. When a future protocol version
+    exposes verified fields, populate them.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")

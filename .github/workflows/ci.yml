@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  quality:
+    name: quality (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install (editable, with dev extras)
+        run: python -m pip install -e ".[dev]"
+
+      - name: Ruff lint
+        run: ruff check .
+
+      - name: Ruff format check
+        run: ruff format --check .
+
+      - name: mypy
+        run: mypy src
+
+      - name: Pytest (JUnit XML)
+        run: pytest --junitxml=reports/ci-junit.xml
+
+      - name: Coverage (>= 90%)
+        run: >-
+          pytest
+          --cov=src/minos_engine
+          --cov-fail-under=90
+          --cov-report=term-missing
+          --cov-report=xml:reports/ci-coverage.xml
+
+      - name: CLI smoke — doctor
+        run: minos-engine doctor --json
+
+      - name: CLI smoke — protocol snapshot
+        run: minos-engine protocol snapshot --fixture tests/fixtures/api/valid_round.json
+
+      - name: CLI smoke — config validate
+        run: >-
+          minos-engine config validate
+          --config tests/fixtures/gatk/default_config.json
+          --parameter-space tests/fixtures/api/gatk_parameter_space.json
+
+      - name: Upload test & coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports-py${{ matrix.python-version }}
+          path: |
+            reports/ci-junit.xml
+            reports/ci-coverage.xml
+          if-no-files-found: ignore

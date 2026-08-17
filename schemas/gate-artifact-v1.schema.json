@@ -21,11 +21,16 @@
         "properties": {
           "description": { "type": "string", "minLength": 1 },
           "path": { "type": "string", "minLength": 1 },
-          "sha256": { "type": ["string", "null"] }
+          "kind": { "enum": ["file", "directory"] },
+          "sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+          "size_bytes": { "type": ["integer", "null"], "minimum": 0 }
         }
       }
     },
     "mandatory_checks": { "type": "object", "additionalProperties": { "type": "boolean" } },
+    "qualified_source_git_sha": { "type": ["string", "null"] },
+    "qualified_source_tree_sha": { "type": ["string", "null"] },
+    "qualification_tool_version": { "type": ["string", "null"] },
     "created_at": { "type": "string", "format": "date-time" },
     "gate_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
   },

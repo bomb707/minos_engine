@@ -22,7 +22,12 @@ release manifest, stage gates, and a CLI.
 - GATK-only caller policy; submission envelope (generation separate from
   submission, no side effects).
 - CLI: `doctor`, `protocol snapshot`, `config validate`, `manifest build`,
-  `gate verify` (human + `--json`).
+  `gate verify-integrity` / `gate require-pass` (integrity vs promotion),
+  `qualify` (human + `--json`).
+- Qualification engine (`src/minos_engine/qualification/`): JUnit-based test
+  accounting, Cobertura coverage enforcement (≥90%), deterministic evidence
+  hashing, required-check registry, and two-commit source provenance.
+- GitHub Actions CI (3.11/3.12); authoritative specs in `docs/specifications/`.
 - Full test suite incl. architecture import-boundary and truth-isolation guards.
 
 ### What is intentionally NOT implemented
@@ -59,7 +64,9 @@ minos-engine config validate \
   --config tests/fixtures/gatk/default_config.json \
   --parameter-space tests/fixtures/api/gatk_parameter_space.json
 minos-engine manifest build --fixture tests/fixtures/api/valid_round.json
-minos-engine gate verify --gate gates/protocol-ready.json
+minos-engine gate verify-integrity --gate gates/protocol-ready.json --base-dir .
+minos-engine gate require-pass --gate gates/protocol-ready.json --base-dir .
+minos-engine qualify   # runs the full qualification and writes gate + report
 ```
 
 ## Stage-gate status
@@ -77,5 +84,9 @@ GitHub repository is reviewed and the next stage is explicitly approved.
 - `docs/architecture/OVERVIEW.md`, `docs/architecture/DEPENDENCY_RULES.md`
 - `docs/contracts/PROTOCOL_CONTRACTS.md`, `docs/contracts/GATK_CONFIG_CONTRACT.md`
 - `docs/runbooks/PROTOCOL_SNAPSHOT.md`
+- `docs/qualification/QUALIFICATION.md` (two-commit provenance, evidence hashing,
+  required checks, integrity vs promotion)
+- `docs/ci/CI_AND_BRANCH_PROTECTION.md`
+- `docs/specifications/` (authoritative build specs + `SPECIFICATION_MANIFEST.json`)
 - `docs/decisions/ADR-0001..0004`
 - `reports/STAGE0_PREIMPLEMENTATION_AUDIT.md`, `reports/STAGE0_QUALIFICATION_REPORT.md`
