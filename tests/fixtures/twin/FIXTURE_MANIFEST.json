@@ -1,0 +1,150 @@
+{
+  "fixtures": [
+    {
+      "classification": "synthetic",
+      "license": "internal-synthetic",
+      "origin": "synthetic (generated, no real genomic data)",
+      "path": "parity/expectation.json",
+      "sha256": "b3f31d196604466d068baf701040059e940c8eb2894b17ab0604dabf0f12aa55",
+      "truth_isolation": "no_truth"
+    },
+    {
+      "classification": "synthetic",
+      "license": "internal-synthetic",
+      "origin": "synthetic (generated, no real genomic data)",
+      "path": "parity/observation_match.json",
+      "sha256": "7c03741bd3e6da4dbe0d2d931cbe11336be95ee12f7ba05278904a6c8a232e2d",
+      "truth_isolation": "no_truth"
+    },
+    {
+      "classification": "synthetic",
+      "license": "internal-synthetic",
+      "origin": "synthetic (generated, no real genomic data)",
+      "path": "parity/observation_mismatch.json",
+      "sha256": "9787d0b86730b8d29650b5d8c0cbcca8fe2649e3cf03da7ddfa036ca86d945a0",
+      "truth_isolation": "no_truth"
+    },
+    {
+      "classification": "synthetic",
+      "license": "internal-synthetic",
+      "origin": "synthetic (generated, no real genomic data)",
+      "path": "raw/inconsistent_supplied.json",
+      "sha256": "c2f26c2b10dccbe047c9ac610a0394674898911ebc2bbf1ecf56cf281e719b57",
+      "truth_isolation": "no_truth"
+    },
+    {
+      "classification": "synthetic",
+      "license": "internal-synthetic",
+      "origin": "synthetic (generated, no real genomic data)",
+      "path": "raw/malformed_numeric.json",
+      "sha256": "a05310566e61f885fc75d42a260bc5a7a598f3aa8595a47def0edb0c8dcc6b21",
+      "truth_isolation": "no_truth"
+    },
+    {
+      "classification": "synthetic",
+      "license": "internal-synthetic",
+      "origin": "synthetic (generated, no real genomic data)",
+      "path": "raw/missing_indel.json",
+      "sha256": "b6c7b340da086b4ba9822eb38e94ff14ca4c770513e91928d5a7defd6a4082ba",
+      "truth_isolation": "no_truth"
+    },
+    {
+      "classification": "synthetic",
+      "license": "internal-synthetic",
+      "origin": "synthetic (generated, no real genomic data)",
+      "path": "raw/negative_count.json",
+      "sha256": "76e2721ddba236eafaa595f9d3bc9cb693f6c518a775f2ef4200d72798cea580",
+      "truth_isolation": "no_truth"
+    },
+    {
+      "classification": "synthetic",
+      "license": "internal-synthetic",
+      "origin": "synthetic (generated, no real genomic data)",
+      "path": "raw/valid.json",
+      "sha256": "25cbe659f8dd3032d9891ea53145fcc6004a17de9a54a3c6d7ff782dba4c8b73",
+      "truth_isolation": "no_truth"
+    },
+    {
+      "classification": "synthetic",
+      "license": "internal-synthetic",
+      "origin": "synthetic (generated, no real genomic data)",
+      "path": "replay/high_fn.json",
+      "sha256": "275e935d06b46efa016f237aaf5e5f02e817d38e51b9621ba061ec9edd0d5fb8",
+      "truth_isolation": "no_truth"
+    },
+    {
+      "classification": "synthetic",
+      "license": "internal-synthetic",
+      "origin": "synthetic (generated, no real genomic data)",
+      "path": "replay/high_fp.json",
+      "sha256": "cef0bc8f7b1690bfaaa459e0bb4e3d142762d96775aed39c83c9396c0d5c28e4",
+      "truth_isolation": "no_truth"
+    },
+    {
+      "classification": "synthetic",
+      "license": "internal-synthetic",
+      "origin": "synthetic (generated, no real genomic data)",
+      "path": "replay/indel_heavy.json",
+      "sha256": "c0509356f7ee35cde72098c155c7b29e2c342102a6f9a574824f1a8cc2fe5a1e",
+      "truth_isolation": "no_truth"
+    },
+    {
+      "classification": "synthetic",
+      "license": "internal-synthetic",
+      "origin": "synthetic (generated, no real genomic data)",
+      "path": "replay/invalid_caller.json",
+      "sha256": "fcb5b2d0acf70c2a67d007c7117a21b4a30e3550a13aa7b3f7c06951c28cdc46",
+      "truth_isolation": "no_truth"
+    },
+    {
+      "classification": "synthetic",
+      "license": "internal-synthetic",
+      "origin": "synthetic (generated, no real genomic data)",
+      "path": "replay/out_of_range.json",
+      "sha256": "6f76855a00732b7e89d0f69622943631e35110473316579bde6af3d9c401a35d",
+      "truth_isolation": "no_truth"
+    },
+    {
+      "classification": "synthetic",
+      "license": "internal-synthetic",
+      "origin": "synthetic (generated, no real genomic data)",
+      "path": "replay/snp_heavy.json",
+      "sha256": "f3d72d46e061ca6e40f353ce76265e6f5f5a5df615383509f2b16908a6d59674",
+      "truth_isolation": "no_truth"
+    },
+    {
+      "classification": "synthetic",
+      "license": "internal-synthetic",
+      "origin": "synthetic (generated, no real genomic data)",
+      "path": "replay/unknown_parameter.json",
+      "sha256": "cc323feadda242ef01fed843815e26bd7bd078810b55cb628ab6b442cce4014b",
+      "truth_isolation": "no_truth"
+    },
+    {
+      "classification": "synthetic",
+      "license": "internal-synthetic",
+      "origin": "synthetic (generated, no real genomic data)",
+      "path": "replay/valid.json",
+      "sha256": "e16da5336ba0abbec773c53adbc472101b1baff41b5dc3343ed77322ed90615d",
+      "truth_isolation": "no_truth"
+    },
+    {
+      "classification": "synthetic",
+      "license": "internal-synthetic",
+      "origin": "synthetic (generated, no real genomic data)",
+      "path": "replay/zero_boundary.json",
+      "sha256": "a832d0a1468df583d953523c34a0daa1247483bb093fddec654770472ba810dd",
+      "truth_isolation": "no_truth"
+    },
+    {
+      "classification": "synthetic",
+      "license": "internal-synthetic",
+      "origin": "synthetic (generated, no real genomic data)",
+      "path": "truth/practice_truth.json",
+      "sha256": "b543de98508077bb9ab56272a554eef1c3bc7ec7d061cc6b76e4461cf3d419d4",
+      "truth_isolation": "offline_truth"
+    }
+  ],
+  "note": "All Twin fixtures are small synthetic JSON. No BAM/VCF/reference/truth bytes are committed.",
+  "schema_version": "twin-fixture-manifest-v1"
+}

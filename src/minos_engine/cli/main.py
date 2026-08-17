@@ -243,6 +243,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_qualify.add_argument("--json", action="store_true")
     p_qualify.set_defaults(func=_cmd_qualify)
 
+    from .twin_commands import add_twin_subparser
+
+    add_twin_subparser(sub)
+
     return parser
 
 

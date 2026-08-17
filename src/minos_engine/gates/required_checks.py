@@ -40,6 +40,42 @@ REQUIRED_CHECKS: dict[str, frozenset[str]] = {
             "worktree_matches_head",
         }
     ),
+    "TWIN-READY": frozenset(
+        {
+            # Stage 0 prerequisite
+            "protocol_ready_prerequisite_valid",
+            "protocol_ready_promotion_authorized",
+            # Twin behavior
+            "twin_contracts_schema_valid",
+            "twin_canonical_hashing_deterministic",
+            "gatk_execution_plan_ok",
+            "gatk_only_policy",
+            "comparison_parser_ok",
+            "scoring_matches_declared_level",
+            "unavailable_scoring_honest",
+            "fixture_replay_deterministic",
+            "parity_mismatch_detection_works",
+            "truth_isolation_ok",
+            "architecture_boundaries_ok",
+            "no_hidden_network_dependency",
+            # Test + static analysis
+            "tests_collected_nonzero",
+            "all_tests_pass",
+            "ruff_check_pass",
+            "ruff_format_pass",
+            "mypy_pass",
+            "coverage_threshold_met",
+            # Git-tree-bound source integrity
+            "required_source_tracked",
+            "worktree_matches_head",
+            "evidence_hashes_complete",
+            "qualified_source_clean",
+            # Documentation + stage gating
+            "stage1_documentation_complete",
+            "layer1_not_implemented",
+            "layer2_blocked",
+        }
+    ),
     # Forward-looking: L1-READY is issued only in Stage 3. Defined here so the
     # Layer 2 entry gate can require the complete set now; no L1-READY exists yet.
     "L1-READY": frozenset(

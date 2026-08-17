@@ -1,0 +1,9 @@
+{
+  "expected_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+  "fields": {
+    "caller": "gatk"
+  },
+  "name": "plan",
+  "protocol_version": "v1",
+  "tool_version": "4.5.0.0"
+}

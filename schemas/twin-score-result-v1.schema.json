@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://minos.engine/schemas/twin-score-result-v1.schema.json",
+  "title": "TwinScoreResult v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "round_id", "status", "score_inputs"],
+  "properties": {
+    "schema_version": { "const": "twin-score-result-v1" },
+    "round_id": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["AVAILABLE", "UNAVAILABLE"] },
+    "reason_code": {
+      "type": ["string", "null"],
+      "enum": [
+        "AUTHORITATIVE_SCORER_NOT_AVAILABLE",
+        "TOOL_IDENTITY_UNAVAILABLE",
+        "TOOL_EXECUTION_NOT_ENABLED",
+        "COMPARISON_RESULT_UNAVAILABLE",
+        "PREREQUISITE_GATE_NOT_SATISFIED",
+        null
+      ]
+    },
+    "scorer_identity": { "type": ["string", "null"] },
+    "score_inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "round_id", "snp_f1", "indel_f1", "mean_recall", "total_truth", "total_calls", "fp_total"],
+      "properties": {
+        "schema_version": { "const": "twin-score-inputs-v1" },
+        "round_id": { "type": "string", "minLength": 1 },
+        "snp_f1": { "type": "number", "minimum": 0, "maximum": 1 },
+        "indel_f1": { "type": "number", "minimum": 0, "maximum": 1 },
+        "mean_recall": { "type": "number", "minimum": 0, "maximum": 1 },
+        "total_truth": { "type": "integer", "minimum": 0 },
+        "total_calls": { "type": "integer", "minimum": 0 },
+        "fp_total": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "components": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["core", "completeness", "fp", "quality"],
+      "properties": {
+        "core": { "type": "number" },
+        "completeness": { "type": "number" },
+        "fp": { "type": "number" },
+        "quality": { "type": "number" }
+      }
+    },
+    "final_score": { "type": ["number", "null"] }
+  },
+  "if": { "properties": { "status": { "const": "AVAILABLE" } } },
+  "then": {
+    "required": ["components", "final_score", "scorer_identity"],
+    "properties": {
+      "components": { "type": "object" },
+      "final_score": { "type": "number" }
+    }
+  },
+  "else": {
+    "required": ["reason_code"],
+    "properties": {
+      "components": { "type": "null" },
+      "final_score": { "type": "null" }
+    }
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://minos.engine/schemas/twin-comparison-result-v1.schema.json",
+  "title": "ComparisonMetrics v1 (hap.py-style)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "round_id", "region", "reference_sha256", "snp", "indel",
+    "snp_precision", "snp_recall", "snp_f1", "indel_precision", "indel_recall", "indel_f1",
+    "total_calls", "truth_vcf_sha256", "query_vcf_sha256", "tool", "raw_result_hash"
+  ],
+  "properties": {
+    "schema_version": { "const": "twin-comparison-result-v1" },
+    "round_id": { "type": "string", "minLength": 1 },
+    "region": { "$ref": "round-context-v1.schema.json#/$defs/region" },
+    "reference_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "snp": { "$ref": "#/$defs/counts" },
+    "indel": { "$ref": "#/$defs/counts" },
+    "snp_precision": { "$ref": "#/$defs/rate" },
+    "snp_recall": { "$ref": "#/$defs/rate" },
+    "snp_f1": { "$ref": "#/$defs/rate" },
+    "indel_precision": { "$ref": "#/$defs/rate" },
+    "indel_recall": { "$ref": "#/$defs/rate" },
+    "indel_f1": { "$ref": "#/$defs/rate" },
+    "total_calls": { "type": "integer", "minimum": 0 },
+    "ti_tv": { "type": ["number", "null"], "minimum": 0 },
+    "het_hom": { "type": ["number", "null"], "minimum": 0 },
+    "truth_vcf_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "query_vcf_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": ["string", "null"] },
+        "digest": { "type": ["string", "null"] }
+      }
+    },
+    "raw_result_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  },
+  "$defs": {
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tp", "fp", "fn"],
+      "properties": {
+        "tp": { "type": "integer", "minimum": 0 },
+        "fp": { "type": "integer", "minimum": 0 },
+        "fn": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "rate": { "type": "number", "minimum": 0, "maximum": 1 }
+  }
+}

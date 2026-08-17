@@ -1,0 +1,54 @@
+{
+  "classification": "synthetic",
+  "comparison_raw": {
+    "het_hom": 1.6,
+    "indel": {
+      "fn": 12,
+      "fp": 8,
+      "tp": 40
+    },
+    "snp": {
+      "fn": 10,
+      "fp": 5,
+      "tp": 90
+    },
+    "ti_tv": 2.05
+  },
+  "comparison_tool": {
+    "digest": null,
+    "name": "hap.py",
+    "version": "0.3.14"
+  },
+  "expected": {},
+  "fixture_id": "out_of_range",
+  "query_vcf_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "request": {
+    "bam_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "budget_seconds": 300.0,
+    "engine_git_sha": "stage1",
+    "gatk_tool": {
+      "digest": null,
+      "name": "gatk",
+      "version": "4.5.0.0"
+    },
+    "output_uri": "s3://minos/round/out.vcf.gz",
+    "parameter_space_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "protocol_snapshot_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "reference_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "region": {
+      "contig": "chr19",
+      "end0_exclusive": 23000000,
+      "length_bp": 10000001,
+      "source": "chr19:13000000-23000000",
+      "source_coordinate_system": "one_based_inclusive",
+      "start0": 12999999,
+      "verified": false
+    },
+    "requested_config": {
+      "min_pruning": 999
+    },
+    "round_id": "2026-08-17T12:00:00.000000+00:00",
+    "schema_version": "twin-execution-request-v1"
+  },
+  "truth_vcf_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+}

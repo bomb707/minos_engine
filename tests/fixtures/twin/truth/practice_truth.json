@@ -1,0 +1,7 @@
+{
+  "classification": "synthetic",
+  "fixture_id": "practice_truth_001",
+  "region_source": "chr19:13000000-23000000",
+  "sentinel": "TRUTH_SENTINEL_DO_NOT_LEAK_1a2b3c",
+  "truth_vcf_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+}

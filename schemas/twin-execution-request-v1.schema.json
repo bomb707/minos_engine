@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://minos.engine/schemas/twin-execution-request-v1.schema.json",
+  "title": "TwinExecutionRequest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "round_id", "region", "requested_config", "parameter_space_hash",
+    "protocol_snapshot_hash", "reference_sha256", "output_uri", "budget_seconds",
+    "gatk_tool", "engine_git_sha"
+  ],
+  "properties": {
+    "schema_version": { "const": "twin-execution-request-v1" },
+    "round_id": { "type": "string", "minLength": 1 },
+    "region": { "$ref": "round-context-v1.schema.json#/$defs/region" },
+    "requested_config": { "type": "object" },
+    "parameter_space_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "protocol_snapshot_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "reference_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "bam_sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+    "output_uri": { "type": "string", "minLength": 1 },
+    "budget_seconds": { "type": "number", "exclusiveMinimum": 0 },
+    "gatk_tool": { "$ref": "#/$defs/tool" },
+    "engine_git_sha": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": ["string", "null"] },
+        "digest": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

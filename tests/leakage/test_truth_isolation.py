@@ -50,8 +50,13 @@ def _docstring_nodes(tree: ast.AST) -> set[int]:
 
 
 def test_no_truth_data_access_in_source():
+    # Scoped to the live/production packages. The offline Validator Twin
+    # legitimately hosts hap.py/scoring adapters (Overall spec §6); production
+    # importing the Twin is separately forbidden by a Twin architecture test.
+    live_packages = ("protocol", "callers", "layer1", "layer2", "intake", "manifests", "common")
     offenders: dict[str, list[str]] = {}
-    for path in SRC.rglob("*.py"):
+    live_files = [f for pkg in live_packages for f in (SRC / pkg).rglob("*.py")]
+    for path in live_files:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         docstrings = _docstring_nodes(tree)
         hits: list[str] = []

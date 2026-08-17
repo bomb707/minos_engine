@@ -56,6 +56,21 @@ jobs:
           --config tests/fixtures/gatk/default_config.json
           --parameter-space tests/fixtures/api/gatk_parameter_space.json
 
+      - name: CLI smoke — twin plan (no execution)
+        run: minos-engine twin plan --request tests/fixtures/twin/replay/valid.json --json
+
+      - name: CLI smoke — twin replay (fixture-backed)
+        run: minos-engine twin replay --fixture tests/fixtures/twin/replay/valid.json --json
+
+      - name: CLI smoke — twin parity
+        run: >-
+          minos-engine twin parity
+          --expected tests/fixtures/twin/parity/expectation.json
+          --observed tests/fixtures/twin/parity/observation_match.json
+
+      - name: Prerequisite gate — PROTOCOL-READY promotion
+        run: minos-engine gate require-pass --gate gates/protocol-ready.json
+
       - name: Upload test & coverage reports
         if: always()
         uses: actions/upload-artifact@v4

@@ -58,8 +58,14 @@ def test_layer2_cannot_import_bam_readers_or_intake():
 
 
 def test_live_package_cannot_import_evaluator_happy_or_scoring():
+    # Scoped to the live/production packages. The Validator Twin + tool adapters
+    # are the OFFLINE evaluation namespace (Overall spec §6) and legitimately
+    # include hap.py/scoring adapters; a Twin architecture test proves production
+    # never imports the Twin/tools.
+    live_packages = ("protocol", "callers", "layer1", "layer2", "intake", "manifests", "common")
+    live_files = [f for pkg in live_packages for f in (SRC / pkg).rglob("*.py")]
     forbidden = ("happy", "hap_py", "scoring", "evaluator", "genomics_config")
-    assert _violations(_all_source_files(), forbidden) == {}
+    assert _violations(live_files, forbidden) == {}
 
 
 def test_production_code_never_imports_tests():

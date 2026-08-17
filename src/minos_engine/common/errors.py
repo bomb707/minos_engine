@@ -58,3 +58,19 @@ class GateError(MinosEngineError):
 
 class ManifestError(MinosEngineError):
     """A release manifest is missing a required identity or has an empty one."""
+
+
+class TwinError(MinosEngineError):
+    """Base for Validator Twin (Stage 1) failures."""
+
+
+class ComparisonError(TwinError):
+    """A comparison (hap.py-style) result is malformed, incomplete, or inconsistent."""
+
+
+class ScoringError(TwinError):
+    """A scoring input/result is invalid."""
+
+
+class ParityError(TwinError):
+    """A parity assessment is invalid or violates its declared level."""

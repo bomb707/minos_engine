@@ -128,8 +128,20 @@ def _docstring_ids(tree: ast.AST) -> set[int]:
     return ids
 
 
+# The live/production ("live image") packages. The Validator Twin, tool
+# adapters, and qualification are the OFFLINE evaluation namespace (Overall spec
+# §6: "twin/evaluation exists only in the offline image"); truth/hap.py/scoring
+# adapters legitimately live there. The live-path truth scan is therefore scoped
+# to these production packages; a separate Twin architecture test proves no
+# production package imports the Twin/tools.
+_LIVE_PACKAGES = ("protocol", "callers", "layer1", "layer2", "intake", "manifests", "common")
+
+
 def no_truth_or_locked_test_access(src_dir: Path) -> bool:
-    for path in src_dir.rglob("*.py"):
+    paths: list[Path] = []
+    for pkg in _LIVE_PACKAGES:
+        paths.extend((src_dir / pkg).rglob("*.py"))
+    for path in paths:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         docstrings = _docstring_ids(tree)
         for node in ast.walk(tree):
@@ -149,8 +161,21 @@ def no_truth_or_locked_test_access(src_dir: Path) -> bool:
     return True
 
 
+_STAGE0_SCHEMAS = (
+    "artifact-identity-v1.schema.json",
+    "round-protocol-snapshot-v1.schema.json",
+    "round-context-v1.schema.json",
+    "parameter-space-snapshot-v1.schema.json",
+    "gate-artifact-v1.schema.json",
+    "release-manifest-v1.schema.json",
+)
+
+
 def six_schemas_present(root: Path) -> bool:
-    return len(list((root / "schemas").glob("*.schema.json"))) == 6
+    # The six required Stage 0 schemas are present. Later stages may add more
+    # schemas (e.g. the Twin's), so this checks the required set by name rather
+    # than an exact total count.
+    return all((root / "schemas" / name).exists() for name in _STAGE0_SCHEMAS)
 
 
 def documentation_complete(root: Path) -> bool:

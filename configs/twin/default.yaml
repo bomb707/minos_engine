@@ -1,0 +1,11 @@
+# Validator Twin defaults (Stage 1).
+schema_version: twin-config-v1
+declared_parity_level: FIXTURE_REPLAY
+# Real GATK / hap.py execution is NOT enabled in Stage 1 (fixture replay only).
+tool_execution:
+  gatk_enabled: false
+  happy_enabled: false
+scoring:
+  # The pinned AdvancedScorer formula is not available in the specifications;
+  # the composite/final score is returned as typed-unavailable.
+  advanced_scorer_available: false
