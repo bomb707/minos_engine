@@ -1,0 +1,137 @@
+{
+  "created_at": "2026-08-17T22:00:50.112050+00:00",
+  "engine_git_sha": "ddb5e5c00b13261e6645253fd8c45535030af896",
+  "evidence": [
+    {
+      "description": "src/minos_engine/storage",
+      "kind": "directory",
+      "path": "src/minos_engine/storage",
+      "sha256": "cd8a5b63409ab10b5f76c63343ea7744c0d4d7b80113304d6bb74e544653d609",
+      "size_bytes": null
+    },
+    {
+      "description": "migrations",
+      "kind": "directory",
+      "path": "migrations",
+      "sha256": "6cd6295be283d5c2c09e7b481deb3c90fc438285126e7ec72a4aaec7da127de9",
+      "size_bytes": null
+    },
+    {
+      "description": "alembic.ini",
+      "kind": "file",
+      "path": "alembic.ini",
+      "sha256": "fbbf339b4d6109db906f77e9eaed530305cf8f701edb1ca9e749a2ff827522e4",
+      "size_bytes": 774
+    },
+    {
+      "description": "migrations/versions/0001_l2b_initial.py",
+      "kind": "file",
+      "path": "migrations/versions/0001_l2b_initial.py",
+      "sha256": "2f357f142e8e3a2f7b5a51bf60e94d3bfecd65ad94e6390baa05c0f1dc7b9b0a",
+      "size_bytes": 2109
+    },
+    {
+      "description": "gates/protocol-ready.json",
+      "kind": "file",
+      "path": "gates/protocol-ready.json",
+      "sha256": "edb57817829a4d4f7f359f12dd626d8333d07f505c8ef5349f22d79ff93d8cf9",
+      "size_bytes": 4022
+    },
+    {
+      "description": "gates/twin-ready.json",
+      "kind": "file",
+      "path": "gates/twin-ready.json",
+      "sha256": "2edffacdddeaf21125715be18b14e77947e063b8a29dfb2bd43b171a864cddde",
+      "size_bytes": 4198
+    },
+    {
+      "description": "gates/l1-ready.json",
+      "kind": "file",
+      "path": "gates/l1-ready.json",
+      "sha256": "d7099a12a2a93e447fd97cab3a4eec1a1a27a90b9262351ec7f576259946d951",
+      "size_bytes": 5499
+    },
+    {
+      "description": "docs/layer2/STORAGE_ARCHITECTURE.md",
+      "kind": "file",
+      "path": "docs/layer2/STORAGE_ARCHITECTURE.md",
+      "sha256": "f867f7e22a897757a9e34e3572627c1b52cca7f585506a70957afcb3839af7c4",
+      "size_bytes": 5353
+    },
+    {
+      "description": "docs/layer2/DATABASE_ROLES.md",
+      "kind": "file",
+      "path": "docs/layer2/DATABASE_ROLES.md",
+      "sha256": "7d85a593031320be2ad23edfb461768c1d7ddde384af55cd3386e3d58cfe0d1e",
+      "size_bytes": 4258
+    },
+    {
+      "description": "docs/layer2/MIGRATIONS.md",
+      "kind": "file",
+      "path": "docs/layer2/MIGRATIONS.md",
+      "sha256": "b14fb3b14872e9d021c0a6f287a7e73e018608b756333ad55756c902c021af17",
+      "size_bytes": 3226
+    },
+    {
+      "description": "tests/integration/layer2_db",
+      "kind": "directory",
+      "path": "tests/integration/layer2_db",
+      "sha256": "13d7f0ffab63f9c4d1906284aeb66756ce4cd400c1bd854cb8922e7120614dae",
+      "size_bytes": null
+    },
+    {
+      "description": "pyproject.toml",
+      "kind": "file",
+      "path": "pyproject.toml",
+      "sha256": "8e13acf7b4029f053e9e35c36a1cc475e0d26d1c43022772a04e850b59f18275",
+      "size_bytes": 2364
+    }
+  ],
+  "gate_hash": "48954170248f930a5e8f965bccd69991e7dba5bbec099a25a777a797835c86a8",
+  "gate_name": "DB-READY",
+  "input_hashes": {
+    "accepted_l1_artifact_commit": "ceadf70ba16c044a62585e7fa88bbf47fbfefae1",
+    "accepted_l1_ready_gate_hash": "aeabfea898edd09f68dbe5662b9aebe9dc87d69c97a10b7c8fb3e9d913b5ef5b",
+    "accepted_l2a_owner_commit": "f96ea78e0943e33f751afe2eb1709512445e9437",
+    "accepted_protocol_ready_gate_hash": "b9cda0bab329b36a0a62b4b7e9ba9b797fc22b46c1055f76db26b591311a1675",
+    "accepted_twin_ready_gate_hash": "3464fb7604fd6b18d9008bafa9e3cf1ad18d7d440d22806bbe043a11d3e9b22a",
+    "alembic_head_revision": "0001_l2b_initial",
+    "migration_file_hash": "2f357f142e8e3a2f7b5a51bf60e94d3bfecd65ad94e6390baa05c0f1dc7b9b0a",
+    "postgres_major_version": "16",
+    "python_runtime": "CPython 3.12",
+    "qualification_report_hash": "90c2e22779be057f257142f8dfaf20d2252a7236e7c9a5be5a05c583f53eeb18",
+    "role_policy_hash": "00e223cc769264189dde7ddd59b856bf6ed3662244ccf6695413b4b92b854d12",
+    "specification_manifest_hash": "29241c14bfbd072ed798ff3628dbea6d683c3251320604385f81fe0987e14843",
+    "storage_schema_hash": "4508728723ef44a5a4e27013b2cb550240614dc1a9a7a451684cb90c877b5977"
+  },
+  "mandatory_checks": {
+    "accepted_prerequisites_unchanged": true,
+    "append_only_passed": true,
+    "artifact_policy_passed": true,
+    "constraint_tests_passed": true,
+    "coverage_passed": true,
+    "five_roles_created": true,
+    "foreign_keys_passed": true,
+    "format_passed": true,
+    "full_tests_passed": true,
+    "l2a_entry_passed": true,
+    "least_privilege_passed": true,
+    "live_evaluation_denied": true,
+    "migration_downgrade_passed": true,
+    "migration_reupgrade_passed": true,
+    "migration_upgrade_passed": true,
+    "mypy_passed": true,
+    "postgres_16_verified": true,
+    "ruff_passed": true,
+    "service_still_blocked": true,
+    "seven_schemas_created": true,
+    "split_manifest_absent": true,
+    "trainer_evaluation_denied": true,
+    "worker_claim_concurrency_passed": true
+  },
+  "qualification_tool_version": "layer2-db-qualifier-v1",
+  "qualified_source_git_sha": "ddb5e5c00b13261e6645253fd8c45535030af896",
+  "qualified_source_tree_sha": "3e78ec555f0a4fe3327aa565df7eb94c3cc4132e",
+  "schema_version": "gate-artifact-v1",
+  "status": "PASS"
+}
