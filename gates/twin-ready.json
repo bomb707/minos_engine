@@ -1,13 +1,27 @@
 {
-  "created_at": "2026-08-17T10:00:53.452309+00:00",
-  "engine_git_sha": "471374b444e3054ee94c9519f0f627bf182a63ee",
+  "created_at": "2026-08-17T10:25:16.837161+00:00",
+  "engine_git_sha": "36f8a3edb4e45125e83c80ea7c54f42ef7bee553",
   "evidence": [
     {
-      "description": "reports/STAGE0_PREIMPLEMENTATION_AUDIT.md",
+      "description": "reports/STAGE1_PREIMPLEMENTATION_AUDIT.md",
       "kind": "file",
-      "path": "reports/STAGE0_PREIMPLEMENTATION_AUDIT.md",
-      "sha256": "fd3ca71ef5e4ea0ee7430b30c42b4cb8a7eb71b557af4bfb5d65717a846f27d6",
-      "size_bytes": 15579
+      "path": "reports/STAGE1_PREIMPLEMENTATION_AUDIT.md",
+      "sha256": "6ea0940ed0f64f3f510a2dd048ee6e47eb1633b11e8741474b46a390fb7efbbc",
+      "size_bytes": 11219
+    },
+    {
+      "description": "gates/protocol-ready.json",
+      "kind": "file",
+      "path": "gates/protocol-ready.json",
+      "sha256": "edb57817829a4d4f7f359f12dd626d8333d07f505c8ef5349f22d79ff93d8cf9",
+      "size_bytes": 4022
+    },
+    {
+      "description": "src/minos_engine",
+      "kind": "directory",
+      "path": "src/minos_engine",
+      "sha256": "35cda423e6c9d3f9a11637214dfe93c66fb0f3e8cb2073d768fe8523eec5075d",
+      "size_bytes": null
     },
     {
       "description": "schemas",
@@ -24,32 +38,25 @@
       "size_bytes": null
     },
     {
-      "description": "src/minos_engine",
-      "kind": "directory",
-      "path": "src/minos_engine",
-      "sha256": "b6c4b681b28ee48c437ae860ed42905f77a3cb3a415b084cc47362cf9192493e",
-      "size_bytes": null
-    },
-    {
       "description": "tests",
       "kind": "directory",
       "path": "tests",
-      "sha256": "675309c77290d319a148c73b08cca6cd38f6f00e6bee5e065ad639cf4267cea2",
+      "sha256": "b41b711192cece11803d0e9400ed817ca3b2666e5eca8a7c02f174f0260651ce",
       "size_bytes": null
     },
     {
       "description": "docs",
       "kind": "directory",
       "path": "docs",
-      "sha256": "347ac18c71aa660b2cc029c26871087a5d7e4b48d846cb65ad42334d3aa38e27",
+      "sha256": "6e002de4451edc980352d91c455cf40132b955b4952d422eed2174c0d833f1ed",
       "size_bytes": null
     },
     {
-      "description": "docs/specifications/SPECIFICATION_MANIFEST.json",
+      "description": ".github/workflows/ci.yml",
       "kind": "file",
-      "path": "docs/specifications/SPECIFICATION_MANIFEST.json",
-      "sha256": "29241c14bfbd072ed798ff3628dbea6d683c3251320604385f81fe0987e14843",
-      "size_bytes": 1494
+      "path": ".github/workflows/ci.yml",
+      "sha256": "824487409c6569f302c40cf9255cd73d50ce98e322aae8c7af5e02aba9a09aaf",
+      "size_bytes": 2781
     },
     {
       "description": "pyproject.toml",
@@ -64,16 +71,9 @@
       "path": "Makefile",
       "sha256": "5e09be3d66139711de45a66789de24ad3c6d52b2794f2605b99009cafcd0dff7",
       "size_bytes": 1377
-    },
-    {
-      "description": ".github/workflows/ci.yml",
-      "kind": "file",
-      "path": ".github/workflows/ci.yml",
-      "sha256": "901c52ee28c75e07a66979da87477ba930d935a0cb60c096afec2c1f7a7bac7d",
-      "size_bytes": 2426
     }
   ],
-  "gate_hash": "ef3bf35ae55ce0b80ae6c3dfddfdaf0e4dfbd8de5a0b1fb453e52bab4eb5197b",
+  "gate_hash": "2963f203ae7d107477e976bfa702244e0c3f12b14bd024fa37a6d42b83fa9724",
   "gate_name": "TWIN-READY",
   "input_hashes": {
     "declared_parity_level": "FIXTURE_REPLAY",
@@ -94,9 +94,11 @@
     "mypy_pass": true,
     "no_hidden_network_dependency": true,
     "parity_mismatch_detection_works": true,
-    "protocol_ready_prerequisite_valid": true,
+    "protocol_ready_evidence_verified": true,
+    "protocol_ready_identity_accepted": true,
     "protocol_ready_promotion_authorized": true,
     "qualified_source_clean": true,
+    "qualified_source_present": true,
     "required_source_tracked": true,
     "ruff_check_pass": true,
     "ruff_format_pass": true,
@@ -109,9 +111,9 @@
     "unavailable_scoring_honest": true,
     "worktree_matches_head": true
   },
-  "qualification_tool_version": "stage0-qualifier-v2",
-  "qualified_source_git_sha": "471374b444e3054ee94c9519f0f627bf182a63ee",
-  "qualified_source_tree_sha": "3fece01e1bc4748d850eaf3086b1e41b6b79c509",
+  "qualification_tool_version": "stage1-twin-qualifier-v1",
+  "qualified_source_git_sha": "36f8a3edb4e45125e83c80ea7c54f42ef7bee553",
+  "qualified_source_tree_sha": "4bbfdbe9ea05c2617341a1cfec26922457af94b6",
   "schema_version": "gate-artifact-v1",
   "status": "PASS"
 }
