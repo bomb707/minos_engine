@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://minos.engine/schemas/layer1-multi-dataset-accuracy-v1.schema.json",
+  "title": "Layer 1 Multi-Dataset Accuracy Result v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "verdict",
+    "layer2_recommendation",
+    "python_version",
+    "tool_versions",
+    "accepted_gates",
+    "selection_algorithm",
+    "dataset_inventory_count",
+    "chromosome_distribution",
+    "datasets",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": { "const": "layer1-multi-dataset-accuracy-v1" },
+    "created_at": { "type": "string" },
+    "verdict": { "enum": ["PASS", "FAIL"] },
+    "layer2_recommendation": {
+      "enum": ["APPROVED", "BLOCKED", "APPROVED_WITH_EXCLUSIONS"]
+    },
+    "python_version": { "type": "string" },
+    "tool_versions": { "type": "object" },
+    "accepted_gates": {
+      "type": "object",
+      "required": ["protocol_ready", "twin_ready", "l1_ready"],
+      "properties": {
+        "protocol_ready": { "type": "string" },
+        "twin_ready": { "type": "string" },
+        "l1_ready": { "type": "string" }
+      }
+    },
+    "selection_algorithm": { "type": "string" },
+    "dataset_inventory_count": { "type": "integer", "minimum": 0 },
+    "chromosome_distribution": { "type": "object" },
+    "datasets": {
+      "type": "array",
+      "minItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "chromosome",
+          "dataset_id",
+          "region",
+          "input_hashes",
+          "numerical",
+          "truth_relevance",
+          "truth_isolation",
+          "determinism",
+          "cross_region",
+          "robustness"
+        ],
+        "properties": {
+          "chromosome": { "type": "string" },
+          "dataset_id": { "type": "string" },
+          "numerical": {
+            "type": "object",
+            "required": [
+              "exact_fields",
+              "exact_mismatches",
+              "float_fields",
+              "float_failures"
+            ]
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "exact_field_pass_rate",
+        "approximation_pass_rate",
+        "coordinate_agreement",
+        "determinism_pass_rate",
+        "truth_isolation_pass_rate",
+        "robustness_pass_rate",
+        "hard_deadline_violations",
+        "total_exact_mismatches",
+        "total_float_failures"
+      ],
+      "properties": {
+        "exact_field_pass_rate": { "type": "number" },
+        "approximation_pass_rate": { "type": "number" },
+        "coordinate_agreement": { "type": "number" },
+        "determinism_pass_rate": { "type": "number" },
+        "truth_isolation_pass_rate": { "type": "number" },
+        "robustness_pass_rate": { "type": "number" },
+        "hard_deadline_violations": { "type": "integer", "minimum": 0 },
+        "total_exact_mismatches": { "type": "integer", "minimum": 0 },
+        "total_float_failures": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}
