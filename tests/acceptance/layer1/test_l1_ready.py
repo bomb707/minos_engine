@@ -48,20 +48,11 @@ def test_committed_l1_ready_gate_verifies_with_descent():
 
 @pytest.mark.skipif(not _GATE.exists(), reason="L1-READY gate is produced in Commit B")
 def test_committed_l1_ready_gate_authorizes_layer2_entry():
-    from minos_engine.gates.verifier import load_gate
-    from minos_engine.layer2.entry_gate import EntryGateRequest, verify_l1_ready
-    from minos_engine.qualification.layer1_checks import profile_schema_hash, profiler_config_hash
+    # The hardened entry gate pins all accepted identities; the caller supplies
+    # only the repo root. This proves the full accepted history chain.
+    from minos_engine.layer2.entry_gate import EntryGateRequest, verify_l2_entry_gate
 
-    gate = load_gate(_GATE)
-    req = EntryGateRequest(
-        l1_ready_path=str(_GATE),
-        qualification_report_path=str(_REPORT),
-        expected_layer1_schema_hash=profile_schema_hash(),
-        expected_profiler_config_hash=profiler_config_hash(),
-        expected_profiler_version="layer1-profiler-v1",
-        base_dir=str(REPO_ROOT),
-        expected_qualified_source_git_sha=gate.qualified_source_git_sha,
-        expected_qualified_source_tree_sha=gate.qualified_source_tree_sha,
-    )
-    result = verify_l1_ready(req)
+    result = verify_l2_entry_gate(EntryGateRequest(repo_root=str(REPO_ROOT)))
     assert result.ok, result.reasons
+    assert result.checks["head_descends_owner"] is True
+    assert result.checks["artifact_proper_descends_source"] is True

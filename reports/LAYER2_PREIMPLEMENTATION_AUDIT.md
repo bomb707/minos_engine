@@ -12,6 +12,39 @@ extracted from the Layer 2 specification, the residual risks, and a staged plan
 
 ---
 
+## Append-only correction (L2-A, 2026-08-17)
+
+The original staged plan below (Part E) labelled the **PostgreSQL storage
+foundation** as L2-A. That sequencing is corrected: Layer 2 must not create or
+consume any state until its exact accepted Layer 1 prerequisite is enforced in
+code. The entry gate, foundational contracts, and the feature-eligibility registry
+therefore become L2-A, and every later stage shifts by one. The original table is
+retained unchanged (append-only evidence); the corrected sequence supersedes it.
+
+```
+Original audit L2-A: PostgreSQL foundation
+Corrected  L2-A:     Exact entry gate, contracts, and feature registry
+PostgreSQL foundation:      moved to L2-B
+Immutable 50/10/15 split:   moved to L2-C
+```
+
+**Corrected sequence (authoritative):**
+
+| Stage | Corrected goal | Gate |
+|---|---|---|
+| **L2-A** | Exact entry gate, foundational contracts, feature-eligibility registry, architecture enforcement | L2A-QUALIFIED (this stage; not L2-READY) |
+| **L2-B** | PostgreSQL storage foundation (7 schemas, 5 roles, migrations, constraints) | DB-READY |
+| **L2-C** | Immutable 50/10/15 dataset split manifest + registry | SPLIT-FROZEN |
+| **L2-D** | Layer 1 profile ingestion (by identity tuple, fail-closed) | INGEST-READY |
+| **L2-E** | Production feature view (ELIGIBLE-only, FORBIDDEN-free) | FEATURE-VIEW-READY |
+| **L2-F +** | Experiment harness → baseline → models → controller → freeze → production | HARNESS-READY … PRODUCTION-READY |
+
+L2-A is delivered by this implementation. It does **not** unblock
+`Layer2Service.select_config` and introduces no PostgreSQL, storage, controller, or
+manifest code. The stage table in Part E is the original (superseded) record.
+
+---
+
 ## Part A — Verified pre-implementation state
 
 ### 1. Runtime and worktree

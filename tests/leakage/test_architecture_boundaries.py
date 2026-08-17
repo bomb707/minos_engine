@@ -57,6 +57,83 @@ def test_layer2_cannot_import_bam_readers_or_intake():
     assert _violations(_package_files("layer2"), forbidden) == {}
 
 
+def test_layer2_forbidden_imports_expanded():
+    # Layer 2 (L2-A) may consume only typed Layer 1 *contracts*, gate/qualification
+    # verification, and common utilities. It must not touch BAM/BAI readers, Layer 1
+    # file-opening logic, intake, truth/eval/scoring/mutation packages, or any
+    # database/network dependency (no PostgreSQL/SQLAlchemy/Alembic in L2-A).
+    forbidden = (
+        "pysam",
+        "minos_engine.intake",
+        "layer1.adapters",
+        "layer1.pysam_adapter",
+        "layer1.scan",
+        "layer1.pileup",
+        "layer1.coverage",
+        "layer1.reference_profile",
+        "layer1.orchestrator",
+        "layer1.sampling",
+        "layer1.serializer",
+        "layer1.service",
+        "happy",
+        "hap_py",
+        "scoring",
+        "evaluator",
+        "mutation",
+        "retrieval",
+        "sqlalchemy",
+        "alembic",
+        "psycopg",
+        "asyncpg",
+        "requests",
+        "httpx",
+        "urllib",
+    )
+    assert _violations(_package_files("layer2"), forbidden) == {}
+
+
+def test_layer2_domain_modules_do_not_open_files_or_parse_env():
+    # Pure Layer 2 domain modules (contracts, feature registry, service) must not
+    # open files or read the environment. The entry gate is the artifact verifier
+    # and legitimately reads the gate/report it is asked to verify.
+    domain = [
+        SRC / "layer2" / "contracts.py",
+        SRC / "layer2" / "feature_registry.py",
+        SRC / "layer2" / "service.py",
+        SRC / "layer2" / "prerequisites.py",
+    ]
+    banned = ("open(", "read_text", "read_bytes", "os.environ", "os.getenv", "getenv(")
+    for f in domain:
+        text = f.read_text(encoding="utf-8")
+        for token in banned:
+            assert token not in text, f"{f} uses {token}"
+
+
+def test_layer2_never_parses_environment():
+    for f in _package_files("layer2"):
+        text = f.read_text(encoding="utf-8")
+        assert "os.environ" not in text and "os.getenv" not in text, f
+
+
+def test_layer2_service_remains_blocked():
+    import pytest
+
+    from minos_engine.common.errors import StageNotReadyError
+    from minos_engine.layer2.service import Layer2Service
+
+    with pytest.raises(StageNotReadyError):
+        Layer2Service().select_config(None)  # type: ignore[arg-type]
+
+
+def test_layer2_consumes_only_typed_layer1_contracts():
+    # If any layer2 file imports from minos_engine.layer1, it must be the contracts
+    # module only (typed profile types), never the profiler/file-opening internals.
+    for f in _package_files("layer2"):
+        for mod in _imports(f):
+            if mod.startswith("minos_engine.layer1"):
+                assert mod == "minos_engine.layer1.contracts", f"{f} imports {mod}"
+
+
 def test_live_package_cannot_import_evaluator_happy_or_scoring():
     # Scoped to the live/production packages. The Validator Twin + tool adapters
     # are the OFFLINE evaluation namespace (Overall spec §6) and legitimately

@@ -6,7 +6,11 @@ import pytest
 
 from minos_engine.common.errors import ContractValidationError, GateError, StageNotReadyError
 from minos_engine.layer1.service import Layer1Service
-from minos_engine.layer2.entry_gate import EntryGateRequest, require_l1_ready, verify_l1_ready
+from minos_engine.layer2.entry_gate import (
+    EntryGateRequest,
+    require_l2_entry_gate,
+    verify_l2_entry_gate,
+)
 from minos_engine.layer2.service import Layer2Service
 from minos_engine.schema_registry import validate_against
 
@@ -24,18 +28,13 @@ def test_layer2_blocked():
 
 
 def test_entry_gate_rejects_missing_l1_ready(tmp_path):
-    req = EntryGateRequest(
-        l1_ready_path=str(tmp_path / "l1-ready.json"),
-        qualification_report_path=str(tmp_path / "l1-report.json"),
-        expected_layer1_schema_hash="a" * 64,
-        expected_profiler_config_hash="b" * 64,
-        expected_profiler_version="l1-profiler-v1",
-    )
-    result = verify_l1_ready(req)
+    # A repo_root with no committed l1-ready.json fails closed.
+    req = EntryGateRequest(repo_root=str(tmp_path))
+    result = verify_l2_entry_gate(req)
     assert not result.ok
-    assert any("missing" in r for r in result.reasons)
+    assert "L1_READY_MISSING" in result.reasons
     with pytest.raises(GateError):
-        require_l1_ready(req)
+        require_l2_entry_gate(req)
 
 
 def test_incompatible_schema_version_rejected():

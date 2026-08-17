@@ -1,8 +1,11 @@
-"""Comprehensive L1-READY entry-gate verification (item 8).
+"""Hardened Layer 2 entry-gate — content negatives against the real repository.
 
-Builds a fully-valid L1-READY gate + qualification report, confirms it verifies,
-then mutates each field to prove every rejection path. Layer 2 stays blocked
-because no legitimate L1-READY exists in the repo.
+The positive case and gate-content negatives run against the committed
+``gates/l1-ready.json`` and the real git history. The verifier pins all accepted
+identities (callers cannot supply them), so negatives are produced by tampering a
+*copy* of the gate/report and pointing the locator at it while the real repo
+supplies the (passing) git-ancestry chain. Synthetic-repo git-ancestry negatives
+live in ``tests/acceptance/layer2/test_entry_gate_git.py``.
 """
 
 from __future__ import annotations
@@ -11,169 +14,157 @@ import json
 
 import pytest
 
-from minos_engine.gates.contracts import EvidenceItem, GateArtifact, GateStatus
-from minos_engine.gates.required_checks import required_checks_for
+from minos_engine.common.errors import GateError
+from minos_engine.gates.contracts import GateArtifact
 from minos_engine.gates.verifier import write_gate
-from minos_engine.layer2.entry_gate import EntryGateRequest, verify_l1_ready
-from minos_engine.qualification.evidence import sha256_file
+from minos_engine.layer2.entry_gate import (
+    EntryGateRequest,
+    require_l2_entry_gate,
+    verify_l2_entry_gate,
+)
+from tests.conftest import REPO_ROOT
 
-SCHEMA_H = "1" * 64
-CFG_H = "2" * 64
-PROFILER_VERSION = "l1-profiler-v1"
-SRC_SHA = "3" * 64
-TREE_SHA = "4" * 64
-TS = "2026-08-17T12:00:00+00:00"
-
-
-def _l1_required_true() -> dict[str, bool]:
-    return dict.fromkeys(required_checks_for("L1-READY"), True)
+_GATE = REPO_ROOT / "gates" / "l1-ready.json"
+_REPORT = REPO_ROOT / "reports" / "LAYER1_QUALIFICATION_REPORT.md"
+pytestmark = pytest.mark.skipif(not _GATE.exists(), reason="L1-READY gate produced in Commit B")
 
 
-def _write_report(tmp_path) -> tuple[str, str]:
-    report = tmp_path / "reports" / "l1-report.json"
-    report.parent.mkdir(parents=True, exist_ok=True)
-    report.write_text(json.dumps({"stage": "S3", "result": "L1-READY"}), encoding="utf-8")
-    return str(report), sha256_file(report)
+def _real_raw() -> dict:
+    return json.loads(_GATE.read_text(encoding="utf-8"))
 
 
-def _build_gate(tmp_path, *, report_hash: str, evidence_path: str, evidence_sha: str) -> str:
-    gate = GateArtifact(
-        gate_name="L1-READY",
-        status=GateStatus.PASS,
-        engine_git_sha="abc123",
-        input_hashes={
-            "layer1_schema_hash": SCHEMA_H,
-            "profiler_config_hash": CFG_H,
-            "profiler_version": PROFILER_VERSION,
-            "qualification_report_hash": report_hash,
-        },
-        evidence=(EvidenceItem(description="report", path=evidence_path, sha256=evidence_sha),),
-        mandatory_checks=_l1_required_true(),
-        qualified_source_git_sha=SRC_SHA,
-        qualified_source_tree_sha=TREE_SHA,
-        qualification_tool_version="stage3-qualifier-v1",
-        created_at=TS,
-    )
+def _write_variant(tmp_path, raw: dict) -> str:
+    raw = dict(raw)
+    raw["gate_hash"] = ""  # force canonical recompute over the mutated content
+    gate = GateArtifact.model_validate(raw)
     path = tmp_path / "gates" / "l1-ready.json"
     write_gate(gate, path)
     return str(path)
 
 
-def _request(tmp_path, gate_path: str, report_path: str, **overrides) -> EntryGateRequest:
-    kwargs = {
-        "l1_ready_path": gate_path,
-        "qualification_report_path": report_path,
-        "expected_layer1_schema_hash": SCHEMA_H,
-        "expected_profiler_config_hash": CFG_H,
-        "expected_profiler_version": PROFILER_VERSION,
-        "base_dir": str(tmp_path),
-        "expected_qualified_source_git_sha": SRC_SHA,
-        "expected_qualified_source_tree_sha": TREE_SHA,
-    }
+def _request(**overrides) -> EntryGateRequest:
+    kwargs = {"repo_root": str(REPO_ROOT)}
     kwargs.update(overrides)
     return EntryGateRequest(**kwargs)
 
 
-def _valid(tmp_path):
-    report_path, report_hash = _write_report(tmp_path)
-    # Evidence points at the report file (relative to base_dir) so re-hash matches.
-    rel = "reports/l1-report.json"
-    gate_path = _build_gate(
-        tmp_path, report_hash=report_hash, evidence_path=rel, evidence_sha=report_hash
-    )
-    return gate_path, report_path
-
-
-def test_valid_l1_ready_passes(tmp_path):
-    gate_path, report_path = _valid(tmp_path)
-    result = verify_l1_ready(_request(tmp_path, gate_path, report_path))
+# --------------------------------------------------------------------------- #
+# Positive
+# --------------------------------------------------------------------------- #
+def test_real_entry_gate_passes():
+    result = verify_l2_entry_gate(_request())
     assert result.ok, result.reasons
+    assert all(result.checks.values())
+    require_l2_entry_gate(_request())  # does not raise
 
 
-@pytest.mark.parametrize(
-    "override,needle",
-    [
-        ({"expected_layer1_schema_hash": "9" * 64}, "schema hash"),
-        ({"expected_profiler_config_hash": "9" * 64}, "configuration hash"),
-        ({"expected_profiler_version": "other"}, "profiler version"),
-        ({"expected_qualified_source_git_sha": "9" * 64}, "source commit"),
-        ({"expected_qualified_source_tree_sha": "9" * 64}, "source tree"),
-    ],
-)
-def test_mismatches_rejected(tmp_path, override, needle):
-    gate_path, report_path = _valid(tmp_path)
-    result = verify_l1_ready(_request(tmp_path, gate_path, report_path, **override))
+# --------------------------------------------------------------------------- #
+# Gate-content negatives (real repo, tampered copy)
+# --------------------------------------------------------------------------- #
+def test_self_consistent_but_unaccepted_gate_rejected(tmp_path):
+    raw = _real_raw()
+    # Add a supplemental (true) check: valid PASS gate, new canonical hash != accepted.
+    # (created_at is excluded from the hash, so it cannot be used to perturb identity.)
+    raw["mandatory_checks"] = dict(raw["mandatory_checks"], extra_supplemental_check=True)
+    gate_path = _write_variant(tmp_path, raw)
+    result = verify_l2_entry_gate(_request(l1_ready_path=gate_path))
     assert not result.ok
-    assert any(needle in r for r in result.reasons), result.reasons
-
-
-def test_missing_report_rejected(tmp_path):
-    gate_path, report_path = _valid(tmp_path)
-    import os
-
-    os.remove(report_path)
-    result = verify_l1_ready(_request(tmp_path, gate_path, report_path))
-    assert not result.ok
-    assert any("report is missing" in r for r in result.reasons)
-
-
-def test_report_hash_mismatch_rejected(tmp_path):
-    gate_path, report_path = _valid(tmp_path)
-    # Tamper the report after the gate recorded its hash.
-    with open(report_path, "w", encoding="utf-8") as fh:
-        fh.write('{"tampered": true}')
-    result = verify_l1_ready(_request(tmp_path, gate_path, report_path))
-    assert not result.ok
-    assert any("report hash mismatch" in r for r in result.reasons)
-
-
-def test_evidence_tamper_rejected(tmp_path):
-    gate_path, report_path = _valid(tmp_path)
-    # The evidence points at the report; tampering it breaks the evidence hash too.
-    with open(report_path, "w", encoding="utf-8") as fh:
-        fh.write('{"tampered": true}')
-    result = verify_l1_ready(_request(tmp_path, gate_path, report_path))
-    assert not result.ok
-    assert any("EVIDENCE_HASH_MISMATCH" in r for r in result.reasons)
+    assert "GATE_HASH_NOT_ACCEPTED" in result.reasons
 
 
 def test_wrong_gate_name_rejected(tmp_path):
-    # A structurally valid PASS gate whose name is not L1-READY.
-    report_path, report_hash = _write_report(tmp_path)
-    gate = GateArtifact(
-        gate_name="PROTOCOL-READY",
-        status=GateStatus.PASS,
-        engine_git_sha="abc",
-        mandatory_checks=dict.fromkeys(required_checks_for("PROTOCOL-READY"), True),
-        evidence=(
-            EvidenceItem(description="e", path="reports/l1-report.json", sha256=report_hash),
-        ),
-        qualified_source_git_sha=SRC_SHA,
-        qualified_source_tree_sha=TREE_SHA,
-        qualification_tool_version="x",
-        created_at=TS,
-    )
-    path = tmp_path / "gates" / "l1-ready.json"
-    write_gate(gate, path)
-    result = verify_l1_ready(_request(tmp_path, str(path), report_path))
+    raw = _real_raw()
+    raw["gate_name"] = "L1-READY-IMPOSTER"  # unregistered name; no required-check set
+    gate_path = _write_variant(tmp_path, raw)
+    result = verify_l2_entry_gate(_request(l1_ready_path=gate_path))
     assert not result.ok
-    assert any("gate_name" in r for r in result.reasons)
+    assert "GATE_NAME_MISMATCH" in result.reasons
 
 
-def test_non_pass_status_rejected(tmp_path):
-    report_path, report_hash = _write_report(tmp_path)
-    gate = GateArtifact(
-        gate_name="L1-READY",
-        status=GateStatus.HOLD,
-        engine_git_sha="abc",
-        mandatory_checks={"determinism": True},
-        evidence=(
-            EvidenceItem(description="e", path="reports/l1-report.json", sha256=report_hash),
-        ),
-        created_at=TS,
-    )
-    path = tmp_path / "gates" / "l1-ready.json"
-    write_gate(gate, path)
-    result = verify_l1_ready(_request(tmp_path, str(path), report_path))
+def test_layer1_schema_hash_mismatch_rejected(tmp_path):
+    raw = _real_raw()
+    raw["input_hashes"] = dict(raw["input_hashes"], layer1_schema_hash="9" * 64)
+    gate_path = _write_variant(tmp_path, raw)
+    result = verify_l2_entry_gate(_request(l1_ready_path=gate_path))
     assert not result.ok
-    assert any("not PASS" in r for r in result.reasons)
+    assert "LAYER1_SCHEMA_HASH_MISMATCH" in result.reasons
+
+
+def test_profiler_version_mismatch_rejected(tmp_path):
+    raw = _real_raw()
+    raw["input_hashes"] = dict(raw["input_hashes"], profiler_version="other")
+    gate_path = _write_variant(tmp_path, raw)
+    result = verify_l2_entry_gate(_request(l1_ready_path=gate_path))
+    assert not result.ok
+    assert "PROFILER_VERSION_MISMATCH" in result.reasons
+
+
+def test_qualified_source_tree_mismatch_rejected(tmp_path):
+    raw = _real_raw()
+    raw["qualified_source_tree_sha"] = "4" * 40
+    gate_path = _write_variant(tmp_path, raw)
+    result = verify_l2_entry_gate(_request(l1_ready_path=gate_path))
+    assert not result.ok
+    assert "QUALIFIED_SOURCE_TREE_MISMATCH" in result.reasons
+
+
+def test_canonical_hash_tamper_rejected(tmp_path):
+    raw = _real_raw()
+    raw["gate_hash"] = "0" * 64  # inconsistent with content, not recomputed
+    path = tmp_path / "gates" / "l1-ready.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    result = verify_l2_entry_gate(_request(l1_ready_path=str(path)))
+    assert not result.ok
+    assert "CANONICAL_HASH_INVALID" in result.reasons
+
+
+def test_unparseable_gate_rejected(tmp_path):
+    path = tmp_path / "gates" / "l1-ready.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{ not json", encoding="utf-8")
+    result = verify_l2_entry_gate(_request(l1_ready_path=str(path)))
+    assert not result.ok
+    assert "GATE_UNPARSEABLE" in result.reasons
+
+
+def test_missing_gate_rejected(tmp_path):
+    result = verify_l2_entry_gate(_request(l1_ready_path=str(tmp_path / "nope.json")))
+    assert not result.ok
+    assert "L1_READY_MISSING" in result.reasons
+
+
+def test_tampered_report_rejected(tmp_path):
+    bad = tmp_path / "report.md"
+    bad.write_text("tampered", encoding="utf-8")
+    result = verify_l2_entry_gate(_request(qualification_report_path=str(bad)))
+    assert not result.ok
+    assert "QUALIFICATION_REPORT_HASH_MISMATCH" in result.reasons
+
+
+def test_missing_report_rejected(tmp_path):
+    result = verify_l2_entry_gate(_request(qualification_report_path=str(tmp_path / "absent.md")))
+    assert not result.ok
+    assert "QUALIFICATION_REPORT_MISSING" in result.reasons
+
+
+# --------------------------------------------------------------------------- #
+# Request shape — callers cannot weaken or override accepted identities
+# --------------------------------------------------------------------------- #
+def test_request_rejects_identity_override():
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError):
+        EntryGateRequest(repo_root=".", expected_l1_gate_hash="a" * 64)  # type: ignore[call-arg]
+
+
+def test_request_requires_repo_root():
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError):
+        EntryGateRequest()  # type: ignore[call-arg]
+
+
+def test_require_raises_on_failure(tmp_path):
+    with pytest.raises(GateError):
+        require_l2_entry_gate(_request(l1_ready_path=str(tmp_path / "nope.json")))
