@@ -1,0 +1,2555 @@
+{
+ "schema_version": "layer1-multi-dataset-accuracy-v1",
+ "created_at": "2026-08-17T17:02:19.026024+00:00",
+ "verdict": "PASS",
+ "layer2_recommendation": "APPROVED_WITH_EXCLUSIONS",
+ "python_version": "3.12.3",
+ "tool_versions": {
+  "pysam": "0.22.1",
+  "pyarrow": "17.0.0",
+  "numpy": "2.5.2"
+ },
+ "accepted_gates": {
+  "protocol_ready": "b9cda0bab329b36a0a62b4b7e9ba9b797fc22b46c1055f76db26b591311a1675",
+  "twin_ready": "3464fb7604fd6b18d9008bafa9e3cf1ad18d7d440d22806bbe043a11d3e9b22a",
+  "l1_ready": "aeabfea898edd09f68dbe5662b9aebe9dc87d69c97a10b7c8fb3e9d913b5ef5b"
+ },
+ "selection_algorithm": "Per chromosome, inventory all 15 practice rounds; select the round whose mean-coverage proxy is closest to the chromosome median (most representative). Selection performed before examining Layer 1 accuracy results.",
+ "dataset_inventory_count": 75,
+ "chromosome_distribution": {
+  "chr18": 15,
+  "chr19": 15,
+  "chr20": 15,
+  "chr21": 15,
+  "chr22": 15
+ },
+ "datasets": [
+  {
+   "chromosome": "chr18",
+   "dataset_id": "49a0587df4584484",
+   "region": {
+    "contig": "chr18",
+    "start0": 26992552,
+    "end0": 36992840,
+    "length_bp": 10000288
+   },
+   "input_hashes": {
+    "bam_sha256": "9b68d395342cba5bada55877d0e6c6ad11f683a00e5430de3a550b761ec52c03",
+    "bam_size_bytes": 169897725,
+    "bai_sha256": "c72b5d7119505f76464fca457aae13913c295d03f7cb9039ab16ba856b702ee1",
+    "reference_sha256": "4c37db9609b3e865e35128fb065f61eea1c83c815386c4631b03820f9b8265d2",
+    "fai_sha256": "1e9dac505c1b48f7a1ca90c5ec7e75ed257a19d4c03b21f4c40e4dfa29b806b5",
+    "truth_vcf_sha256": "3d1a72ffd44205d441ab7b7a2ad8043f3c29b4b448fe515d578c164e897dd4e5",
+    "mutations_sha256": "260b83b5349ee367b6cee584ccf990705bfa5fba9f9ca83a00e2007368375368"
+   },
+   "determinism": {
+    "runs": 3,
+    "fingerprint_equal": true,
+    "feature_values_equal": true,
+    "content_hash_equal": true,
+    "families_equal": true,
+    "warnings_equal": true,
+    "fingerprint": "1400181822f6063be98bc689819002d200f480fa0e2c07c06fc717f5a60580e5",
+    "elapsed_seconds": [
+     109.37,
+     110.26,
+     110.53
+    ],
+    "peak_rss_mb": 641.4,
+    "status": "COMPLETE"
+   },
+   "numerical": {
+    "exact_fields": 22,
+    "exact_mismatches": 0,
+    "float_fields": 15,
+    "float_failures": 0,
+    "fields": [
+     {
+      "key": "bq.bases_observed",
+      "observed": 254430457,
+      "expected": 254430457,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "bq.bases_with_quality",
+      "observed": 254430457,
+      "expected": 254430457,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "bq.mean",
+      "observed": 35.637472879278754,
+      "expected": 35.637472879278754,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.aligned_query_bases",
+      "observed": 253934349,
+      "expected": 253934349,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.deleted_bases",
+      "observed": 54743,
+      "expected": 54743,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.hard_clipped_bases",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.inserted_bases",
+      "observed": 56542,
+      "expected": 56542,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.query_consuming_bases",
+      "observed": 254430457,
+      "expected": 254430457,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.skipped_bases",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.soft_clipped_bases",
+      "observed": 439566,
+      "expected": 439566,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "coverage.max_depth",
+      "observed": 111,
+      "expected": 111,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "coverage.mean_depth",
+      "observed": 25.392703590136605,
+      "expected": 25.392703590136605,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "coverage.region_len",
+      "observed": 10000288,
+      "expected": 10000288,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "coverage.zero_depth_fraction",
+      "observed": 0.000248292849165944,
+      "expected": 0.000248292849165944,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_below_mapq",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_duplicate",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_qcfail",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_secondary",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_supplementary",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_unmapped",
+      "observed": 12939,
+      "expected": 12939,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.included",
+      "observed": 1719122,
+      "expected": 1719122,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.observed",
+      "observed": 1732061,
+      "expected": 1732061,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "mq.count",
+      "observed": 1719122,
+      "expected": 1719122,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "mq.mean",
+      "observed": 69.88520477313256,
+      "expected": 69.88520477313419,
+      "kind": "float_strict",
+      "abs_error": 1.6342482922482304e-12,
+      "rel_error": 2.338475357628888e-14,
+      "ok": true
+     },
+     {
+      "key": "reads.duplicate_fraction",
+      "observed": 0.0,
+      "expected": 0.0,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.mapped_fraction",
+      "observed": 0.9925297088266521,
+      "expected": 0.9925297088266521,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.qcfail_fraction",
+      "observed": 0.0,
+      "expected": 0.0,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.reverse_strand_fraction",
+      "observed": 0.5000005816922825,
+      "expected": 0.5000005816922825,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.secondary_fraction",
+      "observed": 0.0,
+      "expected": 0.0,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.supplementary_fraction",
+      "observed": 0.0,
+      "expected": 0.0,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.total_observed_alignments",
+      "observed": 1732061,
+      "expected": 1732061,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "ref.entropy_bits",
+      "observed": 1.9550950470549124,
+      "expected": 1.9550950470549124,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "ref.gc_fraction",
+      "observed": 0.37591057377547527,
+      "expected": 0.37591057377547527,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "ref.homopolymer_base_fraction",
+      "observed": 0.10918365551072129,
+      "expected": 0.10918365551072129,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "ref.n_fraction",
+      "observed": 0.0,
+      "expected": 0.0,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "rl.count",
+      "observed": 1719122,
+      "expected": 1719122,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "rl.mean",
+      "observed": 148.00023325860445,
+      "expected": 148.00023325860528,
+      "kind": "float_strict",
+      "abs_error": 8.242295734817162e-13,
+      "rel_error": 5.569109962424958e-15,
+      "ok": true
+     }
+    ]
+   },
+   "truth_relevance": {
+    "evaluable_truth": 4000,
+    "truth_by_class": {
+     "del": 306,
+     "ins": 325,
+     "snp": 3369
+    },
+    "sensitivity_overall": 0.99325,
+    "sensitivity_by_class": {
+     "del": 0.9640522875816994,
+     "ins": 0.9753846153846154,
+     "snp": 0.9976254081329772
+    },
+    "sensitivity_by_zygosity": {
+     "het": 0.9936,
+     "hom_alt": 0.9926666666666667
+    },
+    "control_count": 4000,
+    "background_rate": 0.0035,
+    "enrichment": 283.7857142857143,
+    "enrichment_ci95": [
+     168.2243761976466,
+     478.7316407583721
+    ],
+    "auroc": 0.9976104375,
+    "auprc": 0.9977319548909561,
+    "truth_with_depth": 3993,
+    "truth_without_alt_evidence": 15
+   },
+   "truth_isolation": {
+    "sanitized_only_files": [
+     "chr18.fa",
+     "chr18.fa.fai",
+     "input.bam",
+     "input.bam.bai"
+    ],
+    "fingerprint_equal": true,
+    "content_hash_equal": true,
+    "families_equal": true,
+    "warnings_equal": true
+   },
+   "cross_region": {
+    "official_region": {
+     "ok": true,
+     "length_bp": 10000288,
+     "processed_length_bp": 10000288
+    },
+    "start_boundary": {
+     "ok": true,
+     "length_bp": 200000,
+     "processed_length_bp": 200000,
+     "length_match": true
+    },
+    "end_boundary": {
+     "ok": true,
+     "length_bp": 200000,
+     "processed_length_bp": 200000,
+     "length_match": true
+    },
+    "high_cov_subregion": {
+     "ok": true,
+     "length_bp": 200000,
+     "processed_length_bp": 200000,
+     "length_match": true
+    },
+    "low_cov_subregion": {
+     "ok": true,
+     "length_bp": 200000,
+     "processed_length_bp": 200000,
+     "length_match": true
+    }
+   },
+   "peak_rss_mb": 644.9,
+   "robustness": {
+    "missing_bai": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "wrong_reference_contig": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "unknown_contig": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "out_of_range_region": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "empty_region": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "missing_reference": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "restrictive_deadline": {
+     "status": "PARTIAL",
+     "degraded_or_partial": true,
+     "schema_valid_no_nan": true
+    }
+   }
+  },
+  {
+   "chromosome": "chr19",
+   "dataset_id": "ff150fd013413702",
+   "region": {
+    "contig": "chr19",
+    "start0": 30146589,
+    "end0": 40146876,
+    "length_bp": 10000287
+   },
+   "input_hashes": {
+    "bam_sha256": "a8a4cf012e3e84a663d37899799b5e285e104ad906ae8ca4b1432a68df8124e2",
+    "bam_size_bytes": 160845738,
+    "bai_sha256": "35f38e17f318899dc943a67a8bd738cfbaa7556e7f8e8058f874235a41da4aec",
+    "reference_sha256": "e00b74f7cd48f6c94395c40ae7b4c13d1c3255e2db1be366eb5a87441577ec5c",
+    "fai_sha256": "ce0ee961cd23439f944459c8483b3a11ab58b87e201272862a24d67fb7707805",
+    "truth_vcf_sha256": "fdb7d2e1821358262c04cf64afef5d2e9595cb9340bf0b6bd5addef42c010bf8",
+    "mutations_sha256": "b370bfad1279a6488198fc16aeda95c4698cfda1370e66a86f45b7cac9063313"
+   },
+   "determinism": {
+    "runs": 3,
+    "fingerprint_equal": true,
+    "feature_values_equal": true,
+    "content_hash_equal": true,
+    "families_equal": true,
+    "warnings_equal": true,
+    "fingerprint": "5449323b3a358f0caee737ef6a79e3db0d5bab6a8f3a7690d1cf279bb6bfe351",
+    "elapsed_seconds": [
+     100.2,
+     100.9,
+     100.05
+    ],
+    "peak_rss_mb": 640.6,
+    "status": "COMPLETE"
+   },
+   "numerical": {
+    "exact_fields": 22,
+    "exact_mismatches": 0,
+    "float_fields": 15,
+    "float_failures": 0,
+    "fields": [
+     {
+      "key": "bq.bases_observed",
+      "observed": 225196619,
+      "expected": 225196619,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "bq.bases_with_quality",
+      "observed": 225196619,
+      "expected": 225196619,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "bq.mean",
+      "observed": 34.72478010871025,
+      "expected": 34.72478010871025,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.aligned_query_bases",
+      "observed": 224344294,
+      "expected": 224344294,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.deleted_bases",
+      "observed": 63170,
+      "expected": 63170,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.hard_clipped_bases",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.inserted_bases",
+      "observed": 63239,
+      "expected": 63239,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.query_consuming_bases",
+      "observed": 225196619,
+      "expected": 225196619,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.skipped_bases",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.soft_clipped_bases",
+      "observed": 789086,
+      "expected": 789086,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "coverage.max_depth",
+      "observed": 299,
+      "expected": 299,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "coverage.mean_depth",
+      "observed": 22.433785550354706,
+      "expected": 22.433785550354706,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "coverage.region_len",
+      "observed": 10000287,
+      "expected": 10000287,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "coverage.zero_depth_fraction",
+      "observed": 0.0036190961319410133,
+      "expected": 0.0036190961319410133,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_below_mapq",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_duplicate",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_qcfail",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_secondary",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_supplementary",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_unmapped",
+      "observed": 21709,
+      "expected": 21709,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.included",
+      "observed": 1521599,
+      "expected": 1521599,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.observed",
+      "observed": 1543308,
+      "expected": 1543308,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "mq.count",
+      "observed": 1521599,
+      "expected": 1521599,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "mq.mean",
+      "observed": 69.70831802596861,
+      "expected": 69.70831802597137,
+      "kind": "float_strict",
+      "abs_error": 2.7569058147491887e-12,
+      "rel_error": 3.9549165620694546e-14,
+      "ok": true
+     },
+     {
+      "key": "reads.duplicate_fraction",
+      "observed": 0.0,
+      "expected": 0.0,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.mapped_fraction",
+      "observed": 0.9859334624067263,
+      "expected": 0.9859334624067263,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.qcfail_fraction",
+      "observed": 0.0,
+      "expected": 0.0,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.reverse_strand_fraction",
+      "observed": 0.4999247502134268,
+      "expected": 0.4999247502134268,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.secondary_fraction",
+      "observed": 0.0,
+      "expected": 0.0,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.supplementary_fraction",
+      "observed": 0.0,
+      "expected": 0.0,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.total_observed_alignments",
+      "observed": 1543308,
+      "expected": 1543308,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "ref.entropy_bits",
+      "observed": 1.9966104728749592,
+      "expected": 1.9966104728749592,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "ref.gc_fraction",
+      "observed": 0.4657401332581755,
+      "expected": 0.4657401332581755,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "ref.homopolymer_base_fraction",
+      "observed": 0.09998833033491938,
+      "expected": 0.09998833033491938,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "ref.n_fraction",
+      "observed": 0.0,
+      "expected": 0.0,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "rl.count",
+      "observed": 1521599,
+      "expected": 1521599,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "rl.mean",
+      "observed": 147.999978312291,
+      "expected": 147.9999783122886,
+      "kind": "float_strict",
+      "abs_error": 2.4158453015843406e-12,
+      "rel_error": 1.6323281456749716e-14,
+      "ok": true
+     }
+    ]
+   },
+   "truth_relevance": {
+    "evaluable_truth": 4000,
+    "truth_by_class": {
+     "del": 353,
+     "ins": 335,
+     "mnp": 1,
+     "snp": 3311
+    },
+    "sensitivity_overall": 0.99225,
+    "sensitivity_by_class": {
+     "del": 0.9745042492917847,
+     "ins": 0.9671641791044776,
+     "mnp": 1.0,
+     "snp": 0.9966777408637874
+    },
+    "sensitivity_by_zygosity": {
+     "het": 0.9918093819806404,
+     "hom_alt": 0.9931506849315068
+    },
+    "control_count": 4000,
+    "background_rate": 0.005,
+    "enrichment": 198.45,
+    "enrichment_ci95": [
+     128.169848125154,
+     307.26729473490747
+    ],
+    "auroc": 0.99769046875,
+    "auprc": 0.9978191445471465,
+    "truth_with_depth": 4000,
+    "truth_without_alt_evidence": 13
+   },
+   "truth_isolation": {
+    "sanitized_only_files": [
+     "chr19.fa",
+     "chr19.fa.fai",
+     "input.bam",
+     "input.bam.bai"
+    ],
+    "fingerprint_equal": true,
+    "content_hash_equal": true,
+    "families_equal": true,
+    "warnings_equal": true
+   },
+   "cross_region": {
+    "official_region": {
+     "ok": true,
+     "length_bp": 10000287,
+     "processed_length_bp": 10000287
+    },
+    "start_boundary": {
+     "ok": true,
+     "length_bp": 200000,
+     "processed_length_bp": 200000,
+     "length_match": true
+    },
+    "end_boundary": {
+     "ok": true,
+     "length_bp": 200000,
+     "processed_length_bp": 200000,
+     "length_match": true
+    },
+    "high_cov_subregion": {
+     "ok": true,
+     "length_bp": 200000,
+     "processed_length_bp": 200000,
+     "length_match": true
+    },
+    "low_cov_subregion": {
+     "ok": true,
+     "length_bp": 200000,
+     "processed_length_bp": 200000,
+     "length_match": true
+    }
+   },
+   "peak_rss_mb": 643.6,
+   "robustness": {
+    "missing_bai": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "wrong_reference_contig": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "unknown_contig": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "out_of_range_region": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "empty_region": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "missing_reference": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "restrictive_deadline": {
+     "status": "PARTIAL",
+     "degraded_or_partial": true,
+     "schema_valid_no_nan": true
+    }
+   }
+  },
+  {
+   "chromosome": "chr20",
+   "dataset_id": "f589ad1a3e9343c0",
+   "region": {
+    "contig": "chr20",
+    "start0": 45790363,
+    "end0": 50790633,
+    "length_bp": 5000270
+   },
+   "input_hashes": {
+    "bam_sha256": "69aa68e3b21d764fe32d63b7a677adc31b8a4f2733e9af52553fb53facf6b606",
+    "bam_size_bytes": 82722023,
+    "bai_sha256": "b9f4b02c91166e2cae14c49ef1ce03d606313a15b85f13604e221810c3da2014",
+    "reference_sha256": "61eba5b05ef7d9ae5310e756c1143fa48072de3856d36871bb14e57aa2435ff3",
+    "fai_sha256": "295950bb320e5f27b37360000d77303187e6399bf8e7705aa26fd4a1c88ba115",
+    "truth_vcf_sha256": "e4f49cb14f4a6db050a872f84d40cc72a263a063e79b5c899e44ba5ab1aa3c13",
+    "mutations_sha256": "319d46b4fbc7db49288a91200adb0c61572d945bb86f8fd8fd71085669cc9164"
+   },
+   "determinism": {
+    "runs": 3,
+    "fingerprint_equal": true,
+    "feature_values_equal": true,
+    "content_hash_equal": true,
+    "families_equal": true,
+    "warnings_equal": true,
+    "fingerprint": "4a35e978e8eeb43103523edb0787d684adfb3f14bc6fc4fc4d80769009a99cd5",
+    "elapsed_seconds": [
+     61.33,
+     61.7,
+     63.6
+    ],
+    "peak_rss_mb": 364.4,
+    "status": "COMPLETE"
+   },
+   "numerical": {
+    "exact_fields": 22,
+    "exact_mismatches": 0,
+    "float_fields": 15,
+    "float_failures": 0,
+    "fields": [
+     {
+      "key": "bq.bases_observed",
+      "observed": 109829616,
+      "expected": 109829616,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "bq.bases_with_quality",
+      "observed": 109829616,
+      "expected": 109829616,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "bq.mean",
+      "observed": 34.14200389264768,
+      "expected": 34.14200389264768,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.aligned_query_bases",
+      "observed": 109366125,
+      "expected": 109366125,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.deleted_bases",
+      "observed": 31062,
+      "expected": 31062,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.hard_clipped_bases",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.inserted_bases",
+      "observed": 31960,
+      "expected": 31960,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.query_consuming_bases",
+      "observed": 109829616,
+      "expected": 109829616,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.skipped_bases",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.soft_clipped_bases",
+      "observed": 431531,
+      "expected": 431531,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "coverage.max_depth",
+      "observed": 194,
+      "expected": 194,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "coverage.mean_depth",
+      "observed": 21.87204390962888,
+      "expected": 21.87204390962888,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "coverage.region_len",
+      "observed": 5000270,
+      "expected": 5000270,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "coverage.zero_depth_fraction",
+      "observed": 0.0006869629040031838,
+      "expected": 0.0006869629040031838,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_below_mapq",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_duplicate",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_qcfail",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_secondary",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_supplementary",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_unmapped",
+      "observed": 11833,
+      "expected": 11833,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.included",
+      "observed": 742092,
+      "expected": 742092,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.observed",
+      "observed": 753925,
+      "expected": 753925,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "mq.count",
+      "observed": 742092,
+      "expected": 742092,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "mq.mean",
+      "observed": 69.77155797394411,
+      "expected": 69.77155797394393,
+      "kind": "float_strict",
+      "abs_error": 1.8474111129762605e-13,
+      "rel_error": 2.6477997147006137e-15,
+      "ok": true
+     },
+     {
+      "key": "reads.duplicate_fraction",
+      "observed": 0.0,
+      "expected": 0.0,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.mapped_fraction",
+      "observed": 0.9843048048545943,
+      "expected": 0.9843048048545943,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.qcfail_fraction",
+      "observed": 0.0,
+      "expected": 0.0,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.reverse_strand_fraction",
+      "observed": 0.4997251014698986,
+      "expected": 0.4997251014698986,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.secondary_fraction",
+      "observed": 0.0,
+      "expected": 0.0,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.supplementary_fraction",
+      "observed": 0.0,
+      "expected": 0.0,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.total_observed_alignments",
+      "observed": 753925,
+      "expected": 753925,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "ref.entropy_bits",
+      "observed": 1.9978389444859947,
+      "expected": 1.9978389444859947,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "ref.gc_fraction",
+      "observed": 0.4726572765070686,
+      "expected": 0.4726572765070686,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "ref.homopolymer_base_fraction",
+      "observed": 0.09534385143202267,
+      "expected": 0.09534385143202267,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "ref.n_fraction",
+      "observed": 0.0,
+      "expected": 0.0,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "rl.count",
+      "observed": 742092,
+      "expected": 742092,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "rl.mean",
+      "observed": 148.0,
+      "expected": 148.0,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     }
+    ]
+   },
+   "truth_relevance": {
+    "evaluable_truth": 4000,
+    "truth_by_class": {
+     "del": 244,
+     "ins": 269,
+     "snp": 3487
+    },
+    "sensitivity_overall": 0.9945,
+    "sensitivity_by_class": {
+     "del": 0.9877049180327869,
+     "ins": 0.9739776951672863,
+     "snp": 0.9965586464009177
+    },
+    "sensitivity_by_zygosity": {
+     "het": 0.9921011058451816,
+     "hom_alt": 0.9986376021798365
+    },
+    "control_count": 4000,
+    "background_rate": 0.00475,
+    "enrichment": 209.3684210526316,
+    "enrichment_ci95": [
+     133.68735779798942,
+     327.8929021868308
+    ],
+    "auroc": 0.99888715625,
+    "auprc": 0.998820319965116,
+    "truth_with_depth": 4000,
+    "truth_without_alt_evidence": 4
+   },
+   "truth_isolation": {
+    "sanitized_only_files": [
+     "chr20.fa",
+     "chr20.fa.fai",
+     "input.bam",
+     "input.bam.bai"
+    ],
+    "fingerprint_equal": true,
+    "content_hash_equal": true,
+    "families_equal": true,
+    "warnings_equal": true
+   },
+   "cross_region": {
+    "official_region": {
+     "ok": true,
+     "length_bp": 5000270,
+     "processed_length_bp": 5000270
+    },
+    "start_boundary": {
+     "ok": true,
+     "length_bp": 200000,
+     "processed_length_bp": 200000,
+     "length_match": true
+    },
+    "end_boundary": {
+     "ok": true,
+     "length_bp": 200000,
+     "processed_length_bp": 200000,
+     "length_match": true
+    },
+    "high_cov_subregion": {
+     "ok": true,
+     "length_bp": 200000,
+     "processed_length_bp": 200000,
+     "length_match": true
+    },
+    "low_cov_subregion": {
+     "ok": true,
+     "length_bp": 200000,
+     "processed_length_bp": 200000,
+     "length_match": true
+    }
+   },
+   "peak_rss_mb": 367.5,
+   "robustness": {
+    "missing_bai": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "wrong_reference_contig": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "unknown_contig": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "out_of_range_region": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "empty_region": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "missing_reference": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "restrictive_deadline": {
+     "status": "PARTIAL",
+     "degraded_or_partial": true,
+     "schema_valid_no_nan": true
+    }
+   }
+  },
+  {
+   "chromosome": "chr21",
+   "dataset_id": "5177fadfb13d5aa6",
+   "region": {
+    "contig": "chr21",
+    "start0": 31233150,
+    "end0": 36233433,
+    "length_bp": 5000283
+   },
+   "input_hashes": {
+    "bam_sha256": "968816341a6542470c4dfafe9f1bb95a6fda7c120d7746ba263a0cd0d88970b7",
+    "bam_size_bytes": 93187286,
+    "bai_sha256": "8424e1f99fa4a451f0e47c2a35d4591839f7c8638e867a14fe95756406c4f8c9",
+    "reference_sha256": "c218d98e3bf58fa3551c3f5f12bc829c798c42fd301f8ed6021c35aa231f39f8",
+    "fai_sha256": "838e3d562353d9a90084416731de18de5848dbb982939ae59af9ce37fd19e0de",
+    "truth_vcf_sha256": "b7da89e6e96551ffb07cbdf4f6f576dbee56ddf46b8ffe0a1e8ef5f8a87b76b0",
+    "mutations_sha256": "c430a739dd119f49c05eb5b40fb280ba866d8918acc3c95ad1ce90bc6f7dae3c"
+   },
+   "determinism": {
+    "runs": 3,
+    "fingerprint_equal": true,
+    "feature_values_equal": true,
+    "content_hash_equal": true,
+    "families_equal": true,
+    "warnings_equal": true,
+    "fingerprint": "bf5feb40505cfc1921fdbf059805dd1e3caeb7d7509fa9311d20c28db5da1887",
+    "elapsed_seconds": [
+     73.03,
+     72.69,
+     72.62
+    ],
+    "peak_rss_mb": 362.8,
+    "status": "COMPLETE"
+   },
+   "numerical": {
+    "exact_fields": 22,
+    "exact_mismatches": 0,
+    "float_fields": 15,
+    "float_failures": 0,
+    "fields": [
+     {
+      "key": "bq.bases_observed",
+      "observed": 134930113,
+      "expected": 134930113,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "bq.bases_with_quality",
+      "observed": 134930113,
+      "expected": 134930113,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "bq.mean",
+      "observed": 35.111073863845355,
+      "expected": 35.111073863845355,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.aligned_query_bases",
+      "observed": 134521070,
+      "expected": 134521070,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.deleted_bases",
+      "observed": 35123,
+      "expected": 35123,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.hard_clipped_bases",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.inserted_bases",
+      "observed": 41817,
+      "expected": 41817,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.query_consuming_bases",
+      "observed": 134930113,
+      "expected": 134930113,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.skipped_bases",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.soft_clipped_bases",
+      "observed": 367226,
+      "expected": 367226,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "coverage.max_depth",
+      "observed": 130,
+      "expected": 130,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "coverage.mean_depth",
+      "observed": 26.902691307671986,
+      "expected": 26.902691307671986,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "coverage.region_len",
+      "observed": 5000283,
+      "expected": 5000283,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "coverage.zero_depth_fraction",
+      "observed": 0.022493326877698724,
+      "expected": 0.022493326877698724,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_below_mapq",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_duplicate",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_qcfail",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_secondary",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_supplementary",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_unmapped",
+      "observed": 11125,
+      "expected": 11125,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.included",
+      "observed": 911691,
+      "expected": 911691,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.observed",
+      "observed": 922816,
+      "expected": 922816,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "mq.count",
+      "observed": 911691,
+      "expected": 911691,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "mq.mean",
+      "observed": 69.89995733203149,
+      "expected": 69.89995733203465,
+      "kind": "float_strict",
+      "abs_error": 3.154809746774845e-12,
+      "rel_error": 4.51332141991025e-14,
+      "ok": true
+     },
+     {
+      "key": "reads.duplicate_fraction",
+      "observed": 0.0,
+      "expected": 0.0,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.mapped_fraction",
+      "observed": 0.9879445089812053,
+      "expected": 0.9879445089812053,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.qcfail_fraction",
+      "observed": 0.0,
+      "expected": 0.0,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.reverse_strand_fraction",
+      "observed": 0.4999073150881165,
+      "expected": 0.4999073150881165,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.secondary_fraction",
+      "observed": 0.0,
+      "expected": 0.0,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.supplementary_fraction",
+      "observed": 0.0,
+      "expected": 0.0,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.total_observed_alignments",
+      "observed": 922816,
+      "expected": 922816,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "ref.entropy_bits",
+      "observed": 1.9870292902527797,
+      "expected": 1.9870292902527797,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "ref.gc_fraction",
+      "observed": 0.43318868065275895,
+      "expected": 0.43318868065275895,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "ref.homopolymer_base_fraction",
+      "observed": 0.09961796162337212,
+      "expected": 0.09961796162337212,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "ref.n_fraction",
+      "observed": 5.999660419220272e-06,
+      "expected": 5.999660419220272e-06,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "rl.count",
+      "observed": 911691,
+      "expected": 911691,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "rl.mean",
+      "observed": 147.99982998625663,
+      "expected": 147.99982998625632,
+      "kind": "float_strict",
+      "abs_error": 3.126388037344441e-13,
+      "rel_error": 2.1124267761893822e-15,
+      "ok": true
+     }
+    ]
+   },
+   "truth_relevance": {
+    "evaluable_truth": 4000,
+    "truth_by_class": {
+     "del": 298,
+     "ins": 359,
+     "snp": 3343
+    },
+    "sensitivity_overall": 0.99425,
+    "sensitivity_by_class": {
+     "del": 0.9966442953020134,
+     "ins": 0.958217270194986,
+     "snp": 0.9979060723900688
+    },
+    "sensitivity_by_zygosity": {
+     "het": 0.9957773512476008,
+     "hom_alt": 0.9913978494623656
+    },
+    "control_count": 4000,
+    "background_rate": 0.00525,
+    "enrichment": 189.38095238095235,
+    "enrichment_ci95": [
+     123.61491892694173,
+     290.13605668352517
+    ],
+    "auroc": 0.99742653125,
+    "auprc": 0.9975094868561709,
+    "truth_with_depth": 3995,
+    "truth_without_alt_evidence": 14
+   },
+   "truth_isolation": {
+    "sanitized_only_files": [
+     "chr21.fa",
+     "chr21.fa.fai",
+     "input.bam",
+     "input.bam.bai"
+    ],
+    "fingerprint_equal": true,
+    "content_hash_equal": true,
+    "families_equal": true,
+    "warnings_equal": true
+   },
+   "cross_region": {
+    "official_region": {
+     "ok": true,
+     "length_bp": 5000283,
+     "processed_length_bp": 5000283
+    },
+    "start_boundary": {
+     "ok": true,
+     "length_bp": 200000,
+     "processed_length_bp": 200000,
+     "length_match": true
+    },
+    "end_boundary": {
+     "ok": true,
+     "length_bp": 200000,
+     "processed_length_bp": 200000,
+     "length_match": true
+    },
+    "high_cov_subregion": {
+     "ok": true,
+     "length_bp": 200000,
+     "processed_length_bp": 200000,
+     "length_match": true
+    },
+    "low_cov_subregion": {
+     "ok": true,
+     "length_bp": 200000,
+     "processed_length_bp": 200000,
+     "length_match": true
+    }
+   },
+   "peak_rss_mb": 366.8,
+   "robustness": {
+    "missing_bai": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "wrong_reference_contig": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "unknown_contig": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "out_of_range_region": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "empty_region": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "missing_reference": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "restrictive_deadline": {
+     "status": "PARTIAL",
+     "degraded_or_partial": true,
+     "schema_valid_no_nan": true
+    }
+   }
+  },
+  {
+   "chromosome": "chr22",
+   "dataset_id": "1ed494cb935cf7b2",
+   "region": {
+    "contig": "chr22",
+    "start0": 29647644,
+    "end0": 34647937,
+    "length_bp": 5000293
+   },
+   "input_hashes": {
+    "bam_sha256": "52c728813355148320b42b5d587af3c79375931928cfcc97187ad120c3445caf",
+    "bam_size_bytes": 81532916,
+    "bai_sha256": "337bbef838cba7fe9279c5db6af9ace428275d75ca5bfd0c7a2a3bc7c809acbd",
+    "reference_sha256": "8d440d7b863c6d0af1bc438385a770b0a861ddc0f5187b7466d893e2728a9b54",
+    "fai_sha256": "7623e1c5091eda09847bd72b64bf57b1abe0bfab3cbef8c4e687975e8ee09e2c",
+    "truth_vcf_sha256": "393fe5b6e7ac0cd58f32d9a820bed854504cf6d6d2c0c2e6423f33277a555674",
+    "mutations_sha256": "3e1f28a5d490449747ba6c75844847005fa9db2216cc693e30eedb0e46569d98"
+   },
+   "determinism": {
+    "runs": 3,
+    "fingerprint_equal": true,
+    "feature_values_equal": true,
+    "content_hash_equal": true,
+    "families_equal": true,
+    "warnings_equal": true,
+    "fingerprint": "01ba22ed367bc78affc15f0992da1bbe92994e13337dab126d5ff70c56767225",
+    "elapsed_seconds": [
+     58.88,
+     58.63,
+     58.53
+    ],
+    "peak_rss_mb": 364.6,
+    "status": "COMPLETE"
+   },
+   "numerical": {
+    "exact_fields": 22,
+    "exact_mismatches": 0,
+    "float_fields": 15,
+    "float_failures": 0,
+    "fields": [
+     {
+      "key": "bq.bases_observed",
+      "observed": 115000222,
+      "expected": 115000222,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "bq.bases_with_quality",
+      "observed": 115000222,
+      "expected": 115000222,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "bq.mean",
+      "observed": 34.90236757977737,
+      "expected": 34.90236757977737,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.aligned_query_bases",
+      "observed": 114594060,
+      "expected": 114594060,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.deleted_bases",
+      "observed": 33465,
+      "expected": 33465,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.hard_clipped_bases",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.inserted_bases",
+      "observed": 33226,
+      "expected": 33226,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.query_consuming_bases",
+      "observed": 115000222,
+      "expected": 115000222,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.skipped_bases",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "cigar.soft_clipped_bases",
+      "observed": 372936,
+      "expected": 372936,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "coverage.max_depth",
+      "observed": 110,
+      "expected": 110,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "coverage.mean_depth",
+      "observed": 22.917469036314472,
+      "expected": 22.917469036314472,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "coverage.region_len",
+      "observed": 5000293,
+      "expected": 5000293,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "coverage.zero_depth_fraction",
+      "observed": 0.00017898951121464283,
+      "expected": 0.00017898951121464283,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_below_mapq",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_duplicate",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_qcfail",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_secondary",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_supplementary",
+      "observed": 0,
+      "expected": 0,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.excluded_unmapped",
+      "observed": 10423,
+      "expected": 10423,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.included",
+      "observed": 777029,
+      "expected": 777029,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "filter.observed",
+      "observed": 787452,
+      "expected": 787452,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "mq.count",
+      "observed": 777029,
+      "expected": 777029,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "mq.mean",
+      "observed": 69.91581266593788,
+      "expected": 69.91581266593654,
+      "kind": "float_strict",
+      "abs_error": 1.3358203432289883e-12,
+      "rel_error": 1.910612624373898e-14,
+      "ok": true
+     },
+     {
+      "key": "reads.duplicate_fraction",
+      "observed": 0.0,
+      "expected": 0.0,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.mapped_fraction",
+      "observed": 0.9867636376566444,
+      "expected": 0.9867636376566444,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.qcfail_fraction",
+      "observed": 0.0,
+      "expected": 0.0,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.reverse_strand_fraction",
+      "observed": 0.49988610463702127,
+      "expected": 0.49988610463702127,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.secondary_fraction",
+      "observed": 0.0,
+      "expected": 0.0,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.supplementary_fraction",
+      "observed": 0.0,
+      "expected": 0.0,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "reads.total_observed_alignments",
+      "observed": 787452,
+      "expected": 787452,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "ref.entropy_bits",
+      "observed": 1.9935581866737504,
+      "expected": 1.9935581866737504,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "ref.gc_fraction",
+      "observed": 0.45305765082166183,
+      "expected": 0.45305765082166183,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "ref.homopolymer_base_fraction",
+      "observed": 0.0956885926484708,
+      "expected": 0.0956885926484708,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "ref.n_fraction",
+      "observed": 0.0,
+      "expected": 0.0,
+      "kind": "float_strict",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "rl.count",
+      "observed": 777029,
+      "expected": 777029,
+      "kind": "exact",
+      "abs_error": 0.0,
+      "rel_error": 0.0,
+      "ok": true
+     },
+     {
+      "key": "rl.mean",
+      "observed": 147.99990991327337,
+      "expected": 147.99990991327223,
+      "kind": "float_strict",
+      "abs_error": 1.1368683772161603e-12,
+      "rel_error": 7.681547765011233e-15,
+      "ok": true
+     }
+    ]
+   },
+   "truth_relevance": {
+    "evaluable_truth": 4000,
+    "truth_by_class": {
+     "del": 331,
+     "ins": 323,
+     "mnp": 2,
+     "snp": 3344
+    },
+    "sensitivity_overall": 0.98875,
+    "sensitivity_by_class": {
+     "del": 0.9697885196374623,
+     "ins": 0.9566563467492261,
+     "mnp": 1.0,
+     "snp": 0.99372009569378
+    },
+    "sensitivity_by_zygosity": {
+     "het": 0.9869390488948426,
+     "hom_alt": 0.9940828402366864
+    },
+    "control_count": 4000,
+    "background_rate": 0.005,
+    "enrichment": 197.75,
+    "enrichment_ci95": [
+     127.71724943480262,
+     306.18465926141363
+    ],
+    "auroc": 0.9964731875,
+    "auprc": 0.9966856530130899,
+    "truth_with_depth": 3996,
+    "truth_without_alt_evidence": 22
+   },
+   "truth_isolation": {
+    "sanitized_only_files": [
+     "chr22.fa",
+     "chr22.fa.fai",
+     "input.bam",
+     "input.bam.bai"
+    ],
+    "fingerprint_equal": true,
+    "content_hash_equal": true,
+    "families_equal": true,
+    "warnings_equal": true
+   },
+   "cross_region": {
+    "official_region": {
+     "ok": true,
+     "length_bp": 5000293,
+     "processed_length_bp": 5000293
+    },
+    "start_boundary": {
+     "ok": true,
+     "length_bp": 200000,
+     "processed_length_bp": 200000,
+     "length_match": true
+    },
+    "end_boundary": {
+     "ok": true,
+     "length_bp": 200000,
+     "processed_length_bp": 200000,
+     "length_match": true
+    },
+    "high_cov_subregion": {
+     "ok": true,
+     "length_bp": 200000,
+     "processed_length_bp": 200000,
+     "length_match": true
+    },
+    "low_cov_subregion": {
+     "ok": true,
+     "length_bp": 200000,
+     "processed_length_bp": 200000,
+     "length_match": true
+    }
+   },
+   "peak_rss_mb": 368.0,
+   "robustness": {
+    "missing_bai": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "wrong_reference_contig": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "unknown_contig": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "out_of_range_region": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "empty_region": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "missing_reference": {
+     "failed_closed": true,
+     "error_type": "Layer1InputError"
+    },
+    "restrictive_deadline": {
+     "status": "PARTIAL",
+     "degraded_or_partial": true,
+     "schema_valid_no_nan": true
+    }
+   }
+  }
+ ],
+ "summary": {
+  "chromosomes": [
+   "chr18",
+   "chr19",
+   "chr20",
+   "chr21",
+   "chr22"
+  ],
+  "exact_field_pass_rate": 1.0,
+  "total_exact_fields": 110,
+  "total_exact_mismatches": 0,
+  "approximation_pass_rate": 1.0,
+  "total_float_fields": 75,
+  "total_float_failures": 0,
+  "max_abs_signed_float_error": 3.154809746774845e-12,
+  "coordinate_agreement": 1.0,
+  "determinism_pass_rate": 1.0,
+  "truth_isolation_pass_rate": 1.0,
+  "robustness_pass_rate": 1.0,
+  "hard_deadline_violations": 0,
+  "schema_validity": 1.0
+ },
+ "truth_relevance_summary": {
+  "min_enrichment_ci95_lower": 123.61491892694173,
+  "min_auroc": 0.9964731875,
+  "class_feature_collapse": [],
+  "per_chromosome": [
+   {
+    "chromosome": "chr18",
+    "evaluable_truth": 4000,
+    "enrichment": 283.7857142857143,
+    "enrichment_ci95": [
+     168.2243761976466,
+     478.7316407583721
+    ],
+    "auroc": 0.9976104375,
+    "auprc": 0.9977319548909561,
+    "sensitivity_overall": 0.99325,
+    "sensitivity_by_class": {
+     "del": 0.9640522875816994,
+     "ins": 0.9753846153846154,
+     "snp": 0.9976254081329772
+    },
+    "background_rate": 0.0035
+   },
+   {
+    "chromosome": "chr19",
+    "evaluable_truth": 4000,
+    "enrichment": 198.45,
+    "enrichment_ci95": [
+     128.169848125154,
+     307.26729473490747
+    ],
+    "auroc": 0.99769046875,
+    "auprc": 0.9978191445471465,
+    "sensitivity_overall": 0.99225,
+    "sensitivity_by_class": {
+     "del": 0.9745042492917847,
+     "ins": 0.9671641791044776,
+     "mnp": 1.0,
+     "snp": 0.9966777408637874
+    },
+    "background_rate": 0.005
+   },
+   {
+    "chromosome": "chr20",
+    "evaluable_truth": 4000,
+    "enrichment": 209.3684210526316,
+    "enrichment_ci95": [
+     133.68735779798942,
+     327.8929021868308
+    ],
+    "auroc": 0.99888715625,
+    "auprc": 0.998820319965116,
+    "sensitivity_overall": 0.9945,
+    "sensitivity_by_class": {
+     "del": 0.9877049180327869,
+     "ins": 0.9739776951672863,
+     "snp": 0.9965586464009177
+    },
+    "background_rate": 0.00475
+   },
+   {
+    "chromosome": "chr21",
+    "evaluable_truth": 4000,
+    "enrichment": 189.38095238095235,
+    "enrichment_ci95": [
+     123.61491892694173,
+     290.13605668352517
+    ],
+    "auroc": 0.99742653125,
+    "auprc": 0.9975094868561709,
+    "sensitivity_overall": 0.99425,
+    "sensitivity_by_class": {
+     "del": 0.9966442953020134,
+     "ins": 0.958217270194986,
+     "snp": 0.9979060723900688
+    },
+    "background_rate": 0.00525
+   },
+   {
+    "chromosome": "chr22",
+    "evaluable_truth": 4000,
+    "enrichment": 197.75,
+    "enrichment_ci95": [
+     127.71724943480262,
+     306.18465926141363
+    ],
+    "auroc": 0.9964731875,
+    "auprc": 0.9966856530130899,
+    "sensitivity_overall": 0.98875,
+    "sensitivity_by_class": {
+     "del": 0.9697885196374623,
+     "ins": 0.9566563467492261,
+     "mnp": 1.0,
+     "snp": 0.99372009569378
+    },
+    "background_rate": 0.005
+   }
+  ],
+  "minimal_bars_met": true,
+  "definitive_thresholds": "OWNER_DECISION_REQUIRED (authoritative spec defines none)"
+ }
+}
