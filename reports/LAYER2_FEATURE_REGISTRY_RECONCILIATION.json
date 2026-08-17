@@ -1,0 +1,37 @@
+{
+  "accepted_layer1_schema_hash": "cbb6efb28ad2c6a407c0658d0f2313df5b3cbae2cf0bbd364053aff62ac457a9",
+  "accepted_profiler_config_hash": "d01b8e7a9da8e31adad1b9cba17230506771a885256a67ec2e96c74a13c07670",
+  "analytical_scalar_count": 184,
+  "container_count": 21,
+  "counts_by_state": {
+    "CONDITIONAL": 60,
+    "ELIGIBLE": 147,
+    "FORBIDDEN": 76,
+    "RESEARCH_ONLY": 2
+  },
+  "counts_by_value_kind": {
+    "BOOL": 2,
+    "CATEGORICAL": 1,
+    "CONTAINER": 21,
+    "COUNT": 43,
+    "FRACTION": 55,
+    "IDENTIFIER": 55,
+    "OPERATIONAL": 5,
+    "REAL": 103
+  },
+  "data_dependent_container_parents": [
+    "reference_context.homopolymer_length_histogram",
+    "spatial.stratum_window_counts"
+  ],
+  "duplicate_analytical_scalar_paths": [],
+  "missing_analytical_scalar_paths": [],
+  "non_scalar_model_feature_paths": [],
+  "passed": true,
+  "registry_hash": "0d8612707c6673060546511d8f5e8d1ba47048ef440e6c2dcf238fdc297f6e0c",
+  "schema_version": "layer2-feature-reconciliation-v1",
+  "serialized_leaf_count": 278,
+  "source_v2_results": "LAYER1_MULTI_DATASET_ACCURACY_RESULTS_V2.json",
+  "unclassified_analytical_scalar_paths": [],
+  "unknown_registry_scalar_paths": [],
+  "window_scalar_count": 14
+}
