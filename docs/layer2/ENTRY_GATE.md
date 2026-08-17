@@ -10,13 +10,20 @@ All expected identities are pinned in `layer2/prerequisites.py` (`ACCEPTED`). Th
 public request carries **only** runtime locators:
 
 ```python
-EntryGateRequest(repo_root=..., l1_ready_path=None, qualification_report_path=None, head_ref="HEAD")
+EntryGateRequest(repo_root=..., head_ref="HEAD")
 ```
 
-Callers cannot select the expected gate hash, source commit/tree, schema hash,
-profiler hash, or version (extra fields are forbidden, so an override attempt is
-rejected at construction). Updating an accepted identity is an owner decision made by
-editing `prerequisites.py` — never an environment, CLI, or caller input.
+The verifier reads only the canonical paths `gates/l1-ready.json` and
+`reports/LAYER1_QUALIFICATION_REPORT.md` under `repo_root`. Optional
+`l1_ready_path`/`qualification_report_path` overrides remain for testability but are
+constrained: an override must be a repo-relative path that resolves within
+`repo_root` and equals the canonical path — absolute paths (`EXTERNAL_PATH_ABSOLUTE`),
+`..` escapes (`EXTERNAL_PATH_ESCAPE`), non-canonical paths (`EXTERNAL_PATH_NOT_CANONICAL`),
+and symlink escapes (`EXTERNAL_PATH_SYMLINK`) are rejected before any bytes are read,
+even if those bytes carry an accepted hash. Callers cannot select the expected gate
+hash, source commit/tree, schema hash, profiler hash, or version (extra fields are
+forbidden). Updating an accepted identity is an owner decision made by editing
+`prerequisites.py` — never an environment, CLI, or caller input.
 
 ## The 34 proven invariants
 1. `l1-ready.json` exists. 2. It parses. 3. `gate_name == "L1-READY"`. 4. `status ==

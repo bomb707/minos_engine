@@ -18,6 +18,7 @@ closed. This does not unblock ``Layer2Service.select_config`` (still
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable
 from pathlib import Path
 
@@ -43,6 +44,8 @@ __all__ = [
 ]
 
 _L1_GATE_NAME = "L1-READY"
+_CANONICAL_GATE = "gates/l1-ready.json"
+_CANONICAL_REPORT = "reports/LAYER1_QUALIFICATION_REPORT.md"
 
 #: Deterministic ordering of the 34 invariants the entry gate proves.
 CHECK_ORDER: tuple[str, ...] = (
@@ -84,14 +87,23 @@ CHECK_ORDER: tuple[str, ...] = (
 
 
 class EntryGateRequest(BaseModel):
-    """Runtime locator context only — never accepted identities."""
+    """Runtime locator context only — never accepted identities.
+
+    The verifier reads only the canonical repository paths ``gates/l1-ready.json``
+    and ``reports/LAYER1_QUALIFICATION_REPORT.md`` under ``repo_root``. Optional
+    overrides remain for testability but are constrained: an override must be a
+    repo-relative path that resolves within ``repo_root`` and equals the canonical
+    path (no absolute paths, no ``..`` escapes, no symlink escapes). An external
+    gate/report is rejected before its bytes are read, even if those bytes carry an
+    accepted hash.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     repo_root: str = Field(min_length=1)
+    head_ref: str = "HEAD"
     l1_ready_path: str | None = None
     qualification_report_path: str | None = None
-    head_ref: str = "HEAD"
 
 
 class EntryGateResult(BaseModel):
@@ -106,6 +118,35 @@ def _all_false(reason: str) -> EntryGateResult:
     checks = dict.fromkeys(CHECK_ORDER, False)
     checks["reason_codes_machine_readable"] = True
     return EntryGateResult(ok=False, checks=checks, reasons=(reason,))
+
+
+def _resolve_canonical(root: Path, override: str | None, canonical: str) -> tuple[Path | None, str]:
+    """Resolve a canonical repo path or a constrained override; fail closed.
+
+    Returns ``(path, "")`` on success or ``(None, CODE)`` when the override is
+    absolute, escapes the repo, is non-canonical, or escapes via a symlink.
+    """
+    if override is None:
+        target = root / canonical
+    else:
+        p = Path(override)
+        if p.is_absolute():
+            return None, "EXTERNAL_PATH_ABSOLUTE"
+        if ".." in p.parts:
+            return None, "EXTERNAL_PATH_ESCAPE"
+        try:
+            rel = (root / p).resolve().relative_to(root.resolve())
+        except ValueError:
+            return None, "EXTERNAL_PATH_ESCAPE"
+        if rel.as_posix() != canonical:
+            return None, "EXTERNAL_PATH_NOT_CANONICAL"
+        target = root / p
+    # Reject a symlink at the canonical location that resolves outside the repo.
+    real = Path(os.path.realpath(target))
+    root_real = root.resolve()
+    if not (real == root_real or real.is_relative_to(root_real)):
+        return None, "EXTERNAL_PATH_SYMLINK"
+    return target, ""
 
 
 def _evidence_path_within(root: Path, relpath: str) -> bool:
@@ -132,14 +173,14 @@ def _verify_against(  # noqa: C901, PLR0912, PLR0915 - one explicit check per in
     request: EntryGateRequest, accepted: AcceptedPrerequisiteIdentity
 ) -> EntryGateResult:
     root = Path(request.repo_root).resolve()
-    l1_path = (
-        Path(request.l1_ready_path) if request.l1_ready_path else root / "gates" / "l1-ready.json"
+    l1_path, gate_code = _resolve_canonical(root, request.l1_ready_path, _CANONICAL_GATE)
+    if l1_path is None:
+        return _all_false(gate_code)
+    report_path, report_code = _resolve_canonical(
+        root, request.qualification_report_path, _CANONICAL_REPORT
     )
-    report_path = (
-        Path(request.qualification_report_path)
-        if request.qualification_report_path
-        else root / "reports" / "LAYER1_QUALIFICATION_REPORT.md"
-    )
+    if report_path is None:
+        return _all_false(report_code)
 
     checks: dict[str, bool] = {}
     reasons: list[str] = []

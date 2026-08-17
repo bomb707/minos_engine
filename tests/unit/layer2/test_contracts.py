@@ -16,6 +16,7 @@ from minos_engine.layer2.contracts import (
     FallbackReason,
     FeatureEligibilityState,
     FeatureRegistryRecord,
+    FeatureValueKind,
     Layer1ProfileReference,
     ParameterSpaceIdentity,
     PromotionRecord,
@@ -23,6 +24,23 @@ from minos_engine.layer2.contracts import (
 )
 
 H = "a" * 64
+SH = "e127d10459068d12d61753f4ddcd4a503a481767aec24c2e5f9ee48655018df6"
+
+
+def _record(**over) -> FeatureRegistryRecord:
+    kwargs = {
+        "field_path": "reads.mapped_fraction",
+        "state": FeatureEligibilityState.ELIGIBLE,
+        "family": "reads",
+        "value_kind": FeatureValueKind.FRACTION,
+        "model_feature": True,
+        "source_schema": "bam-profile-v1",
+        "source_schema_hash": SH,
+        "config_bound": False,
+        "truth_derived": False,
+    }
+    kwargs.update(over)
+    return FeatureRegistryRecord(**kwargs)
 
 
 def test_artifact_identity_valid_and_frozen():
@@ -97,15 +115,7 @@ def test_decision_identity_requires_sha():
         DecisionIdentity(decision_id="d", config_hash="x", decision_manifest_hash=H)
 
 
-def test_profile_reference_optional_hashes():
-    ref = Layer1ProfileReference(
-        profile_id="p",
-        profile_manifest_hash=H,
-        fingerprint_hash=H,
-        region_hash=H,
-        bam_sha256=H,
-    )
-    assert ref.bai_sha256 is None
+def test_profile_reference_all_identities_mandatory():
     with pytest.raises(pydantic.ValidationError):
         Layer1ProfileReference(
             profile_id="p",
@@ -113,37 +123,37 @@ def test_profile_reference_optional_hashes():
             fingerprint_hash=H,
             region_hash=H,
             bam_sha256=H,
-            reference_sha256="bad",
-        )
+        )  # type: ignore[call-arg]  # missing bai/reference/fai
 
 
 def test_feature_record_truth_derived_must_be_forbidden():
-    FeatureRegistryRecord(
+    _record(
         field_path="external.truth_vcf",
         state=FeatureEligibilityState.FORBIDDEN,
         family="external",
-        rationale="truth",
+        value_kind=FeatureValueKind.IDENTIFIER,
+        model_feature=False,
+        source_schema="external",
         truth_derived=True,
     )
     with pytest.raises(pydantic.ValidationError):
-        FeatureRegistryRecord(
-            field_path="x.y",
-            state=FeatureEligibilityState.ELIGIBLE,
-            family="x",
-            rationale="r",
-            truth_derived=True,
-        )
+        _record(truth_derived=True)  # ELIGIBLE + truth_derived -> rejected
 
 
-def test_feature_record_derived_properties():
-    elig = FeatureRegistryRecord(
-        field_path="a", state=FeatureEligibilityState.ELIGIBLE, family="a", rationale="r"
-    )
-    cond = FeatureRegistryRecord(
-        field_path="b", state=FeatureEligibilityState.CONDITIONAL, family="b", rationale="r"
-    )
-    assert elig.production_allowed and not elig.requires_promotion
-    assert cond.requires_promotion and not cond.production_allowed
+def test_feature_record_model_feature_invariant():
+    elig = _record()
+    assert elig.production_allowed
+    # A container can never be a model feature.
+    with pytest.raises(pydantic.ValidationError):
+        _record(value_kind=FeatureValueKind.CONTAINER, model_feature=True)
+    # FORBIDDEN scalar is not a model feature.
+    with pytest.raises(pydantic.ValidationError):
+        _record(state=FeatureEligibilityState.FORBIDDEN, model_feature=True)
+
+
+def test_feature_record_bad_schema_hash_rejected():
+    with pytest.raises(pydantic.ValidationError):
+        _record(source_schema_hash="short")
 
 
 def test_promotion_rejects_test_partition():
@@ -182,6 +192,9 @@ def test_decision_request_and_result_typed():
             fingerprint_hash=H,
             region_hash=H,
             bam_sha256=H,
+            bai_sha256=H,
+            reference_sha256=H,
+            fai_sha256=H,
         ),
         parameter_space=ParameterSpaceIdentity(parameter_space_hash=H),
         safe_baseline=ArtifactIdentity(uri="u", sha256=H),

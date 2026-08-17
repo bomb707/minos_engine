@@ -23,11 +23,14 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from minos_engine.common.hashing import canonical_hash
+
 __all__ = [
     "ControlMode",
     "FallbackReason",
     "DatasetPartition",
     "FeatureEligibilityState",
+    "FeatureValueKind",
     "ArtifactIdentity",
     "AcceptedPrerequisiteIdentity",
     "Layer1ProfileReference",
@@ -37,6 +40,7 @@ __all__ = [
     "DecisionIdentity",
     "FeatureRegistryRecord",
     "PromotionRecord",
+    "CanonicalFeatureVector",
     "DecisionRequest",
     "DecisionResult",
 ]
@@ -49,10 +53,6 @@ def _sha256(v: str) -> str:
     if not _SHA256_RE.match(v):
         raise ValueError("must be 64 lowercase hexadecimal characters (SHA-256)")
     return v
-
-
-def _sha256_opt(v: str | None) -> str | None:
-    return None if v is None else _sha256(v)
 
 
 def _git_oid(v: str) -> str:
@@ -105,6 +105,30 @@ class FeatureEligibilityState(str, Enum):
     CONDITIONAL = "CONDITIONAL"
     RESEARCH_ONLY = "RESEARCH_ONLY"
     FORBIDDEN = "FORBIDDEN"
+
+
+class FeatureValueKind(str, Enum):
+    """The value shape of a registry record.
+
+    ``FRACTION``/``REAL``/``COUNT`` are scalar numeric leaves (candidate model
+    features). ``BOOL``/``CATEGORICAL``/``IDENTIFIER``/``OPERATIONAL`` are scalar
+    non-numeric leaves that are never model features. ``CONTAINER`` is a structured
+    map/array documented for completeness and never a model feature.
+    """
+
+    FRACTION = "FRACTION"  # finite float in [0, 1]
+    REAL = "REAL"  # finite float (phred, depth, insert bp, entropy, quantile leaf, density)
+    COUNT = "COUNT"  # non-negative integer magnitude
+    BOOL = "BOOL"
+    CATEGORICAL = "CATEGORICAL"
+    IDENTIFIER = "IDENTIFIER"
+    OPERATIONAL = "OPERATIONAL"
+    CONTAINER = "CONTAINER"
+
+
+_NUMERIC_KINDS = frozenset(
+    {FeatureValueKind.FRACTION, FeatureValueKind.REAL, FeatureValueKind.COUNT}
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -172,9 +196,13 @@ class AcceptedPrerequisiteIdentity(_Frozen):
 class Layer1ProfileReference(_Frozen):
     """Reference to a Layer 1 profile by identity only — never the profile bytes.
 
-    Layer 2 consumes profiles through this typed reference (identity + input
-    content hashes); it does not open BAM/BAI/reference files. Truth, mutations,
-    and scores are never referenced here.
+    Production-ready contract: **all** identities are mandatory and fail closed
+    when missing, empty, uppercase, or malformed. Layer 2 consumes profiles through
+    this typed reference (identity + input content hashes); it does not open
+    BAM/BAI/reference files. Truth, mutations, and scores are never referenced. A
+    future degraded/reference-less profile needs its own separately-typed contract;
+    this one is never weakened. ``identity_tuple_hash`` is derived canonically from
+    the (bam, bai, reference, fai, region) tuple and binds the exact input identity.
     """
 
     profile_id: str = Field(min_length=1)
@@ -182,19 +210,40 @@ class Layer1ProfileReference(_Frozen):
     fingerprint_hash: str
     region_hash: str
     bam_sha256: str
-    bai_sha256: str | None = None
-    reference_sha256: str | None = None
-    fai_sha256: str | None = None
+    bai_sha256: str
+    reference_sha256: str
+    fai_sha256: str
+    identity_tuple_hash: str = ""
 
-    @field_validator("profile_manifest_hash", "fingerprint_hash", "region_hash", "bam_sha256")
+    @field_validator(
+        "profile_manifest_hash",
+        "fingerprint_hash",
+        "region_hash",
+        "bam_sha256",
+        "bai_sha256",
+        "reference_sha256",
+        "fai_sha256",
+    )
     @classmethod
     def _v_req(cls, v: str) -> str:
         return _sha256(v)
 
-    @field_validator("bai_sha256", "reference_sha256", "fai_sha256")
-    @classmethod
-    def _v_opt(cls, v: str | None) -> str | None:
-        return _sha256_opt(v)
+    @model_validator(mode="after")
+    def _bind_tuple(self) -> Layer1ProfileReference:
+        expected = canonical_hash(
+            {
+                "bam_sha256": self.bam_sha256,
+                "bai_sha256": self.bai_sha256,
+                "reference_sha256": self.reference_sha256,
+                "fai_sha256": self.fai_sha256,
+                "region_hash": self.region_hash,
+            }
+        )
+        if self.identity_tuple_hash == "":
+            object.__setattr__(self, "identity_tuple_hash", expected)
+        elif self.identity_tuple_hash != expected:
+            raise ValueError("identity_tuple_hash does not match canonical identity tuple")
+        return self
 
 
 class RoundIdentity(_Frozen):
@@ -257,41 +306,62 @@ class FeatureRegistryRecord(_Frozen):
 
     Invariants:
       * ``truth_derived`` may be True only for a FORBIDDEN field;
-      * ``production_allowed`` is True only for an ELIGIBLE field;
-      * a CONDITIONAL or RESEARCH_ONLY field always requires an explicit
-        qualified promotion before production use.
+      * ``model_feature`` is True only for a scalar numeric leaf
+        (FRACTION/REAL/COUNT) whose state is ELIGIBLE/CONDITIONAL/RESEARCH_ONLY —
+        containers, identifiers, operational and categorical leaves are never
+        model features;
+      * ``production_allowed`` is True only for an ELIGIBLE scalar model feature.
     """
 
     field_path: str = Field(min_length=1)
     state: FeatureEligibilityState
     family: str = Field(min_length=1)
-    rationale: str = Field(min_length=1)
+    value_kind: FeatureValueKind
+    model_feature: bool
+    source_schema: str = Field(min_length=1)
+    source_schema_hash: str
+    config_bound: bool = False
     truth_derived: bool = False
+
+    @field_validator("source_schema_hash")
+    @classmethod
+    def _v_sha(cls, v: str) -> str:
+        return _sha256(v)
 
     @model_validator(mode="after")
     def _invariants(self) -> FeatureRegistryRecord:
         if self.truth_derived and self.state is not FeatureEligibilityState.FORBIDDEN:
             raise ValueError("a truth-derived field must be FORBIDDEN, never eligible")
+        eligible_state = self.state in (
+            FeatureEligibilityState.ELIGIBLE,
+            FeatureEligibilityState.CONDITIONAL,
+            FeatureEligibilityState.RESEARCH_ONLY,
+        )
+        expect_feature = eligible_state and self.value_kind in _NUMERIC_KINDS
+        if self.model_feature != expect_feature:
+            raise ValueError(
+                "model_feature must be True iff a scalar numeric leaf in an "
+                "eligible/conditional/research state; containers are never features"
+            )
+        if self.value_kind is FeatureValueKind.CONTAINER and self.model_feature:
+            raise ValueError("a container can never be a scalar model feature")
         return self
 
     @property
     def production_allowed(self) -> bool:
-        return self.state is FeatureEligibilityState.ELIGIBLE
-
-    @property
-    def requires_promotion(self) -> bool:
-        return self.state in (
-            FeatureEligibilityState.CONDITIONAL,
-            FeatureEligibilityState.RESEARCH_ONLY,
-        )
+        return self.state is FeatureEligibilityState.ELIGIBLE and self.model_feature
 
 
 class PromotionRecord(_Frozen):
-    """An explicit, owner-authorized feature promotion to ELIGIBLE.
+    """Descriptive future-stage contract. **Authorizes nothing in L2-A.**
 
-    A promotion may only be justified by development-partition evidence (train or
-    validation). Test-partition evidence is rejected: the locked test set can
-    never decide feature retention.
+    A caller-constructed ``PromotionRecord`` must never authorize a CONDITIONAL or
+    RESEARCH_ONLY feature. A real promotion (a future stage) requires a
+    repository-owned, hash-bound, git-bound accepted promotion *artifact* binding
+    field path, previous/new states, registry hash, split-manifest hash, training
+    and validation evidence hashes, qualification report, accepted commit/tree, and
+    explicit owner authorization — test-set evidence may never authorize a
+    promotion. This descriptive object carries none of that authority.
     """
 
     field_path: str = Field(min_length=1)
@@ -306,6 +376,41 @@ class PromotionRecord(_Frozen):
             raise ValueError("a promotion must target ELIGIBLE")
         if self.evidence_partition is DatasetPartition.TEST:
             raise ValueError("promotion cannot be justified by test-set results")
+        return self
+
+
+class CanonicalFeatureVector(_Frozen):
+    """A frozen, deterministic, canonically-hashable production feature vector."""
+
+    fields: tuple[str, ...]
+    values: tuple[float, ...]
+    registry_hash: str
+    vector_hash: str = ""
+
+    @field_validator("registry_hash")
+    @classmethod
+    def _v_sha(cls, v: str) -> str:
+        return _sha256(v)
+
+    @model_validator(mode="after")
+    def _bind(self) -> CanonicalFeatureVector:
+        if len(self.fields) != len(self.values):
+            raise ValueError("fields and values length mismatch")
+        if list(self.fields) != sorted(self.fields):
+            raise ValueError("fields must be in deterministic (sorted) order")
+        if len(set(self.fields)) != len(self.fields):
+            raise ValueError("duplicate feature field in vector")
+        expected = canonical_hash(
+            {
+                "fields": list(self.fields),
+                "values": list(self.values),
+                "registry_hash": self.registry_hash,
+            }
+        )
+        if self.vector_hash == "":
+            object.__setattr__(self, "vector_hash", expected)
+        elif self.vector_hash != expected:
+            raise ValueError("vector_hash does not match canonical content")
         return self
 
 
