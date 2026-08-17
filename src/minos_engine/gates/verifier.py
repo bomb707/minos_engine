@@ -20,6 +20,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict
 
 from minos_engine.common.errors import GateError
+from minos_engine.qualification import git_tree as G
 from minos_engine.qualification.evidence import hash_path
 from minos_engine.schema_registry import validate_against
 
@@ -69,17 +70,31 @@ def _integrity_reasons(gate: GateArtifact, base_dir: Path | None) -> list[str]:
     reasons: list[str] = []
     if gate.gate_hash != gate.compute_hash():
         reasons.append("gate_hash does not match canonical content")
-    if base_dir is not None:
-        for item in gate.evidence:
-            if item.sha256 is None:
+    if base_dir is None:
+        return reasons
+
+    # For a git-bound gate (records a qualified source commit) re-hash evidence
+    # from that commit's blobs, so untracked/drifted working-tree content cannot
+    # satisfy verification. Otherwise fall back to filesystem hashing.
+    ref = gate.qualified_source_git_sha
+    git_bound = bool(ref) and G.is_git_repo(base_dir)
+    for item in gate.evidence:
+        if item.sha256 is None:
+            continue
+        if git_bound:
+            try:
+                actual = G.hash_git_path(base_dir, item.path, ref)  # type: ignore[arg-type]
+            except G.GitUnavailableError:
+                reasons.append(f"evidence not tracked in qualified commit: {item.path}")
                 continue
+        else:
             target = base_dir / item.path
             if not target.exists():
                 reasons.append(f"evidence path missing: {item.path}")
                 continue
             actual = hash_path(target)
-            if actual != item.sha256:
-                reasons.append(f"evidence hash mismatch: {item.path}")
+        if actual != item.sha256:
+            reasons.append(f"evidence hash mismatch: {item.path}")
     return reasons
 
 

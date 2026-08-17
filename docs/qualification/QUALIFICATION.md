@@ -40,10 +40,31 @@ spec `.docx` and manifest), `docs/specifications/SPECIFICATION_MANIFEST.json`,
 `pyproject.toml`, `Makefile`, `.github/workflows/ci.yml`.
 
 ### File vs directory digest
-- File: `sha256(exact bytes)`.
-- Directory: enumerate regular files (excluding `__pycache__`, `*.pyc`, caches,
-  `.git`, `.venv`), normalize paths POSIX-relative, sort, then hash the
-  canonical list `[{"path","sha256","size_bytes"}, ...]`.
+- File: `sha256(exact bytes)` of the committed blob.
+- Directory: enumerate the **tracked** files under it (`git ls-files`), normalize
+  paths POSIX-relative, sort, then hash the canonical list
+  `[{"path","sha256","size_bytes"}, ...]`. Untracked/ignored files are excluded.
+
+## Tracked-source evidence rule (git-tree-bound)
+
+A PASS qualification must never depend on ignored, untracked, or working-tree
+drifted content — only on what is committed in the qualified commit. This closes
+the defect where an ignored+untracked `configs/runtime/gatk_only.yaml` was hashed
+locally and produced a PASS, while a fresh CI clone lacked the file and failed.
+
+- Evidence is hashed from committed blobs (`git cat-file blob <commit>:<path>`),
+  so untracked/ignored/drifted files are ineligible.
+- Directory evidence enumerates `git ls-files` entries only.
+- `required_source_tracked` fails the gate if any required file (configs incl.
+  `configs/runtime/gatk_only.yaml`, schemas, fixtures, specs, workflow, build
+  files, audit) is absent from `git ls-files`.
+- `worktree_matches_head` fails the gate if any required working-tree file
+  differs from its committed blob.
+- If `root` is not a git repository, everything fails closed.
+- The verifier re-hashes a git-bound gate's evidence from
+  `qualified_source_git_sha`, so drifted working-tree content cannot satisfy
+  verification. The recorded `qualified_source_tree_sha` and the evidence
+  therefore describe the same committed source state.
 
 ## Required-check registry
 

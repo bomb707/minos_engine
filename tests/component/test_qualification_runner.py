@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import json
 
-from minos_engine.gates.contracts import GateStatus
+from minos_engine.gates.contracts import EvidenceItem, GateStatus
 from minos_engine.qualification import checks as C
 from minos_engine.qualification.coverage import CoverageResult
 from minos_engine.qualification.fixtures import raw_response, valid_raw_payload
 from minos_engine.qualification.provenance import GitProvenance, read_provenance
 from minos_engine.qualification.pytest_accounting import PytestAccounting
-from minos_engine.qualification.runner import assemble_result, write_outputs
+from minos_engine.qualification.runner import (
+    _EVIDENCE,
+    SourceIntegrity,
+    assemble_result,
+    write_outputs,
+)
 from tests.conftest import REPO_ROOT
 
 _ACC_OK = PytestAccounting(
@@ -30,12 +35,29 @@ _TOOLS_OK = {"ruff_check": True, "ruff_format": True, "mypy": True}
 _TS = "2026-08-17T12:00:00+00:00"
 
 
+def _si_ok(**overrides) -> SourceIntegrity:
+    evidence = tuple(
+        EvidenceItem(description=rel, path=rel, kind=kind, sha256="a" * 64)
+        for rel, kind in _EVIDENCE
+    )
+    kwargs = {
+        "evidence": evidence,
+        "evidence_hashes_complete": True,
+        "required_source_tracked": True,
+        "worktree_matches_head": True,
+        "spec_manifest_hash": "b" * 64,
+    }
+    kwargs.update(overrides)
+    return SourceIntegrity(**kwargs)
+
+
 def _assemble(**overrides):
     kwargs = {
         "accounting": _ACC_OK,
         "coverage": _COV_OK,
         "tools": dict(_TOOLS_OK),
         "provenance": _PROV_OK,
+        "source_integrity": _si_ok(),
         "created_at": _TS,
     }
     kwargs.update(overrides)
@@ -78,6 +100,31 @@ def test_assemble_reject_when_coverage_below_threshold():
     result = _assemble(coverage=low)
     assert result.gate.status is GateStatus.REJECT
     assert result.gate.mandatory_checks["coverage_threshold_met"] is False
+
+
+def test_assemble_reject_when_source_not_tracked():
+    result = _assemble(source_integrity=_si_ok(required_source_tracked=False))
+    assert result.gate.status is GateStatus.REJECT
+    assert result.gate.mandatory_checks["required_source_tracked"] is False
+
+
+def test_assemble_reject_when_worktree_drifts():
+    result = _assemble(source_integrity=_si_ok(worktree_matches_head=False))
+    assert result.gate.status is GateStatus.REJECT
+    assert result.gate.mandatory_checks["worktree_matches_head"] is False
+
+
+def test_assemble_reject_when_evidence_incomplete():
+    ev = tuple(
+        EvidenceItem(description=rel, path=rel, kind=kind, sha256=None)
+        for rel, kind in _EVIDENCE[:1]
+    ) + tuple(
+        EvidenceItem(description=rel, path=rel, kind=kind, sha256="a" * 64)
+        for rel, kind in _EVIDENCE[1:]
+    )
+    result = _assemble(source_integrity=_si_ok(evidence=ev, evidence_hashes_complete=False))
+    assert result.gate.status is GateStatus.REJECT
+    assert result.gate.mandatory_checks["evidence_hashes_complete"] is False
 
 
 def test_write_outputs(tmp_path):

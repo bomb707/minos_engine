@@ -31,14 +31,23 @@ from minos_engine.settings import Settings
 
 from . import QUALIFICATION_TOOL_VERSION
 from . import checks as C
+from . import git_tree as G
 from .coverage import STAGE0_COVERAGE_THRESHOLD, CoverageResult, run_coverage
-from .evidence import hash_path, sha256_directory, sha256_file
 from .provenance import GitProvenance, read_provenance
 from .pytest_accounting import PytestAccounting, run_pytest, suite_passes
 
-__all__ = ["QualificationResult", "qualify", "write_outputs"]
+__all__ = [
+    "QualificationResult",
+    "SourceIntegrity",
+    "REQUIRED_TRACKED_FILES",
+    "gather_source_integrity",
+    "assemble_result",
+    "qualify",
+    "write_outputs",
+]
 
 GATE_NAME = "PROTOCOL-READY"
+SPEC_MANIFEST = "docs/specifications/SPECIFICATION_MANIFEST.json"
 
 # (path, kind) evidence set — Commit A source tree. NOT the report or gate.
 _EVIDENCE = (
@@ -48,11 +57,51 @@ _EVIDENCE = (
     ("src/minos_engine", EvidenceKind.DIRECTORY),
     ("tests", EvidenceKind.DIRECTORY),
     ("docs", EvidenceKind.DIRECTORY),
-    ("docs/specifications/SPECIFICATION_MANIFEST.json", EvidenceKind.FILE),
+    (SPEC_MANIFEST, EvidenceKind.FILE),
     ("pyproject.toml", EvidenceKind.FILE),
     ("Makefile", EvidenceKind.FILE),
     (".github/workflows/ci.yml", EvidenceKind.FILE),
 )
+
+# Individual files that MUST be tracked in the qualified commit for a PASS.
+# Includes configs/runtime/gatk_only.yaml — the file the ignore rule dropped.
+REQUIRED_TRACKED_FILES = (
+    "pyproject.toml",
+    "Makefile",
+    ".gitignore",
+    ".github/workflows/ci.yml",
+    "README.md",
+    "configs/engine/default.yaml",
+    "configs/layer1/default.yaml",
+    "configs/layer2/default.yaml",
+    "configs/runtime/gatk_only.yaml",
+    "schemas/artifact-identity-v1.schema.json",
+    "schemas/round-protocol-snapshot-v1.schema.json",
+    "schemas/round-context-v1.schema.json",
+    "schemas/parameter-space-snapshot-v1.schema.json",
+    "schemas/gate-artifact-v1.schema.json",
+    "schemas/release-manifest-v1.schema.json",
+    "tests/fixtures/api/valid_round.json",
+    "tests/fixtures/api/gatk_parameter_space.json",
+    "tests/fixtures/gatk/default_config.json",
+    "docs/specifications/MINOS_ENGINE_Overall_Exact_Build_Specification_v2.docx",
+    "docs/specifications/MINOS_ENGINE_Layer1_Exact_Build_Specification_v2.docx",
+    "docs/specifications/MINOS_ENGINE_Layer2_Exact_Build_Specification_v2.docx",
+    SPEC_MANIFEST,
+    "reports/STAGE0_PREIMPLEMENTATION_AUDIT.md",
+)
+
+
+class SourceIntegrity(BaseModel):
+    """Git-tree-bound evidence + source-tracking results for the qualified ref."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    evidence: tuple[EvidenceItem, ...]
+    evidence_hashes_complete: bool
+    required_source_tracked: bool
+    worktree_matches_head: bool
+    spec_manifest_hash: str
 
 
 class QualificationResult(BaseModel):
@@ -64,6 +113,7 @@ class QualificationResult(BaseModel):
     coverage: CoverageResult
     tools: dict[str, bool]
     provenance: GitProvenance
+    source_integrity: SourceIntegrity
 
 
 def _bin(name: str) -> str:  # pragma: no cover - environment path resolution
@@ -79,41 +129,83 @@ def _tool_ok(cmd: list[str], root: Path) -> bool:  # pragma: no cover - subproce
     return proc.returncode == 0
 
 
-def _build_evidence(root: Path) -> tuple[list[EvidenceItem], bool]:
+def gather_source_integrity(root: Path, ref: str = "HEAD") -> SourceIntegrity:
+    """Build git-tree-bound evidence + source-tracking results for ``ref``.
+
+    Evidence hashes come from committed blobs (``git cat-file``), so untracked,
+    ignored, or working-tree-drifted content can never be counted as evidence.
+    Fail-closed: if ``root`` is not a git repo, nothing is tracked.
+    """
+    root = root.resolve()
+    if not G.is_git_repo(root):
+        empty = tuple(
+            EvidenceItem(description=rel, path=rel, kind=kind, sha256=None)
+            for rel, kind in _EVIDENCE
+        )
+        return SourceIntegrity(
+            evidence=empty,
+            evidence_hashes_complete=False,
+            required_source_tracked=False,
+            worktree_matches_head=False,
+            spec_manifest_hash=canonical_hash({"status": "no-git"}),
+        )
+
     items: list[EvidenceItem] = []
     complete = True
     for rel, kind in _EVIDENCE:
-        target = root / rel
-        if not target.exists():
+        try:
+            if kind is EvidenceKind.DIRECTORY:
+                if not G.list_tracked(root, rel):
+                    raise G.GitUnavailableError(f"no tracked files under {rel}")
+                digest, _ = G.sha256_git_directory(root, rel, ref)
+                items.append(EvidenceItem(description=rel, path=rel, kind=kind, sha256=digest))
+            else:
+                if not G.is_tracked(root, rel):
+                    raise G.GitUnavailableError(f"{rel} is not tracked")
+                sha, size = G.sha256_git_file(root, rel, ref)
+                items.append(
+                    EvidenceItem(description=rel, path=rel, kind=kind, sha256=sha, size_bytes=size)
+                )
+        except G.GitUnavailableError:
             complete = False
             items.append(EvidenceItem(description=rel, path=rel, kind=kind, sha256=None))
-            continue
-        if kind is EvidenceKind.DIRECTORY:
-            digest, _ = sha256_directory(target)
-            items.append(EvidenceItem(description=rel, path=rel, kind=kind, sha256=digest))
-        else:
-            data = target.read_bytes()
-            items.append(
-                EvidenceItem(
-                    description=rel,
-                    path=rel,
-                    kind=kind,
-                    sha256=sha256_file(target),
-                    size_bytes=len(data),
-                )
-            )
-    return items, complete
+
+    required_tracked = all(G.is_tracked(root, f) for f in REQUIRED_TRACKED_FILES)
+    worktree_matches = all(
+        G.worktree_matches_ref(root, f, ref)
+        for f in REQUIRED_TRACKED_FILES
+        if G.is_tracked(root, f)
+    )
+    try:
+        spec_hash = (
+            G.sha256_git_file(root, SPEC_MANIFEST, ref)[0]
+            if G.is_tracked(root, SPEC_MANIFEST)
+            else canonical_hash({"status": "missing"})
+        )
+    except G.GitUnavailableError:
+        spec_hash = canonical_hash({"status": "missing"})
+
+    return SourceIntegrity(
+        evidence=tuple(items),
+        evidence_hashes_complete=complete,
+        required_source_tracked=required_tracked,
+        worktree_matches_head=worktree_matches,
+        spec_manifest_hash=spec_hash,
+    )
 
 
 def qualify(root: Path) -> QualificationResult:  # pragma: no cover - subprocess orchestration
-    """Gather real tool results (subprocess) then assemble the gate.
+    """Gather real tool + git results (subprocess) then assemble the gate.
 
     Not unit-tested because it spawns pytest/coverage as subprocesses (which
     would recurse if run inside the test suite). The pure assembly it delegates
-    to — :func:`assemble_result` — is fully unit-tested with synthetic inputs.
+    to — :func:`assemble_result` — is fully unit-tested with synthetic inputs,
+    and :func:`gather_source_integrity` is tested against temporary git repos.
     """
     root = root.resolve()
     provenance = read_provenance(root)
+    ref = provenance.head_sha or "HEAD"
+    source_integrity = gather_source_integrity(root, ref)
     accounting = run_pytest(root)
     coverage = run_coverage(root)[0]
     tools = {
@@ -122,7 +214,12 @@ def qualify(root: Path) -> QualificationResult:  # pragma: no cover - subprocess
         "mypy": _tool_ok([_bin("mypy"), "src"], root),
     }
     return assemble_result(
-        root, accounting=accounting, coverage=coverage, tools=tools, provenance=provenance
+        root,
+        accounting=accounting,
+        coverage=coverage,
+        tools=tools,
+        provenance=provenance,
+        source_integrity=source_integrity,
     )
 
 
@@ -133,14 +230,14 @@ def assemble_result(
     coverage: CoverageResult,
     tools: dict[str, bool],
     provenance: GitProvenance,
+    source_integrity: SourceIntegrity,
     created_at: str | None = None,
 ) -> QualificationResult:
-    """Build the gate + report from already-gathered tool results (no subprocess)."""
+    """Build the gate + report from already-gathered results (no subprocess)."""
     root = root.resolve()
     src_dir = root / "src" / "minos_engine"
     settings = Settings.load()
-
-    evidence, evidence_complete = _build_evidence(root)
+    si = source_integrity
 
     mandatory = {
         "all_tests_pass": suite_passes(accounting),
@@ -158,10 +255,12 @@ def assemble_result(
         "six_schemas_present": C.six_schemas_present(root),
         "documentation_complete": C.documentation_complete(root),
         "ci_workflow_present": C.ci_workflow_present(root),
-        "evidence_hashes_complete": evidence_complete,
+        "evidence_hashes_complete": si.evidence_hashes_complete,
         "qualified_source_clean": provenance.worktree_clean,
         "coverage_threshold_met": coverage.meets(STAGE0_COVERAGE_THRESHOLD),
         "specifications_present": C.specifications_present(root),
+        "required_source_tracked": si.required_source_tracked,
+        "worktree_matches_head": si.worktree_matches_head,
     }
 
     status = GateStatus.PASS if all(mandatory.values()) else GateStatus.REJECT
@@ -172,7 +271,7 @@ def assemble_result(
         "engine_config_hash": engine_config_hash(settings),
         "protocol_contract_hash": protocol_contract_hash(),
         "default_config_hash": canonicalize_config({}).config_hash,
-        "specification_manifest_hash": _spec_manifest_hash(root),
+        "specification_manifest_hash": si.spec_manifest_hash,
     }
 
     gate = GateArtifact(
@@ -180,7 +279,7 @@ def assemble_result(
         status=status,
         engine_git_sha=provenance.head_sha or "unavailable",
         input_hashes=input_hashes,
-        evidence=tuple(evidence),
+        evidence=si.evidence,
         mandatory_checks=mandatory,
         qualified_source_git_sha=provenance.head_sha,
         qualified_source_tree_sha=provenance.tree_sha,
@@ -204,14 +303,8 @@ def assemble_result(
         coverage=coverage,
         tools=tools,
         provenance=provenance,
+        source_integrity=si,
     )
-
-
-def _spec_manifest_hash(root: Path) -> str:
-    manifest = root / "docs" / "specifications" / "SPECIFICATION_MANIFEST.json"
-    if not manifest.exists():
-        return canonical_hash({"status": "missing"})
-    return hash_path(manifest)
 
 
 def write_outputs(result: QualificationResult, root: Path) -> tuple[Path, Path]:
@@ -264,6 +357,33 @@ def _render_report(
 The gate hashes the Commit-A source tree (evidence below); it never hashes the
 report or the gate, so there is no circular dependency. The report may reference
 the gate hash because the report is not part of the gate's evidence.
+
+## Git-tree-bound source integrity
+Evidence is hashed from the committed blobs of the qualified commit
+(`git cat-file`), never from arbitrary working-tree content. Untracked, ignored,
+or drifted files cannot count as evidence.
+| Check | Value |
+|---|---|
+| `required_source_tracked` | {mandatory.get("required_source_tracked")} |
+| `worktree_matches_head` | {mandatory.get("worktree_matches_head")} |
+| `evidence_hashes_complete` | {mandatory.get("evidence_hashes_complete")} |
+
+## Remediation notes (why the previous run failed)
+- **Defect:** `.gitignore` contained a bare `runtime/` rule, which unintentionally
+  matched `configs/runtime/` and left `configs/runtime/gatk_only.yaml` **untracked**.
+- **Why local tests passed:** the file existed in the developer's working tree and
+  the old qualification hashed working-tree content, so `Settings.load()` and the
+  gate both succeeded locally.
+- **Why GitHub Actions failed:** a fresh clone (CI) has only tracked files, so the
+  runtime config was absent and `Settings.load()` raised
+  `FileNotFoundError: configs/runtime/gatk_only.yaml` (13 failed on 3.11 and 3.12).
+- **Fix:** the ignore rule is anchored (`/runtime/`), the config is tracked, and
+  qualification is now **git-tree-bound**: `required_source_tracked` and
+  `worktree_matches_head` are mandatory checks, and evidence hashes come from the
+  qualified commit's blobs. Regression tests (temporary git repos) prove that
+  untracked, ignored, missing, or drifted required files cannot produce PASS, and
+  that a clean `git archive` export contains the runtime config and `Settings.load`
+  succeeds.
 
 ## Test execution (machine-readable JUnit XML)
 | Metric | Value |

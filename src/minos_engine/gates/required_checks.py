@@ -35,6 +35,9 @@ REQUIRED_CHECKS: dict[str, frozenset[str]] = {
             "qualified_source_clean",
             "coverage_threshold_met",
             "specifications_present",
+            # Git-tree-bound source integrity (no untracked/ignored evidence).
+            "required_source_tracked",
+            "worktree_matches_head",
         }
     ),
     # Forward-looking: L1-READY is issued only in Stage 3. Defined here so the
