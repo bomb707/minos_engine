@@ -380,12 +380,39 @@ class PromotionRecord(_Frozen):
 
 
 class CanonicalFeatureVector(_Frozen):
-    """A frozen, deterministic, canonically-hashable production feature vector."""
+    """A frozen, deterministic, canonically-hashable production feature vector.
+
+    Direct construction cannot produce an invalid vector that would bypass
+    :func:`~minos_engine.layer2.feature_registry.validate_production_feature_mapping`:
+    every value is a finite, non-bool number; fields are sorted and unique; fields
+    and values have equal length; the registry hash has a valid shape; and the
+    vector hash binds the validated canonical content. Field-specific
+    COUNT/FRACTION semantics live at the registry boundary (they require the
+    registry classification and would be a circular dependency here); this generic
+    contract enforces the representation-level invariants only.
+    """
 
     fields: tuple[str, ...]
     values: tuple[float, ...]
     registry_hash: str
     vector_hash: str = ""
+
+    @field_validator("values", mode="before")
+    @classmethod
+    def _v_values(cls, v: object) -> tuple[float, ...]:
+        if not isinstance(v, (list, tuple)):
+            raise ValueError("values must be a sequence of numbers")
+        out: list[float] = []
+        for x in v:
+            if isinstance(x, bool):
+                raise ValueError("bool is not a valid feature value")
+            if not isinstance(x, (int, float)):
+                raise ValueError("feature value must be a built-in int or float")
+            fx = float(x)
+            if not math.isfinite(fx):
+                raise ValueError("feature value must be finite (no NaN/Infinity)")
+            out.append(fx)
+        return tuple(out)
 
     @field_validator("registry_hash")
     @classmethod

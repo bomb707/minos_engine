@@ -53,9 +53,17 @@ FR.registry_hash()  # stable canonical identity
 ```
 `assert_production_feature_vector` has **no promotion parameter**. CONDITIONAL,
 RESEARCH_ONLY, FORBIDDEN, containers, unknown paths, and duplicates are always
-rejected. `validate_production_feature_mapping` additionally rejects bool values,
-NaN/Infinity, wrong types, and out-of-range fractions, returning a frozen,
-deterministic, canonically-hashable `CanonicalFeatureVector`.
+rejected. `validate_production_feature_mapping` additionally validates each value
+per `value_kind` (via `validate_scalar_value`) and returns a frozen, deterministic,
+canonically-hashable `CanonicalFeatureVector`.
+
+Per-value policy (`validate_scalar_value`): **COUNT** — built-in `int`, not `bool`,
+`0 <= v <= 2**53` (exactly representable); floats (even `1.0`), strings, `Decimal`,
+NumPy scalars, and `None` are rejected. **REAL/FRACTION** — built-in `int` or
+`float` (never `bool`), finite (no NaN/Infinity), integers within `±2**53`;
+FRACTION additionally in `[0.0, 1.0]`. `CanonicalFeatureVector` direct construction
+independently rejects bool/NaN/Infinity/non-numeric values, unsorted or duplicate
+fields, length mismatches, malformed hashes, and an incorrect supplied vector hash.
 
 ## Promotion security
 There are **no accepted promotions in L2-A**. A caller-constructed

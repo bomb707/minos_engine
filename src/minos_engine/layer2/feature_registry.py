@@ -55,6 +55,7 @@ __all__ = [
     "scalar_model_feature_paths",
     "container_paths",
     "assert_production_feature_vector",
+    "validate_scalar_value",
     "validate_production_feature_mapping",
 ]
 
@@ -1822,33 +1823,71 @@ def assert_production_feature_vector(field_paths: Iterable[str]) -> None:
             raise ValueError(f"field is not an ELIGIBLE scalar model feature: {fp}")
 
 
+# Largest integer exactly representable as an IEEE-754 double; COUNT (and any
+# integer input) must stay within this range so float storage is lossless.
+_MAX_EXACT_INT = 2**53
+_SCALAR_KINDS = (FRACTION, REAL, COUNT)
+
+
+def validate_scalar_value(record: FeatureRegistryRecord, raw: object) -> float:
+    """Validate one scalar feature value against its ``value_kind``; return an exact float.
+
+    Policy (documented contract):
+
+      * COUNT input must be a built-in Python ``int``, must not be ``bool``, must be
+        non-negative, and must be exactly representable in the
+        ``CanonicalFeatureVector`` representation (``0 <= value <= 2**53``). Floats
+        (including integral floats like ``1.0``), strings, ``Decimal``, NumPy
+        scalars, and ``None`` are rejected.
+      * REAL/FRACTION input must be a built-in ``int`` or ``float`` (never ``bool``),
+        finite (no NaN/Infinity), and — for integers — exactly representable
+        (``abs(value) <= 2**53``). FRACTION must additionally lie in ``[0.0, 1.0]``.
+
+    Non-scalar value kinds (CONTAINER/IDENTIFIER/OPERATIONAL/BOOL/CATEGORICAL) are
+    rejected: they are never model features.
+    """
+    kind = record.value_kind
+    fp = record.field_path
+    if kind not in _SCALAR_KINDS:
+        raise ValueError(f"{kind.value} is not a scalar model feature: {fp}")
+    if isinstance(raw, bool):
+        raise ValueError(f"bool is not a valid numeric feature value: {fp}")
+    if kind is COUNT:
+        # Exact built-in int only — reject float/str/Decimal/NumPy/None.
+        if type(raw) is not int:
+            raise ValueError(f"COUNT feature must be a built-in int (no float/other): {fp}")
+        if raw < 0:
+            raise ValueError(f"COUNT feature must be non-negative: {fp}")
+        if raw > _MAX_EXACT_INT:
+            raise ValueError(f"COUNT feature exceeds exactly-representable range (2**53): {fp}")
+        return float(raw)
+    # REAL or FRACTION — exact built-in int or float only.
+    if type(raw) is not int and type(raw) is not float:
+        raise ValueError(f"feature value must be a built-in int or float: {fp}")
+    if type(raw) is int and abs(raw) > _MAX_EXACT_INT:
+        raise ValueError(f"integer feature exceeds exactly-representable range (2**53): {fp}")
+    val = float(raw)
+    if not math.isfinite(val):
+        raise ValueError(f"feature value must be finite (no NaN/Infinity): {fp}")
+    if kind is FRACTION and not (0.0 <= val <= 1.0):
+        raise ValueError(f"fraction feature out of [0,1]: {fp}")
+    return val
+
+
 def validate_production_feature_mapping(
-    features: Mapping[str, float | int],
+    features: Mapping[str, object],
 ) -> CanonicalFeatureVector:
     """Validate a complete production feature mapping and return a canonical vector.
 
     Accepts ELIGIBLE scalar leaves only. Rejects unknown/container/non-ELIGIBLE
-    paths, bool values, NaN/Infinity, wrong types, and out-of-range fractions.
+    paths (via :func:`assert_production_feature_vector`) and, per
+    :func:`validate_scalar_value`, bool values, NaN/Infinity, wrong types,
+    lossy/oversized integers, fractional COUNT values, and out-of-range fractions.
     """
     paths = list(features.keys())
     assert_production_feature_vector(paths)
     ordered = sorted(paths)
-    values: list[float] = []
-    for fp in ordered:
-        rec = _BY_PATH[fp]
-        raw = features[fp]
-        if isinstance(raw, bool):
-            raise ValueError(f"bool is not a valid numeric feature value: {fp}")
-        if not isinstance(raw, (int, float)):
-            raise ValueError(f"feature value must be numeric: {fp}")
-        val = float(raw)
-        if not math.isfinite(val):
-            raise ValueError(f"feature value must be finite (no NaN/Infinity): {fp}")
-        if rec.value_kind is FRACTION and not (0.0 <= val <= 1.0):
-            raise ValueError(f"fraction feature out of [0,1]: {fp}")
-        if rec.value_kind is COUNT and val < 0:
-            raise ValueError(f"count feature must be non-negative: {fp}")
-        values.append(val)
+    values = [validate_scalar_value(_BY_PATH[fp], features[fp]) for fp in ordered]
     return CanonicalFeatureVector(
         fields=tuple(ordered), values=tuple(values), registry_hash=REGISTRY_HASH
     )
