@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://minos.engine/schemas/round-protocol-snapshot-v1.schema.json",
+  "title": "RoundProtocolSnapshot v1",
+  "description": "Immutable snapshot of live round state and provenance identities. Required identities are non-empty; unknown required identity fails closed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "snapshot_id", "retrieved_at", "round_id", "round_status",
+    "exact_region", "deadline_at", "commit_reveal_state", "parameter_ranges_raw",
+    "parameter_space_hash", "network_config_raw", "minos_upstream_commit",
+    "scorer_hash", "gatk_image_digest", "happy_image_digest", "reference_sha256",
+    "source_endpoints", "stale"
+  ],
+  "properties": {
+    "schema_version": { "const": "round-protocol-snapshot-v1" },
+    "snapshot_id": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "retrieved_at": { "type": "string", "format": "date-time" },
+    "round_id": { "type": "string", "minLength": 1 },
+    "round_status": { "enum": ["pending", "open", "scoring", "completed", "unknown"] },
+    "exact_region": { "$ref": "round-context-v1.schema.json#/$defs/region" },
+    "deadline_at": { "type": "string", "format": "date-time" },
+    "commit_reveal_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["available"],
+      "properties": {
+        "available": { "type": "boolean" },
+        "enabled": { "type": ["boolean", "null"] },
+        "phase": { "type": ["string", "null"] },
+        "detail": { "type": ["string", "null"] }
+      }
+    },
+    "parameter_ranges_raw": { "type": "object" },
+    "parameter_space_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "network_config_raw": { "type": "object" },
+    "minos_upstream_commit": { "type": "string", "minLength": 1 },
+    "scorer_hash": { "type": "string", "minLength": 1 },
+    "gatk_image_digest": { "type": "string", "minLength": 1 },
+    "happy_image_digest": { "type": "string", "minLength": 1 },
+    "reference_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "source_endpoints": { "type": "object", "additionalProperties": { "type": "string" } },
+    "stale": { "type": "boolean" }
+  }
+}

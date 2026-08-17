@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://minos.engine/schemas/round-context-v1.schema.json",
+  "title": "RoundContext v1",
+  "description": "Truth-free per-round context for Layer 1 / Layer 2.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "round_id", "status", "exact_region",
+    "time_remaining_seconds", "bam_artifact", "bai_artifact",
+    "reference_artifact", "protocol_snapshot_id"
+  ],
+  "properties": {
+    "schema_version": { "const": "round-context-v1" },
+    "round_id": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["pending", "open", "scoring", "completed", "unknown"] },
+    "exact_region": { "$ref": "#/$defs/region" },
+    "time_remaining_seconds": { "type": "number", "minimum": 0 },
+    "bam_artifact": { "$ref": "artifact-identity-v1.schema.json" },
+    "bai_artifact": { "$ref": "artifact-identity-v1.schema.json" },
+    "reference_artifact": { "$ref": "artifact-identity-v1.schema.json" },
+    "protocol_snapshot_id": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "region": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source", "source_coordinate_system", "contig",
+        "start0", "end0_exclusive", "length_bp", "verified"
+      ],
+      "properties": {
+        "source": { "type": "string", "minLength": 1 },
+        "source_coordinate_system": { "type": "string", "minLength": 1 },
+        "contig": { "type": "string", "pattern": "^chr([1-9]|1[0-9]|2[0-2]|X|Y|M)$" },
+        "start0": { "type": "integer", "minimum": 0 },
+        "end0_exclusive": { "type": "integer", "minimum": 1 },
+        "length_bp": { "type": "integer", "minimum": 1 },
+        "verified": { "type": "boolean" }
+      }
+    }
+  }
+}

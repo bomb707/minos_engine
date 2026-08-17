@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Ephemeral engine runtime (never committed)
+runtime/
+
+# Large genomic / truth artifacts — MUST NOT be committed
+*.bam
+*.bai
+*.cram
+*.vcf
+*.vcf.gz
+*.vcf.gz.tbi
+*.fa
+*.fasta
+*.fai
+*.dict
+*.sdf/
+truth.*
+mutations.*
+
+# OS
+.DS_Store

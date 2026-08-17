@@ -1,0 +1,10 @@
+schema_version: engine-config-v1
+round:
+  # Minos round duration is 72 minutes.
+  duration_seconds: 4320
+prediction:
+  # Target a complete first decision in ~5 minutes; keep a final safety reserve.
+  target_seconds: 300
+  final_safety_reserve_seconds: 300
+truth_isolation:
+  enabled: true

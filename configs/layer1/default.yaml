@@ -1,0 +1,14 @@
+# Layer 1 defaults (declared for structure; Layer 1 is NOT implemented in Stage 0).
+# Values mirror Layer 1 spec §3 so the config location is stable for Stage 2.
+schema_version: layer1-config-v1
+implemented: false
+window:
+  primary_bp: 100000
+  refinement_bp: 10000
+budget:
+  soft_seconds: 180
+  hard_seconds: 300
+pileup:
+  soft_seconds: 90
+coverage:
+  overlap_policy: fragment_primary

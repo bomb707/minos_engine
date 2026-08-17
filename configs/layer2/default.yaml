@@ -1,0 +1,7 @@
+# Layer 2 defaults (declared for structure; Layer 2 is BLOCKED until L1-READY).
+# Present only so the config location is stable for Stage 4+.
+schema_version: layer2-config-v1
+implemented: false
+blocked_until: l1-ready
+control:
+  default_mode: SAFE_BASELINE

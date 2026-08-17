@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://minos.engine/schemas/release-manifest-v1.schema.json",
+  "title": "ReleaseManifest v1",
+  "description": "Reproducibility manifest. Required identities are present and non-null; empty git/scorer/upstream identity fails closed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "engine_version", "git_sha", "engine_config_hash",
+    "protocol_contract_hash", "gatk_registry_hash", "minos_upstream_commit",
+    "scorer_hash", "parameter_space_hash", "created_at", "optional_identities"
+  ],
+  "properties": {
+    "schema_version": { "const": "release-manifest-v1" },
+    "engine_version": { "type": "string", "minLength": 1 },
+    "git_sha": { "type": "string", "minLength": 1 },
+    "engine_config_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "protocol_contract_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "gatk_registry_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "minos_upstream_commit": { "type": "string", "minLength": 1 },
+    "scorer_hash": { "type": "string", "minLength": 1 },
+    "parameter_space_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "optional_identities": {
+      "type": "object",
+      "description": "Future identities distinguished as available/unavailable/unknown/not_applicable.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status"],
+        "properties": {
+          "status": { "enum": ["available", "unavailable", "unknown", "not_applicable"] },
+          "value": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

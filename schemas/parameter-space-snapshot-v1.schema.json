@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://minos.engine/schemas/parameter-space-snapshot-v1.schema.json",
+  "title": "ParameterSpaceSnapshot v1",
+  "description": "Runtime legal-range snapshot for the active caller (gatk). parameter_space_hash identifies the range content only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "caller", "parameters", "source", "retrieved_at", "parameter_space_hash", "stale"],
+  "properties": {
+    "schema_version": { "const": "parameter-space-snapshot-v1" },
+    "caller": { "const": "gatk" },
+    "parameters": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/range" }
+    },
+    "source": { "type": "string", "minLength": 1 },
+    "retrieved_at": { "type": "string", "format": "date-time" },
+    "parameter_space_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "stale": { "type": "boolean" }
+  },
+  "$defs": {
+    "range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["int", "float", "bool", "enum"] },
+        "minimum": { "type": ["number", "null"] },
+        "maximum": { "type": ["number", "null"] },
+        "enum_values": { "type": ["array", "null"], "items": { "type": "string" } },
+        "default": {}
+      }
+    }
+  }
+}

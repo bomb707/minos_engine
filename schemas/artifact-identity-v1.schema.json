@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://minos.engine/schemas/artifact-identity-v1.schema.json",
+  "title": "ArtifactIdentity v1",
+  "description": "Content identity of a round artifact. A filename alone is never an identity.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["uri", "sha256", "size_bytes", "media_type", "created_at_or_observed_at"],
+  "properties": {
+    "uri": { "type": "string", "minLength": 1 },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "size_bytes": { "type": "integer", "minimum": 0 },
+    "media_type": { "type": "string", "minLength": 1 },
+    "created_at_or_observed_at": { "type": "string", "format": "date-time" }
+  }
+}

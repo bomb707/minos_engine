@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://minos.engine/schemas/gate-artifact-v1.schema.json",
+  "title": "GateArtifact v1",
+  "description": "Machine-generated stage-gate evidence. A PASS gate requires all mandatory checks true.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "gate_name", "status", "engine_git_sha", "input_hashes", "evidence", "mandatory_checks", "created_at", "gate_hash"],
+  "properties": {
+    "schema_version": { "const": "gate-artifact-v1" },
+    "gate_name": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["PASS", "HOLD", "PATCH", "REJECT"] },
+    "engine_git_sha": { "type": "string", "minLength": 1 },
+    "input_hashes": { "type": "object", "additionalProperties": { "type": "string" } },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["description", "path"],
+        "properties": {
+          "description": { "type": "string", "minLength": 1 },
+          "path": { "type": "string", "minLength": 1 },
+          "sha256": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "mandatory_checks": { "type": "object", "additionalProperties": { "type": "boolean" } },
+    "created_at": { "type": "string", "format": "date-time" },
+    "gate_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  },
+  "if": { "properties": { "status": { "const": "PASS" } } },
+  "then": {
+    "properties": {
+      "mandatory_checks": {
+        "type": "object",
+        "minProperties": 1,
+        "additionalProperties": { "const": true }
+      }
+    }
+  }
+}
