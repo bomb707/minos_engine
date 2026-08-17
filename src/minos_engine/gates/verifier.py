@@ -78,23 +78,42 @@ def _integrity_reasons(gate: GateArtifact, base_dir: Path | None) -> list[str]:
     # satisfy verification. Otherwise fall back to filesystem hashing.
     ref = gate.qualified_source_git_sha
     git_bound = bool(ref) and G.is_git_repo(base_dir)
+    if git_bound:
+        # Distinguish missing history from missing/mismatched evidence: if the
+        # qualified commit itself is absent (e.g. a shallow clone), say so once
+        # instead of reporting every directory as "not tracked".
+        assert ref is not None
+        if not G.object_exists(base_dir, ref):
+            shallow = G.is_shallow(base_dir)
+            cause = (
+                "GIT_HISTORY_INCOMPLETE (shallow clone)"
+                if shallow
+                else "QUALIFIED_COMMIT_UNAVAILABLE"
+            )
+            reasons.append(
+                f"{cause}: qualified commit {ref} is absent locally; "
+                "check out full git history (fetch-depth: 0)"
+            )
+            return reasons
+
     for item in gate.evidence:
         if item.sha256 is None:
             continue
         if git_bound:
+            assert ref is not None
             try:
-                actual = G.hash_git_path(base_dir, item.path, ref)  # type: ignore[arg-type]
+                actual = G.hash_git_path(base_dir, item.path, ref)
             except G.GitUnavailableError:
-                reasons.append(f"evidence not tracked in qualified commit: {item.path}")
+                reasons.append(f"EVIDENCE_PATH_MISSING: {item.path} absent from qualified commit")
                 continue
         else:
             target = base_dir / item.path
             if not target.exists():
-                reasons.append(f"evidence path missing: {item.path}")
+                reasons.append(f"EVIDENCE_PATH_MISSING: {item.path}")
                 continue
             actual = hash_path(target)
         if actual != item.sha256:
-            reasons.append(f"evidence hash mismatch: {item.path}")
+            reasons.append(f"EVIDENCE_HASH_MISMATCH: {item.path}")
     return reasons
 
 

@@ -44,14 +44,18 @@ def build_doctor_report(
     gatk_only_ok = cfg.runtime_policy.active == "gatk" and cfg.runtime_policy.allowed == ("gatk",)
     l1_ready = _l1_ready(gdir)
 
+    from minos_engine.common.runtime import is_supported_runtime, runtime_report
+
     checks = {
         "gatk_registry_complete": registry_ok,
         "schemas_available": schemas_ok,
         "gatk_only_policy": gatk_only_ok,
         "truth_isolation_enabled": cfg.engine.truth_isolation_enabled,
+        "python_runtime_is_3_12": is_supported_runtime(),
     }
     overall = "healthy" if all(checks.values()) else "degraded"
 
+    runtime = runtime_report()
     return {
         "engine": {
             "stage": STAGE,
@@ -62,6 +66,7 @@ def build_doctor_report(
                 IdentityStatus.AVAILABLE.value if git_sha else IdentityStatus.UNAVAILABLE.value
             ),
         },
+        "runtime": runtime,
         "caller": {
             "active": cfg.runtime_policy.active,
             "allowed": list(cfg.runtime_policy.allowed),

@@ -134,7 +134,7 @@ def test_evidence_tamper_rejected(tmp_path):
         fh.write('{"tampered": true}')
     result = verify_l1_ready(_request(tmp_path, gate_path, report_path))
     assert not result.ok
-    assert any("evidence hash mismatch" in r for r in result.reasons)
+    assert any("EVIDENCE_HASH_MISMATCH" in r for r in result.reasons)
 
 
 def test_wrong_gate_name_rejected(tmp_path):

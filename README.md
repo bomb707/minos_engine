@@ -43,7 +43,8 @@ formula is not defined in the specs — see `docs/twin/SCORING_CONTRACT.md`).
 - Qualification engine (`src/minos_engine/qualification/`): JUnit-based test
   accounting, Cobertura coverage enforcement (≥90%), deterministic evidence
   hashing, required-check registry, and two-commit source provenance.
-- GitHub Actions CI (3.11/3.12); authoritative specs in `docs/specifications/`.
+- GitHub Actions CI on **Python 3.12** (the only supported runtime); authoritative
+  specs in `docs/specifications/`.
 - Full test suite incl. architecture import-boundary and truth-isolation guards.
 
 ### What is intentionally NOT implemented
@@ -54,8 +55,15 @@ formula is not defined in the specs — see `docs/twin/SCORING_CONTRACT.md`).
 - Live Minos API integration (fixture-backed only in Stage 0).
 - Any access to truth / locked-test data (see ADR-0003).
 
+## Supported runtime
+**CPython 3.12.x** is the only supported, tested, and qualified runtime (it
+matches the Minos subnet). Other Python versions are rejected by the runtime
+preflight (`minos-engine doctor` reports the policy; `require_supported_runtime`
+fails closed). No Python 3.11 support is claimed.
+
 ## Setup
 ```bash
+# Requires Python 3.12.
 make bootstrap          # python3 -m venv .venv && pip install -e ".[dev]"
 # or manually:
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"

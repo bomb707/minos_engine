@@ -5,9 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "minos-engine"
 version = "0.1.0"
-description = "MINOS_ENGINE — protocol-faithful GATK config engine for Minos Bittensor Subnet 107 (Stage 0)"
+description = "MINOS_ENGINE — protocol-faithful GATK config engine for Minos Bittensor Subnet 107"
 readme = "README.md"
-requires-python = ">=3.11"
+# Python 3.12 is the only supported/tested/qualified runtime (matches the subnet).
+requires-python = ">=3.12,<3.13"
 license = { text = "Proprietary" }
 authors = [{ name = "MINOS_ENGINE" }]
 dependencies = [
@@ -42,7 +43,7 @@ minos_engine = ["py.typed"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
@@ -55,7 +56,7 @@ ignore = ["E501", "UP042"]
 known-first-party = ["minos_engine"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 strict = true
 warn_unused_configs = true
 disallow_untyped_defs = true

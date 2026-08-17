@@ -2,7 +2,10 @@
 
 ## CI workflow
 `.github/workflows/ci.yml` runs on `push`, `pull_request`, and
-`workflow_dispatch`, on Python **3.11** and **3.12**:
+`workflow_dispatch`, on **Python 3.12 only** (the supported/qualified runtime),
+with **full git history** (`fetch-depth: 0`) so the qualification can verify
+historical commits/trees/blobs, and a runtime assertion + git-history preflight
+before the main steps:
 
 ```
 python -m pip install -e ".[dev]"
@@ -25,7 +28,7 @@ These are recommendations only; repository settings are not changed by this
 work. On the default branch (`main`):
 
 1. **Require the `CI` status checks to pass** before merging — both
-   `quality (py3.11)` and `quality (py3.12)`.
+   `quality (python-3.12)`.
 2. **Require a pull request** before merging; require at least one review.
 3. **Require branches to be up to date** before merging (linear, no stale
    merges).

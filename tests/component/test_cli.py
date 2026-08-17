@@ -16,6 +16,32 @@ def test_doctor_json(capsys):
     assert out["gatk_registry"]["parameter_count"] == 25
     assert out["stage_gates"]["layer2_blocked"] is True
     assert out["overall_health"] == "healthy"
+    # Runtime policy is reported and enforced (Python 3.12 only).
+    assert out["runtime"]["supported"] == "CPython 3.12.x"
+    assert out["runtime"]["is_supported"] is True
+    assert out["mandatory_checks"]["python_runtime_is_3_12"] is True
+
+
+def test_git_history_check_json(capsys):
+    from tests.conftest import REPO_ROOT
+
+    code = main(
+        [
+            "git-history",
+            "check",
+            "--protocol-gate",
+            str(REPO_ROOT / "gates" / "protocol-ready.json"),
+            "--twin-gate",
+            str(REPO_ROOT / "gates" / "twin-ready.json"),
+            "--base-dir",
+            str(REPO_ROOT),
+            "--json",
+        ]
+    )
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["ok"] is True
+    assert out["shallow"] is False
 
 
 def test_protocol_snapshot_json(capsys):

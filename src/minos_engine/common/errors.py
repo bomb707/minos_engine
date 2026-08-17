@@ -60,6 +60,10 @@ class ManifestError(MinosEngineError):
     """A release manifest is missing a required identity or has an empty one."""
 
 
+class UnsupportedRuntimeError(MinosEngineError):
+    """The running Python interpreter is not the supported runtime (CPython 3.12)."""
+
+
 class TwinError(MinosEngineError):
     """Base for Validator Twin (Stage 1) failures."""
 

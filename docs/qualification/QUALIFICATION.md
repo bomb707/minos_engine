@@ -32,6 +32,17 @@ TWIN-READY reuses the git-tree-bound, two-commit machinery with Stage-1 specific
 - **Evidence rehashing** (Stage 0 and Stage 1) enumerates files from the *tree of
   the qualified ref* (`git ls-tree <ref>`), so digests reproduce from the
   qualified commit regardless of the current HEAD.
+- **Runtime policy**: CPython **3.12.x** is the only supported/qualified runtime
+  (matches the subnet). `python_runtime_is_3_12` is a mandatory TWIN-READY check;
+  the gate records `python_runtime: CPython 3.12` (no patch level in the hash).
+- **Git-history preflight**: because qualification verifies historical commits,
+  trees, and blobs, CI checks out **full history** (`fetch-depth: 0`).
+  `minos-engine git-history check --protocol-gate … --twin-gate … --base-dir .`
+  runs before the tests and fails closed with distinct reason codes
+  (`GIT_HISTORY_INCOMPLETE`, `QUALIFIED_COMMIT_UNAVAILABLE`,
+  `QUALIFIED_TREE_UNAVAILABLE`, `QUALIFIED_TREE_MISMATCH`, `EVIDENCE_PATH_MISSING`,
+  `EVIDENCE_HASH_MISMATCH`) — a missing historical commit (shallow clone) is never
+  reported as an untracked evidence file.
 
 ## Two-commit qualification (provenance)
 

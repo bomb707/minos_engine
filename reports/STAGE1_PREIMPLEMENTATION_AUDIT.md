@@ -10,7 +10,8 @@
 - Qualified Stage 0 source commit: `4a5a14d47f198a214e4dff8da2c4466e5fc7a425`
 - Qualified source tree: `f248480a5dd43c277e493155a31a9a289a2ce31e`
 - PROTOCOL-READY gate hash: `b9cda0bab329b36a0a62b4b7e9ba9b797fc22b46c1055f76db26b591311a1675`
-- Stage 0: 215 passed, coverage 94.26%, CI green on 3.11/3.12.
+- Stage 0: 215 passed, coverage 94.26%. (Runtime standardized to Python 3.12 only
+  during Stage 1 remediation; the engine is tested/qualified on CPython 3.12.x.)
 - Specs verified against `docs/specifications/SPECIFICATION_MANIFEST.json` (all three sha256 match). Worktree clean at start.
 
 Stage 0 contracts are **not** changed or reinterpreted by this stage.
@@ -75,7 +76,7 @@ A lower level is never reported as a higher level; `TwinParityReport.declared_le
 | S1-R17 | Assignment §14 | TWIN-READY gate w/ required-check registry, integrity vs promotion | `gates/required_checks` TWIN-READY set + `qualification/twin_runner.py` | qualification (group I) | authoritative |
 | S1-R18 | Assignment §15 | Two-commit git-tree-bound qualification; records prerequisite gate hash + parity level | `qualification/twin_runner.py` | group I, group J | authoritative |
 | S1-R19 | Assignment §6 | One canonical JSON/sha256; golden vectors; timestamp excluded | reuse Stage 0 `common.canonical_json`/`hashing`; golden tests | group B | authoritative |
-| S1-R20 | Assignment §17 | CI 3.11/3.12, clean checkout, no network/GATK/hap.py deps | extend `.github/workflows/ci.yml` | group J | authoritative |
+| S1-R20 | Assignment §17 | CI Python 3.12 only, full history, clean checkout, no network/GATK/hap.py deps | `.github/workflows/ci.yml` | group J | authoritative |
 | S1-R21 | Assignment §12 | Layer 1 unimplemented, Layer 2 blocked | unchanged Stage 0 services; TWIN-READY checks assert both | group G/I | authoritative |
 
 ## Explicit exclusions (not implemented in Stage 1)

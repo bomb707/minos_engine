@@ -76,6 +76,12 @@ def object_exists(root: Path, sha: str) -> bool:
     return _run_text(root, ["cat-file", "-e", sha]).returncode == 0
 
 
+def is_shallow(root: Path) -> bool:
+    """True iff the repository is a shallow clone (incomplete history)."""
+    proc = _run_text(root, ["rev-parse", "--is-shallow-repository"])
+    return proc.returncode == 0 and proc.stdout.strip() == "true"
+
+
 def commit_tree_sha(root: Path, commit_sha: str) -> str | None:
     """Return the tree SHA of ``commit_sha``, or None if unavailable."""
     proc = _run_text(root, ["rev-parse", f"{commit_sha}^{{tree}}"])

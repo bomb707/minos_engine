@@ -44,6 +44,8 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         lines = [
             f"MINOS_ENGINE doctor — stage {report['engine']['stage']} v{report['engine']['package_version']}",
             f"  python           : {report['engine']['python_version']}",
+            f"  runtime policy   : {report['runtime']['supported']} "
+            f"(current supported: {report['runtime']['is_supported']})",
             f"  git sha          : {report['engine']['git_sha'] or '(unavailable)'}",
             f"  active caller    : {report['caller']['active']} (gatk-only: {report['caller']['gatk_only_policy']})",
             f"  gatk registry    : {report['gatk_registry']['parameter_count']}/{report['gatk_registry']['expected']} params",
@@ -130,6 +132,22 @@ def _cmd_manifest_build(args: argparse.Namespace) -> int:
             fh.write(json.dumps(out, indent=2, sort_keys=True) + "\n")
     _print(out, args.json, json.dumps(out, indent=2, sort_keys=True))
     return EXIT_OK
+
+
+def _cmd_git_history_check(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from minos_engine.qualification.git_history import check_repository_history
+
+    base = Path(args.base_dir).resolve() if args.base_dir else Path.cwd()
+    result = check_repository_history(
+        base,
+        protocol_gate=Path(args.protocol_gate),
+        twin_gate=Path(args.twin_gate),
+    )
+    out = result.model_dump(mode="json")
+    _print(out, args.json, json.dumps(out, indent=2, sort_keys=True))
+    return EXIT_OK if result.ok else EXIT_VERIFY_FAILED
 
 
 def _cmd_gate_verify_integrity(args: argparse.Namespace) -> int:
@@ -242,6 +260,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_qualify.add_argument("--root", default=None, help="repository root (default: cwd)")
     p_qualify.add_argument("--json", action="store_true")
     p_qualify.set_defaults(func=_cmd_qualify)
+
+    p_history = sub.add_parser("git-history", help="git-history preflight for committed gates")
+    history_sub = p_history.add_subparsers(dest="history_command", required=True)
+    p_hcheck = history_sub.add_parser(
+        "check", help="verify qualified commits/trees/evidence objects exist locally"
+    )
+    p_hcheck.add_argument("--protocol-gate", default="gates/protocol-ready.json")
+    p_hcheck.add_argument("--twin-gate", default="gates/twin-ready.json")
+    p_hcheck.add_argument("--base-dir", default=None)
+    p_hcheck.add_argument("--json", action="store_true")
+    p_hcheck.set_defaults(func=_cmd_git_history_check)
 
     from .twin_commands import add_twin_subparser
 

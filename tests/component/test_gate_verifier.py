@@ -73,4 +73,4 @@ def test_evidence_tamper_fails_integrity(tmp_path):
     evidence_file.write_text("TAMPERED", encoding="utf-8")
     result = verify_gate_integrity(gate, base_dir=tmp_path)
     assert not result.ok
-    assert any("evidence hash mismatch" in r for r in result.reasons)
+    assert any("EVIDENCE_HASH_MISMATCH" in r for r in result.reasons)

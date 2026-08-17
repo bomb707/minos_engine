@@ -66,6 +66,7 @@ REQUIRED_CHECKS: dict[str, frozenset[str]] = {
             "ruff_format_pass",
             "mypy_pass",
             "coverage_threshold_met",
+            "python_runtime_is_3_12",
             # Git-tree-bound source integrity
             "required_source_tracked",
             "worktree_matches_head",

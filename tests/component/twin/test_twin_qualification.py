@@ -76,6 +76,28 @@ def test_twin_qualification_pass_on_clean_repo():
     assert gate.mandatory_checks["protocol_ready_evidence_verified"] is True
 
 
+def test_gate_records_python_runtime():
+    result = _assemble()
+    assert result.gate.input_hashes["python_runtime"] == "CPython 3.12"
+    assert result.gate.mandatory_checks["python_runtime_is_3_12"] is True
+
+
+def test_twin_ready_cannot_pass_if_runtime_false():
+    checks = _pass_checks(python_runtime_is_3_12=False)
+    with pytest.raises(ValidationError):
+        GateArtifact(
+            gate_name="TWIN-READY",
+            status=GateStatus.PASS,
+            engine_git_sha="x",
+            mandatory_checks=checks,
+            evidence=(EvidenceItem(description="e", path="reports/x.md", sha256="a" * 64),),
+            qualified_source_git_sha="s",
+            qualified_source_tree_sha="t",
+            qualification_tool_version="v",
+            created_at=_TS,
+        )
+
+
 def test_stage1_qualifier_identity_changes_gate_hash():
     result = _assemble()
     base = result.gate.model_dump(mode="json")

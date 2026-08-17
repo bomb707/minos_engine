@@ -16,6 +16,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict
 
 from minos_engine import __version__
+from minos_engine.common.runtime import is_supported_runtime, runtime_identity
 from minos_engine.gates.contracts import EvidenceKind, GateArtifact, GateStatus
 from minos_engine.gates.required_checks import required_checks_for
 from minos_engine.settings import Settings
@@ -80,8 +81,10 @@ STAGE1_REQUIRED_TRACKED_FILES: tuple[str, ...] = (
     "src/minos_engine/twin/prerequisites.py",
     "src/minos_engine/tools/gatk.py",
     "src/minos_engine/tools/happy.py",
+    "src/minos_engine/common/runtime.py",
     "src/minos_engine/qualification/twin_runner.py",
     "src/minos_engine/qualification/twin_checks.py",
+    "src/minos_engine/qualification/git_history.py",
     "src/minos_engine/cli/twin_commands.py",
     "tests/fixtures/twin/FIXTURE_MANIFEST.json",
     "tests/fixtures/twin/replay/valid.json",
@@ -179,6 +182,7 @@ def assemble_twin_result(
         "ruff_format_pass": tools["ruff_format"],
         "mypy_pass": tools["mypy"],
         "coverage_threshold_met": coverage.meets(STAGE0_COVERAGE_THRESHOLD),
+        "python_runtime_is_3_12": is_supported_runtime(),
         "required_source_tracked": si.required_source_tracked,
         "worktree_matches_head": si.worktree_matches_head,
         "evidence_hashes_complete": si.evidence_hashes_complete,
@@ -196,6 +200,8 @@ def assemble_twin_result(
         "prerequisite_protocol_ready_gate_hash": prereq_hash or "unavailable",
         "declared_parity_level": DECLARED_PARITY_LEVEL.value,
         "specification_manifest_hash": si.spec_manifest_hash,
+        # Content-stable runtime identity (no patch level; contract is 3.12.x).
+        "python_runtime": runtime_identity(),
     }
 
     gate = GateArtifact(
@@ -278,6 +284,7 @@ def verify_twin_ready(
         "canonical_integrity": gate.gate_hash == gate.compute_hash(),
         "qualification_tool_identity": gate.qualification_tool_version
         == STAGE1_TWIN_QUALIFIER_VERSION,
+        "python_runtime_is_3_12": is_supported_runtime(),
         "stage1_evidence_verified": integrity.ok,
         "required_checks_and_promotion": promotion.ok,
         "prerequisite_identity_accepted": prereq.identity_accepted,
