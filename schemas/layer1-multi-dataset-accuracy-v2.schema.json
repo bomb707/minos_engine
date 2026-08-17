@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://minos.engine/schemas/layer1-multi-dataset-accuracy-v2.schema.json",
+  "title": "Layer 1 Multi-Dataset Accuracy Result v2",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "verdict",
+    "layer2_recommendation",
+    "python_version",
+    "tool_versions",
+    "accepted_gates",
+    "field_inventory",
+    "field_coverage_by_classification",
+    "unvalidated_l2_field_count",
+    "datasets",
+    "emitted_feature_truth_relevance_pooled",
+    "bam_intrinsic_observability_pooled",
+    "robustness",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": { "const": "layer1-multi-dataset-accuracy-v2" },
+    "created_at": { "type": "string" },
+    "verdict": { "enum": ["PASS", "FAIL", "INCOMPLETE"] },
+    "layer2_recommendation": { "enum": ["APPROVED", "BLOCKED", "APPROVED_WITH_EXCLUSIONS"] },
+    "python_version": { "type": "string" },
+    "tool_versions": { "type": "object" },
+    "accepted_gates": {
+      "type": "object",
+      "required": ["protocol_ready", "twin_ready", "l1_ready"]
+    },
+    "field_inventory": {
+      "type": "object",
+      "required": ["total_serialized_fields", "analytical_fields", "l2_consumable_fields",
+        "operational_fields_excluded", "identifier_fields", "unvalidated_fields"]
+    },
+    "field_coverage_by_classification": { "type": "object" },
+    "unvalidated_l2_field_count": { "type": "integer", "minimum": 0 },
+    "datasets": {
+      "type": "array",
+      "minItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["chromosome", "dataset_id", "category_tally", "unvalidated_l2_fields",
+          "emitted_feature_truth_relevance", "bam_intrinsic_observability",
+          "reconciliation", "determinism", "truth_isolation"]
+      }
+    },
+    "emitted_feature_truth_relevance_pooled": {
+      "type": "object",
+      "required": ["spearman_snp", "spearman_indel", "auroc_snp_median_split",
+        "n_sampled_windows", "useful_snp", "useful_indel"]
+    },
+    "bam_intrinsic_observability_pooled": { "type": "object" },
+    "robustness": { "type": "object" },
+    "summary": {
+      "type": "object",
+      "required": ["exact_pass_rate", "float_strict_pass_rate", "sampled_pass_rate",
+        "approximate_pass_rate", "derived_pass_rate", "determinism_pass_rate",
+        "truth_isolation_pass_rate", "robustness_pass_rate", "hard_deadline_violations",
+        "total_exact_mismatches", "total_analytical_failures"]
+    }
+  }
+}
