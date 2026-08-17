@@ -1,0 +1,117 @@
+{
+  "created_at": "2026-08-17T10:00:53.452309+00:00",
+  "engine_git_sha": "471374b444e3054ee94c9519f0f627bf182a63ee",
+  "evidence": [
+    {
+      "description": "reports/STAGE0_PREIMPLEMENTATION_AUDIT.md",
+      "kind": "file",
+      "path": "reports/STAGE0_PREIMPLEMENTATION_AUDIT.md",
+      "sha256": "fd3ca71ef5e4ea0ee7430b30c42b4cb8a7eb71b557af4bfb5d65717a846f27d6",
+      "size_bytes": 15579
+    },
+    {
+      "description": "schemas",
+      "kind": "directory",
+      "path": "schemas",
+      "sha256": "74df703402e1fc940603582b8a06242d0eeb8eb41118c4fe8009ecc557e40ff7",
+      "size_bytes": null
+    },
+    {
+      "description": "configs",
+      "kind": "directory",
+      "path": "configs",
+      "sha256": "20647353697df9ee6b90df31d4e0209c771d7da0951b855caa074d9f7cfb7564",
+      "size_bytes": null
+    },
+    {
+      "description": "src/minos_engine",
+      "kind": "directory",
+      "path": "src/minos_engine",
+      "sha256": "b6c4b681b28ee48c437ae860ed42905f77a3cb3a415b084cc47362cf9192493e",
+      "size_bytes": null
+    },
+    {
+      "description": "tests",
+      "kind": "directory",
+      "path": "tests",
+      "sha256": "675309c77290d319a148c73b08cca6cd38f6f00e6bee5e065ad639cf4267cea2",
+      "size_bytes": null
+    },
+    {
+      "description": "docs",
+      "kind": "directory",
+      "path": "docs",
+      "sha256": "347ac18c71aa660b2cc029c26871087a5d7e4b48d846cb65ad42334d3aa38e27",
+      "size_bytes": null
+    },
+    {
+      "description": "docs/specifications/SPECIFICATION_MANIFEST.json",
+      "kind": "file",
+      "path": "docs/specifications/SPECIFICATION_MANIFEST.json",
+      "sha256": "29241c14bfbd072ed798ff3628dbea6d683c3251320604385f81fe0987e14843",
+      "size_bytes": 1494
+    },
+    {
+      "description": "pyproject.toml",
+      "kind": "file",
+      "path": "pyproject.toml",
+      "sha256": "a2c03ec39814ff6e16cae38e03592cc172154fc573ba191899b23b13e5e8ecfe",
+      "size_bytes": 1737
+    },
+    {
+      "description": "Makefile",
+      "kind": "file",
+      "path": "Makefile",
+      "sha256": "5e09be3d66139711de45a66789de24ad3c6d52b2794f2605b99009cafcd0dff7",
+      "size_bytes": 1377
+    },
+    {
+      "description": ".github/workflows/ci.yml",
+      "kind": "file",
+      "path": ".github/workflows/ci.yml",
+      "sha256": "901c52ee28c75e07a66979da87477ba930d935a0cb60c096afec2c1f7a7bac7d",
+      "size_bytes": 2426
+    }
+  ],
+  "gate_hash": "ef3bf35ae55ce0b80ae6c3dfddfdaf0e4dfbd8de5a0b1fb453e52bab4eb5197b",
+  "gate_name": "TWIN-READY",
+  "input_hashes": {
+    "declared_parity_level": "FIXTURE_REPLAY",
+    "prerequisite_protocol_ready_gate_hash": "b9cda0bab329b36a0a62b4b7e9ba9b797fc22b46c1055f76db26b591311a1675",
+    "specification_manifest_hash": "29241c14bfbd072ed798ff3628dbea6d683c3251320604385f81fe0987e14843"
+  },
+  "mandatory_checks": {
+    "all_tests_pass": true,
+    "architecture_boundaries_ok": true,
+    "comparison_parser_ok": true,
+    "coverage_threshold_met": true,
+    "evidence_hashes_complete": true,
+    "fixture_replay_deterministic": true,
+    "gatk_execution_plan_ok": true,
+    "gatk_only_policy": true,
+    "layer1_not_implemented": true,
+    "layer2_blocked": true,
+    "mypy_pass": true,
+    "no_hidden_network_dependency": true,
+    "parity_mismatch_detection_works": true,
+    "protocol_ready_prerequisite_valid": true,
+    "protocol_ready_promotion_authorized": true,
+    "qualified_source_clean": true,
+    "required_source_tracked": true,
+    "ruff_check_pass": true,
+    "ruff_format_pass": true,
+    "scoring_matches_declared_level": true,
+    "stage1_documentation_complete": true,
+    "tests_collected_nonzero": true,
+    "truth_isolation_ok": true,
+    "twin_canonical_hashing_deterministic": true,
+    "twin_contracts_schema_valid": true,
+    "unavailable_scoring_honest": true,
+    "worktree_matches_head": true
+  },
+  "qualification_tool_version": "stage0-qualifier-v2",
+  "qualified_source_git_sha": "471374b444e3054ee94c9519f0f627bf182a63ee",
+  "qualified_source_tree_sha": "3fece01e1bc4748d850eaf3086b1e41b6b79c509",
+  "schema_version": "gate-artifact-v1",
+  "status": "PASS"
+}
