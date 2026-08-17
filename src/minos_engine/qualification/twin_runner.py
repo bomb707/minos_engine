@@ -26,8 +26,9 @@ from minos_engine.twin.prerequisites import verify_protocol_ready
 from . import checks as C
 from . import git_tree as G
 from . import twin_checks as TC
+from .ancestry import verify_commit_ancestry
 from .coverage import STAGE0_COVERAGE_THRESHOLD, CoverageResult, run_coverage
-from .provenance import GitProvenance, read_provenance, verify_parent_is
+from .provenance import GitProvenance, read_provenance
 from .pytest_accounting import PytestAccounting, run_pytest, suite_passes
 from .runner import SourceIntegrity, _bin, _tool_ok, gather_source_integrity
 
@@ -47,6 +48,11 @@ __all__ = [
 GATE_NAME = "TWIN-READY"
 # Stage 1 has its own qualifier identity (distinct from Stage 0's).
 STAGE1_TWIN_QUALIFIER_VERSION = "stage1-twin-qualifier-v1"
+# Accepted TWIN-READY artifact commit (Commit B — where the accepted gate was
+# committed). This is a permanent accepted identity, like the accepted gate hash /
+# source / tree; the non-mutating check proves HEAD descends from it via Git
+# objects. It is NOT the current HEAD and is never derived from commit messages.
+ACCEPTED_TWIN_ARTIFACT_COMMIT = "0469b3b8cb326ff32c0412ebec258871c4c39467"
 
 # Stage 1 evidence set (hashed from the qualified Commit A tree). Excludes the
 # generated final artifacts (gates/twin-ready.json, the Stage 1 qualification
@@ -294,12 +300,27 @@ def verify_twin_ready(
         "qualified_tree_matches": G.commit_tree_sha(root, src_sha)
         == gate.qualified_source_tree_sha,
     }
+    ancestry = None
     if require_descends:
-        checks["commit_b_descends_a"] = verify_parent_is(root, src_sha)
+        ancestry = verify_commit_ancestry(
+            root,
+            qualified_source=src_sha,
+            expected_tree=gate.qualified_source_tree_sha or "",
+            artifact_commit=ACCEPTED_TWIN_ARTIFACT_COMMIT,
+        )
+        # The accepted artifact commit must properly descend from the qualified
+        # source, and the checked repository HEAD must descend from that accepted
+        # artifact commit (supporting execution at the artifact commit OR any later
+        # genuine descendant — never HEAD == artifact only).
+        checks["commit_b_descends_a"] = ancestry.checks["commit_b_descends_a"]
+        checks["artifact_commit_present"] = ancestry.checks["artifact_commit_present"]
+        checks["head_descends_artifact"] = ancestry.checks["head_descends_artifact"]
 
     for name, ok in checks.items():
         if not ok:
             reasons.append(f"{name} failed")
+    if ancestry is not None:
+        reasons.extend(f"ancestry: {r}" for r in ancestry.reasons)
     reasons.extend(f"evidence: {r}" for r in integrity.reasons)
     reasons.extend(f"promotion: {r}" for r in promotion.reasons)
     reasons.extend(f"prerequisite: {r}" for r in prereq.reasons)

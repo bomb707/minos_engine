@@ -36,6 +36,17 @@ def test_committed_l1_ready_gate_verifies():
 
 
 @pytest.mark.skipif(not _GATE.exists(), reason="L1-READY gate is produced in Commit B")
+def test_committed_l1_ready_gate_verifies_with_descent():
+    # HEAD must properly descend from the qualified source commit — the repaired
+    # ancestry supports the artifact commit and any later genuine descendant.
+    from minos_engine.qualification.layer1_runner import verify_l1_ready_gate
+
+    result = verify_l1_ready_gate(REPO_ROOT, _GATE, require_descends=True)
+    assert result.ok, result.reasons
+    assert result.checks["commit_b_descends_a"] is True
+
+
+@pytest.mark.skipif(not _GATE.exists(), reason="L1-READY gate is produced in Commit B")
 def test_committed_l1_ready_gate_authorizes_layer2_entry():
     from minos_engine.gates.verifier import load_gate
     from minos_engine.layer2.entry_gate import EntryGateRequest, verify_l1_ready

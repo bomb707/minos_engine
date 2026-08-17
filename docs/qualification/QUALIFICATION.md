@@ -27,8 +27,22 @@ TWIN-READY reuses the git-tree-bound, two-commit machinery with Stage-1 specific
 - **Non-mutating check mode**: `minos-engine twin qualify --check` and
   `minos-engine twin gate require-pass` verify a committed TWIN-READY gate
   (integrity, required checks, Stage 1 evidence from Commit A, qualifier identity,
-  accepted prerequisite + its evidence, promotion, and Commit-B-descends-Commit-A)
+  accepted prerequisite + its evidence, promotion, and the Git-ancestry invariant)
   without regenerating artifacts. CI runs both, so a tampered gate fails CI.
+- **Git-ancestry invariant (descendant-safe).** The non-mutating check must hold
+  at the original artifact commit **and** at any later repository commit that
+  genuinely descends from the accepted artifact history — it is not `HEAD ==
+  artifact commit`. `qualification/ancestry.verify_commit_ancestry` proves, using
+  Git objects (`git merge-base --is-ancestor`): the qualified source commit exists;
+  its tree equals the gate's recorded tree; the accepted artifact commit
+  (`ACCEPTED_TWIN_ARTIFACT_COMMIT = 0469b3b…`, a pinned accepted identity) is a
+  *proper* descendant of the source; and the checked HEAD descends from that
+  accepted artifact commit. Divergent siblings, rewritten/unrelated history, and
+  missing/shallow objects fail closed with distinct reason codes
+  (`QUALIFIED_COMMIT_UNAVAILABLE`, `QUALIFIED_TREE_MISMATCH`,
+  `ARTIFACT_COMMIT_UNAVAILABLE`, `ARTIFACT_NOT_PROPER_DESCENDANT_OF_SOURCE`,
+  `HEAD_NOT_DESCENDANT_OF_ARTIFACT`). L1-READY uses the same helper with no pinned
+  artifact commit, requiring HEAD to properly descend from the qualified source.
 - **Evidence rehashing** (Stage 0 and Stage 1) enumerates files from the *tree of
   the qualified ref* (`git ls-tree <ref>`), so digests reproduce from the
   qualified commit regardless of the current HEAD.

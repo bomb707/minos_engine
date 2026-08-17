@@ -24,6 +24,7 @@ from .evidence import FileDigest
 __all__ = [
     "GitUnavailableError",
     "is_git_repo",
+    "is_ancestor",
     "list_tracked",
     "is_tracked",
     "check_ignored",
@@ -80,6 +81,21 @@ def is_shallow(root: Path) -> bool:
     """True iff the repository is a shallow clone (incomplete history)."""
     proc = _run_text(root, ["rev-parse", "--is-shallow-repository"])
     return proc.returncode == 0 and proc.stdout.strip() == "true"
+
+
+def is_ancestor(root: Path, ancestor: str, descendant: str) -> bool:
+    """True iff ``ancestor`` is an ancestor of (or equal to) ``descendant``.
+
+    Uses ``git merge-base --is-ancestor``: exit 0 = ancestor (or equal), exit 1 =
+    not an ancestor, any other exit (e.g. a missing object in a shallow clone) is
+    treated as *not proven* and returns ``False`` — fail closed. Callers that need
+    to distinguish "missing object" from "genuinely not a descendant" should probe
+    :func:`object_exists` / :func:`is_shallow` first for a precise reason.
+    """
+    if not ancestor or not descendant:
+        return False
+    proc = _run_text(root, ["merge-base", "--is-ancestor", ancestor, descendant])
+    return proc.returncode == 0
 
 
 def commit_tree_sha(root: Path, commit_sha: str) -> str | None:
