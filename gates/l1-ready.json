@@ -1,0 +1,145 @@
+{
+  "created_at": "2026-08-17T12:37:02.375081+00:00",
+  "engine_git_sha": "3a6e60e66e16279808a5f3c8e60babee54ba64ca",
+  "evidence": [
+    {
+      "description": "reports/LAYER1_PREIMPLEMENTATION_AUDIT.md",
+      "kind": "file",
+      "path": "reports/LAYER1_PREIMPLEMENTATION_AUDIT.md",
+      "sha256": "b01bf1c4b569b76afd98e8cf5f7d372dd5a75ed305333ef61dce6b876d824c87",
+      "size_bytes": 21399
+    },
+    {
+      "description": "reports/LAYER1_REAL_BAM_REPORT.json",
+      "kind": "file",
+      "path": "reports/LAYER1_REAL_BAM_REPORT.json",
+      "sha256": "eaa33eb8a00eedc0c599f8d00448262a7692dfe20578ce75d2939a7a54a20370",
+      "size_bytes": 1508
+    },
+    {
+      "description": "gates/protocol-ready.json",
+      "kind": "file",
+      "path": "gates/protocol-ready.json",
+      "sha256": "edb57817829a4d4f7f359f12dd626d8333d07f505c8ef5349f22d79ff93d8cf9",
+      "size_bytes": 4022
+    },
+    {
+      "description": "gates/twin-ready.json",
+      "kind": "file",
+      "path": "gates/twin-ready.json",
+      "sha256": "2edffacdddeaf21125715be18b14e77947e063b8a29dfb2bd43b171a864cddde",
+      "size_bytes": 4198
+    },
+    {
+      "description": "src/minos_engine",
+      "kind": "directory",
+      "path": "src/minos_engine",
+      "sha256": "2bd0a92bd1823a11cac2c2c89108ed88cf3364c578f1cb65509db44dcee75654",
+      "size_bytes": null
+    },
+    {
+      "description": "schemas",
+      "kind": "directory",
+      "path": "schemas",
+      "sha256": "f79015c78444db4b387c1cd477a6a0aa3d91cda580191b0743b69f431eaaed3f",
+      "size_bytes": null
+    },
+    {
+      "description": "configs",
+      "kind": "directory",
+      "path": "configs",
+      "sha256": "c7bba4ae6fbe13765c92bdd62f4bf2bd933f1c3d02af7948387b438daeb63cef",
+      "size_bytes": null
+    },
+    {
+      "description": "tests",
+      "kind": "directory",
+      "path": "tests",
+      "sha256": "980d46b646879372d986c1ec216a4b895c9d93bcf41d676f0b86533beab46527",
+      "size_bytes": null
+    },
+    {
+      "description": "docs",
+      "kind": "directory",
+      "path": "docs",
+      "sha256": "9a9320d5087a42911f01a9ee21c544ed2542fea6a78b61a9c8e7171073552563",
+      "size_bytes": null
+    },
+    {
+      "description": ".github/workflows/ci.yml",
+      "kind": "file",
+      "path": ".github/workflows/ci.yml",
+      "sha256": "de37c5df72b1ea4d0d226393008f33318789535a25e0f606dd56a7f0ccd52c51",
+      "size_bytes": 3919
+    },
+    {
+      "description": "pyproject.toml",
+      "kind": "file",
+      "path": "pyproject.toml",
+      "sha256": "006c623cd570335c6a26ecacec8e71cfabb331507af0f1a7cc8724606fc590e7",
+      "size_bytes": 2026
+    },
+    {
+      "description": "Makefile",
+      "kind": "file",
+      "path": "Makefile",
+      "sha256": "6b211b7c071c392a9187aa5176335ac42768c9b6dcde961dd605937df78d49aa",
+      "size_bytes": 1448
+    }
+  ],
+  "gate_hash": "68baa4973188df5ffa773688820368f8c4545969dbfdd31fea324301cca1be73",
+  "gate_name": "L1-READY",
+  "input_hashes": {
+    "layer1_schema_hash": "cbb6efb28ad2c6a407c0658d0f2313df5b3cbae2cf0bbd364053aff62ac457a9",
+    "prerequisite_protocol_ready_gate_hash": "b9cda0bab329b36a0a62b4b7e9ba9b797fc22b46c1055f76db26b591311a1675",
+    "prerequisite_twin_ready_gate_hash": "3464fb7604fd6b18d9008bafa9e3cf1ad18d7d440d22806bbe043a11d3e9b22a",
+    "profiler_config_hash": "d01b8e7a9da8e31adad1b9cba17230506771a885256a67ec2e96c74a13c07670",
+    "profiler_version": "layer1-profiler-v1",
+    "python_runtime": "CPython 3.12",
+    "qualification_report_hash": "79cbca9e3958ebac15d797c0a67ded888035e8fd16c97e11df39757cdf73a146",
+    "real_bam_integration_report_hash": "f9345957f2ad70603049befbae8fc72a923f3f136d8c09db58ab6e6d09bf76dd",
+    "specification_manifest_hash": "29241c14bfbd072ed798ff3628dbea6d683c3251320604385f81fe0987e14843",
+    "synthetic_fixture_identity": "3914a6c58e38431e5c20dfbf3eb4121e34421919ddad0d52f230fdd19676d3d6"
+  },
+  "mandatory_checks": {
+    "all_tests_pass": true,
+    "coverage_threshold_met": true,
+    "evidence_hashes_complete": true,
+    "layer1_architecture_boundaries_verified": true,
+    "layer1_contracts_schema_valid": true,
+    "layer1_deadline_behavior_verified": true,
+    "layer1_determinism_verified": true,
+    "layer1_documentation_complete": true,
+    "layer1_feature_known_answers_pass": true,
+    "layer1_filter_policy_verified": true,
+    "layer1_hard_limit_met": true,
+    "layer1_input_validation_complete": true,
+    "layer1_memory_policy_verified": true,
+    "layer1_real_bam_qualified": true,
+    "layer1_reference_profiler_verified": true,
+    "layer1_truth_isolation_verified": true,
+    "layer2_blocked": true,
+    "mypy_pass": true,
+    "profile_schema_hash_match": true,
+    "profiler_config_hash_match": true,
+    "profiler_version_match": true,
+    "protocol_ready_evidence_verified": true,
+    "protocol_ready_identity_accepted": true,
+    "python_runtime_is_3_12": true,
+    "qualified_source_clean": true,
+    "qualified_source_present": true,
+    "required_source_tracked": true,
+    "ruff_check_pass": true,
+    "ruff_format_pass": true,
+    "tests_collected_nonzero": true,
+    "twin_ready_evidence_verified": true,
+    "twin_ready_identity_accepted": true,
+    "twin_ready_promotion_authorized": true,
+    "worktree_matches_head": true
+  },
+  "qualification_tool_version": "layer1-qualifier-v1",
+  "qualified_source_git_sha": "3a6e60e66e16279808a5f3c8e60babee54ba64ca",
+  "qualified_source_tree_sha": "3c5852932dda89b15916f5e9efcc9aea517683bc",
+  "schema_version": "gate-artifact-v1",
+  "status": "PASS"
+}
