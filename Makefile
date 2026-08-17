@@ -51,5 +51,8 @@ doctor:
 gate:
 	$(PY) scripts/build_protocol_ready_gate.py
 
+layer1-qualify:
+	$(PY) -m minos_engine.cli.main layer1 qualify --json
+
 stage0: lint fmt-check typecheck cov
 	@echo "Stage 0 checks complete."

@@ -11,9 +11,11 @@ from minos_engine.layer2.service import Layer2Service
 from minos_engine.schema_registry import validate_against
 
 
-def test_layer1_not_implemented():
-    with pytest.raises(StageNotReadyError):
-        Layer1Service().analyze(None)  # type: ignore[arg-type]
+def test_layer1_now_implemented():
+    # Layer 1 is implemented at this stage: the service exposes the real profiling
+    # entry point instead of raising StageNotReadyError.
+    assert hasattr(Layer1Service, "profile")
+    assert hasattr(Layer1Service, "analyze")
 
 
 def test_layer2_blocked():

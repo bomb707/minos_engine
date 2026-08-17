@@ -53,7 +53,8 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
             f"  upstream ident   : {report['provenance']['upstream_minos_identity_status']}",
             f"  scorer ident     : {report['provenance']['scorer_identity_status']}",
             f"  reference reg    : {report['reference_registry']['status']}",
-            f"  layer 1 ready    : {report['stage_gates']['layer1_ready']}",
+            f"  layer 1          : implemented ({report['layer1']['profiler_version']})",
+            f"  l1-ready gate    : {report['stage_gates']['l1_ready_gate_present']}",
             f"  layer 2 blocked  : {report['stage_gates']['layer2_blocked']}",
             f"  overall health   : {report['overall_health']}",
         ]
@@ -275,6 +276,11 @@ def build_parser() -> argparse.ArgumentParser:
     from .twin_commands import add_twin_subparser
 
     add_twin_subparser(sub)
+
+    from .layer1_commands import add_layer1_subparser, add_profile_command
+
+    add_layer1_subparser(sub)
+    add_profile_command(sub)
 
     return parser
 

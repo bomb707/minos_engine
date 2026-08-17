@@ -44,6 +44,31 @@ TWIN-READY reuses the git-tree-bound, two-commit machinery with Stage-1 specific
   `EVIDENCE_HASH_MISMATCH`) — a missing historical commit (shallow clone) is never
   reported as an untracked evidence file.
 
+## Layer 1 (L1-READY) qualification
+
+L1-READY reuses the git-tree-bound, two-commit machinery with Layer-1 specifics:
+
+- **Accepted prerequisites (pinned).** `layer1/prerequisites.py` pins the accepted
+  TWIN-READY identity (gate hash `3464fb76…`, source `e9263ef…`, tree `f84c0661…`)
+  and returns three separate results; the accepted PROTOCOL-READY prerequisite is
+  reused from Stage 1. A locally-regenerated TWIN-READY gate can never authorize
+  Layer 1.
+- **Two-tier qualification.** `synthetic_ci_qualified` (mandatory pysam fixtures in
+  CI) and `real_bam_qualified` (the committed `reports/LAYER1_REAL_BAM_REPORT.json`).
+  The gate cannot PASS with `layer1_real_bam_qualified=false` — a missing real BAM
+  yields HOLD, never a false PASS.
+- **Qualifier identity**: `layer1-qualifier-v1`. The gate records the profile schema
+  hash, profiler config hash, profiler version, both prerequisite gate hashes, the
+  real-BAM integration-report hash, and the synthetic fixture identity.
+- **Report/gate ordering.** The report is written first; the gate records the
+  report's sha256 (checked by the Layer 2 entry gate) and the report does not embed
+  the gate hash (no cycle). Evidence is the Commit-A Layer 1 source tree; the report
+  and gate are Commit B and are not evidence.
+- **Non-mutating check mode**: `minos-engine layer1 qualify --check` and
+  `minos-engine layer1 gate require-pass` verify a committed L1-READY gate
+  (integrity, required checks, Commit-A evidence, qualifier identity, both accepted
+  prerequisites, promotion, and Commit-B-descends-Commit-A) without regenerating it.
+
 ## Two-commit qualification (provenance)
 
 The gate must attest the *complete* source tree it qualifies. To avoid a gate

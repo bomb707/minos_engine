@@ -1,14 +1,85 @@
-# Layer 1 defaults (declared for structure; Layer 1 is NOT implemented in Stage 0).
-# Values mirror Layer 1 spec §3 so the config location is stable for Stage 2.
+# Layer 1 profiler configuration (Layer 1 spec §3). Versioned; the canonical
+# hash of the *semantic* values (below, excluding comments) is the
+# profiler_config_hash bound into every ProfileResult, ContextFingerprint, and
+# the L1-READY gate. Changing any value here changes the fingerprint by design.
 schema_version: layer1-config-v1
-implemented: false
+profiler_config_version: layer1-profiler-v1
+implemented: true
+
 window:
-  primary_bp: 100000
-  refinement_bp: 10000
+  primary_bp: 100000       # partition the exact interval; last window may be shorter
+  refinement_bp: 10000     # only full or selected primary windows
+
 budget:
-  soft_seconds: 180
-  hard_seconds: 300
+  soft_seconds: 180        # begin degradation before this boundary
+  hard_seconds: 300        # monotonic deadline; no stage may exceed it
+  serialization_reserve_seconds: 10  # kept back for atomic output writing
+
 pileup:
-  soft_seconds: 90
+  soft_seconds: 90         # estimated cost decides full vs adaptive
+  max_depth: 20000         # versioned cap; record columns reaching it, reduce confidence
+  stepper: samtools        # pinned pysam stepper (unit-tested)
+  min_base_quality: 0      # raw BAM-quality measurement; BAQ disabled
+  min_mapping_quality: 0
+  ignore_overlaps: true
+  compute_baq: false
+
 coverage:
-  overlap_policy: fragment_primary
+  overlap_policy: fragment_primary   # avoid overlapping-mate double count
+  count_deletions_in_depth: false    # deletions do not add base depth; recorded separately
+  depth_bins: [0, 5, 10, 20, 50, 100, 200]  # fixed edges; never inferred from the BAM
+  quantiles: [0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99]
+
+quantiles:
+  algorithm: exact_bounded_v1        # deterministic; same input/version -> same bytes
+  max_retained: 200000               # bounded reservoir cap before exact-sketch fallback
+
+filters:
+  min_mapping_quality: 0             # analysis-eligible MQ floor (MQ0 still tracked)
+  drop_secondary: true
+  drop_supplementary: true
+  drop_duplicate: true
+  drop_qcfail: true
+  drop_unmapped: true
+
+thresholds:
+  base_quality_low: 20               # BQ<20 fraction
+  mapping_quality_low: 20            # MQ<20 fraction
+  support: [2, 3, 5, 8, 10]          # per-position alt support curve
+  allele_fraction: [0.05, 0.10, 0.20, 0.30, 0.40]
+  median_alt_quality: [10, 20, 30]   # alt BQ/MQ curve
+
+reference:
+  homopolymer_min_run: 4             # minimal identical-base run length recorded
+  dinucleotide_min_run: 3            # minimal repeated 2-mer run length flagged
+  low_entropy_bits: 1.5              # window low-entropy stratum threshold
+
+sampling:
+  refinement_window_quota: 24        # deterministic max refined/pileup windows
+  per_stratum_quota: 4               # deterministic reserved quota per stratum
+  strata:
+    low_coverage_depth: 10
+    high_coverage_depth: 100
+    low_mq_fraction: 0.10
+    low_bq_fraction: 0.10
+    clipping_read_fraction: 0.10
+    nm_per_base: 0.02
+    indel_burden: 0.02
+    low_entropy_bits: 1.5
+    homopolymer_burden: 0.05
+
+confidence:
+  high_min: 0.90                     # HIGH >= 0.90
+  medium_min: 0.70                   # MEDIUM 0.70..0.90; LOW < 0.70
+
+cost_model:
+  # pred_seconds = exp(b0 + b1*log(region_bp) + b2*log(reads+1) + b3*mean_depth
+  #   + b4*max_depth_proxy + b5*clipping_rate + b6*cigar_complexity)
+  # Conservative rule-based coefficients; calibration deferred (audit UNAVAILABLE #1).
+  b0: -14.0
+  b1: 0.85
+  b2: 0.55
+  b3: 0.010
+  b4: 0.00002
+  b5: 1.2
+  b6: 0.8

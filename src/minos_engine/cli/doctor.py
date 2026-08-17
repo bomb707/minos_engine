@@ -27,6 +27,26 @@ def _l1_ready(gates_dir: Path) -> bool:
     return (gates_dir / "l1-ready.json").exists()
 
 
+def _layer2_blocked() -> bool:
+    from minos_engine.qualification.checks import layer2_blocked
+
+    return layer2_blocked()
+
+
+def _layer1_status() -> dict[str, Any]:
+    from minos_engine.layer1.config import load_layer1_config
+
+    cfg = load_layer1_config()
+    return {
+        "implemented": True,
+        "profiler_version": cfg.profiler_config_version,
+        "profiler_config_hash": cfg.config_hash,
+        "primary_window_bp": cfg.window.primary_bp,
+        "hard_limit_seconds": cfg.budget.hard_seconds,
+        "overlap_policy": cfg.coverage.overlap_policy,
+    }
+
+
 def build_doctor_report(
     *,
     settings: Settings | None = None,
@@ -94,9 +114,13 @@ def build_doctor_report(
             "contigs": list(ref.contigs()),
             "status": "populated" if ref.contigs() else "empty",
         },
+        "layer1": _layer1_status(),
         "stage_gates": {
-            "layer1_ready": l1_ready,
-            "layer2_blocked": not l1_ready,
+            # A present L1-READY gate is a prerequisite for Layer 2, but Layer 2 is
+            # blocked because it is not implemented (its service refuses), which is
+            # true regardless of whether the gate exists.
+            "l1_ready_gate_present": l1_ready,
+            "layer2_blocked": _layer2_blocked(),
         },
         "mandatory_checks": checks,
         "overall_health": overall,

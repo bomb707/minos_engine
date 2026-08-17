@@ -98,11 +98,12 @@ def required_identity_fails_closed() -> bool:
 
 
 def layer1_not_implemented() -> bool:
-    try:
-        Layer1Service().analyze(None)  # type: ignore[arg-type]
-    except StageNotReadyError:
-        return True
-    return False
+    # Stage marker used by the accepted Stage 0/Stage 1 gates (frozen ``True`` at
+    # their commits). Layer 1 is implemented at/after the Layer 1 stage, so the
+    # live value is now ``False`` — the service exposes the real profiling path
+    # (``profile``) instead of raising ``StageNotReadyError``. The accepted gates
+    # are re-verified by re-hashing their committed source and are unaffected.
+    return not hasattr(Layer1Service, "profile")
 
 
 def layer2_blocked() -> bool:

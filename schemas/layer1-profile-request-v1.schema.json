@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://minos.engine/schemas/layer1-profile-request-v1.schema.json",
+  "title": "Layer 1 ProfileRequest v1",
+  "additionalProperties": false,
+  "properties": {
+    "round_id": {
+      "minLength": 1,
+      "title": "Round Id",
+      "type": "string"
+    },
+    "bam_path": {
+      "minLength": 1,
+      "title": "Bam Path",
+      "type": "string"
+    },
+    "bai_path": {
+      "minLength": 1,
+      "title": "Bai Path",
+      "type": "string"
+    },
+    "reference_path": {
+      "minLength": 1,
+      "title": "Reference Path",
+      "type": "string"
+    },
+    "fai_path": {
+      "minLength": 1,
+      "title": "Fai Path",
+      "type": "string"
+    },
+    "region_source": {
+      "minLength": 1,
+      "title": "Region Source",
+      "type": "string"
+    },
+    "region_coordinate_convention": {
+      "minLength": 1,
+      "title": "Region Coordinate Convention",
+      "type": "string"
+    },
+    "budget_seconds": {
+      "exclusiveMinimum": 0,
+      "title": "Budget Seconds",
+      "type": "number"
+    },
+    "expected_hashes": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Expected Hashes"
+    },
+    "cpu_limit": {
+      "minimum": 1,
+      "title": "Cpu Limit",
+      "type": "integer"
+    },
+    "memory_limit_bytes": {
+      "exclusiveMinimum": 0,
+      "title": "Memory Limit Bytes",
+      "type": "integer"
+    },
+    "profiler_config_version": {
+      "minLength": 1,
+      "title": "Profiler Config Version",
+      "type": "string"
+    },
+    "profiler_config_hash": {
+      "minLength": 1,
+      "title": "Profiler Config Hash",
+      "type": "string"
+    }
+  },
+  "required": [
+    "round_id",
+    "bam_path",
+    "bai_path",
+    "reference_path",
+    "fai_path",
+    "region_source",
+    "region_coordinate_convention",
+    "budget_seconds",
+    "cpu_limit",
+    "memory_limit_bytes",
+    "profiler_config_version",
+    "profiler_config_hash"
+  ],
+  "type": "object"
+}

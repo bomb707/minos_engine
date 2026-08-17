@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://minos.engine/schemas/layer1-fingerprint-v1.schema.json",
+  "title": "Layer 1 ContextFingerprint v1",
+  "$defs": {
+    "FieldStatus": {
+      "enum": [
+        "available",
+        "unavailable"
+      ],
+      "title": "FieldStatus",
+      "type": "string"
+    },
+    "ProfileStatus": {
+      "enum": [
+        "COMPLETE",
+        "PARTIAL",
+        "FAILED"
+      ],
+      "title": "ProfileStatus",
+      "type": "string"
+    },
+    "Region": {
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "contig": {
+          "minLength": 1,
+          "title": "Contig",
+          "type": "string"
+        },
+        "start0": {
+          "minimum": 0,
+          "title": "Start0",
+          "type": "integer"
+        },
+        "end0_exclusive": {
+          "exclusiveMinimum": 0,
+          "title": "End0 Exclusive",
+          "type": "integer"
+        },
+        "length_bp": {
+          "exclusiveMinimum": 0,
+          "title": "Length Bp",
+          "type": "integer"
+        },
+        "source_coordinate_system": {
+          "minLength": 1,
+          "title": "Source Coordinate System",
+          "type": "string"
+        },
+        "verified": {
+          "title": "Verified",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "source",
+        "contig",
+        "start0",
+        "end0_exclusive",
+        "length_bp",
+        "source_coordinate_system",
+        "verified"
+      ],
+      "title": "Region",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Canonical Layer 1 identity \u2014 no paths, timestamps, runtime, or host state.",
+  "properties": {
+    "schema_version": {
+      "default": "layer1-fingerprint-v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "profile_schema_version": {
+      "minLength": 1,
+      "title": "Profile Schema Version",
+      "type": "string"
+    },
+    "profiler_algorithm_version": {
+      "minLength": 1,
+      "title": "Profiler Algorithm Version",
+      "type": "string"
+    },
+    "profiler_config_hash": {
+      "minLength": 1,
+      "title": "Profiler Config Hash",
+      "type": "string"
+    },
+    "bam_sha256": {
+      "maxLength": 64,
+      "minLength": 64,
+      "title": "Bam Sha256",
+      "type": "string"
+    },
+    "index_status": {
+      "$ref": "#/$defs/FieldStatus"
+    },
+    "index_sha256": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Index Sha256"
+    },
+    "reference_status": {
+      "$ref": "#/$defs/FieldStatus"
+    },
+    "reference_sha256": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reference Sha256"
+    },
+    "region": {
+      "$ref": "#/$defs/Region"
+    },
+    "sampling_plan_hash": {
+      "minLength": 1,
+      "title": "Sampling Plan Hash",
+      "type": "string"
+    },
+    "read_filter_policy_hash": {
+      "minLength": 1,
+      "title": "Read Filter Policy Hash",
+      "type": "string"
+    },
+    "completed_families": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Completed Families",
+      "type": "array"
+    },
+    "degradation_status": {
+      "$ref": "#/$defs/ProfileStatus"
+    },
+    "feature_values_hash": {
+      "minLength": 1,
+      "title": "Feature Values Hash",
+      "type": "string"
+    },
+    "fingerprint_hash": {
+      "default": "",
+      "title": "Fingerprint Hash",
+      "type": "string"
+    }
+  },
+  "required": [
+    "profile_schema_version",
+    "profiler_algorithm_version",
+    "profiler_config_hash",
+    "bam_sha256",
+    "index_status",
+    "reference_status",
+    "region",
+    "sampling_plan_hash",
+    "read_filter_policy_hash",
+    "completed_families",
+    "degradation_status",
+    "feature_values_hash"
+  ],
+  "type": "object"
+}

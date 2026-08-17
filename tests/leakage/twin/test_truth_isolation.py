@@ -71,14 +71,14 @@ def test_truth_sentinel_cannot_reach_production_contract():
             assert sentinel not in f.read_text(encoding="utf-8")
 
 
-def test_layer1_unimplemented_and_layer2_blocked():
+def test_layer1_implemented_and_layer2_blocked():
     import pytest
 
     from minos_engine.common.errors import StageNotReadyError
     from minos_engine.layer1.service import Layer1Service
     from minos_engine.layer2.service import Layer2Service
 
-    with pytest.raises(StageNotReadyError):
-        Layer1Service().analyze(None)  # type: ignore[arg-type]
+    # Layer 1 is implemented (real profiling entry point); Layer 2 remains blocked.
+    assert hasattr(Layer1Service, "profile")
     with pytest.raises(StageNotReadyError):
         Layer2Service().select_config(None)  # type: ignore[arg-type]

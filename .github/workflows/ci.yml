@@ -92,6 +92,17 @@ jobs:
       - name: Gate — TWIN-READY non-mutating check (Commit A evidence + descent)
         run: minos-engine twin qualify --check --gate gates/twin-ready.json --base-dir .
 
+      # Layer 1 uses synthetic pysam fixtures in CI; the external real BAM is a
+      # separate qualification input recorded in the committed integration report.
+      - name: CLI smoke — Layer 1 synthetic profile
+        run: python scripts/layer1_smoke.py
+
+      - name: Gate — L1-READY (accepted prerequisites + git-bound evidence)
+        run: minos-engine layer1 gate require-pass --gate gates/l1-ready.json --base-dir .
+
+      - name: Gate — L1-READY non-mutating check (Commit A evidence + descent)
+        run: minos-engine layer1 qualify --check --gate gates/l1-ready.json --base-dir .
+
       - name: Upload test & coverage reports
         if: always()
         uses: actions/upload-artifact@v4

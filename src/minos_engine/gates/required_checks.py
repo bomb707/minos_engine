@@ -79,17 +79,50 @@ REQUIRED_CHECKS: dict[str, frozenset[str]] = {
             "layer2_blocked",
         }
     ),
-    # Forward-looking: L1-READY is issued only in Stage 3. Defined here so the
-    # Layer 2 entry gate can require the complete set now; no L1-READY exists yet.
+    # L1-READY — complete fail-closed set for the Layer 1 qualification gate.
+    # Layer 2 remains blocked until a PASS L1-READY verifies through the entry gate.
     "L1-READY": frozenset(
         {
-            "all_tests_pass",
-            "determinism",
-            "truth_isolation",
-            "performance_hard_limit",
+            # Accepted prerequisites (Stage 0 + Stage 1 identities, git-bound).
+            "protocol_ready_identity_accepted",
+            "protocol_ready_evidence_verified",
+            "twin_ready_identity_accepted",
+            "twin_ready_evidence_verified",
+            "twin_ready_promotion_authorized",
+            "python_runtime_is_3_12",
+            # Layer 1 behavior.
+            "layer1_contracts_schema_valid",
+            "layer1_input_validation_complete",
+            "layer1_filter_policy_verified",
+            "layer1_feature_known_answers_pass",
+            "layer1_reference_profiler_verified",
+            "layer1_determinism_verified",
+            "layer1_truth_isolation_verified",
+            "layer1_architecture_boundaries_verified",
+            "layer1_deadline_behavior_verified",
+            "layer1_hard_limit_met",
+            "layer1_memory_policy_verified",
+            "layer1_real_bam_qualified",
+            # Identity binding.
             "profile_schema_hash_match",
             "profiler_config_hash_match",
             "profiler_version_match",
+            # Git-tree-bound source integrity.
+            "required_source_tracked",
+            "worktree_matches_head",
+            "evidence_hashes_complete",
+            "qualified_source_clean",
+            "qualified_source_present",
+            # Test + static analysis.
+            "tests_collected_nonzero",
+            "all_tests_pass",
+            "coverage_threshold_met",
+            "ruff_check_pass",
+            "ruff_format_pass",
+            "mypy_pass",
+            # Documentation + stage gating.
+            "layer1_documentation_complete",
+            "layer2_blocked",
         }
     ),
 }

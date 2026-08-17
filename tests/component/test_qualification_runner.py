@@ -64,14 +64,26 @@ def _assemble(**overrides):
     return assemble_result(REPO_ROOT, **kwargs)
 
 
-def test_assemble_pass_gate_on_clean_repo():
+def test_assemble_machinery_intact_after_stage_advance():
+    # We have advanced to the Layer 1 stage: rebuilding the Stage 0 gate at the
+    # live tree now REJECTs solely because the `layer1_not_implemented` stage
+    # marker has flipped to False. Every other required check still passes, which
+    # proves the qualifier machinery is intact. The accepted committed gate is
+    # unaffected (it is re-verified by re-hashing its committed source).
     result = _assemble()
     gate = result.gate
-    assert gate.status is GateStatus.PASS, [k for k, v in gate.mandatory_checks.items() if not v]
+    failing = [k for k, v in gate.mandatory_checks.items() if not v]
+    assert failing == ["layer1_not_implemented"], failing
+    assert gate.status is GateStatus.REJECT
     assert gate.qualified_source_git_sha == "a" * 40
-    assert gate.qualification_tool_version
     assert all(e.sha256 for e in gate.evidence)
     assert "PROTOCOL-READY" in result.report_markdown
+
+
+def test_accepted_protocol_ready_still_verifies():
+    from minos_engine.twin.prerequisites import verify_protocol_ready
+
+    assert verify_protocol_ready(REPO_ROOT).ok
 
 
 def test_assemble_reject_when_a_tool_fails():
@@ -141,7 +153,7 @@ def test_checks_on_real_repo():
     assert C.canonical_determinism()
     assert C.gatk_only_policy()
     assert C.required_identity_fails_closed()
-    assert C.layer1_not_implemented()
+    assert not C.layer1_not_implemented()  # Layer 1 is now implemented
     assert C.layer2_blocked()
     assert C.six_schemas_present(REPO_ROOT)
     assert C.documentation_complete(REPO_ROOT)

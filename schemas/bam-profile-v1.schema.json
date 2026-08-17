@@ -1,0 +1,1517 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://minos.engine/schemas/bam-profile-v1.schema.json",
+  "title": "BAM profile v1",
+  "$defs": {
+    "AlignmentMetrics": {
+      "additionalProperties": false,
+      "properties": {
+        "total_observed_alignments": {
+          "minimum": 0,
+          "title": "Total Observed Alignments",
+          "type": "integer"
+        },
+        "included_primary_alignments": {
+          "minimum": 0,
+          "title": "Included Primary Alignments",
+          "type": "integer"
+        },
+        "mapped_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Mapped Fraction",
+          "type": "number"
+        },
+        "unmapped_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Unmapped Fraction",
+          "type": "number"
+        },
+        "duplicate_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Duplicate Fraction",
+          "type": "number"
+        },
+        "secondary_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Secondary Fraction",
+          "type": "number"
+        },
+        "supplementary_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Supplementary Fraction",
+          "type": "number"
+        },
+        "qcfail_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Qcfail Fraction",
+          "type": "number"
+        },
+        "paired_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Paired Fraction",
+          "type": "number"
+        },
+        "proper_pair_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Proper Pair Fraction",
+          "type": "number"
+        },
+        "reverse_strand_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Reverse Strand Fraction",
+          "type": "number"
+        },
+        "mate_unmapped_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Mate Unmapped Fraction",
+          "type": "number"
+        }
+      },
+      "required": [
+        "total_observed_alignments",
+        "included_primary_alignments",
+        "mapped_fraction",
+        "unmapped_fraction",
+        "duplicate_fraction",
+        "secondary_fraction",
+        "supplementary_fraction",
+        "qcfail_fraction",
+        "paired_fraction",
+        "proper_pair_fraction",
+        "reverse_strand_fraction",
+        "mate_unmapped_fraction"
+      ],
+      "title": "AlignmentMetrics",
+      "type": "object"
+    },
+    "BamIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "bam_sha256": {
+          "maxLength": 64,
+          "minLength": 64,
+          "title": "Bam Sha256",
+          "type": "string"
+        },
+        "bam_size_bytes": {
+          "exclusiveMinimum": 0,
+          "title": "Bam Size Bytes",
+          "type": "integer"
+        },
+        "header_sha256": {
+          "maxLength": 64,
+          "minLength": 64,
+          "title": "Header Sha256",
+          "type": "string"
+        },
+        "index_status": {
+          "$ref": "#/$defs/FieldStatus"
+        },
+        "index_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Index Sha256"
+        },
+        "reference_status": {
+          "$ref": "#/$defs/FieldStatus"
+        },
+        "reference_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference Sha256"
+        },
+        "fai_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fai Sha256"
+        },
+        "verification_strength": {
+          "$ref": "#/$defs/VerificationStrength"
+        }
+      },
+      "required": [
+        "bam_sha256",
+        "bam_size_bytes",
+        "header_sha256",
+        "index_status",
+        "reference_status",
+        "verification_strength"
+      ],
+      "title": "BamIdentity",
+      "type": "object"
+    },
+    "BaseQualityMetrics": {
+      "additionalProperties": false,
+      "properties": {
+        "bases_observed": {
+          "minimum": 0,
+          "title": "Bases Observed",
+          "type": "integer"
+        },
+        "bases_with_quality": {
+          "minimum": 0,
+          "title": "Bases With Quality",
+          "type": "integer"
+        },
+        "mean_base_quality_phred": {
+          "minimum": 0.0,
+          "title": "Mean Base Quality Phred",
+          "type": "number"
+        },
+        "stddev_base_quality_phred": {
+          "minimum": 0.0,
+          "title": "Stddev Base Quality Phred",
+          "type": "number"
+        },
+        "quantiles_phred": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Quantiles Phred",
+          "type": "object"
+        },
+        "bq_lt20_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Bq Lt20 Fraction",
+          "type": "number"
+        },
+        "missing_quality_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Missing Quality Fraction",
+          "type": "number"
+        }
+      },
+      "required": [
+        "bases_observed",
+        "bases_with_quality",
+        "mean_base_quality_phred",
+        "stddev_base_quality_phred",
+        "quantiles_phred",
+        "bq_lt20_fraction",
+        "missing_quality_fraction"
+      ],
+      "title": "BaseQualityMetrics",
+      "type": "object"
+    },
+    "CigarMetrics": {
+      "additionalProperties": false,
+      "properties": {
+        "aligned_query_bases": {
+          "minimum": 0,
+          "title": "Aligned Query Bases",
+          "type": "integer"
+        },
+        "soft_clipped_bases": {
+          "minimum": 0,
+          "title": "Soft Clipped Bases",
+          "type": "integer"
+        },
+        "hard_clipped_bases": {
+          "minimum": 0,
+          "title": "Hard Clipped Bases",
+          "type": "integer"
+        },
+        "inserted_bases": {
+          "minimum": 0,
+          "title": "Inserted Bases",
+          "type": "integer"
+        },
+        "deleted_bases": {
+          "minimum": 0,
+          "title": "Deleted Bases",
+          "type": "integer"
+        },
+        "skipped_bases": {
+          "minimum": 0,
+          "title": "Skipped Bases",
+          "type": "integer"
+        },
+        "query_consuming_bases": {
+          "minimum": 0,
+          "title": "Query Consuming Bases",
+          "type": "integer"
+        },
+        "soft_clipped_read_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Soft Clipped Read Fraction",
+          "type": "number"
+        },
+        "soft_clipped_base_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Soft Clipped Base Fraction",
+          "type": "number"
+        },
+        "indel_bearing_read_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Indel Bearing Read Fraction",
+          "type": "number"
+        },
+        "nm_per_aligned_base": {
+          "minimum": 0.0,
+          "title": "Nm Per Aligned Base",
+          "type": "number"
+        },
+        "nm_availability_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Nm Availability Fraction",
+          "type": "number"
+        },
+        "cigar_ins_del_burden": {
+          "minimum": 0.0,
+          "title": "Cigar Ins Del Burden",
+          "type": "number"
+        }
+      },
+      "required": [
+        "aligned_query_bases",
+        "soft_clipped_bases",
+        "hard_clipped_bases",
+        "inserted_bases",
+        "deleted_bases",
+        "skipped_bases",
+        "query_consuming_bases",
+        "soft_clipped_read_fraction",
+        "soft_clipped_base_fraction",
+        "indel_bearing_read_fraction",
+        "nm_per_aligned_base",
+        "nm_availability_fraction",
+        "cigar_ins_del_burden"
+      ],
+      "title": "CigarMetrics",
+      "type": "object"
+    },
+    "CompletionReport": {
+      "additionalProperties": false,
+      "properties": {
+        "completed_families": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Completed Families",
+          "type": "array"
+        },
+        "variant_evidence_completion": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Variant Evidence Completion",
+          "type": "number"
+        },
+        "status": {
+          "$ref": "#/$defs/ProfileStatus"
+        }
+      },
+      "required": [
+        "completed_families",
+        "variant_evidence_completion",
+        "status"
+      ],
+      "title": "CompletionReport",
+      "type": "object"
+    },
+    "ConfidenceReport": {
+      "additionalProperties": false,
+      "properties": {
+        "integrity": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Integrity",
+          "type": "number"
+        },
+        "completeness": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Completeness",
+          "type": "number"
+        },
+        "availability": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Availability",
+          "type": "number"
+        },
+        "consistency": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Consistency",
+          "type": "number"
+        },
+        "overall": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Overall",
+          "type": "number"
+        },
+        "band": {
+          "minLength": 1,
+          "title": "Band",
+          "type": "string"
+        }
+      },
+      "required": [
+        "integrity",
+        "completeness",
+        "availability",
+        "consistency",
+        "overall",
+        "band"
+      ],
+      "title": "ConfidenceReport",
+      "type": "object"
+    },
+    "CoverageMetrics": {
+      "additionalProperties": false,
+      "properties": {
+        "fragment_primary": {
+          "$ref": "#/$defs/CoverageView"
+        },
+        "duplicate_including": {
+          "$ref": "#/$defs/CoverageView"
+        },
+        "deletion_aware_depth_recorded_separately": {
+          "default": true,
+          "title": "Deletion Aware Depth Recorded Separately",
+          "type": "boolean"
+        },
+        "eligible_region_bases": {
+          "minimum": 0,
+          "title": "Eligible Region Bases",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "fragment_primary",
+        "duplicate_including",
+        "eligible_region_bases"
+      ],
+      "title": "CoverageMetrics",
+      "type": "object"
+    },
+    "CoverageView": {
+      "additionalProperties": false,
+      "properties": {
+        "view_name": {
+          "minLength": 1,
+          "title": "View Name",
+          "type": "string"
+        },
+        "depth_semantics": {
+          "minLength": 1,
+          "title": "Depth Semantics",
+          "type": "string"
+        },
+        "mean_depth_reads_per_base": {
+          "minimum": 0.0,
+          "title": "Mean Depth Reads Per Base",
+          "type": "number"
+        },
+        "median_depth_reads_per_base": {
+          "minimum": 0.0,
+          "title": "Median Depth Reads Per Base",
+          "type": "number"
+        },
+        "stddev_depth": {
+          "minimum": 0.0,
+          "title": "Stddev Depth",
+          "type": "number"
+        },
+        "coefficient_of_variation": {
+          "minimum": 0.0,
+          "title": "Coefficient Of Variation",
+          "type": "number"
+        },
+        "depth_mad": {
+          "minimum": 0.0,
+          "title": "Depth Mad",
+          "type": "number"
+        },
+        "max_depth": {
+          "minimum": 0,
+          "title": "Max Depth",
+          "type": "integer"
+        },
+        "zero_depth_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Zero Depth Fraction",
+          "type": "number"
+        },
+        "depth_lt5_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Depth Lt5 Fraction",
+          "type": "number"
+        },
+        "depth_lt10_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Depth Lt10 Fraction",
+          "type": "number"
+        },
+        "depth_lt20_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Depth Lt20 Fraction",
+          "type": "number"
+        },
+        "depth_gt50_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Depth Gt50 Fraction",
+          "type": "number"
+        },
+        "depth_gt100_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Depth Gt100 Fraction",
+          "type": "number"
+        },
+        "depth_gt200_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Depth Gt200 Fraction",
+          "type": "number"
+        },
+        "callable_base_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Callable Base Fraction",
+          "type": "number"
+        },
+        "depth_quantiles": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Depth Quantiles",
+          "type": "object"
+        }
+      },
+      "required": [
+        "view_name",
+        "depth_semantics",
+        "mean_depth_reads_per_base",
+        "median_depth_reads_per_base",
+        "stddev_depth",
+        "coefficient_of_variation",
+        "depth_mad",
+        "max_depth",
+        "zero_depth_fraction",
+        "depth_lt5_fraction",
+        "depth_lt10_fraction",
+        "depth_lt20_fraction",
+        "depth_gt50_fraction",
+        "depth_gt100_fraction",
+        "depth_gt200_fraction",
+        "callable_base_fraction",
+        "depth_quantiles"
+      ],
+      "title": "CoverageView",
+      "type": "object"
+    },
+    "DegradationRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "stage": {
+          "$ref": "#/$defs/DegradationStage"
+        },
+        "reason": {
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "trigger": {
+          "minLength": 1,
+          "title": "Trigger",
+          "type": "string"
+        },
+        "omitted_features": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Omitted Features",
+          "type": "array"
+        },
+        "completed_features": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Completed Features",
+          "type": "array"
+        },
+        "elapsed_seconds": {
+          "minimum": 0.0,
+          "title": "Elapsed Seconds",
+          "type": "number"
+        },
+        "remaining_seconds": {
+          "title": "Remaining Seconds",
+          "type": "number"
+        },
+        "usable": {
+          "title": "Usable",
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/$defs/ProfileStatus"
+        }
+      },
+      "required": [
+        "stage",
+        "reason",
+        "trigger",
+        "omitted_features",
+        "completed_features",
+        "elapsed_seconds",
+        "remaining_seconds",
+        "usable",
+        "status"
+      ],
+      "title": "DegradationRecord",
+      "type": "object"
+    },
+    "DegradationStage": {
+      "enum": [
+        "FULL",
+        "REDUCED_PILEUP",
+        "REDUCED_WINDOWS",
+        "CORE_ONLY"
+      ],
+      "title": "DegradationStage",
+      "type": "string"
+    },
+    "DifficultyVector": {
+      "additionalProperties": false,
+      "description": "Descriptive, versioned, monotonic risk transforms. Never a GATK recommendation.",
+      "properties": {
+        "transform_version": {
+          "minLength": 1,
+          "title": "Transform Version",
+          "type": "string"
+        },
+        "mapping_risk": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Mapping Risk",
+          "type": "number"
+        },
+        "coverage_risk": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Coverage Risk",
+          "type": "number"
+        },
+        "base_quality_risk": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Base Quality Risk",
+          "type": "number"
+        },
+        "complexity_risk": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Complexity Risk",
+          "type": "number"
+        },
+        "reference_context_risk": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Reference Context Risk",
+          "type": "number"
+        }
+      },
+      "required": [
+        "transform_version",
+        "mapping_risk",
+        "coverage_risk",
+        "base_quality_risk",
+        "complexity_risk",
+        "reference_context_risk"
+      ],
+      "title": "DifficultyVector",
+      "type": "object"
+    },
+    "FieldStatus": {
+      "enum": [
+        "available",
+        "unavailable"
+      ],
+      "title": "FieldStatus",
+      "type": "string"
+    },
+    "FilterCounts": {
+      "additionalProperties": false,
+      "description": "Mutually-exclusive read accounting: observed = included + \u03a3 excluded.",
+      "properties": {
+        "observed": {
+          "minimum": 0,
+          "title": "Observed",
+          "type": "integer"
+        },
+        "included": {
+          "minimum": 0,
+          "title": "Included",
+          "type": "integer"
+        },
+        "excluded_unmapped": {
+          "minimum": 0,
+          "title": "Excluded Unmapped",
+          "type": "integer"
+        },
+        "excluded_secondary": {
+          "minimum": 0,
+          "title": "Excluded Secondary",
+          "type": "integer"
+        },
+        "excluded_supplementary": {
+          "minimum": 0,
+          "title": "Excluded Supplementary",
+          "type": "integer"
+        },
+        "excluded_duplicate": {
+          "minimum": 0,
+          "title": "Excluded Duplicate",
+          "type": "integer"
+        },
+        "excluded_qcfail": {
+          "minimum": 0,
+          "title": "Excluded Qcfail",
+          "type": "integer"
+        },
+        "excluded_below_mapq": {
+          "minimum": 0,
+          "title": "Excluded Below Mapq",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "observed",
+        "included",
+        "excluded_unmapped",
+        "excluded_secondary",
+        "excluded_supplementary",
+        "excluded_duplicate",
+        "excluded_qcfail",
+        "excluded_below_mapq"
+      ],
+      "title": "FilterCounts",
+      "type": "object"
+    },
+    "FragmentMetrics": {
+      "additionalProperties": false,
+      "properties": {
+        "eligible_pair_count": {
+          "minimum": 0,
+          "title": "Eligible Pair Count",
+          "type": "integer"
+        },
+        "template_length_policy": {
+          "minLength": 1,
+          "title": "Template Length Policy",
+          "type": "string"
+        },
+        "mean_insert_size_bp": {
+          "minimum": 0.0,
+          "title": "Mean Insert Size Bp",
+          "type": "number"
+        },
+        "stddev_insert_size_bp": {
+          "minimum": 0.0,
+          "title": "Stddev Insert Size Bp",
+          "type": "number"
+        },
+        "insert_size_mad_bp": {
+          "minimum": 0.0,
+          "title": "Insert Size Mad Bp",
+          "type": "number"
+        },
+        "quantiles_bp": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Quantiles Bp",
+          "type": "object"
+        },
+        "overlapping_mate_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Overlapping Mate Fraction",
+          "type": "number"
+        },
+        "abnormal_pair_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Abnormal Pair Fraction",
+          "type": "number"
+        }
+      },
+      "required": [
+        "eligible_pair_count",
+        "template_length_policy",
+        "mean_insert_size_bp",
+        "stddev_insert_size_bp",
+        "insert_size_mad_bp",
+        "quantiles_bp",
+        "overlapping_mate_fraction",
+        "abnormal_pair_fraction"
+      ],
+      "title": "FragmentMetrics",
+      "type": "object"
+    },
+    "HeaderSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "hd_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hd Version"
+        },
+        "sort_order": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sort Order"
+        },
+        "contigs": {
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "type": "array"
+          },
+          "title": "Contigs",
+          "type": "array"
+        },
+        "read_group_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Read Group Ids",
+          "type": "array"
+        },
+        "sample_names": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Sample Names",
+          "type": "array"
+        },
+        "library_names": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Library Names",
+          "type": "array"
+        },
+        "platform_values": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Platform Values",
+          "type": "array"
+        },
+        "program_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Program Ids",
+          "type": "array"
+        },
+        "coordinate_sorted": {
+          "title": "Coordinate Sorted",
+          "type": "boolean"
+        },
+        "has_nm_tag_observed": {
+          "title": "Has Nm Tag Observed",
+          "type": "boolean"
+        },
+        "has_md_tag_observed": {
+          "title": "Has Md Tag Observed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "contigs",
+        "read_group_ids",
+        "sample_names",
+        "library_names",
+        "platform_values",
+        "program_ids",
+        "coordinate_sorted",
+        "has_nm_tag_observed",
+        "has_md_tag_observed"
+      ],
+      "title": "HeaderSummary",
+      "type": "object"
+    },
+    "MappingQualityMetrics": {
+      "additionalProperties": false,
+      "properties": {
+        "count": {
+          "minimum": 0,
+          "title": "Count",
+          "type": "integer"
+        },
+        "mean": {
+          "minimum": 0.0,
+          "title": "Mean",
+          "type": "number"
+        },
+        "stddev": {
+          "minimum": 0.0,
+          "title": "Stddev",
+          "type": "number"
+        },
+        "minimum": {
+          "minimum": 0.0,
+          "title": "Minimum",
+          "type": "number"
+        },
+        "maximum": {
+          "minimum": 0.0,
+          "title": "Maximum",
+          "type": "number"
+        },
+        "quantiles": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Quantiles",
+          "type": "object"
+        },
+        "mean_mapping_quality_phred": {
+          "minimum": 0.0,
+          "title": "Mean Mapping Quality Phred",
+          "type": "number"
+        },
+        "mq0_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Mq0 Fraction",
+          "type": "number"
+        },
+        "mq_lt20_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Mq Lt20 Fraction",
+          "type": "number"
+        }
+      },
+      "required": [
+        "count",
+        "mean",
+        "stddev",
+        "minimum",
+        "maximum",
+        "quantiles",
+        "mean_mapping_quality_phred",
+        "mq0_fraction",
+        "mq_lt20_fraction"
+      ],
+      "title": "MappingQualityMetrics",
+      "type": "object"
+    },
+    "PileupMode": {
+      "enum": [
+        "FULL",
+        "ADAPTIVE",
+        "SKIPPED"
+      ],
+      "title": "PileupMode",
+      "type": "string"
+    },
+    "ProfileStatus": {
+      "enum": [
+        "COMPLETE",
+        "PARTIAL",
+        "FAILED"
+      ],
+      "title": "ProfileStatus",
+      "type": "string"
+    },
+    "ProfilerProvenance": {
+      "additionalProperties": false,
+      "properties": {
+        "profiler_version": {
+          "minLength": 1,
+          "title": "Profiler Version",
+          "type": "string"
+        },
+        "config_version": {
+          "minLength": 1,
+          "title": "Config Version",
+          "type": "string"
+        },
+        "config_hash": {
+          "minLength": 1,
+          "title": "Config Hash",
+          "type": "string"
+        },
+        "pysam_version": {
+          "minLength": 1,
+          "title": "Pysam Version",
+          "type": "string"
+        },
+        "schema_version": {
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "profiler_version",
+        "config_version",
+        "config_hash",
+        "pysam_version",
+        "schema_version"
+      ],
+      "title": "ProfilerProvenance",
+      "type": "object"
+    },
+    "ReadLengthMetrics": {
+      "additionalProperties": false,
+      "properties": {
+        "count": {
+          "minimum": 0,
+          "title": "Count",
+          "type": "integer"
+        },
+        "mean": {
+          "minimum": 0.0,
+          "title": "Mean",
+          "type": "number"
+        },
+        "stddev": {
+          "minimum": 0.0,
+          "title": "Stddev",
+          "type": "number"
+        },
+        "minimum": {
+          "minimum": 0.0,
+          "title": "Minimum",
+          "type": "number"
+        },
+        "maximum": {
+          "minimum": 0.0,
+          "title": "Maximum",
+          "type": "number"
+        },
+        "quantiles": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Quantiles",
+          "type": "object"
+        },
+        "variable_read_length": {
+          "title": "Variable Read Length",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "count",
+        "mean",
+        "stddev",
+        "minimum",
+        "maximum",
+        "quantiles",
+        "variable_read_length"
+      ],
+      "title": "ReadLengthMetrics",
+      "type": "object"
+    },
+    "ReferenceContextMetrics": {
+      "additionalProperties": false,
+      "properties": {
+        "gc_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Gc Fraction",
+          "type": "number"
+        },
+        "n_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "N Fraction",
+          "type": "number"
+        },
+        "entropy_bits": {
+          "minimum": 0.0,
+          "title": "Entropy Bits",
+          "type": "number"
+        },
+        "homopolymer_base_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Homopolymer Base Fraction",
+          "type": "number"
+        },
+        "homopolymer_length_histogram": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Homopolymer Length Histogram",
+          "type": "object"
+        },
+        "dinucleotide_repeat_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Dinucleotide Repeat Fraction",
+          "type": "number"
+        },
+        "ambiguous_reference_excluded": {
+          "title": "Ambiguous Reference Excluded",
+          "type": "boolean"
+        },
+        "reference_available": {
+          "title": "Reference Available",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "gc_fraction",
+        "n_fraction",
+        "entropy_bits",
+        "homopolymer_base_fraction",
+        "homopolymer_length_histogram",
+        "dinucleotide_repeat_fraction",
+        "ambiguous_reference_excluded",
+        "reference_available"
+      ],
+      "title": "ReferenceContextMetrics",
+      "type": "object"
+    },
+    "Region": {
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "contig": {
+          "minLength": 1,
+          "title": "Contig",
+          "type": "string"
+        },
+        "start0": {
+          "minimum": 0,
+          "title": "Start0",
+          "type": "integer"
+        },
+        "end0_exclusive": {
+          "exclusiveMinimum": 0,
+          "title": "End0 Exclusive",
+          "type": "integer"
+        },
+        "length_bp": {
+          "exclusiveMinimum": 0,
+          "title": "Length Bp",
+          "type": "integer"
+        },
+        "source_coordinate_system": {
+          "minLength": 1,
+          "title": "Source Coordinate System",
+          "type": "string"
+        },
+        "verified": {
+          "title": "Verified",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "source",
+        "contig",
+        "start0",
+        "end0_exclusive",
+        "length_bp",
+        "source_coordinate_system",
+        "verified"
+      ],
+      "title": "Region",
+      "type": "object"
+    },
+    "RuntimeComplexity": {
+      "additionalProperties": false,
+      "properties": {
+        "predicted_pileup_seconds": {
+          "minimum": 0.0,
+          "title": "Predicted Pileup Seconds",
+          "type": "number"
+        },
+        "actual_pileup_seconds": {
+          "minimum": 0.0,
+          "title": "Actual Pileup Seconds",
+          "type": "number"
+        },
+        "chosen_pileup_mode": {
+          "$ref": "#/$defs/PileupMode"
+        }
+      },
+      "required": [
+        "predicted_pileup_seconds",
+        "actual_pileup_seconds",
+        "chosen_pileup_mode"
+      ],
+      "title": "RuntimeComplexity",
+      "type": "object"
+    },
+    "SpatialMetrics": {
+      "additionalProperties": false,
+      "properties": {
+        "primary_window_count": {
+          "minimum": 0,
+          "title": "Primary Window Count",
+          "type": "integer"
+        },
+        "refined_window_count": {
+          "minimum": 0,
+          "title": "Refined Window Count",
+          "type": "integer"
+        },
+        "sampled_window_count": {
+          "minimum": 0,
+          "title": "Sampled Window Count",
+          "type": "integer"
+        },
+        "analyzed_bases": {
+          "minimum": 0,
+          "title": "Analyzed Bases",
+          "type": "integer"
+        },
+        "interval_fraction_analyzed": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Interval Fraction Analyzed",
+          "type": "number"
+        },
+        "stratum_window_counts": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Stratum Window Counts",
+          "type": "object"
+        },
+        "sampling_uncertainty": {
+          "minimum": 0.0,
+          "title": "Sampling Uncertainty",
+          "type": "number"
+        }
+      },
+      "required": [
+        "primary_window_count",
+        "refined_window_count",
+        "sampled_window_count",
+        "analyzed_bases",
+        "interval_fraction_analyzed",
+        "stratum_window_counts",
+        "sampling_uncertainty"
+      ],
+      "title": "SpatialMetrics",
+      "type": "object"
+    },
+    "StageTiming": {
+      "additionalProperties": false,
+      "description": "Operational timing \u2014 NOT part of content identity (excluded from fingerprint).",
+      "properties": {
+        "stage": {
+          "minLength": 1,
+          "title": "Stage",
+          "type": "string"
+        },
+        "elapsed_seconds": {
+          "minimum": 0.0,
+          "title": "Elapsed Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "stage",
+        "elapsed_seconds"
+      ],
+      "title": "StageTiming",
+      "type": "object"
+    },
+    "VariantEvidenceMetrics": {
+      "additionalProperties": false,
+      "properties": {
+        "analyzed_callable_bases": {
+          "minimum": 0,
+          "title": "Analyzed Callable Bases",
+          "type": "integer"
+        },
+        "eligible_region_bases": {
+          "minimum": 0,
+          "title": "Eligible Region Bases",
+          "type": "integer"
+        },
+        "mismatch_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Mismatch Fraction",
+          "type": "number"
+        },
+        "candidate_snp_density_per_base": {
+          "minimum": 0.0,
+          "title": "Candidate Snp Density Per Base",
+          "type": "number"
+        },
+        "candidate_insertion_density_per_base": {
+          "minimum": 0.0,
+          "title": "Candidate Insertion Density Per Base",
+          "type": "number"
+        },
+        "candidate_deletion_density_per_base": {
+          "minimum": 0.0,
+          "title": "Candidate Deletion Density Per Base",
+          "type": "number"
+        },
+        "support_threshold_site_counts": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Support Threshold Site Counts",
+          "type": "object"
+        },
+        "allele_fraction_threshold_site_counts": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Allele Fraction Threshold Site Counts",
+          "type": "object"
+        },
+        "forward_alt_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Forward Alt Fraction",
+          "type": "number"
+        },
+        "reverse_alt_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Reverse Alt Fraction",
+          "type": "number"
+        },
+        "low_quality_alt_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Low Quality Alt Fraction",
+          "type": "number"
+        },
+        "columns_reaching_max_depth": {
+          "minimum": 0,
+          "title": "Columns Reaching Max Depth",
+          "type": "integer"
+        },
+        "max_depth_capped_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Max Depth Capped Fraction",
+          "type": "number"
+        }
+      },
+      "required": [
+        "analyzed_callable_bases",
+        "eligible_region_bases",
+        "mismatch_fraction",
+        "candidate_snp_density_per_base",
+        "candidate_insertion_density_per_base",
+        "candidate_deletion_density_per_base",
+        "support_threshold_site_counts",
+        "allele_fraction_threshold_site_counts",
+        "forward_alt_fraction",
+        "reverse_alt_fraction",
+        "low_quality_alt_fraction",
+        "columns_reaching_max_depth",
+        "max_depth_capped_fraction"
+      ],
+      "title": "VariantEvidenceMetrics",
+      "type": "object"
+    },
+    "VerificationStrength": {
+      "enum": [
+        "content_hash_and_fetch",
+        "fetch_only",
+        "declared_digest"
+      ],
+      "title": "VerificationStrength",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "default": "bam-profile-v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "profile_id": {
+      "minLength": 1,
+      "title": "Profile Id",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/ProfileStatus"
+    },
+    "provenance": {
+      "$ref": "#/$defs/ProfilerProvenance"
+    },
+    "identity": {
+      "$ref": "#/$defs/BamIdentity"
+    },
+    "region": {
+      "$ref": "#/$defs/Region"
+    },
+    "header": {
+      "$ref": "#/$defs/HeaderSummary"
+    },
+    "filter_counts": {
+      "$ref": "#/$defs/FilterCounts"
+    },
+    "reads": {
+      "$ref": "#/$defs/AlignmentMetrics"
+    },
+    "coverage": {
+      "$ref": "#/$defs/CoverageMetrics"
+    },
+    "mapping_quality": {
+      "$ref": "#/$defs/MappingQualityMetrics"
+    },
+    "base_quality": {
+      "$ref": "#/$defs/BaseQualityMetrics"
+    },
+    "read_length": {
+      "$ref": "#/$defs/ReadLengthMetrics"
+    },
+    "pairing": {
+      "$ref": "#/$defs/FragmentMetrics"
+    },
+    "alignment": {
+      "$ref": "#/$defs/CigarMetrics"
+    },
+    "variant_evidence": {
+      "$ref": "#/$defs/VariantEvidenceMetrics"
+    },
+    "reference_context": {
+      "$ref": "#/$defs/ReferenceContextMetrics"
+    },
+    "spatial": {
+      "$ref": "#/$defs/SpatialMetrics"
+    },
+    "difficulty": {
+      "$ref": "#/$defs/DifficultyVector"
+    },
+    "runtime_complexity": {
+      "$ref": "#/$defs/RuntimeComplexity"
+    },
+    "confidence": {
+      "$ref": "#/$defs/ConfidenceReport"
+    },
+    "completion": {
+      "$ref": "#/$defs/CompletionReport"
+    },
+    "stage_timings": {
+      "items": {
+        "$ref": "#/$defs/StageTiming"
+      },
+      "title": "Stage Timings",
+      "type": "array"
+    },
+    "degradation": {
+      "items": {
+        "$ref": "#/$defs/DegradationRecord"
+      },
+      "title": "Degradation",
+      "type": "array"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
+    }
+  },
+  "required": [
+    "profile_id",
+    "status",
+    "provenance",
+    "identity",
+    "region",
+    "header",
+    "filter_counts",
+    "reads",
+    "coverage",
+    "mapping_quality",
+    "base_quality",
+    "read_length",
+    "pairing",
+    "alignment",
+    "variant_evidence",
+    "reference_context",
+    "spatial",
+    "difficulty",
+    "runtime_complexity",
+    "confidence",
+    "completion",
+    "stage_timings",
+    "degradation",
+    "warnings"
+  ],
+  "type": "object"
+}

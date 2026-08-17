@@ -64,16 +64,31 @@ def _assemble(**over):
     return assemble_twin_result(REPO_ROOT, **kw)
 
 
-def test_twin_qualification_pass_on_clean_repo():
+def test_twin_qualification_machinery_intact_after_stage_advance():
+    # We have advanced to the Layer 1 stage: rebuilding TWIN-READY at the live
+    # tree now REJECTs solely because `layer1_not_implemented` flipped to False.
+    # Every other required check still passes. The accepted committed TWIN-READY
+    # gate is unaffected (re-verified by re-hashing its committed source).
     result = _assemble()
     gate = result.gate
-    assert gate.status is GateStatus.PASS, [k for k, v in gate.mandatory_checks.items() if not v]
+    failing = [k for k, v in gate.mandatory_checks.items() if not v]
+    assert failing == ["layer1_not_implemented"], failing
+    assert gate.status is GateStatus.REJECT
     assert gate.gate_name == "TWIN-READY"
     assert gate.qualification_tool_version == STAGE1_TWIN_QUALIFIER_VERSION
     assert gate.input_hashes["declared_parity_level"] == "FIXTURE_REPLAY"
     assert gate.input_hashes["prerequisite_protocol_ready_gate_hash"].startswith("b9cda0ba")
     assert gate.mandatory_checks["protocol_ready_identity_accepted"] is True
     assert gate.mandatory_checks["protocol_ready_evidence_verified"] is True
+
+
+def test_accepted_twin_ready_still_verifies():
+    from minos_engine.qualification.twin_runner import verify_twin_ready
+
+    v = verify_twin_ready(
+        REPO_ROOT, REPO_ROOT / "gates" / "twin-ready.json", require_descends=False
+    )
+    assert v.ok, v.reasons
 
 
 def test_gate_records_python_runtime():

@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://minos.engine/schemas/window-profile-v1.schema.json",
+  "title": "Window profile row v1",
+  "additionalProperties": false,
+  "properties": {
+    "profile_id": {
+      "minLength": 1,
+      "title": "Profile Id",
+      "type": "string"
+    },
+    "window_id": {
+      "minimum": 0,
+      "title": "Window Id",
+      "type": "integer"
+    },
+    "contig": {
+      "minLength": 1,
+      "title": "Contig",
+      "type": "string"
+    },
+    "start0": {
+      "minimum": 0,
+      "title": "Start0",
+      "type": "integer"
+    },
+    "end0": {
+      "exclusiveMinimum": 0,
+      "title": "End0",
+      "type": "integer"
+    },
+    "length_bp": {
+      "exclusiveMinimum": 0,
+      "title": "Length Bp",
+      "type": "integer"
+    },
+    "stratum": {
+      "minLength": 1,
+      "title": "Stratum",
+      "type": "string"
+    },
+    "read_count": {
+      "minimum": 0,
+      "title": "Read Count",
+      "type": "integer"
+    },
+    "depth_mean_reads_per_base": {
+      "minimum": 0.0,
+      "title": "Depth Mean Reads Per Base",
+      "type": "number"
+    },
+    "depth_median_reads_per_base": {
+      "minimum": 0.0,
+      "title": "Depth Median Reads Per Base",
+      "type": "number"
+    },
+    "mq_mean_phred": {
+      "minimum": 0.0,
+      "title": "Mq Mean Phred",
+      "type": "number"
+    },
+    "bq_mean_phred": {
+      "minimum": 0.0,
+      "title": "Bq Mean Phred",
+      "type": "number"
+    },
+    "duplicate_fraction": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Duplicate Fraction",
+      "type": "number"
+    },
+    "soft_clipped_read_fraction": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Soft Clipped Read Fraction",
+      "type": "number"
+    },
+    "nm_per_aligned_base": {
+      "minimum": 0.0,
+      "title": "Nm Per Aligned Base",
+      "type": "number"
+    },
+    "cigar_ins_del_burden": {
+      "minimum": 0.0,
+      "title": "Cigar Ins Del Burden",
+      "type": "number"
+    },
+    "gc_fraction": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Gc Fraction",
+      "type": "number"
+    },
+    "entropy_bits": {
+      "minimum": 0.0,
+      "title": "Entropy Bits",
+      "type": "number"
+    },
+    "homopolymer_base_fraction": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Homopolymer Base Fraction",
+      "type": "number"
+    },
+    "candidate_snp_density_per_base": {
+      "minimum": 0.0,
+      "title": "Candidate Snp Density Per Base",
+      "type": "number"
+    },
+    "candidate_indel_density_per_base": {
+      "minimum": 0.0,
+      "title": "Candidate Indel Density Per Base",
+      "type": "number"
+    },
+    "difficult_flags": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Difficult Flags",
+      "type": "array"
+    },
+    "sampled": {
+      "title": "Sampled",
+      "type": "boolean"
+    },
+    "selection_probability": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Selection Probability",
+      "type": "number"
+    },
+    "analysis_weight": {
+      "minimum": 0.0,
+      "title": "Analysis Weight",
+      "type": "number"
+    }
+  },
+  "required": [
+    "profile_id",
+    "window_id",
+    "contig",
+    "start0",
+    "end0",
+    "length_bp",
+    "stratum",
+    "read_count",
+    "depth_mean_reads_per_base",
+    "depth_median_reads_per_base",
+    "mq_mean_phred",
+    "bq_mean_phred",
+    "duplicate_fraction",
+    "soft_clipped_read_fraction",
+    "nm_per_aligned_base",
+    "cigar_ins_del_burden",
+    "gc_fraction",
+    "entropy_bits",
+    "homopolymer_base_fraction",
+    "candidate_snp_density_per_base",
+    "candidate_indel_density_per_base",
+    "difficult_flags",
+    "sampled",
+    "selection_probability",
+    "analysis_weight"
+  ],
+  "type": "object"
+}

@@ -17,6 +17,10 @@ dependencies = [
     "httpx>=0.27",
     "jsonschema>=4.21",
     "referencing>=0.30",
+    # Layer 1 — truth-free BAM/reference profiling (CPython 3.12 wheels).
+    "pysam>=0.22,<0.23",
+    "pyarrow>=16,<18",
+    "numpy>=1.26,<3",
 ]
 
 [project.optional-dependencies]
@@ -66,7 +70,7 @@ packages = ["minos_engine"]
 exclude = ['(^|/)(\.venv|build|dist)(/|$)']
 
 [[tool.mypy.overrides]]
-module = ["yaml", "jsonschema", "jsonschema.*"]
+module = ["yaml", "jsonschema", "jsonschema.*", "pysam", "pysam.*", "pyarrow", "pyarrow.*", "numpy", "numpy.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

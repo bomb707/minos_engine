@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://minos.engine/schemas/profile-manifest-v1.schema.json",
+  "title": "Profile manifest v1",
+  "$defs": {
+    "ProfileStatus": {
+      "enum": [
+        "COMPLETE",
+        "PARTIAL",
+        "FAILED"
+      ],
+      "title": "ProfileStatus",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "default": "profile-manifest-v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "profile_id": {
+      "minLength": 1,
+      "title": "Profile Id",
+      "type": "string"
+    },
+    "created_at": {
+      "minLength": 1,
+      "title": "Created At",
+      "type": "string"
+    },
+    "profiler_version": {
+      "minLength": 1,
+      "title": "Profiler Version",
+      "type": "string"
+    },
+    "profiler_config_hash": {
+      "minLength": 1,
+      "title": "Profiler Config Hash",
+      "type": "string"
+    },
+    "region_contig": {
+      "minLength": 1,
+      "title": "Region Contig",
+      "type": "string"
+    },
+    "region_start0": {
+      "minimum": 0,
+      "title": "Region Start0",
+      "type": "integer"
+    },
+    "region_end0": {
+      "exclusiveMinimum": 0,
+      "title": "Region End0",
+      "type": "integer"
+    },
+    "status": {
+      "$ref": "#/$defs/ProfileStatus"
+    },
+    "profile_sha256": {
+      "maxLength": 64,
+      "minLength": 64,
+      "title": "Profile Sha256",
+      "type": "string"
+    },
+    "windows_sha256": {
+      "maxLength": 64,
+      "minLength": 64,
+      "title": "Windows Sha256",
+      "type": "string"
+    },
+    "windows_row_count": {
+      "minimum": 0,
+      "title": "Windows Row Count",
+      "type": "integer"
+    },
+    "fingerprint_hash": {
+      "maxLength": 64,
+      "minLength": 64,
+      "title": "Fingerprint Hash",
+      "type": "string"
+    }
+  },
+  "required": [
+    "profile_id",
+    "created_at",
+    "profiler_version",
+    "profiler_config_hash",
+    "region_contig",
+    "region_start0",
+    "region_end0",
+    "status",
+    "profile_sha256",
+    "windows_sha256",
+    "windows_row_count",
+    "fingerprint_hash"
+  ],
+  "type": "object"
+}

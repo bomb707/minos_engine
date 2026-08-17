@@ -1,0 +1,178 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://minos.engine/schemas/layer1-integration-report-v1.schema.json",
+  "title": "Layer 1 Integration Report v1",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "default": "layer1-integration-report-v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "dataset_id": {
+      "minLength": 1,
+      "title": "Dataset Id",
+      "type": "string"
+    },
+    "bam_sha256": {
+      "maxLength": 64,
+      "minLength": 64,
+      "title": "Bam Sha256",
+      "type": "string"
+    },
+    "bam_size_bytes": {
+      "exclusiveMinimum": 0,
+      "title": "Bam Size Bytes",
+      "type": "integer"
+    },
+    "bai_sha256": {
+      "maxLength": 64,
+      "minLength": 64,
+      "title": "Bai Sha256",
+      "type": "string"
+    },
+    "reference_sha256": {
+      "maxLength": 64,
+      "minLength": 64,
+      "title": "Reference Sha256",
+      "type": "string"
+    },
+    "fai_sha256": {
+      "maxLength": 64,
+      "minLength": 64,
+      "title": "Fai Sha256",
+      "type": "string"
+    },
+    "region_source": {
+      "minLength": 1,
+      "title": "Region Source",
+      "type": "string"
+    },
+    "region_contig": {
+      "minLength": 1,
+      "title": "Region Contig",
+      "type": "string"
+    },
+    "region_start0": {
+      "minimum": 0,
+      "title": "Region Start0",
+      "type": "integer"
+    },
+    "region_end0": {
+      "exclusiveMinimum": 0,
+      "title": "Region End0",
+      "type": "integer"
+    },
+    "profiler_version": {
+      "minLength": 1,
+      "title": "Profiler Version",
+      "type": "string"
+    },
+    "profiler_config_hash": {
+      "minLength": 1,
+      "title": "Profiler Config Hash",
+      "type": "string"
+    },
+    "profile_schema_hash": {
+      "minLength": 1,
+      "title": "Profile Schema Hash",
+      "type": "string"
+    },
+    "fingerprint_hash": {
+      "maxLength": 64,
+      "minLength": 64,
+      "title": "Fingerprint Hash",
+      "type": "string"
+    },
+    "first_run_elapsed_seconds": {
+      "minimum": 0,
+      "title": "First Run Elapsed Seconds",
+      "type": "number"
+    },
+    "first_run_peak_rss_mb": {
+      "minimum": 0,
+      "title": "First Run Peak Rss Mb",
+      "type": "number"
+    },
+    "second_run_elapsed_seconds": {
+      "minimum": 0,
+      "title": "Second Run Elapsed Seconds",
+      "type": "number"
+    },
+    "second_run_peak_rss_mb": {
+      "minimum": 0,
+      "title": "Second Run Peak Rss Mb",
+      "type": "number"
+    },
+    "repeat_run_fingerprint_equal": {
+      "title": "Repeat Run Fingerprint Equal",
+      "type": "boolean"
+    },
+    "degradation_status": {
+      "minLength": 1,
+      "title": "Degradation Status",
+      "type": "string"
+    },
+    "pileup_mode": {
+      "minLength": 1,
+      "title": "Pileup Mode",
+      "type": "string"
+    },
+    "completed_families": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Completed Families",
+      "type": "array"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
+    },
+    "hard_limit_seconds": {
+      "exclusiveMinimum": 0,
+      "title": "Hard Limit Seconds",
+      "type": "number"
+    },
+    "hard_limit_met": {
+      "title": "Hard Limit Met",
+      "type": "boolean"
+    },
+    "real_bam_qualified": {
+      "title": "Real Bam Qualified",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "dataset_id",
+    "bam_sha256",
+    "bam_size_bytes",
+    "bai_sha256",
+    "reference_sha256",
+    "fai_sha256",
+    "region_source",
+    "region_contig",
+    "region_start0",
+    "region_end0",
+    "profiler_version",
+    "profiler_config_hash",
+    "profile_schema_hash",
+    "fingerprint_hash",
+    "first_run_elapsed_seconds",
+    "first_run_peak_rss_mb",
+    "second_run_elapsed_seconds",
+    "second_run_peak_rss_mb",
+    "repeat_run_fingerprint_equal",
+    "degradation_status",
+    "pileup_mode",
+    "completed_families",
+    "warnings",
+    "hard_limit_seconds",
+    "hard_limit_met",
+    "real_bam_qualified"
+  ],
+  "type": "object"
+}
