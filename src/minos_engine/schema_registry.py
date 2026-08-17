@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from jsonschema import Draft202012Validator
-from jsonschema.validators import RefResolver
+from referencing import Registry, Resource
 
 from minos_engine.common.errors import ContractValidationError
 
@@ -42,19 +42,23 @@ def available_schemas() -> tuple[str, ...]:
     return tuple(sorted(p.name for p in schemas_dir().glob("*.schema.json")))
 
 
-def _validator(name: str) -> Draft202012Validator:
-    schema = load_schema(name)
-    store = {}
+@cache
+def _registry() -> Registry:
+    resources = []
     for p in schemas_dir().glob("*.schema.json"):
         with p.open("r", encoding="utf-8") as fh:
             doc = json.load(fh)
-        store[p.name] = doc
-        if "$id" in doc:
-            store[doc["$id"]] = doc
-    resolver = RefResolver(
-        base_uri=f"{schemas_dir().as_uri()}/{name}", referrer=schema, store=store
-    )
-    return Draft202012Validator(schema, resolver=resolver)
+        resource = Resource.from_contents(doc)
+        uri = doc.get("$id", p.name)
+        resources.append((uri, resource))
+        # Also register under the bare filename so relative $refs resolve.
+        resources.append((p.name, resource))
+    return Registry().with_resources(resources)
+
+
+def _validator(name: str) -> Draft202012Validator:
+    schema = load_schema(name)
+    return Draft202012Validator(schema, registry=_registry())
 
 
 def validate_against(name: str, obj: Any) -> None:

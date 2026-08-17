@@ -1,38 +1,47 @@
 {
   "caller": "gatk",
+  "parameter_space_hash": "605679294caea090c8a78a5c93f3b816cb2aff05251b33446a7e312e83c205fc",
   "parameters": {
     "active_probability_threshold": {
       "default": 0.002,
+      "enum_values": null,
       "maximum": 0.05,
       "minimum": 0.001,
       "type": "float"
     },
     "adaptive_pruning_initial_error_rate": {
       "default": 0.001,
+      "enum_values": null,
       "maximum": 0.1,
       "minimum": 0.0001,
       "type": "float"
     },
     "assembly_region_padding": {
       "default": 100,
+      "enum_values": null,
       "maximum": 500,
       "minimum": 0,
       "type": "int"
     },
     "base_quality_score_threshold": {
       "default": 18,
+      "enum_values": null,
       "maximum": 50,
       "minimum": 0,
       "type": "int"
     },
     "contamination_fraction_to_filter": {
       "default": 0.0,
+      "enum_values": null,
       "maximum": 0.5,
       "minimum": 0.0,
       "type": "float"
     },
     "dont_use_soft_clipped_bases": {
       "default": false,
+      "enum_values": null,
+      "maximum": null,
+      "minimum": null,
       "type": "bool"
     },
     "emit_ref_confidence": {
@@ -42,76 +51,90 @@
         "GVCF",
         "BP_RESOLUTION"
       ],
+      "maximum": null,
+      "minimum": null,
       "type": "enum"
     },
     "heterozygosity": {
       "default": 0.001,
+      "enum_values": null,
       "maximum": 0.01,
       "minimum": 0.0001,
       "type": "float"
     },
     "indel_heterozygosity": {
       "default": 0.000125,
+      "enum_values": null,
       "maximum": 0.001,
       "minimum": 1e-05,
       "type": "float"
     },
     "max_alternate_alleles": {
       "default": 6,
+      "enum_values": null,
       "maximum": 20,
       "minimum": 1,
       "type": "int"
     },
     "max_assembly_region_size": {
       "default": 300,
+      "enum_values": null,
       "maximum": 700,
       "minimum": 100,
       "type": "int"
     },
     "max_num_haplotypes_in_population": {
       "default": 128,
+      "enum_values": null,
       "maximum": 128,
       "minimum": 8,
       "type": "int"
     },
     "max_reads_per_alignment_start": {
       "default": 50,
+      "enum_values": null,
       "maximum": 300,
       "minimum": 25,
       "type": "int"
     },
     "min_assembly_region_size": {
       "default": 50,
+      "enum_values": null,
       "maximum": 300,
       "minimum": 1,
       "type": "int"
     },
     "min_base_quality_score": {
       "default": 10,
+      "enum_values": null,
       "maximum": 50,
       "minimum": 10,
       "type": "int"
     },
     "min_dangling_branch_length": {
       "default": 4,
+      "enum_values": null,
       "maximum": 20,
       "minimum": 2,
       "type": "int"
     },
     "min_mapping_quality_score": {
       "default": 20,
+      "enum_values": null,
       "maximum": 60,
       "minimum": 0,
       "type": "int"
     },
     "min_pruning": {
       "default": 2,
+      "enum_values": null,
       "maximum": 10,
       "minimum": 2,
       "type": "int"
     },
     "pair_hmm_gap_continuation_penalty": {
       "default": 10,
+      "enum_values": null,
       "maximum": 30,
       "minimum": 1,
       "type": "int"
@@ -124,32 +147,41 @@
         "AGGRESSIVE",
         "CONSERVATIVE"
       ],
+      "maximum": null,
+      "minimum": null,
       "type": "enum"
     },
     "phred_scaled_global_read_mismapping_rate": {
       "default": 45,
+      "enum_values": null,
       "maximum": 60,
       "minimum": 10,
       "type": "int"
     },
     "pruning_lod_threshold": {
       "default": 2.302585,
+      "enum_values": null,
       "maximum": 10.0,
       "minimum": 0.5,
       "type": "float"
     },
     "recover_all_dangling_branches": {
       "default": false,
+      "enum_values": null,
+      "maximum": null,
+      "minimum": null,
       "type": "bool"
     },
     "sample_ploidy": {
       "default": 2,
+      "enum_values": null,
       "maximum": 10,
       "minimum": 1,
       "type": "int"
     },
     "standard_min_confidence_threshold_for_calling": {
       "default": 30.0,
+      "enum_values": null,
       "maximum": 100.0,
       "minimum": 10.0,
       "type": "float"
