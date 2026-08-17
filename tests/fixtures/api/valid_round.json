@@ -1,0 +1,213 @@
+{
+  "payload": {
+    "artifacts": {
+      "bai": {
+        "media_type": "application/x-bai",
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "size_bytes": 8192,
+        "uri": "s3://minos/round/input.bam.bai"
+      },
+      "bam": {
+        "media_type": "application/x-bam",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "size_bytes": 10485760,
+        "uri": "s3://minos/round/input.bam"
+      },
+      "reference": {
+        "media_type": "text/x-fasta",
+        "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "size_bytes": 62435964,
+        "uri": "s3://minos/reference/chr19.fa"
+      }
+    },
+    "network_config": {
+      "api_base_url": "https://api.theminos.ai",
+      "network": "finney"
+    },
+    "parameter_space": {
+      "caller": "gatk",
+      "parameters": {
+        "active_probability_threshold": {
+          "default": 0.002,
+          "maximum": 0.05,
+          "minimum": 0.001,
+          "type": "float"
+        },
+        "adaptive_pruning_initial_error_rate": {
+          "default": 0.001,
+          "maximum": 0.1,
+          "minimum": 0.0001,
+          "type": "float"
+        },
+        "assembly_region_padding": {
+          "default": 100,
+          "maximum": 500,
+          "minimum": 0,
+          "type": "int"
+        },
+        "base_quality_score_threshold": {
+          "default": 18,
+          "maximum": 50,
+          "minimum": 0,
+          "type": "int"
+        },
+        "contamination_fraction_to_filter": {
+          "default": 0.0,
+          "maximum": 0.5,
+          "minimum": 0.0,
+          "type": "float"
+        },
+        "dont_use_soft_clipped_bases": {
+          "default": false,
+          "type": "bool"
+        },
+        "emit_ref_confidence": {
+          "default": "NONE",
+          "enum_values": [
+            "NONE",
+            "GVCF",
+            "BP_RESOLUTION"
+          ],
+          "type": "enum"
+        },
+        "heterozygosity": {
+          "default": 0.001,
+          "maximum": 0.01,
+          "minimum": 0.0001,
+          "type": "float"
+        },
+        "indel_heterozygosity": {
+          "default": 0.000125,
+          "maximum": 0.001,
+          "minimum": 1e-05,
+          "type": "float"
+        },
+        "max_alternate_alleles": {
+          "default": 6,
+          "maximum": 20,
+          "minimum": 1,
+          "type": "int"
+        },
+        "max_assembly_region_size": {
+          "default": 300,
+          "maximum": 700,
+          "minimum": 100,
+          "type": "int"
+        },
+        "max_num_haplotypes_in_population": {
+          "default": 128,
+          "maximum": 128,
+          "minimum": 8,
+          "type": "int"
+        },
+        "max_reads_per_alignment_start": {
+          "default": 50,
+          "maximum": 300,
+          "minimum": 25,
+          "type": "int"
+        },
+        "min_assembly_region_size": {
+          "default": 50,
+          "maximum": 300,
+          "minimum": 1,
+          "type": "int"
+        },
+        "min_base_quality_score": {
+          "default": 10,
+          "maximum": 50,
+          "minimum": 10,
+          "type": "int"
+        },
+        "min_dangling_branch_length": {
+          "default": 4,
+          "maximum": 20,
+          "minimum": 2,
+          "type": "int"
+        },
+        "min_mapping_quality_score": {
+          "default": 20,
+          "maximum": 60,
+          "minimum": 0,
+          "type": "int"
+        },
+        "min_pruning": {
+          "default": 2,
+          "maximum": 10,
+          "minimum": 2,
+          "type": "int"
+        },
+        "pair_hmm_gap_continuation_penalty": {
+          "default": 10,
+          "maximum": 30,
+          "minimum": 1,
+          "type": "int"
+        },
+        "pcr_indel_model": {
+          "default": "CONSERVATIVE",
+          "enum_values": [
+            "NONE",
+            "HOSTILE",
+            "AGGRESSIVE",
+            "CONSERVATIVE"
+          ],
+          "type": "enum"
+        },
+        "phred_scaled_global_read_mismapping_rate": {
+          "default": 45,
+          "maximum": 60,
+          "minimum": 10,
+          "type": "int"
+        },
+        "pruning_lod_threshold": {
+          "default": 2.302585,
+          "maximum": 10.0,
+          "minimum": 0.5,
+          "type": "float"
+        },
+        "recover_all_dangling_branches": {
+          "default": false,
+          "type": "bool"
+        },
+        "sample_ploidy": {
+          "default": 2,
+          "maximum": 10,
+          "minimum": 1,
+          "type": "int"
+        },
+        "standard_min_confidence_threshold_for_calling": {
+          "default": 30.0,
+          "maximum": 100.0,
+          "minimum": 10.0,
+          "type": "float"
+        }
+      },
+      "schema_version": "parameter-space-snapshot-v1",
+      "source": "MINOS_ENGINE_Layer2_Exact_Build_Specification_v2 \u00a76 (documented 2026-08-09)"
+    },
+    "provenance": {
+      "gatk_image_digest": "broadinstitute/gatk:4.5.0.0",
+      "happy_image_digest": "genonet/hap-py@sha256:03acabe84bbfba35f5a7234129d524c563f5657e1f21150a2ea2797f8e6d05f2",
+      "minos_upstream_commit": "0f1e2d3c4b5a69788796a5b4c3d2e1f001122334",
+      "reference_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "scorer_hash": "5555555555555555555555555555555555555555555555555555555555555555"
+    },
+    "round": {
+      "commit_reveal": {
+        "available": false,
+        "detail": "platform has no cryptographic commit-reveal"
+      },
+      "coordinate_system": "one_based_inclusive",
+      "deadline_at": "2026-08-17T13:12:00+00:00",
+      "region": "chr19:13000000-23000000",
+      "round_id": "2026-08-17T12:00:00.000000+00:00",
+      "status": "open",
+      "time_remaining_seconds": 4200
+    },
+    "stale": false
+  },
+  "retrieved_at": "2026-08-17T12:00:00+00:00",
+  "source_endpoints": {
+    "parameter_space": "https://api.theminos.ai/reference/parameter_ranges",
+    "round_status": "https://api.theminos.ai/v2/round-status"
+  }
+}
