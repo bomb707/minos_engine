@@ -1,6 +1,6 @@
 {
-  "created_at": "2026-08-17T12:37:02.375081+00:00",
-  "engine_git_sha": "3a6e60e66e16279808a5f3c8e60babee54ba64ca",
+  "created_at": "2026-08-17T13:03:09.812044+00:00",
+  "engine_git_sha": "743c9d9f203c485010db2fa683b5767187fe62b0",
   "evidence": [
     {
       "description": "reports/LAYER1_PREIMPLEMENTATION_AUDIT.md",
@@ -34,7 +34,7 @@
       "description": "src/minos_engine",
       "kind": "directory",
       "path": "src/minos_engine",
-      "sha256": "2bd0a92bd1823a11cac2c2c89108ed88cf3364c578f1cb65509db44dcee75654",
+      "sha256": "52121e36068e2c606b41d38eec2d78bf6267aa015e8ca67ab98f93c8de907894",
       "size_bytes": null
     },
     {
@@ -55,14 +55,14 @@
       "description": "tests",
       "kind": "directory",
       "path": "tests",
-      "sha256": "980d46b646879372d986c1ec216a4b895c9d93bcf41d676f0b86533beab46527",
+      "sha256": "fe7d97b2c4512dcce0161d3d14815c09e945060a57013e36e065a0f802608d57",
       "size_bytes": null
     },
     {
       "description": "docs",
       "kind": "directory",
       "path": "docs",
-      "sha256": "9a9320d5087a42911f01a9ee21c544ed2542fea6a78b61a9c8e7171073552563",
+      "sha256": "39039920a8b0eae8026456898f730d02a70387bb0adfecef552700fe8989056e",
       "size_bytes": null
     },
     {
@@ -87,7 +87,7 @@
       "size_bytes": 1448
     }
   ],
-  "gate_hash": "68baa4973188df5ffa773688820368f8c4545969dbfdd31fea324301cca1be73",
+  "gate_hash": "aeabfea898edd09f68dbe5662b9aebe9dc87d69c97a10b7c8fb3e9d913b5ef5b",
   "gate_name": "L1-READY",
   "input_hashes": {
     "layer1_schema_hash": "cbb6efb28ad2c6a407c0658d0f2313df5b3cbae2cf0bbd364053aff62ac457a9",
@@ -96,7 +96,7 @@
     "profiler_config_hash": "d01b8e7a9da8e31adad1b9cba17230506771a885256a67ec2e96c74a13c07670",
     "profiler_version": "layer1-profiler-v1",
     "python_runtime": "CPython 3.12",
-    "qualification_report_hash": "79cbca9e3958ebac15d797c0a67ded888035e8fd16c97e11df39757cdf73a146",
+    "qualification_report_hash": "82d5d0c8a9b8ff9f028fc8b4969e16265c5d9c9d65e0b4955555403be886fdd4",
     "real_bam_integration_report_hash": "f9345957f2ad70603049befbae8fc72a923f3f136d8c09db58ab6e6d09bf76dd",
     "specification_manifest_hash": "29241c14bfbd072ed798ff3628dbea6d683c3251320604385f81fe0987e14843",
     "synthetic_fixture_identity": "3914a6c58e38431e5c20dfbf3eb4121e34421919ddad0d52f230fdd19676d3d6"
@@ -138,8 +138,8 @@
     "worktree_matches_head": true
   },
   "qualification_tool_version": "layer1-qualifier-v1",
-  "qualified_source_git_sha": "3a6e60e66e16279808a5f3c8e60babee54ba64ca",
-  "qualified_source_tree_sha": "3c5852932dda89b15916f5e9efcc9aea517683bc",
+  "qualified_source_git_sha": "743c9d9f203c485010db2fa683b5767187fe62b0",
+  "qualified_source_tree_sha": "0d1f827d53e61d66b055d2259ee89134b721344f",
   "schema_version": "gate-artifact-v1",
   "status": "PASS"
 }
