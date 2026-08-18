@@ -11,6 +11,7 @@ PostgreSQL major version. A PASS is never constructed from caller-supplied boole
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
@@ -52,6 +53,8 @@ __all__ = [
     "verify_db_ready_gate",
     "write_db_outputs",
 ]
+
+_HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 GATE_NAME = "DB-READY"
 DB_QUALIFIER_VERSION = "layer2-db-qualifier-v1"
@@ -243,34 +246,64 @@ def migration_immutable(root: Path) -> bool:
     return not any(token in src for token in _FORBIDDEN_MIGRATION_TOKENS)
 
 
-def l2a_closure_checks(root: Path) -> dict[str, bool]:
-    """Independently prove the final accepted L2-A closure chain from git objects."""
+def l2a_closure_checks(
+    root: Path,
+    *,
+    l2b_source_ref: str,
+    l2b_source_tree: str | None = None,
+    head_ref: str = "HEAD",
+    require_head_descends: bool = True,
+) -> dict[str, bool]:
+    """Independently prove the L2-A closure chain and the *exact* qualified L2-B source.
+
+    ``l2b_source_ref`` is the frozen L2-B source commit (from provenance during gate
+    generation; ``gate.qualified_source_git_sha`` during verification) — never a
+    substitute such as the current HEAD. The qualified source is proven to exist, be a
+    commit, carry the bound tree, and *properly descend* the accepted L2-A evidence
+    (evidence is a proper ancestor of the qualified source, and the qualified source is
+    not an ancestor of / sibling to / unrelated to the evidence). HEAD is only used for
+    the separate ``head_descends_l2b_qualified_source`` invariant.
+    """
     src = PRE.L2A_CLOSURE_SOURCE_COMMIT
     src_tree = PRE.L2A_CLOSURE_SOURCE_TREE
     evi = PRE.L2A_CLOSURE_EVIDENCE_COMMIT
     evi_tree = PRE.L2A_CLOSURE_EVIDENCE_TREE
-    head = read_provenance(root).head_sha or "HEAD"
 
     src_ok = G.object_exists(root, src)
     evi_ok = G.object_exists(root, evi)
-    head_ok = G.object_exists(root, head)
     src_tree_ok = src_ok and G.commit_tree_sha(root, src) == src_tree
     evi_tree_ok = evi_ok and G.commit_tree_sha(root, evi) == evi_tree
-    # closure evidence properly descends closure source
+    # accepted closure evidence properly descends the accepted closure source
     chain_ok = bool(
         src_ok and evi_ok and G.is_ancestor(root, src, evi) and not G.is_ancestor(root, evi, src)
     )
-    # remediated L2-B source (HEAD) properly descends closure evidence
-    descends_ok = bool(
-        evi_ok and head_ok and G.is_ancestor(root, evi, head) and not G.is_ancestor(root, head, evi)
+
+    # The exact qualified L2-B source commit (never current HEAD for checks 1-7).
+    qs = l2b_source_ref
+    qs_present = bool(qs) and G.is_commit(root, qs)
+    qs_tree_ok = bool(
+        qs_present and (l2b_source_tree is None or G.commit_tree_sha(root, qs) == l2b_source_tree)
     )
+    # accepted L2-A evidence is a PROPER ancestor of the qualified source
+    # (rejects sibling / ancestor / unrelated qualified sources).
+    qs_descends_l2a = bool(
+        evi_ok and qs_present and G.is_ancestor(root, evi, qs) and not G.is_ancestor(root, qs, evi)
+    )
+    head_ok = G.object_exists(root, head_ref)
+    head_descends_qs = (not require_head_descends) or bool(
+        qs_present and head_ok and G.is_ancestor(root, qs, head_ref)
+    )
+
     return {
         "l2a_closure_source_bound": src_ok,
         "l2a_closure_source_tree_bound": src_tree_ok,
         "l2a_closure_evidence_bound": evi_ok,
         "l2a_closure_evidence_tree_bound": evi_tree_ok,
         "l2a_closure_chain_valid": chain_ok,
-        "l2b_source_descends_l2a": descends_ok,
+        "l2b_qualified_source_present": qs_present,
+        "l2b_qualified_source_tree_bound": qs_tree_ok,
+        "l2b_qualified_source_descends_l2a": qs_descends_l2a,
+        "head_descends_l2b_qualified_source": head_descends_qs,
         "accepted_feature_registry_hash_bound": FR.REGISTRY_HASH
         == PRE.ACCEPTED_FEATURE_REGISTRY_HASH,
     }
@@ -346,7 +379,17 @@ def assemble_db_result(
         "format_passed": tools["format"],
         "mypy_passed": tools["mypy"],
         "accepted_prerequisites_unchanged": _accepted_prerequisites_unchanged(root),
-        **l2a_closure_checks(root),
+        # migration_file_hash is the git-bound evidence hash; the contract is derived
+        # from it (the verifier re-proves both against the committed source blob).
+        "migration_file_evidence_bound": migration_sha == si_evidence_hash(si, MIGRATION_FILE),
+        "migration_contract_bound": contract_hash(migration_sha)
+        == contract_hash(si_evidence_hash(si, MIGRATION_FILE)),
+        # The frozen L2-B qualified source is provenance's HEAD (== source at generation).
+        **l2a_closure_checks(
+            root,
+            l2b_source_ref=provenance.head_sha or "",
+            l2b_source_tree=provenance.tree_sha,
+        ),
     }
 
     status = GateStatus.PASS if all(mandatory.values()) else GateStatus.HOLD
@@ -459,17 +502,51 @@ def verify_db_ready_gate(
         "qualified_commit_present": G.object_exists(root, src_sha),
         "qualified_tree_matches": G.commit_tree_sha(root, src_sha)
         == gate.qualified_source_tree_sha,
-        # Migration immutability + contract binding (independent recompute).
         "migration_immutable": migration_immutable(root),
-        "migration_contract_bound": gate.input_hashes.get("migration_contract_hash")
-        == contract_hash(gate.input_hashes.get("migration_file_hash", "")),
     }
+    gih = gate.input_hashes.get
+
+    # --- Defect 2: migration cross-binding to qualified-source evidence -----------
+    # Find exactly one file evidence item for the migration, with a valid sha, and
+    # prove its sha equals the committed migration blob at the QUALIFIED SOURCE commit
+    # (not the working tree / current HEAD). The migration hash and the contract hash
+    # are then checked against that independently-verified evidence hash — never
+    # recomputed from an untrusted input field.
+    mig_items = [e for e in gate.evidence if e.path == MIGRATION_FILE]
+    mig_item = mig_items[0] if len(mig_items) == 1 else None
+    mig_item_valid = bool(
+        mig_item is not None
+        and mig_item.kind is EvidenceKind.FILE
+        and mig_item.sha256 is not None
+        and _HEX64.match(mig_item.sha256)
+    )
+    mig_evi_sha = mig_item.sha256 if (mig_item and mig_item.sha256) else ""
+    try:
+        committed_mig_sha = G.sha256_git_file(root, MIGRATION_FILE, src_sha)[0]
+    except Exception:  # noqa: BLE001 - unreachable/missing blob fails closed
+        committed_mig_sha = ""
+    checks["migration_evidence_present"] = mig_item_valid
+    checks["migration_evidence_matches_source_blob"] = bool(
+        mig_item_valid and committed_mig_sha and mig_evi_sha == committed_mig_sha
+    )
+    checks["migration_file_evidence_bound"] = bool(
+        mig_item_valid and gih("migration_file_hash") == mig_evi_sha
+    )
+    checks["migration_contract_bound"] = bool(
+        mig_item_valid and gih("migration_contract_hash") == contract_hash(mig_evi_sha)
+    )
+
+    # --- Defect 1: L2-A closure verified against the EXACT qualified source --------
     # Each closure check ANDs the gate's bound value (== pinned) with the independent
     # git recomputation, under a single key, so tampering the input OR a broken chain
-    # both fail closed. (A plain dict spread of the recompute would silently overwrite
-    # the binding checks.)
-    gih = gate.input_hashes.get
-    cc = l2a_closure_checks(root)
+    # both fail closed. The qualified source (not current HEAD) is the subject.
+    cc = l2a_closure_checks(
+        root,
+        l2b_source_ref=src_sha,
+        l2b_source_tree=gate.qualified_source_tree_sha,
+        head_ref="HEAD",
+        require_head_descends=require_descends,
+    )
     checks["l2a_closure_source_bound"] = cc["l2a_closure_source_bound"] and (
         gih("accepted_l2a_closure_source_commit") == PRE.L2A_CLOSURE_SOURCE_COMMIT
     )
@@ -483,7 +560,10 @@ def verify_db_ready_gate(
         gih("accepted_l2a_closure_evidence_tree") == PRE.L2A_CLOSURE_EVIDENCE_TREE
     )
     checks["l2a_closure_chain_valid"] = cc["l2a_closure_chain_valid"]
-    checks["l2b_source_descends_l2a"] = cc["l2b_source_descends_l2a"]
+    checks["l2b_qualified_source_present"] = cc["l2b_qualified_source_present"]
+    checks["l2b_qualified_source_tree_bound"] = cc["l2b_qualified_source_tree_bound"]
+    checks["l2b_qualified_source_descends_l2a"] = cc["l2b_qualified_source_descends_l2a"]
+    checks["head_descends_l2b_qualified_source"] = cc["head_descends_l2b_qualified_source"]
     checks["accepted_feature_registry_hash_bound"] = cc[
         "accepted_feature_registry_hash_bound"
     ] and (

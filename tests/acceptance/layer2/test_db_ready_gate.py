@@ -94,13 +94,18 @@ def test_db_ready_required_checks_registered():
         "accepted_prerequisites_unchanged",
         "migration_immutable",
         "migration_contract_frozen",
+        "migration_file_evidence_bound",
+        "migration_contract_bound",
         "admin_ownership_passed",
         "l2a_closure_source_bound",
         "l2a_closure_source_tree_bound",
         "l2a_closure_evidence_bound",
         "l2a_closure_evidence_tree_bound",
         "l2a_closure_chain_valid",
-        "l2b_source_descends_l2a",
+        "l2b_qualified_source_present",
+        "l2b_qualified_source_tree_bound",
+        "l2b_qualified_source_descends_l2a",
+        "head_descends_l2b_qualified_source",
         "accepted_feature_registry_hash_bound",
     ):
         assert check in required
@@ -132,7 +137,11 @@ def test_assemble_pass_when_all_checks_true():
     )
     assert result.gate.mandatory_checks["migration_immutable"] is True
     assert result.gate.mandatory_checks["l2a_closure_chain_valid"] is True
-    assert result.gate.mandatory_checks["l2b_source_descends_l2a"] is True
+    assert result.gate.mandatory_checks["l2b_qualified_source_present"] is True
+    assert result.gate.mandatory_checks["l2b_qualified_source_descends_l2a"] is True
+    assert result.gate.mandatory_checks["head_descends_l2b_qualified_source"] is True
+    assert result.gate.mandatory_checks["migration_file_evidence_bound"] is True
+    assert result.gate.mandatory_checks["migration_contract_bound"] is True
     assert result.gate.mandatory_checks["accepted_feature_registry_hash_bound"] is True
 
 
@@ -200,47 +209,168 @@ def test_wrong_qualification_tool_rejected(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# Final accepted L2-A closure binding — negatives (Defect 3)
+# Defect 1 — qualified-source ancestry (real git graphs, injected identities)
 # --------------------------------------------------------------------------- #
+from minos_engine.layer2 import prerequisites as PRE  # noqa: E402
+from minos_engine.qualification.layer2_db_runner import l2a_closure_checks  # noqa: E402
 
 
-def _git(root, *args):
-    subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=True)
+def _g(root, *a):
+    return subprocess.run(
+        ["git", "-C", str(root), *a], capture_output=True, text=True, check=True
+    ).stdout.strip()
 
 
-def _tmp_git_repo(tmp_path):
-    root = tmp_path / "repo"
-    root.mkdir()
-    _git(root, "init", "-q")
-    _git(root, "config", "user.email", "t@e.com")
-    _git(root, "config", "user.name", "t")
-    (root / "x").write_text("x", encoding="utf-8")
-    _git(root, "add", "-A")
-    _git(root, "commit", "-q", "-m", "c1")
-    return root
+def _init(root):
+    root.mkdir(parents=True, exist_ok=True)
+    _g(root, "init", "-q")
+    _g(root, "config", "user.email", "t@e.com")
+    _g(root, "config", "user.name", "t")
 
 
-def test_closure_checks_fail_closed_on_missing_git_objects(tmp_path):
-    from minos_engine.qualification.layer2_db_runner import l2a_closure_checks
+def _commit(root, name):
+    (root / name).write_text(name, encoding="utf-8")
+    _g(root, "add", "-A")
+    _g(root, "commit", "-q", "-m", name)
+    return _g(root, "rev-parse", "HEAD")
 
-    checks = l2a_closure_checks(_tmp_git_repo(tmp_path))
-    # the pinned closure commits/trees are absent in a throwaway repo -> fail closed
-    assert checks["l2a_closure_source_bound"] is False
-    assert checks["l2a_closure_evidence_bound"] is False
-    assert checks["l2a_closure_chain_valid"] is False
-    assert checks["l2b_source_descends_l2a"] is False
-    # registry-hash binding is repo-independent and remains bound
-    assert checks["accepted_feature_registry_hash_bound"] is True
+
+def _tree(root, sha):
+    return _g(root, "rev-parse", f"{sha}^{{tree}}")
+
+
+def _set_pre(mp, *, src, src_tree, evi, evi_tree):
+    mp.setattr(PRE, "L2A_CLOSURE_SOURCE_COMMIT", src)
+    mp.setattr(PRE, "L2A_CLOSURE_SOURCE_TREE", src_tree)
+    mp.setattr(PRE, "L2A_CLOSURE_EVIDENCE_COMMIT", evi)
+    mp.setattr(PRE, "L2A_CLOSURE_EVIDENCE_TREE", evi_tree)
+
+
+def _linear(root, monkeypatch):
+    """L2A_source -> L2A_evidence -> L2B_source (returns the three shas)."""
+    _init(root)
+    src = _commit(root, "l2a_src")
+    evi = _commit(root, "l2a_evi")
+    l2b = _commit(root, "l2b_src")
+    _set_pre(monkeypatch, src=src, src_tree=_tree(root, src), evi=evi, evi_tree=_tree(root, evi))
+    return src, evi, l2b
+
+
+def test_qualified_source_valid_chain_passes(tmp_path, monkeypatch):
+    root = tmp_path / "r"
+    src, evi, l2b = _linear(root, monkeypatch)
+    head = _commit(root, "later_head")
+    c = l2a_closure_checks(
+        root, l2b_source_ref=l2b, l2b_source_tree=_tree(root, l2b), head_ref=head
+    )
+    for k in (
+        "l2a_closure_chain_valid",
+        "l2b_qualified_source_present",
+        "l2b_qualified_source_tree_bound",
+        "l2b_qualified_source_descends_l2a",
+        "head_descends_l2b_qualified_source",
+    ):
+        assert c[k] is True, k
+
+
+def test_missing_qualified_source_fails(tmp_path, monkeypatch):
+    root = tmp_path / "r"
+    _linear(root, monkeypatch)
+    c = l2a_closure_checks(root, l2b_source_ref="0" * 40, l2b_source_tree=None)
+    assert c["l2b_qualified_source_present"] is False
+    assert c["l2b_qualified_source_descends_l2a"] is False
+
+
+def test_wrong_qualified_source_tree_fails(tmp_path, monkeypatch):
+    root = tmp_path / "r"
+    _src, _evi, l2b = _linear(root, monkeypatch)
+    c = l2a_closure_checks(root, l2b_source_ref=l2b, l2b_source_tree="0" * 40)
+    assert c["l2b_qualified_source_tree_bound"] is False
+
+
+def test_ancestor_qualified_source_fails(tmp_path, monkeypatch):
+    root = tmp_path / "r"
+    src, _evi, _l2b = _linear(root, monkeypatch)
+    # src predates the L2A evidence -> evidence is not an ancestor of it
+    c = l2a_closure_checks(root, l2b_source_ref=src, l2b_source_tree=_tree(root, src))
+    assert c["l2b_qualified_source_descends_l2a"] is False
+
+
+def test_unrelated_orphan_qualified_source_fails(tmp_path, monkeypatch):
+    root = tmp_path / "r"
+    _linear(root, monkeypatch)
+    _g(root, "checkout", "-q", "--orphan", "orphan")
+    orph = _commit(root, "orphan_root")
+    c = l2a_closure_checks(root, l2b_source_ref=orph, l2b_source_tree=_tree(root, orph))
+    assert c["l2b_qualified_source_descends_l2a"] is False
+
+
+def test_sibling_qualified_source_fails(tmp_path, monkeypatch):
+    root = tmp_path / "r"
+    src, _evi, _l2b = _linear(root, monkeypatch)
+    _g(root, "checkout", "-q", "-b", "sib", src)  # branch off BEFORE the evidence
+    sib = _commit(root, "sibling_src")
+    c = l2a_closure_checks(root, l2b_source_ref=sib, l2b_source_tree=_tree(root, sib))
+    assert c["l2b_qualified_source_descends_l2a"] is False
+
+
+def test_merge_head_does_not_launder_sibling_source(tmp_path, monkeypatch):
+    # MANDATORY: a later merge HEAD that descends BOTH the accepted L2-A evidence and a
+    # sibling L2-B source must NOT make that sibling source acceptable.
+    root = tmp_path / "r"
+    src, evi, _l2b = _linear(root, monkeypatch)
+    _g(root, "checkout", "-q", "-b", "sib", src)  # sibling lineage from before evidence
+    sib = _commit(root, "sibling_src")
+    _g(root, "checkout", "-q", evi)  # detached at the accepted evidence
+    _g(root, "merge", "-q", "--no-ff", "-m", "merge_sib", "sib")
+    merge_head = _g(root, "rev-parse", "HEAD")
+    # the merge HEAD genuinely descends both the evidence AND the sibling source
+    assert (
+        subprocess.run(
+            ["git", "-C", str(root), "merge-base", "--is-ancestor", evi, merge_head]
+        ).returncode
+        == 0
+    )
+    assert (
+        subprocess.run(
+            ["git", "-C", str(root), "merge-base", "--is-ancestor", sib, merge_head]
+        ).returncode
+        == 0
+    )
+    c = l2a_closure_checks(
+        root, l2b_source_ref=sib, l2b_source_tree=_tree(root, sib), head_ref=merge_head
+    )
+    assert c["head_descends_l2b_qualified_source"] is True  # HEAD descends the sibling source...
+    assert c["l2b_qualified_source_descends_l2a"] is False  # ...but the source is not from L2-A
+
+
+def test_head_not_descending_qualified_source_fails(tmp_path, monkeypatch):
+    root = tmp_path / "r"
+    _src, _evi, l2b = _linear(root, monkeypatch)
+    _later = _commit(root, "later")
+    # point head_ref at the qualified source's parent (evidence), which does not descend it
+    c = l2a_closure_checks(
+        root,
+        l2b_source_ref=l2b,
+        l2b_source_tree=_tree(root, l2b),
+        head_ref=PRE.L2A_CLOSURE_EVIDENCE_COMMIT,
+        require_head_descends=True,
+    )
+    assert c["head_descends_l2b_qualified_source"] is False
 
 
 def test_closure_checks_pass_on_real_repo():
-    from minos_engine.qualification.layer2_db_runner import l2a_closure_checks
+    from minos_engine.qualification.provenance import read_provenance
 
-    checks = l2a_closure_checks(REPO_ROOT)
-    assert all(checks.values()), checks
+    head = read_provenance(REPO_ROOT).head_sha or "HEAD"
+    c = l2a_closure_checks(REPO_ROOT, l2b_source_ref=head)
+    assert all(c.values()), c
 
 
-@pytest.mark.skipif(not _GATE.exists(), reason="DB-READY gate produced in Commit R")
+# --------------------------------------------------------------------------- #
+# Defect 3 (retained) — closure binding tamper (committed gate)
+# --------------------------------------------------------------------------- #
+@pytest.mark.skipif(not _GATE.exists(), reason="DB-READY gate produced in Commit T")
 @pytest.mark.parametrize(
     "field,check",
     [
@@ -264,9 +394,8 @@ def test_tampered_closure_binding_rejected(tmp_path, field, check):
     assert any(check in r for r in result.reasons), result.reasons
 
 
-@pytest.mark.skipif(not _GATE.exists(), reason="DB-READY gate produced in Commit R")
+@pytest.mark.skipif(not _GATE.exists(), reason="DB-READY gate produced in Commit T")
 def test_old_owner_commit_substituted_for_closure_rejected(tmp_path):
-    # The earlier audit/owner commit must NOT satisfy the final-closure source binding.
     from pathlib import Path
 
     def mut(raw):
@@ -280,8 +409,29 @@ def test_old_owner_commit_substituted_for_closure_rejected(tmp_path):
     assert any("l2a_closure_source_bound" in r for r in result.reasons)
 
 
-@pytest.mark.skipif(not _GATE.exists(), reason="DB-READY gate produced in Commit R")
-def test_tampered_migration_contract_rejected(tmp_path):
+# --------------------------------------------------------------------------- #
+# Defect 2 — migration cross-binding to qualified-source evidence
+# --------------------------------------------------------------------------- #
+def _find_mig_evidence(raw):
+    return next(
+        e for e in raw["evidence"] if e["path"] == "migrations/versions/0001_l2b_initial.py"
+    )
+
+
+@pytest.mark.skipif(not _GATE.exists(), reason="DB-READY gate produced in Commit T")
+def test_only_migration_file_hash_changed_rejected(tmp_path):
+    from pathlib import Path
+
+    def mut(raw):
+        raw["input_hashes"] = dict(raw["input_hashes"], migration_file_hash="9" * 64)
+
+    result = verify_db_ready_gate(REPO_ROOT, Path(_tamper(tmp_path, mut)), require_descends=False)
+    assert not result.ok
+    assert any("migration_file_evidence_bound" in r for r in result.reasons)
+
+
+@pytest.mark.skipif(not _GATE.exists(), reason="DB-READY gate produced in Commit T")
+def test_only_migration_contract_hash_changed_rejected(tmp_path):
     from pathlib import Path
 
     def mut(raw):
@@ -290,3 +440,103 @@ def test_tampered_migration_contract_rejected(tmp_path):
     result = verify_db_ready_gate(REPO_ROOT, Path(_tamper(tmp_path, mut)), require_descends=False)
     assert not result.ok
     assert any("migration_contract_bound" in r for r in result.reasons)
+
+
+@pytest.mark.skipif(not _GATE.exists(), reason="DB-READY gate produced in Commit T")
+def test_both_migration_hashes_changed_consistently_rejected(tmp_path):
+    # MANDATORY: an attacker sets file_hash=X and contract=contract_hash(X). It must
+    # fail because the input migration hash != the independently verified source blob.
+    from pathlib import Path
+
+    from minos_engine.storage.migration_contract import contract_hash
+
+    x = "1" * 64
+
+    def mut(raw):
+        raw["input_hashes"] = dict(
+            raw["input_hashes"], migration_file_hash=x, migration_contract_hash=contract_hash(x)
+        )
+
+    result = verify_db_ready_gate(REPO_ROOT, Path(_tamper(tmp_path, mut)), require_descends=False)
+    assert not result.ok
+    assert any("migration_file_evidence_bound" in r for r in result.reasons), result.reasons
+
+
+@pytest.mark.skipif(not _GATE.exists(), reason="DB-READY gate produced in Commit T")
+def test_migration_evidence_missing_rejected(tmp_path):
+    from pathlib import Path
+
+    def mut(raw):
+        raw["evidence"] = [
+            e for e in raw["evidence"] if e["path"] != "migrations/versions/0001_l2b_initial.py"
+        ]
+
+    result = verify_db_ready_gate(REPO_ROOT, Path(_tamper(tmp_path, mut)), require_descends=False)
+    assert not result.ok
+    assert any("migration_evidence_present" in r for r in result.reasons)
+
+
+@pytest.mark.skipif(not _GATE.exists(), reason="DB-READY gate produced in Commit T")
+def test_migration_evidence_duplicated_rejected(tmp_path):
+    from pathlib import Path
+
+    def mut(raw):
+        raw["evidence"] = [*raw["evidence"], dict(_find_mig_evidence(raw))]
+
+    result = verify_db_ready_gate(REPO_ROOT, Path(_tamper(tmp_path, mut)), require_descends=False)
+    assert not result.ok
+    assert any("migration_evidence_present" in r for r in result.reasons)
+
+
+@pytest.mark.skipif(not _GATE.exists(), reason="DB-READY gate produced in Commit T")
+def test_migration_evidence_kind_changed_rejected(tmp_path):
+    from pathlib import Path
+
+    def mut(raw):
+        for e in raw["evidence"]:
+            if e["path"] == "migrations/versions/0001_l2b_initial.py":
+                e["kind"] = "directory"
+
+    result = verify_db_ready_gate(REPO_ROOT, Path(_tamper(tmp_path, mut)), require_descends=False)
+    assert not result.ok
+    assert any("migration_evidence_present" in r for r in result.reasons)
+
+
+@pytest.mark.skipif(not _GATE.exists(), reason="DB-READY gate produced in Commit T")
+def test_migration_evidence_hash_differs_from_blob_rejected(tmp_path):
+    # Change the evidence sha AND the matching input hash so file_evidence_bound would
+    # pass, but it no longer equals the committed source blob.
+    from pathlib import Path
+
+    x = "2" * 64
+
+    def mut(raw):
+        for e in raw["evidence"]:
+            if e["path"] == "migrations/versions/0001_l2b_initial.py":
+                e["sha256"] = x
+        raw["input_hashes"] = dict(raw["input_hashes"], migration_file_hash=x)
+
+    result = verify_db_ready_gate(REPO_ROOT, Path(_tamper(tmp_path, mut)), require_descends=False)
+    assert not result.ok
+    assert any("migration_evidence_matches_source_blob" in r for r in result.reasons) or any(
+        "evidence" in r for r in result.reasons
+    )
+
+
+@pytest.mark.skipif(not _GATE.exists(), reason="DB-READY gate produced in Commit T")
+def test_verification_uses_source_blob_not_working_tree(tmp_path):
+    # Modifying the working-tree migration must not affect verification, which reads the
+    # blob from the qualified source commit.
+
+    mig = REPO_ROOT / "migrations" / "versions" / "0001_l2b_initial.py"
+    original = mig.read_bytes()
+    try:
+        mig.write_bytes(original + b"\n# working-tree noise\n")
+        result = verify_db_ready_gate(REPO_ROOT, _GATE, require_descends=True)
+        assert result.ok, result.reasons
+    finally:
+        mig.write_bytes(original)
+    # Working-tree noise must not surface as a failing binding: the verifier hashed the
+    # migration blob from the qualified source commit, not the drifted working-tree file.
+    assert not any("migration_contract_bound" in r for r in result.reasons)
+    assert not any("migration_file_evidence_bound" in r for r in result.reasons)

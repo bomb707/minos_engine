@@ -154,13 +154,19 @@ REQUIRED_CHECKS: dict[str, frozenset[str]] = {
             # Immutable migration + admin ownership + final L2-A closure binding.
             "migration_immutable",
             "migration_contract_frozen",
+            "migration_file_evidence_bound",
+            "migration_contract_bound",
             "admin_ownership_passed",
             "l2a_closure_source_bound",
             "l2a_closure_source_tree_bound",
             "l2a_closure_evidence_bound",
             "l2a_closure_evidence_tree_bound",
             "l2a_closure_chain_valid",
-            "l2b_source_descends_l2a",
+            # Exact qualified-source ancestry (never current-HEAD substitution).
+            "l2b_qualified_source_present",
+            "l2b_qualified_source_tree_bound",
+            "l2b_qualified_source_descends_l2a",
+            "head_descends_l2b_qualified_source",
             "accepted_feature_registry_hash_bound",
         }
     ),

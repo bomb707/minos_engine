@@ -25,6 +25,8 @@ __all__ = [
     "GitUnavailableError",
     "is_git_repo",
     "is_ancestor",
+    "object_type",
+    "is_commit",
     "list_tracked",
     "is_tracked",
     "check_ignored",
@@ -75,6 +77,21 @@ def object_exists(root: Path, sha: str) -> bool:
     if not sha:
         return False
     return _run_text(root, ["cat-file", "-e", sha]).returncode == 0
+
+
+def object_type(root: Path, sha: str) -> str | None:
+    """Return the git object type of ``sha`` (``commit``/``tree``/``blob``/``tag``) or None."""
+    if not sha:
+        return None
+    proc = _run_text(root, ["cat-file", "-t", sha])
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def is_commit(root: Path, sha: str) -> bool:
+    """True iff ``sha`` names a commit object."""
+    return object_type(root, sha) == "commit"
 
 
 def is_shallow(root: Path) -> bool:

@@ -77,6 +77,16 @@ and the accepted PROTOCOL/TWIN/L1 hashes). `minos-engine layer2 db qualify --che
 verifies a committed gate non-mutatingly; `minos-engine layer2 db gate require-pass`
 requires PASS. See `MIGRATIONS.md` and `DATABASE_ROLES.md`.
 
+**Qualified-source verification principle.** Every immutable DB-READY binding is
+verified against the gate's `qualified_source_git_sha` — never the current HEAD or the
+working tree. The L2-A closure ancestry proves that the *exact* qualified source
+commit exists, carries the bound tree, and *properly descends* the accepted L2-A
+evidence (rejecting sibling/ancestor/unrelated sources even when a later merge HEAD
+descends both). The migration-file hash and migration-contract hash are checked
+against the migration evidence item, whose SHA-256 is independently re-hashed from the
+committed migration blob at the qualified source; the contract is recomputed from that
+verified evidence hash, so a consistently-tampered pair of input hashes still fails.
+
 ## Known limitations (deferred)
 - No 50/10/15 split manifest, no sample allocation, no dataset population (L2-C).
 - Partition-based row isolation for the trainer/locked-test path is a future L2-C/L2-E
