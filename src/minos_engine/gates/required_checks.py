@@ -200,6 +200,7 @@ REQUIRED_CHECKS: dict[str, frozenset[str]] = {
             "committed_inventory_bytes_bound",
             "inventory_manifest_identity_bound",
             "inventory_paths_safe",
+            "inventory_paths_identity_bound",
             "inventory_truth_mutation_isolation_ok",
             # Generator + manifest-schema evidence cross-bound to unique source evidence.
             "generator_source_evidence_present",

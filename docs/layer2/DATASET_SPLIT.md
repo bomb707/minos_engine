@@ -177,8 +177,15 @@ its frozen contract and **recomputes its hash from the validated entries** — t
 manifest (exactly 75 entries, identical dataset-ID set, matching round-ID/chromosome, no
 duplicates), proves all four paths are safe portable POSIX relatives (no absolute, drive,
 backslash, URI, or `..`/`.` segments), and rejects any truth/mutation/score/evaluation
-token — so a *consistently re-hashed* tampered inventory still fails on the manifest
-correspondence or safe-path policy, not merely a stale outer hash; (c) cross-binds
+token; additionally it **derives each entry's four resolver paths from its manifest-bound
+identity** — `practice/round_<round_id>/input.bam[.bai]` and
+`reference/<chromosome>/<chromosome>.fa[.fai]` (bare lowercase-hex round dir, `chrNN`
+casing, exactly as committed) — and requires the stored paths to equal the derived ones
+(`inventory_paths_identity_bound`, independent of the embedded hash, the gate inventory
+hash, the committed SHA, the payload hash, and the gate hash). So a *consistently
+re-hashed committed-blob* substitution to a still-safe operational path is rejected because
+it no longer equals the manifest-derived path, not merely because an outer hash is stale;
+(c) cross-binds
 `generator_source_hash` to the **unique** `src/minos_engine/layer2/split` directory
 evidence item and `manifest_schema_hash` to the **unique** schema file evidence item, each
 recomputed from Commit W's blobs; and (d) binds the exact committed final-report bytes via

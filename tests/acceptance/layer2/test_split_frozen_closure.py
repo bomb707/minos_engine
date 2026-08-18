@@ -13,8 +13,9 @@ import json
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
-from minos_engine.gates.contracts import GateArtifact
+from minos_engine.gates.contracts import EvidenceItem, EvidenceKind, GateArtifact
 from minos_engine.gates.required_checks import required_checks_for
 from minos_engine.gates.verifier import write_gate
 from minos_engine.qualification.layer2_split_runner import (
@@ -34,6 +35,7 @@ _NEW_REQUIRED = (
     "committed_inventory_bytes_bound",
     "inventory_manifest_identity_bound",
     "inventory_paths_safe",
+    "inventory_paths_identity_bound",
     "inventory_truth_mutation_isolation_ok",
     "generator_source_evidence_present",
     "generator_source_evidence_matches_source",
@@ -284,3 +286,61 @@ def test_tampered_inventory_bytes_binding_rejected(tmp_path):
     )
     assert not result.ok
     assert any("committed_inventory_bytes_bound" in x for x in result.reasons)
+
+
+# --------------------------------------------------------------------------- #
+# Schema evidence: duplicate / wrong kind / wrong path / malformed / missing hash
+# --------------------------------------------------------------------------- #
+@needs_gate
+def test_schema_evidence_duplicated_rejected(tmp_path):
+    def mut(r):
+        item = next(e for e in r["evidence"] if e["path"] == MANIFEST_SCHEMA_FILE)
+        r["evidence"].append(dict(item))
+
+    result = _verify(tmp_path, mut)
+    assert not result.ok
+    assert any("manifest_schema_evidence_present" in x for x in result.reasons)
+
+
+@needs_gate
+def test_schema_evidence_wrong_kind_rejected(tmp_path):
+    def mut(r):
+        for e in r["evidence"]:
+            if e["path"] == MANIFEST_SCHEMA_FILE:
+                e["kind"] = "directory"
+
+    result = _verify(tmp_path, mut)
+    assert not result.ok
+    assert any("manifest_schema_evidence_present" in x for x in result.reasons)
+
+
+@needs_gate
+def test_schema_evidence_wrong_path_rejected(tmp_path):
+    def mut(r):
+        for e in r["evidence"]:
+            if e["path"] == MANIFEST_SCHEMA_FILE:
+                e["path"] = "schemas/some-other.schema.json"
+
+    result = _verify(tmp_path, mut)
+    assert not result.ok
+    assert any("manifest_schema_evidence_present" in x for x in result.reasons)
+
+
+def test_schema_evidence_malformed_hash_rejected_at_construction():
+    # A malformed evidence sha is rejected by the evidence contract itself.
+    with pytest.raises(ValidationError):
+        EvidenceItem(
+            description="schema", path=MANIFEST_SCHEMA_FILE, kind=EvidenceKind.FILE, sha256="zzz"
+        )
+
+
+@needs_gate
+def test_schema_evidence_missing_hash_rejected_in_pass_gate(tmp_path):
+    # A null evidence sha cannot appear in a PASS gate (every evidence sha must be present).
+    raw = json.loads(_GATE.read_text(encoding="utf-8"))
+    for e in raw["evidence"]:
+        if e["path"] == MANIFEST_SCHEMA_FILE:
+            e["sha256"] = None
+    raw["gate_hash"] = ""
+    with pytest.raises(ValidationError):
+        GateArtifact.model_validate(raw)

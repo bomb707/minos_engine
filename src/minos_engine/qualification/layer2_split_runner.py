@@ -68,6 +68,7 @@ __all__ = [
     "SPLIT_REQUIRED_TRACKED_FILES",
     "InventoryVerification",
     "verify_inventory",
+    "derive_inventory_paths",
     "evidence_payload_hash",
     "SplitQualificationResult",
     "SplitGateVerification",
@@ -159,6 +160,22 @@ def _inv_path_safe(p: str) -> bool:
     return not any(seg in ("", ".", "..") for seg in segs)
 
 
+def derive_inventory_paths(round_id: str, chromosome: str) -> dict[str, str]:
+    """The exact canonical resolver paths for a manifest-bound identity.
+
+    Derived *only* from the identity (round id + chromosome), never read from the
+    inventory — this is the independent anchor that rejects a consistently re-hashed
+    operational-path substitution that is still syntactically safe. The convention
+    matches the committed corpus exactly (bare lowercase-hex round dir, ``chrNN`` casing).
+    """
+    return {
+        "bam_relpath": f"practice/round_{round_id}/input.bam",
+        "bai_relpath": f"practice/round_{round_id}/input.bam.bai",
+        "reference_relpath": f"reference/{chromosome}/{chromosome}.fa",
+        "fai_relpath": f"reference/{chromosome}/{chromosome}.fa.fai",
+    }
+
+
 class InventoryVerification(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -215,6 +232,18 @@ def verify_inventory(
     checks["inventory_paths_safe"] = all(
         _inv_path_safe(getattr(e, f)) for e in inv.entries for f in _INV_PATH_FIELDS
     )
+
+    # Manifest-derived path identity: every stored path must equal the path derived
+    # from the entry's MANIFEST-bound identity (round id + chromosome from the frozen
+    # manifest, matched by dataset id) — not trusted from inventory fields. Independent
+    # of every hash; a consistently re-hashed safe-path substitution fails here.
+    paths_identity_ok = identity_ok and all(
+        {f: getattr(e, f) for f in _INV_PATH_FIELDS}
+        == derive_inventory_paths(*manifest_by_id[e.dataset_id])
+        for e in inv.entries
+        if e.dataset_id in manifest_by_id
+    )
+    checks["inventory_paths_identity_bound"] = paths_identity_ok
 
     blob = json.dumps(inv.to_canonical(), sort_keys=True).lower()
     checks["inventory_truth_mutation_isolation_ok"] = not any(
@@ -623,6 +652,7 @@ def assemble_split_result(
             "inventory_manifest_identity_bound", False
         ),
         "inventory_paths_safe": iv.checks.get("inventory_paths_safe", False),
+        "inventory_paths_identity_bound": iv.checks.get("inventory_paths_identity_bound", False),
         "inventory_truth_mutation_isolation_ok": iv.checks.get(
             "inventory_truth_mutation_isolation_ok", False
         ),
@@ -874,6 +904,9 @@ def verify_split_frozen_gate(
         inv_result and ivc.get("inventory_manifest_identity_bound")
     )
     checks["inventory_paths_safe"] = bool(inv_result and ivc.get("inventory_paths_safe"))
+    checks["inventory_paths_identity_bound"] = bool(
+        inv_result and ivc.get("inventory_paths_identity_bound")
+    )
     checks["inventory_truth_mutation_isolation_ok"] = bool(
         inv_result and ivc.get("inventory_truth_mutation_isolation_ok")
     )

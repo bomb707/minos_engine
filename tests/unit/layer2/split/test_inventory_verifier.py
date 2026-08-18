@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import copy
 
+import pytest
+
 from minos_engine.gates.contracts import EvidenceItem, EvidenceKind
 from minos_engine.layer2.split.contracts import LocalInputEntry, LocalInputInventory
 from minos_engine.qualification.layer2_split_runner import (
@@ -63,17 +65,58 @@ def test_path_changed_with_old_hash_rejected():
     assert result.checks.get("inventory_contract_valid") is False
 
 
-def test_path_and_hash_changed_consistently_still_binds_manifest():
-    # A benign relative-path change with a consistently recomputed hash passes the
-    # inventory's own recomputation, but the GATE binding (gate inventory hash) is what
-    # rejects it upstream; here we assert the recomputation itself is honest.
+def test_consistent_safe_path_substitution_rejected_by_identity():
+    # A benign, still-safe relative-path change with a consistently recomputed hash
+    # passes the inventory's own recomputation (embedded_matches True) — but it is
+    # rejected because the path no longer equals the value DERIVED from the entry's
+    # manifest-bound identity. This is the closure of the final defect.
     raw = _inv_dict()
     raw["entries"][0]["bam_relpath"] = "practice/round_alt/input.bam"
     raw = _rehash(raw)
     result = verify_inventory(raw, synthetic_manifest())
     assert result.embedded_matches is True  # recomputed to match the tampered content
-    # ...but the recomputed hash now differs from the frozen accepted inventory hash.
-    assert result.inventory_hash != synthetic_inventory().inventory_hash
+    assert result.checks["inventory_paths_identity_bound"] is False
+    assert result.ok is False
+
+
+def test_accepted_inventory_paths_identity_bound_true():
+    result = verify_inventory(_inv_dict(), synthetic_manifest())
+    assert result.checks["inventory_paths_identity_bound"] is True
+
+
+def test_derived_paths_match_all_entries():
+    from minos_engine.qualification.layer2_split_runner import derive_inventory_paths
+
+    manifest = synthetic_manifest()
+    by_id = {s.dataset_id: (s.round_id, s.chromosome) for s in manifest.samples}
+    for e in synthetic_inventory().entries:
+        rid, chrom = by_id[e.dataset_id]
+        expected = derive_inventory_paths(rid, chrom)
+        assert e.bam_relpath == expected["bam_relpath"]
+        assert e.bai_relpath == expected["bai_relpath"]
+        assert e.reference_relpath == expected["reference_relpath"]
+        assert e.fai_relpath == expected["fai_relpath"]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("bam_relpath", "practice/round_alt/input.bam"),
+        ("bai_relpath", "practice/round_alt/input.bam.bai"),
+        ("reference_relpath", "reference/chrOther/chrOther.fa"),
+        ("fai_relpath", "reference/chrOther/chrOther.fa.fai"),
+    ],
+)
+def test_each_path_field_identity_substitution_rejected(field, value):
+    raw = _inv_dict()
+    raw["entries"][0][field] = value
+    raw = _rehash(raw)  # consistently re-hashed, still syntactically safe
+    result = verify_inventory(raw, synthetic_manifest())
+    assert result.ok is False
+    assert result.checks["inventory_paths_identity_bound"] is False
+    # correspondence + safe-path still pass; only the derived-path identity fails.
+    assert result.checks["inventory_manifest_identity_bound"] is True
+    assert result.checks["inventory_paths_safe"] is True
 
 
 # --------------------------------------------------------------------------- #
