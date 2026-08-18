@@ -241,6 +241,85 @@ REQUIRED_CHECKS: dict[str, frozenset[str]] = {
             "service_still_blocked",
         }
     ),
+    # SPLIT-FROZEN-V2 — Layer 2 stage L2-C epoched, growth-stable dataset split.
+    # Supersedes v1 within L2-C: binds the accepted v1 SPLIT-FROZEN identity and proves
+    # the v2 qualified source properly descends the v1 SPLIT-FROZEN evidence commit.
+    "SPLIT-FROZEN-V2": frozenset(
+        {
+            # Accepted prerequisites (unchanged + verified).
+            "accepted_protocol_ready_unchanged",
+            "accepted_twin_ready_unchanged",
+            "accepted_l1_ready_unchanged",
+            "accepted_db_ready_unchanged",
+            "accepted_split_frozen_unchanged",
+            # Exact v1 SPLIT-FROZEN closure ancestry (never current-HEAD substitution).
+            "split_frozen_source_present",
+            "split_frozen_source_tree_bound",
+            "split_frozen_evidence_present",
+            "v2_source_descends_split_frozen",
+            "head_descends_v2_source",
+            # Epoch-1 manifest bindings — EXACT inheritance of the accepted v1 partitions
+            # (zero assignment transitions; test/validation cohorts preserved verbatim).
+            "epoch_manifest_schema_valid",
+            "epoch_manifest_verified",
+            "canonical_epoch_manifest_hash_bound",
+            "epoch1_inherits_v1_partitions_exactly",
+            "epoch1_zero_transitions",
+            "epoch1_test_cohort_preserved",
+            "epoch1_validation_cohort_preserved",
+            "epoch1_parent_fields_null",
+            "ancestor_v1_registry_bound",
+            "registry_snapshot_hash_bound",
+            "split_policy_hash_bound",
+            "committed_epoch_manifest_bytes_bound",
+            "epoch1_is_first_epoch",
+            # Generator + manifest-schema evidence cross-bound to unique source evidence.
+            "generator_source_evidence_present",
+            "generator_source_evidence_matches_source",
+            "generator_source_evidence_bound",
+            "manifest_schema_evidence_present",
+            "manifest_schema_evidence_matches_source",
+            "manifest_schema_evidence_bound",
+            # Final closure report bytes + non-circular aggregate evidence payload.
+            "qualification_report_bytes_bound",
+            "evidence_payload_paths_exact",
+            "evidence_payload_hash_bound",
+            # Immutable v2 migration bindings (git-tree-bound evidence) + CI head pin.
+            "v2_migration_immutable",
+            "v2_migration_file_evidence_bound",
+            "v2_migration_contract_bound",
+            "alembic_head_includes_v2",
+            "ci_asserts_head_0003",
+            # Exact epoch-1 split counts.
+            "total_sample_count_75",
+            "partition_totals_50_10_15",
+            "per_chromosome_10_2_3",
+            # Test + static analysis.
+            "full_tests_passed",
+            "coverage_passed",
+            "ruff_passed",
+            "format_passed",
+            "mypy_passed",
+            # Real PostgreSQL 16 v2 integration (incl. growth immutability + access states).
+            "postgres_16_verified",
+            "v2_migration_lifecycle_passed",
+            "epoch_role_isolation_passed",
+            "epoch_immutability_passed",
+            "epoch_constraints_passed",
+            "epoch_counts_50_10_15_passed",
+            "sealed_test_access_denied_passed",
+            "validation_evaluator_only_passed",
+            "trainer_view_no_features_passed",
+            "parent_immutability_passed",
+            "growth_new_samples_only_passed",
+            "removal_replacement_rejected_passed",
+            # Source integrity + leakage + stage gating.
+            "evidence_hashes_complete",
+            "required_source_tracked",
+            "truth_mutation_isolation_ok",
+            "service_still_blocked",
+        }
+    ),
 }
 
 

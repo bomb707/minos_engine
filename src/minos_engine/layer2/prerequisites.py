@@ -50,6 +50,10 @@ __all__ = [
     "DB_READY_SOURCE_COMMIT",
     "DB_READY_SOURCE_TREE",
     "DB_READY_EVIDENCE_COMMIT",
+    "SPLIT_FROZEN_GATE_HASH",
+    "SPLIT_FROZEN_SOURCE_COMMIT",
+    "SPLIT_FROZEN_SOURCE_TREE",
+    "SPLIT_FROZEN_EVIDENCE_COMMIT",
     "ACCEPTED",
 ]
 
@@ -87,6 +91,18 @@ DB_READY_GATE_HASH = "259986a0423a1b8317bb4c6b1a1cb9213708444a8a6764fc8c7703cf80
 DB_READY_SOURCE_COMMIT = "695901ee95c529acf8a434c1babe06f364efa790"
 DB_READY_SOURCE_TREE = "462106b2a98a5c00ca49faa771531d2730b435da"
 DB_READY_EVIDENCE_COMMIT = "2df03a2cdf37b8c83d34d3e0347ba06a7159310d"
+
+# Accepted L2-C SPLIT-FROZEN (v1) closure identities. The v2 epoched split supersedes v1
+# *within* stage L2-C: the SPLIT-FROZEN-v2 gate binds these accepted v1 identities and its
+# qualified source must properly descend the v1 SPLIT-FROZEN evidence commit. v1 stays
+# byte-identical and historical (its gate/manifest/migration are never modified). A change
+# to any of these is an explicit owner acceptance decision (see update procedure above).
+#   * source commit (Commit Y): the v1 verifier-closure source (inventory-path identity).
+#   * evidence commit: adds gates/split-frozen.json + the v1 final closure report only.
+SPLIT_FROZEN_GATE_HASH = "5520328868f408fe705a9d6618e3d67c081fa4e0aaa8dd764bb933aea866c702"
+SPLIT_FROZEN_SOURCE_COMMIT = "5ff8c361acc19613f0db7e4f93f88fe4aab9bfd5"
+SPLIT_FROZEN_SOURCE_TREE = "49b49c53137528da309ebb39ee3a9e456f6ead4a"
+SPLIT_FROZEN_EVIDENCE_COMMIT = "b03ac174672a70c360f6678ca28e324b49852c26"
 
 #: The single frozen accepted-identity contract used by the entry-gate verifier.
 ACCEPTED = AcceptedPrerequisiteIdentity(

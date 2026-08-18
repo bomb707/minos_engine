@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://minos.engine/schemas/layer2-dataset-split-v2.schema.json",
+  "title": "Layer 2 Dataset Split Epoch Manifest v2",
+  "description": "Immutable, growth-stable, stratified, epoched dataset split manifest (L2-C v2). Epoch 1 inherits the accepted v1 partitions verbatim; each later epoch is a frozen superset snapshot that grandfathers all prior assignments and assigns only new samples. Purely deterministic content: no timestamps, git sha, absolute paths, or truth/mutation information.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "epoch",
+    "parent_epoch",
+    "salt",
+    "split_algorithm",
+    "split_policy_version",
+    "split_policy_hash",
+    "ratio_basis",
+    "ratio_basis_total",
+    "ancestor_v1_dataset_registry_hash",
+    "registry_snapshot_hash",
+    "parent_registry_snapshot_hash",
+    "parent_manifest_hash",
+    "transition_count",
+    "inherited_count",
+    "new_count",
+    "counts",
+    "per_chromosome",
+    "samples",
+    "manifest_hash"
+  ],
+  "properties": {
+    "schema_version": { "const": "layer2-dataset-split-v2" },
+    "epoch": { "type": "integer", "minimum": 1 },
+    "parent_epoch": { "type": ["integer", "null"], "minimum": 1 },
+    "salt": { "type": "string", "minLength": 1 },
+    "split_algorithm": { "const": "hash-ordered-ratio-filled-grandfathered" },
+    "split_policy_version": { "const": "layer2-dataset-split-v2" },
+    "split_policy_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "ratio_basis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["train", "validation", "test"],
+      "properties": {
+        "train": { "type": "integer", "minimum": 0 },
+        "validation": { "type": "integer", "minimum": 0 },
+        "test": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "ratio_basis_total": { "type": "integer", "exclusiveMinimum": 0 },
+    "ancestor_v1_dataset_registry_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "registry_snapshot_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "parent_registry_snapshot_hash": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+    "parent_manifest_hash": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+    "transition_count": { "type": "integer", "minimum": 0 },
+    "inherited_count": { "type": "integer", "minimum": 0 },
+    "new_count": { "type": "integer", "minimum": 0 },
+    "manifest_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["train", "validation", "test"],
+      "properties": {
+        "train": { "type": "integer", "minimum": 0 },
+        "validation": { "type": "integer", "minimum": 0 },
+        "test": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "per_chromosome": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["train", "validation", "test"],
+        "properties": {
+          "train": { "type": "integer", "minimum": 0 },
+          "validation": { "type": "integer", "minimum": 0 },
+          "test": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "samples": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "dataset_id",
+          "round_id",
+          "chromosome",
+          "identity_tuple_hash",
+          "partition",
+          "origin_epoch",
+          "assignment_source"
+        ],
+        "properties": {
+          "dataset_id": { "type": "string", "minLength": 1 },
+          "round_id": { "type": "string", "pattern": "^[0-9a-f]+$" },
+          "chromosome": { "enum": ["chr18", "chr19", "chr20", "chr21", "chr22"] },
+          "identity_tuple_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "partition": { "enum": ["train", "validation", "test"] },
+          "origin_epoch": { "type": "integer", "minimum": 1 },
+          "assignment_source": { "enum": ["v1-inherited", "v2-policy"] }
+        }
+      }
+    }
+  }
+}
