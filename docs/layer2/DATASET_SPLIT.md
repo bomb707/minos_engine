@@ -168,3 +168,33 @@ laundering) and that HEAD descends the L2-C source, re-verifies the committed ma
 bytes and re-derives its content, and rejects duplicate/missing migration evidence and
 consistently-tampered hash pairs. No value is trusted merely because it appears in the
 gate. See `STORAGE_ARCHITECTURE.md`, `DATABASE_ROLES.md`, and `MIGRATIONS.md`.
+
+### 12.1 Independent inventory + evidence-payload closure
+The verifier additionally: (a) re-validates the committed local input inventory through
+its frozen contract and **recomputes its hash from the validated entries** — the embedded
+`inventory_hash` is never trusted, and the recomputed value must equal the gate's
+`local_input_inventory_hash`; (b) binds every inventory identity to the frozen canonical
+manifest (exactly 75 entries, identical dataset-ID set, matching round-ID/chromosome, no
+duplicates), proves all four paths are safe portable POSIX relatives (no absolute, drive,
+backslash, URI, or `..`/`.` segments), and rejects any truth/mutation/score/evaluation
+token — so a *consistently re-hashed* tampered inventory still fails on the manifest
+correspondence or safe-path policy, not merely a stale outer hash; (c) cross-binds
+`generator_source_hash` to the **unique** `src/minos_engine/layer2/split` directory
+evidence item and `manifest_schema_hash` to the **unique** schema file evidence item, each
+recomputed from Commit W's blobs; and (d) binds the exact committed final-report bytes via
+`qualification_report_hash = sha256(report bytes)` plus a deterministic
+`evidence_payload_hash` over `{manifest, inventory, final report}` — recomputed from
+committed blobs, and **never** including `gates/split-frozen.json` itself.
+
+### 12.2 Non-circular two-commit evidence model
+A gate cannot bind the identity of the commit that introduces it: writing Commit X's own
+SHA/tree into the gate changes the tree and therefore the commit SHA. The closure uses two
+commits. **Commit W** carries the final verifier and tests; the gate binds Commit W's
+SHA/tree and re-hashes source evidence from Commit W's blobs. **Commit X** carries the
+regenerated gate and the new `LAYER2_L2C_SPLIT_FINAL_CLOSURE_REPORT.md` (the historical
+report is never overwritten). The report deliberately omits the gate hash, report hash, and
+payload hash, so hashing the report bytes is well defined. The gate does **not** embed
+Commit X's own SHA/tree; Commit X's identity is established externally — reported after
+push, frozen by owner acceptance, and pinned by the next stage as its prerequisite. At
+verification the gate may require HEAD to descend Commit W and verifies the payload from the
+current tree; it never claims to internally bind Commit X's own SHA.

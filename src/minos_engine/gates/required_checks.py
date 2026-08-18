@@ -194,6 +194,24 @@ REQUIRED_CHECKS: dict[str, frozenset[str]] = {
             "feature_registry_hash_bound",
             "committed_manifest_bytes_bound",
             "local_input_inventory_hash_bound",
+            # Independent inventory verification + frozen-manifest correspondence.
+            "inventory_contract_valid",
+            "inventory_hash_recomputed",
+            "committed_inventory_bytes_bound",
+            "inventory_manifest_identity_bound",
+            "inventory_paths_safe",
+            "inventory_truth_mutation_isolation_ok",
+            # Generator + manifest-schema evidence cross-bound to unique source evidence.
+            "generator_source_evidence_present",
+            "generator_source_evidence_matches_source",
+            "generator_source_evidence_bound",
+            "manifest_schema_evidence_present",
+            "manifest_schema_evidence_matches_source",
+            "manifest_schema_evidence_bound",
+            # Final closure report bytes + non-circular aggregate evidence payload.
+            "qualification_report_bytes_bound",
+            "evidence_payload_paths_exact",
+            "evidence_payload_hash_bound",
             # Immutable L2-C migration bindings (git-tree-bound evidence).
             "l2c_migration_immutable",
             "l2c_migration_file_evidence_bound",
