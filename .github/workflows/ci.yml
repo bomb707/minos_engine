@@ -132,13 +132,39 @@ jobs:
           done
           psql "$MINOS_DATABASE_URL" -c "SELECT version();"
 
-      - name: Alembic upgrade head
-        run: alembic upgrade head
+      - name: Alembic upgrade head — confirm L2-C head 0002_l2c_dataset_split
+        run: |
+          alembic upgrade head
+          alembic current | grep 0002_l2c_dataset_split
 
-      - name: Confirm migration head revision
-        run: alembic current | grep 0001_l2b_initial
+      - name: Alembic downgrade to 0001_l2b_initial (L2-C removed, L2-B retained)
+        run: |
+          alembic downgrade 0001_l2b_initial
+          alembic current | grep 0001_l2b_initial
+          python - <<'PY'
+          from sqlalchemy import create_engine, text
+          from minos_engine.storage.database import database_url
+          l2c = ("dataset_registry", "split_allocations", "dataset_evaluation_identity")
+          l2b_schemas = ["catalog", "profiling", "experiments", "evaluation", "models", "runtime", "audit"]
+          e = create_engine(database_url())
+          with e.connect() as c:
+              present_l2c = c.execute(
+                  text("SELECT count(*) FROM information_schema.tables WHERE table_name = ANY(:n)"),
+                  {"n": list(l2c)},
+              ).scalar()
+              l2b_tables = c.execute(
+                  text(
+                      "SELECT count(*) FROM information_schema.tables "
+                      "WHERE table_schema = ANY(:s) AND table_name NOT IN "
+                      "('dataset_registry','split_allocations','dataset_evaluation_identity')"
+                  ),
+                  {"s": l2b_schemas},
+              ).scalar()
+          assert present_l2c == 0, f"L2-C objects not removed on downgrade to 0001: {present_l2c}"
+          assert l2b_tables == 10, f"L2-B tables not retained (expected 10): {l2b_tables}"
+          PY
 
-      - name: Alembic downgrade base (verify stage-owned removal)
+      - name: Alembic downgrade base (all stage-owned objects removed)
         run: |
           alembic downgrade base
           python - <<'PY'
@@ -154,10 +180,10 @@ jobs:
           assert n == 0, f"stage schemas not removed: {n}"
           PY
 
-      - name: Alembic re-upgrade + confirm head
+      - name: Alembic re-upgrade head — confirm L2-C head 0002_l2c_dataset_split
         run: |
           alembic upgrade head
-          alembic current | grep 0001_l2b_initial
+          alembic current | grep 0002_l2c_dataset_split
 
       - name: Migration immutability + frozen inventory tests
         run: pytest tests/integration/layer2_db/test_migration_immutability.py -q
@@ -171,13 +197,25 @@ jobs:
       - name: L2-B PostgreSQL integration tests (must not skip in CI)
         run: pytest tests/integration/layer2_db -q
 
-      - name: Gate — DB-READY (if present)
+      - name: L2-C PostgreSQL integration tests (must not skip in CI)
+        run: pytest tests/integration/layer2_split -q
+
+      - name: Gate — DB-READY (immutable L2-B lineage base, if present)
         run: |
           if [ -f gates/db-ready.json ]; then
             minos-engine layer2 db gate require-pass --gate gates/db-ready.json --base-dir .
             minos-engine layer2 db qualify --check --gate gates/db-ready.json --base-dir .
           else
             echo "gates/db-ready.json not present (DB-READY evidence lives in Commit P)"
+          fi
+
+      - name: Gate — SPLIT-FROZEN (if present)
+        run: |
+          if [ -f gates/split-frozen.json ]; then
+            minos-engine layer2 split gate require-pass --gate gates/split-frozen.json --base-dir .
+            minos-engine layer2 split qualify --check --gate gates/split-frozen.json --base-dir .
+          else
+            echo "gates/split-frozen.json not present (SPLIT-FROZEN evidence lives in the L2-C evidence commit)"
           fi
 
       - name: Upload test & coverage reports
