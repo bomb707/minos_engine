@@ -46,6 +46,10 @@ __all__ = [
     "L2A_CLOSURE_EVIDENCE_COMMIT",
     "L2A_CLOSURE_EVIDENCE_TREE",
     "ACCEPTED_FEATURE_REGISTRY_HASH",
+    "DB_READY_GATE_HASH",
+    "DB_READY_SOURCE_COMMIT",
+    "DB_READY_SOURCE_TREE",
+    "DB_READY_EVIDENCE_COMMIT",
     "ACCEPTED",
 ]
 
@@ -75,6 +79,14 @@ L2A_CLOSURE_SOURCE_TREE = "e581ff76223210895ceff1521dabba751de72f9a"
 L2A_CLOSURE_EVIDENCE_COMMIT = "70d08daa7a5fce76ca347e1635507757ef792c88"
 L2A_CLOSURE_EVIDENCE_TREE = "eadb6d6f19d99a1f20de7bfb231771d832dc6114"
 ACCEPTED_FEATURE_REGISTRY_HASH = "0d8612707c6673060546511d8f5e8d1ba47048ef440e6c2dcf238fdc297f6e0c"
+
+# Accepted L2-B DB-READY closure identities (bound by the L2-C SPLIT-FROZEN gate; the
+# L2-C qualified source must properly descend the DB-READY evidence commit). A change
+# to any of these is an explicit owner acceptance decision (see update procedure above).
+DB_READY_GATE_HASH = "259986a0423a1b8317bb4c6b1a1cb9213708444a8a6764fc8c7703cf80499698"
+DB_READY_SOURCE_COMMIT = "695901ee95c529acf8a434c1babe06f364efa790"
+DB_READY_SOURCE_TREE = "462106b2a98a5c00ca49faa771531d2730b435da"
+DB_READY_EVIDENCE_COMMIT = "2df03a2cdf37b8c83d34d3e0347ba06a7159310d"
 
 #: The single frozen accepted-identity contract used by the entry-gate verifier.
 ACCEPTED = AcceptedPrerequisiteIdentity(

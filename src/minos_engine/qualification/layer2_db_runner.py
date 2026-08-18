@@ -42,6 +42,7 @@ __all__ = [
     "GATE_NAME",
     "DB_QUALIFIER_VERSION",
     "ALEMBIC_HEAD",
+    "l2b_revision_is_immutable_base",
     "DB_EVIDENCE",
     "DB_REQUIRED_TRACKED_FILES",
     "DbQualificationResult",
@@ -135,6 +136,37 @@ def alembic_head() -> str:
     from alembic.script import ScriptDirectory
 
     return ScriptDirectory.from_config(Config("alembic.ini")).get_current_head() or ""
+
+
+def l2b_revision_is_immutable_base(bound_revision: str) -> bool:
+    """True iff ``bound_revision`` is the immutable base of the migration lineage.
+
+    Forward-compatible replacement for a strict ``bound == head`` equality: a later
+    stage (L2-C and beyond) legitimately adds migrations on top of ``0001_l2b_initial``,
+    moving the head forward. The DB-READY binding stays valid as long as the bound L2-B
+    revision still exists, is the *base* revision (``down_revision is None``), and is an
+    ancestor of the current single head — so a tampered, replaced, or removed L2-B
+    migration still fails closed. This never loosens the L2-B guarantee; it only stops
+    a legitimate forward migration from falsely breaking DB-READY re-verification.
+    """
+    if not bound_revision:
+        return False
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    sd = ScriptDirectory.from_config(Config("alembic.ini"))
+    head = sd.get_current_head() or ""
+    if not head:
+        return False
+    if bound_revision == head:
+        return True
+    if sd.get_base() != bound_revision:
+        return False
+    try:
+        ancestry = {r.revision for r in sd.walk_revisions(base="base", head=head)}
+    except Exception:  # noqa: BLE001 - unknown/broken lineage fails closed
+        return False
+    return bound_revision in ancestry
 
 
 def run_db_suite(root: Path) -> dict[str, bool]:  # pragma: no cover - subprocess + real PG
@@ -489,7 +521,9 @@ def verify_db_ready_gate(
         "python_runtime_is_3_12": is_supported_runtime(),
         "evidence_verified": integrity.ok,
         "required_checks_and_promotion": promotion.ok,
-        "alembic_head_bound": gate.input_hashes.get("alembic_head_revision") == alembic_head(),
+        "alembic_head_bound": l2b_revision_is_immutable_base(
+            gate.input_hashes.get("alembic_head_revision") or ""
+        ),
         "storage_schema_bound": gate.input_hashes.get("storage_schema_hash")
         == storage_schema_hash(),
         "role_policy_bound": gate.input_hashes.get("role_policy_hash") == role_policy_hash(),

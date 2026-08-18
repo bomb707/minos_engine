@@ -18,6 +18,7 @@ from minos_engine.qualification.layer2_db_runner import (
     MIGRATION_FILE,
     alembic_head,
     assemble_db_result,
+    l2b_revision_is_immutable_base,
     verify_db_ready_gate,
 )
 from minos_engine.qualification.provenance import read_provenance
@@ -111,20 +112,35 @@ def test_db_ready_required_checks_registered():
         assert check in required
 
 
-def test_alembic_head_matches_constant():
-    assert alembic_head() == ALEMBIC_HEAD
+def test_l2b_revision_is_immutable_base():
+    # After L2-C adds migration 0002, the live head advances past 0001_l2b_initial, but
+    # the DB-READY-bound L2-B revision must remain the immutable base of the lineage and
+    # an ancestor of the current head (forward-migration compatibility, fail-closed).
+    assert ALEMBIC_HEAD == "0001_l2b_initial"
+    assert l2b_revision_is_immutable_base(ALEMBIC_HEAD) is True
+    assert l2b_revision_is_immutable_base("deadbeef_not_a_revision") is False
+    assert alembic_head() != ""  # a single concrete head exists
 
 
 # --------------------------------------------------------------------------- #
 # Assembly status logic (no PostgreSQL required)
 # --------------------------------------------------------------------------- #
-def test_assemble_pass_when_all_checks_true():
+def test_assemble_pass_when_all_checks_true(monkeypatch):
+    # L2-C legitimately adds the split schema/manifest to the working tree, so a fresh
+    # DB-READY assembly would now see split_manifest_absent=False. Isolate that
+    # working-tree-dependent check to exercise the pure assemble PASS logic. (The
+    # committed DB-READY gate froze split_manifest_absent=True and is unaffected.)
+    monkeypatch.setattr(
+        "minos_engine.qualification.layer2_db_runner._split_manifest_absent", lambda root: True
+    )
     result = _assemble(_passmap(all_pass=True))
     assert result.gate.status is GateStatus.PASS
     assert required_checks_for(GATE_NAME) <= set(result.gate.mandatory_checks)
     # the gate binds the storage/role/alembic + final L2-A closure identities
     ih = result.gate.input_hashes
-    assert ih["alembic_head_revision"] == ALEMBIC_HEAD
+    # a freshly-assembled gate binds the live Alembic head (0002+ once L2-C is present);
+    # the committed DB-READY gate keeps its frozen 0001 binding, still the lineage base.
+    assert ih["alembic_head_revision"] == alembic_head()
     assert ih["postgres_major_version"] == "16"
     assert ih["accepted_l1_ready_gate_hash"].startswith("aeabfea8")
     assert ih["accepted_l2a_closure_source_commit"] == "c2ceed0cd8566442ca229eaa41d9a096c0b4ccea"
@@ -145,7 +161,10 @@ def test_assemble_pass_when_all_checks_true():
     assert result.gate.mandatory_checks["accepted_feature_registry_hash_bound"] is True
 
 
-def test_assemble_holds_when_a_behavior_check_fails():
+def test_assemble_holds_when_a_behavior_check_fails(monkeypatch):
+    monkeypatch.setattr(
+        "minos_engine.qualification.layer2_db_runner._split_manifest_absent", lambda root: True
+    )
     pm = _passmap(all_pass=True)
     pm["test_worker_claim.py::case1"] = False
     result = _assemble(pm)

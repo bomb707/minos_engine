@@ -170,6 +170,58 @@ REQUIRED_CHECKS: dict[str, frozenset[str]] = {
             "accepted_feature_registry_hash_bound",
         }
     ),
+    # SPLIT-FROZEN — Layer 2 stage L2-C immutable dataset registry + 50/10/15 split.
+    "SPLIT-FROZEN": frozenset(
+        {
+            # Accepted prerequisites (unchanged + verified).
+            "accepted_protocol_ready_unchanged",
+            "accepted_twin_ready_unchanged",
+            "accepted_l1_ready_unchanged",
+            "accepted_db_ready_unchanged",
+            # Exact DB-READY closure ancestry (never current-HEAD substitution).
+            "db_ready_source_present",
+            "db_ready_source_tree_bound",
+            "db_ready_evidence_present",
+            "l2c_source_descends_db_ready",
+            "head_descends_l2c_source",
+            # Canonical manifest + registry bindings (independently recomputed).
+            "manifest_schema_valid",
+            "manifest_verified",
+            "canonical_manifest_hash_bound",
+            "dataset_registry_hash_bound",
+            "split_policy_hash_bound",
+            "parameter_space_hash_bound",
+            "feature_registry_hash_bound",
+            "committed_manifest_bytes_bound",
+            "local_input_inventory_hash_bound",
+            # Immutable L2-C migration bindings (git-tree-bound evidence).
+            "l2c_migration_immutable",
+            "l2c_migration_file_evidence_bound",
+            "l2c_migration_contract_bound",
+            "alembic_head_is_l2c",
+            # Exact split counts.
+            "total_sample_count_75",
+            "partition_totals_50_10_15",
+            "per_chromosome_10_2_3",
+            # Test + static analysis.
+            "full_tests_passed",
+            "coverage_passed",
+            "ruff_passed",
+            "format_passed",
+            "mypy_passed",
+            # Real PostgreSQL 16 integration.
+            "postgres_16_verified",
+            "l2c_migration_lifecycle_passed",
+            "role_isolation_passed",
+            "immutability_passed",
+            "constraints_passed",
+            # Source integrity + leakage + stage gating.
+            "evidence_hashes_complete",
+            "required_source_tracked",
+            "truth_mutation_isolation_ok",
+            "service_still_blocked",
+        }
+    ),
 }
 
 

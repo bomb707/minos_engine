@@ -114,8 +114,12 @@ def scratch_database(base_url: str, name: str) -> Iterator[str]:
 
 @pytest.fixture(scope="session")
 def main_db_url(pg_base_url: str) -> Iterator[str]:
+    # Pin the L2-B suite to the L2-B revision so a later stage's migration (L2-C's
+    # 0002 and beyond) never changes what these L2-B tests observe (exactly 10 tables,
+    # 7 schemas, head 0001_l2b_initial). L2-C validates itself in tests/integration/
+    # layer2_split against the current head.
     with scratch_database(pg_base_url, "minos_l2b_main") as url:
-        alembic_upgrade(url, "head")
+        alembic_upgrade(url, "0001_l2b_initial")
         yield url
 
 

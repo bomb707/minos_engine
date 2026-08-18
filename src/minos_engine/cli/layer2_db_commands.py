@@ -82,8 +82,11 @@ def _cmd_db_require_pass(args: argparse.Namespace) -> int:
 
 
 def add_layer2_subparser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    p_layer2 = sub.add_parser("layer2", help="Layer 2 operations (L2-B database)")
+    from .layer2_split_commands import add_split_subparser
+
+    p_layer2 = sub.add_parser("layer2", help="Layer 2 operations (L2-B database, L2-C split)")
     l2_sub = p_layer2.add_subparsers(dest="layer2_command", required=True)
+    add_split_subparser(l2_sub)
     p_db = l2_sub.add_parser("db", help="Layer 2 database (L2-B) operations")
     db_sub = p_db.add_subparsers(dest="db_command", required=True)
 

@@ -55,13 +55,13 @@ def _table_count(url: str) -> int:
 def test_full_migration_lifecycle(pg_base_url: str):
     with scratch_database(pg_base_url, "minos_l2b_lifecycle") as url:
         # clean database -> upgrade head
-        alembic_upgrade(url, "head")
+        alembic_upgrade(url, _HEAD)
         assert _current_head(url) == _HEAD
         assert _schemas_present(url) == set(SCHEMAS)
         assert _table_count(url) == 10
 
         # second upgrade is a no-op
-        alembic_upgrade(url, "head")
+        alembic_upgrade(url, _HEAD)
         assert _current_head(url) == _HEAD
 
         # downgrade to base removes stage-owned schemas/tables
@@ -70,7 +70,7 @@ def test_full_migration_lifecycle(pg_base_url: str):
         assert _current_head(url) is None
 
         # re-upgrade succeeds
-        alembic_upgrade(url, "head")
+        alembic_upgrade(url, _HEAD)
         assert _current_head(url) == _HEAD
         assert _schemas_present(url) == set(SCHEMAS)
         assert _table_count(url) == 10
@@ -81,7 +81,7 @@ def test_downgrade_local_cleanup_is_complete_and_safe(pg_base_url: str):
     # another database), but the downgrade must still complete without error and
     # leave no stage-owned grants or schemas in THIS database.
     with scratch_database(pg_base_url, "minos_l2b_roles") as url:
-        alembic_upgrade(url, "head")
+        alembic_upgrade(url, _HEAD)
         alembic_downgrade(url, "base")  # must not raise
         eng = create_engine(normalize_database_url(url))
         try:
@@ -114,7 +114,7 @@ def test_downgrade_fully_drops_roles_on_clean_cluster():
     try:
         base = server.get_uri()
         with scratch_database(base, "minos_l2b_cleanroles") as url:
-            alembic_upgrade(url, "head")
+            alembic_upgrade(url, _HEAD)
             alembic_downgrade(url, "base")
             eng = create_engine(normalize_database_url(base))
             try:

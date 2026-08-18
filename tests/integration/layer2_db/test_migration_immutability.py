@@ -92,7 +92,7 @@ def test_runtime_metadata_change_does_not_affect_migration(pg_base_url: str):
     )
     try:
         with scratch_database(pg_base_url, "minos_imm_add") as url:
-            alembic_upgrade(url, "head")
+            alembic_upgrade(url, "0001_l2b_initial")
             eng = create_engine(normalize_database_url(url))
             try:
                 with eng.connect() as c:
@@ -115,7 +115,7 @@ def test_runtime_metadata_change_does_not_affect_migration(pg_base_url: str):
 # --- #5/#6/#7 frozen inventory + lifecycle --------------------------------------
 def test_clean_upgrade_produces_frozen_inventory(pg_base_url: str):
     with scratch_database(pg_base_url, "minos_frozen") as url:
-        alembic_upgrade(url, "head")
+        alembic_upgrade(url, "0001_l2b_initial")
         counts = _counts(url)
         assert counts == FROZEN_INVENTORY["counts"]
         eng = create_engine(normalize_database_url(url))
@@ -149,7 +149,7 @@ def test_clean_upgrade_produces_frozen_inventory(pg_base_url: str):
 
 def test_downgrade_removes_exactly_the_frozen_inventory(pg_base_url: str):
     with scratch_database(pg_base_url, "minos_frozen_down") as url:
-        alembic_upgrade(url, "head")
+        alembic_upgrade(url, "0001_l2b_initial")
         alembic_downgrade(url, "base")
         counts = _counts(url)
         assert counts["schemas"] == 0
@@ -159,9 +159,9 @@ def test_downgrade_removes_exactly_the_frozen_inventory(pg_base_url: str):
 
 def test_upgrade_downgrade_reupgrade(pg_base_url: str):
     with scratch_database(pg_base_url, "minos_frozen_cycle") as url:
-        alembic_upgrade(url, "head")
+        alembic_upgrade(url, "0001_l2b_initial")
         alembic_downgrade(url, "base")
-        alembic_upgrade(url, "head")
+        alembic_upgrade(url, "0001_l2b_initial")
         assert _counts(url) == FROZEN_INVENTORY["counts"]
 
 
