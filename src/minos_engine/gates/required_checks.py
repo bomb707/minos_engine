@@ -151,6 +151,17 @@ REQUIRED_CHECKS: dict[str, frozenset[str]] = {
             "format_passed",
             "mypy_passed",
             "accepted_prerequisites_unchanged",
+            # Immutable migration + admin ownership + final L2-A closure binding.
+            "migration_immutable",
+            "migration_contract_frozen",
+            "admin_ownership_passed",
+            "l2a_closure_source_bound",
+            "l2a_closure_source_tree_bound",
+            "l2a_closure_evidence_bound",
+            "l2a_closure_evidence_tree_bound",
+            "l2a_closure_chain_valid",
+            "l2b_source_descends_l2a",
+            "accepted_feature_registry_hash_bound",
         }
     ),
 }

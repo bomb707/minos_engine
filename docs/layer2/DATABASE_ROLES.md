@@ -67,6 +67,27 @@ L2-C (the immutable 50/10/15 split manifest and sample allocation) does not exis
 future L2-C/L2-E control. L2-B denies `minos_trainer` access to the `evaluation` schema
 (where truth-derived evidence lives) at the schema-USAGE level today.
 
+## Ownership model & administrative login
+`minos_admin` is a **NOLOGIN** group/ownership role and is **never** a superuser (it
+has none of `SUPERUSER`, `CREATEDB`, `CREATEROLE`, `REPLICATION`, `BYPASSRLS`). The
+migration creates the seven schemas `AUTHORIZATION minos_admin` and creates all ten
+tables, both trigger functions, and every index/trigger while executing under
+`SET ROLE minos_admin`, so `minos_admin` **owns** them and can `ALTER`/`DROP`/index
+them. Application roles receive only least-privilege grants and are **never** granted
+membership in `minos_admin`, so no application role can `SET ROLE minos_admin`.
+
+An external administrative **login** role (not committed here, not part of the five
+MINOS roles) performs migrations by becoming/`SET ROLE minos_admin`. That login must
+be a member of `minos_admin` (or a superuser). Separately — and documented distinctly
+from `minos_admin`'s own privileges — the bootstrap of the five roles requires the
+migration login to hold `CREATEROLE` (or be superuser) **only** to run the initial
+`CREATE ROLE` statements; `minos_admin` itself never holds `CREATEROLE`.
+
+Unsafe default `PUBLIC EXECUTE` on the stage functions is revoked, and safe default
+privileges are set (as `minos_admin`) so future objects it creates do not restore
+`PUBLIC` access. On downgrade those default-privilege entries are cleared before the
+roles are dropped.
+
 ## Role lifecycle
 Roles are created idempotently (NOLOGIN, no password) during `upgrade`. `downgrade`
 revokes all grants and default privileges in this database, then drops exactly the five

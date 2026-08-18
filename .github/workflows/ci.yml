@@ -159,6 +159,15 @@ jobs:
           alembic upgrade head
           alembic current | grep 0001_l2b_initial
 
+      - name: Migration immutability + frozen inventory tests
+        run: pytest tests/integration/layer2_db/test_migration_immutability.py -q
+
+      - name: Admin ownership / capability + role-denial tests
+        run: >-
+          pytest
+          tests/integration/layer2_db/test_admin_ownership.py
+          tests/integration/layer2_db/test_roles_isolation.py -q
+
       - name: L2-B PostgreSQL integration tests (must not skip in CI)
         run: pytest tests/integration/layer2_db -q
 

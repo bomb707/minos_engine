@@ -23,9 +23,11 @@ from minos_engine.common.runtime import is_supported_runtime, runtime_identity
 from minos_engine.gates.contracts import EvidenceKind, GateArtifact, GateStatus
 from minos_engine.gates.required_checks import required_checks_for
 from minos_engine.gates.verifier import load_gate, require_gate_pass, verify_gate_integrity
+from minos_engine.layer2 import feature_registry as FR
 from minos_engine.layer2 import prerequisites as PRE
 from minos_engine.layer2.entry_gate import EntryGateRequest, verify_l2_entry_gate
 from minos_engine.storage.fingerprint import storage_schema_hash
+from minos_engine.storage.migration_contract import contract_hash
 from minos_engine.storage.roles import role_policy_hash
 
 from . import git_tree as G
@@ -68,6 +70,8 @@ DB_EVIDENCE: tuple[tuple[str, EvidenceKind], ...] = (
     ("docs/layer2/STORAGE_ARCHITECTURE.md", EvidenceKind.FILE),
     ("docs/layer2/DATABASE_ROLES.md", EvidenceKind.FILE),
     ("docs/layer2/MIGRATIONS.md", EvidenceKind.FILE),
+    ("src/minos_engine/layer2/feature_registry.py", EvidenceKind.FILE),
+    ("src/minos_engine/layer2/prerequisites.py", EvidenceKind.FILE),
     (_DB_SUITE, EvidenceKind.DIRECTORY),
     ("pyproject.toml", EvidenceKind.FILE),
 )
@@ -88,12 +92,15 @@ DB_REQUIRED_TRACKED_FILES: tuple[str, ...] = (
     "src/minos_engine/storage/models/audit.py",
     "src/minos_engine/storage/repositories/artifacts.py",
     "src/minos_engine/storage/repositories/append_only.py",
+    "src/minos_engine/storage/migration_contract.py",
     MIGRATION_FILE,
     "migrations/env.py",
     "alembic.ini",
     "docs/layer2/STORAGE_ARCHITECTURE.md",
     "docs/layer2/DATABASE_ROLES.md",
     "docs/layer2/MIGRATIONS.md",
+    "src/minos_engine/layer2/feature_registry.py",
+    "src/minos_engine/layer2/prerequisites.py",
 )
 
 # gate check -> the DB-suite nodeids (file.py or file.py::test) whose pass proves it.
@@ -104,6 +111,8 @@ _CHECK_NODES: dict[str, tuple[str, ...]] = {
     "migration_upgrade_passed": ("test_migration_lifecycle.py::test_full_migration_lifecycle",),
     "migration_downgrade_passed": ("test_migration_lifecycle.py::test_full_migration_lifecycle",),
     "migration_reupgrade_passed": ("test_migration_lifecycle.py::test_full_migration_lifecycle",),
+    "migration_contract_frozen": ("test_migration_immutability.py",),
+    "admin_ownership_passed": ("test_admin_ownership.py",),
     "constraint_tests_passed": ("test_constraints.py",),
     "foreign_keys_passed": ("test_constraints.py::test_orphan_foreign_key_rejected",),
     "append_only_passed": ("test_append_only.py",),
@@ -214,6 +223,59 @@ def _split_manifest_absent(root: Path) -> bool:
     return not any(p.exists() for p in candidates)
 
 
+_FORBIDDEN_MIGRATION_TOKENS = (
+    "Base.metadata",
+    "create_all",
+    "drop_all",
+    "import Base",
+    "storage.metadata",
+    "storage import models",
+    "storage.models",
+)
+
+
+def migration_immutable(root: Path) -> bool:
+    """The migration is a self-contained snapshot: no ORM metadata dependency."""
+    path = root / MIGRATION_FILE
+    if not path.exists():
+        return False
+    src = path.read_text(encoding="utf-8")
+    return not any(token in src for token in _FORBIDDEN_MIGRATION_TOKENS)
+
+
+def l2a_closure_checks(root: Path) -> dict[str, bool]:
+    """Independently prove the final accepted L2-A closure chain from git objects."""
+    src = PRE.L2A_CLOSURE_SOURCE_COMMIT
+    src_tree = PRE.L2A_CLOSURE_SOURCE_TREE
+    evi = PRE.L2A_CLOSURE_EVIDENCE_COMMIT
+    evi_tree = PRE.L2A_CLOSURE_EVIDENCE_TREE
+    head = read_provenance(root).head_sha or "HEAD"
+
+    src_ok = G.object_exists(root, src)
+    evi_ok = G.object_exists(root, evi)
+    head_ok = G.object_exists(root, head)
+    src_tree_ok = src_ok and G.commit_tree_sha(root, src) == src_tree
+    evi_tree_ok = evi_ok and G.commit_tree_sha(root, evi) == evi_tree
+    # closure evidence properly descends closure source
+    chain_ok = bool(
+        src_ok and evi_ok and G.is_ancestor(root, src, evi) and not G.is_ancestor(root, evi, src)
+    )
+    # remediated L2-B source (HEAD) properly descends closure evidence
+    descends_ok = bool(
+        evi_ok and head_ok and G.is_ancestor(root, evi, head) and not G.is_ancestor(root, head, evi)
+    )
+    return {
+        "l2a_closure_source_bound": src_ok,
+        "l2a_closure_source_tree_bound": src_tree_ok,
+        "l2a_closure_evidence_bound": evi_ok,
+        "l2a_closure_evidence_tree_bound": evi_tree_ok,
+        "l2a_closure_chain_valid": chain_ok,
+        "l2b_source_descends_l2a": descends_ok,
+        "accepted_feature_registry_hash_bound": FR.REGISTRY_HASH
+        == PRE.ACCEPTED_FEATURE_REGISTRY_HASH,
+    }
+
+
 class DbQualificationResult(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -271,9 +333,11 @@ def assemble_db_result(
     si = source_integrity
     entry_ok = verify_l2_entry_gate(EntryGateRequest(repo_root=str(root))).ok
 
+    migration_sha = si_evidence_hash(si, MIGRATION_FILE)
     mandatory: dict[str, bool] = {
         "l2a_entry_passed": entry_ok,
         **{check: _check_from_suite(passmap, nodes) for check, nodes in _CHECK_NODES.items()},
+        "migration_immutable": migration_immutable(root),
         "service_still_blocked": _service_still_blocked(),
         "split_manifest_absent": _split_manifest_absent(root),
         "full_tests_passed": suite_passes(accounting),
@@ -282,6 +346,7 @@ def assemble_db_result(
         "format_passed": tools["format"],
         "mypy_passed": tools["mypy"],
         "accepted_prerequisites_unchanged": _accepted_prerequisites_unchanged(root),
+        **l2a_closure_checks(root),
     }
 
     status = GateStatus.PASS if all(mandatory.values()) else GateStatus.HOLD
@@ -289,15 +354,27 @@ def assemble_db_result(
 
     input_hashes = {
         "alembic_head_revision": alembic_head(),
-        "migration_file_hash": si_evidence_hash(si, MIGRATION_FILE),
+        "migration_file_hash": migration_sha,
+        "migration_contract_hash": contract_hash(migration_sha),
         "storage_schema_hash": storage_schema_hash(),
         "role_policy_hash": role_policy_hash(),
         "postgres_major_version": "16" if mandatory["postgres_16_verified"] else "unverified",
         "accepted_protocol_ready_gate_hash": PRE.PROTOCOL_READY_GATE_HASH,
         "accepted_twin_ready_gate_hash": PRE.TWIN_READY_GATE_HASH,
         "accepted_l1_ready_gate_hash": PRE.L1_READY_GATE_HASH,
-        "accepted_l2a_owner_commit": PRE.OWNER_ACCEPTANCE_COMMIT,
-        "accepted_l1_artifact_commit": PRE.ARTIFACT_COMMIT,
+        "accepted_l2a_closure_source_commit": PRE.L2A_CLOSURE_SOURCE_COMMIT,
+        "accepted_l2a_closure_source_tree": PRE.L2A_CLOSURE_SOURCE_TREE,
+        "accepted_l2a_closure_evidence_commit": PRE.L2A_CLOSURE_EVIDENCE_COMMIT,
+        "accepted_l2a_closure_evidence_tree": PRE.L2A_CLOSURE_EVIDENCE_TREE,
+        "accepted_feature_registry_hash": PRE.ACCEPTED_FEATURE_REGISTRY_HASH,
+        # Exact test accounting bound into the gate (unambiguous evidence).
+        "test_collected": str(accounting.collected),
+        "test_passed": str(accounting.passed),
+        "test_failed": str(accounting.failed),
+        "test_errors": str(accounting.errors),
+        "test_skipped": str(accounting.skipped),
+        "db_integration_collected": str(len(passmap)),
+        "db_integration_passed": str(sum(1 for v in passmap.values() if v)),
         "qualification_report_hash": "",  # set by write_db_outputs after render
         "python_runtime": runtime_identity(),
         "specification_manifest_hash": si.spec_manifest_hash,
@@ -382,7 +459,38 @@ def verify_db_ready_gate(
         "qualified_commit_present": G.object_exists(root, src_sha),
         "qualified_tree_matches": G.commit_tree_sha(root, src_sha)
         == gate.qualified_source_tree_sha,
+        # Migration immutability + contract binding (independent recompute).
+        "migration_immutable": migration_immutable(root),
+        "migration_contract_bound": gate.input_hashes.get("migration_contract_hash")
+        == contract_hash(gate.input_hashes.get("migration_file_hash", "")),
     }
+    # Each closure check ANDs the gate's bound value (== pinned) with the independent
+    # git recomputation, under a single key, so tampering the input OR a broken chain
+    # both fail closed. (A plain dict spread of the recompute would silently overwrite
+    # the binding checks.)
+    gih = gate.input_hashes.get
+    cc = l2a_closure_checks(root)
+    checks["l2a_closure_source_bound"] = cc["l2a_closure_source_bound"] and (
+        gih("accepted_l2a_closure_source_commit") == PRE.L2A_CLOSURE_SOURCE_COMMIT
+    )
+    checks["l2a_closure_source_tree_bound"] = cc["l2a_closure_source_tree_bound"] and (
+        gih("accepted_l2a_closure_source_tree") == PRE.L2A_CLOSURE_SOURCE_TREE
+    )
+    checks["l2a_closure_evidence_bound"] = cc["l2a_closure_evidence_bound"] and (
+        gih("accepted_l2a_closure_evidence_commit") == PRE.L2A_CLOSURE_EVIDENCE_COMMIT
+    )
+    checks["l2a_closure_evidence_tree_bound"] = cc["l2a_closure_evidence_tree_bound"] and (
+        gih("accepted_l2a_closure_evidence_tree") == PRE.L2A_CLOSURE_EVIDENCE_TREE
+    )
+    checks["l2a_closure_chain_valid"] = cc["l2a_closure_chain_valid"]
+    checks["l2b_source_descends_l2a"] = cc["l2b_source_descends_l2a"]
+    checks["accepted_feature_registry_hash_bound"] = cc[
+        "accepted_feature_registry_hash_bound"
+    ] and (
+        gih("accepted_feature_registry_hash")
+        == PRE.ACCEPTED_FEATURE_REGISTRY_HASH
+        == FR.REGISTRY_HASH
+    )
     ancestry = None
     if require_descends:
         ancestry = verify_commit_ancestry(
@@ -413,7 +521,7 @@ def write_db_outputs(result: DbQualificationResult, root: Path) -> tuple[Path, P
     from minos_engine.common.hashing import sha256_hex
     from minos_engine.gates.verifier import write_gate
 
-    report_path = root / "reports" / "LAYER2_L2B_DB_QUALIFICATION_REPORT.md"
+    report_path = root / "reports" / "LAYER2_L2B_DB_REMEDIATION_REPORT.md"
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(result.report_markdown, encoding="utf-8")
     report_sha = sha256_hex(report_path.read_bytes())
@@ -440,7 +548,8 @@ def _render_report(
     )
     ev = "\n".join(f"| `{e.path}` | {e.kind.value} | `{e.sha256}` |" for e in gate.evidence)
     ih = json.dumps(gate.input_hashes, indent=2, sort_keys=True)
-    return f"""# LAYER 2 — L2-B DB-READY Qualification Report
+    g = gate.input_hashes.get
+    return f"""# LAYER 2 — L2-B DB-READY Remediation Qualification Report
 
 **Gate:** {GATE_NAME} — **{gate.status.value}**
 **Qualification tool:** {DB_QUALIFIER_VERSION}
@@ -449,21 +558,36 @@ def _render_report(
 
 > Generated by `minos-engine layer2 db qualify`. Not hand-authored. A PASS gate is
 > not constructible with any failing mandatory check; the DB-READY required set is
-> enforced. Evidence is hashed from the qualified commit's blobs. All schema/role/
-> constraint/append-only/least-privilege/worker-claim checks come from the real
-> PostgreSQL 16 integration suite. `Layer2Service.select_config` remains blocked and
-> no dataset split manifest exists.
+> enforced. Evidence is hashed from the qualified commit's blobs. The migration is a
+> frozen, self-contained snapshot (no ORM metadata dependency); `minos_admin` owns the
+> schemas/tables/functions (NOLOGIN, non-superuser); and the gate binds the final
+> accepted L2-A closure identities and the accepted feature-registry hash. All
+> schema/role/constraint/append-only/least-privilege/worker-claim/admin-ownership
+> checks come from the real PostgreSQL 16 integration suite.
+> `Layer2Service.select_config` remains blocked and no dataset split manifest exists.
 
 ## Mandatory checks
 | Check | Status | Kind |
 |---|---|---|
 {rows}
 
-## Test execution
+## Test accounting (exact, unambiguous)
+This report binds the pre-evidence full-suite accounting from the qualification run
+(the committed DB-READY gate did not exist yet, so the expected-gate tests skip with an
+explicit reason). The final post-evidence full-suite result — with the gate present so
+those tests execute — is recorded separately in the final review response.
+
 | Metric | Value |
 |---|---|
-| Collected | {accounting.collected} |
-| Passed | {accounting.passed} |
+| Full suite — collected | {g("test_collected")} |
+| Full suite — passed | {g("test_passed")} |
+| Full suite — failed | {g("test_failed")} |
+| Full suite — errors | {g("test_errors")} |
+| Full suite — skipped | {g("test_skipped")} |
+| Full suite — deselected | 0 |
+| PostgreSQL integration — collected | {g("db_integration_collected")} |
+| PostgreSQL integration — passed | {g("db_integration_passed")} |
+| PostgreSQL integration — skipped | 0 |
 | Coverage | {coverage.line_coverage_percent}% (threshold {STAGE0_COVERAGE_THRESHOLD}%) |
 
 ## Bound identities

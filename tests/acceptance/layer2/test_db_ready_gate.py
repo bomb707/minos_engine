@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 
 import pytest
 
@@ -91,6 +92,16 @@ def test_db_ready_required_checks_registered():
         "service_still_blocked",
         "split_manifest_absent",
         "accepted_prerequisites_unchanged",
+        "migration_immutable",
+        "migration_contract_frozen",
+        "admin_ownership_passed",
+        "l2a_closure_source_bound",
+        "l2a_closure_source_tree_bound",
+        "l2a_closure_evidence_bound",
+        "l2a_closure_evidence_tree_bound",
+        "l2a_closure_chain_valid",
+        "l2b_source_descends_l2a",
+        "accepted_feature_registry_hash_bound",
     ):
         assert check in required
 
@@ -106,11 +117,23 @@ def test_assemble_pass_when_all_checks_true():
     result = _assemble(_passmap(all_pass=True))
     assert result.gate.status is GateStatus.PASS
     assert required_checks_for(GATE_NAME) <= set(result.gate.mandatory_checks)
-    # the gate binds the storage/role/alembic identities
+    # the gate binds the storage/role/alembic + final L2-A closure identities
     ih = result.gate.input_hashes
     assert ih["alembic_head_revision"] == ALEMBIC_HEAD
     assert ih["postgres_major_version"] == "16"
     assert ih["accepted_l1_ready_gate_hash"].startswith("aeabfea8")
+    assert ih["accepted_l2a_closure_source_commit"] == "c2ceed0cd8566442ca229eaa41d9a096c0b4ccea"
+    assert ih["accepted_l2a_closure_source_tree"] == "e581ff76223210895ceff1521dabba751de72f9a"
+    assert ih["accepted_l2a_closure_evidence_commit"] == "70d08daa7a5fce76ca347e1635507757ef792c88"
+    assert ih["accepted_l2a_closure_evidence_tree"] == "eadb6d6f19d99a1f20de7bfb231771d832dc6114"
+    assert (
+        ih["accepted_feature_registry_hash"]
+        == "0d8612707c6673060546511d8f5e8d1ba47048ef440e6c2dcf238fdc297f6e0c"
+    )
+    assert result.gate.mandatory_checks["migration_immutable"] is True
+    assert result.gate.mandatory_checks["l2a_closure_chain_valid"] is True
+    assert result.gate.mandatory_checks["l2b_source_descends_l2a"] is True
+    assert result.gate.mandatory_checks["accepted_feature_registry_hash_bound"] is True
 
 
 def test_assemble_holds_when_a_behavior_check_fails():
@@ -174,3 +197,96 @@ def test_wrong_qualification_tool_rejected(tmp_path):
     result = verify_db_ready_gate(REPO_ROOT, Path(_tamper(tmp_path, mut)), require_descends=False)
     assert not result.ok
     assert any("qualification_tool_identity" in r for r in result.reasons)
+
+
+# --------------------------------------------------------------------------- #
+# Final accepted L2-A closure binding — negatives (Defect 3)
+# --------------------------------------------------------------------------- #
+
+
+def _git(root, *args):
+    subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=True)
+
+
+def _tmp_git_repo(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "t@e.com")
+    _git(root, "config", "user.name", "t")
+    (root / "x").write_text("x", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "c1")
+    return root
+
+
+def test_closure_checks_fail_closed_on_missing_git_objects(tmp_path):
+    from minos_engine.qualification.layer2_db_runner import l2a_closure_checks
+
+    checks = l2a_closure_checks(_tmp_git_repo(tmp_path))
+    # the pinned closure commits/trees are absent in a throwaway repo -> fail closed
+    assert checks["l2a_closure_source_bound"] is False
+    assert checks["l2a_closure_evidence_bound"] is False
+    assert checks["l2a_closure_chain_valid"] is False
+    assert checks["l2b_source_descends_l2a"] is False
+    # registry-hash binding is repo-independent and remains bound
+    assert checks["accepted_feature_registry_hash_bound"] is True
+
+
+def test_closure_checks_pass_on_real_repo():
+    from minos_engine.qualification.layer2_db_runner import l2a_closure_checks
+
+    checks = l2a_closure_checks(REPO_ROOT)
+    assert all(checks.values()), checks
+
+
+@pytest.mark.skipif(not _GATE.exists(), reason="DB-READY gate produced in Commit R")
+@pytest.mark.parametrize(
+    "field,check",
+    [
+        ("accepted_l2a_closure_source_commit", "l2a_closure_source_bound"),
+        ("accepted_l2a_closure_source_tree", "l2a_closure_source_tree_bound"),
+        ("accepted_l2a_closure_evidence_commit", "l2a_closure_evidence_bound"),
+        ("accepted_l2a_closure_evidence_tree", "l2a_closure_evidence_tree_bound"),
+        ("accepted_feature_registry_hash", "accepted_feature_registry_hash_bound"),
+    ],
+)
+def test_tampered_closure_binding_rejected(tmp_path, field, check):
+    from pathlib import Path
+
+    def mut(raw):
+        raw["input_hashes"] = dict(
+            raw["input_hashes"], **{field: "9" * len(raw["input_hashes"][field])}
+        )
+
+    result = verify_db_ready_gate(REPO_ROOT, Path(_tamper(tmp_path, mut)), require_descends=False)
+    assert not result.ok
+    assert any(check in r for r in result.reasons), result.reasons
+
+
+@pytest.mark.skipif(not _GATE.exists(), reason="DB-READY gate produced in Commit R")
+def test_old_owner_commit_substituted_for_closure_rejected(tmp_path):
+    # The earlier audit/owner commit must NOT satisfy the final-closure source binding.
+    from pathlib import Path
+
+    def mut(raw):
+        raw["input_hashes"] = dict(
+            raw["input_hashes"],
+            accepted_l2a_closure_source_commit="f96ea78e0943e33f751afe2eb1709512445e9437",
+        )
+
+    result = verify_db_ready_gate(REPO_ROOT, Path(_tamper(tmp_path, mut)), require_descends=False)
+    assert not result.ok
+    assert any("l2a_closure_source_bound" in r for r in result.reasons)
+
+
+@pytest.mark.skipif(not _GATE.exists(), reason="DB-READY gate produced in Commit R")
+def test_tampered_migration_contract_rejected(tmp_path):
+    from pathlib import Path
+
+    def mut(raw):
+        raw["input_hashes"] = dict(raw["input_hashes"], migration_contract_hash="9" * 64)
+
+    result = verify_db_ready_gate(REPO_ROOT, Path(_tamper(tmp_path, mut)), require_descends=False)
+    assert not result.ok
+    assert any("migration_contract_bound" in r for r in result.reasons)

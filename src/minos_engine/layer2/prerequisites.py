@@ -41,6 +41,11 @@ __all__ = [
     "V2_FRAMEWORK_COMMIT",
     "V2_EVIDENCE_COMMIT",
     "OWNER_ACCEPTANCE_COMMIT",
+    "L2A_CLOSURE_SOURCE_COMMIT",
+    "L2A_CLOSURE_SOURCE_TREE",
+    "L2A_CLOSURE_EVIDENCE_COMMIT",
+    "L2A_CLOSURE_EVIDENCE_TREE",
+    "ACCEPTED_FEATURE_REGISTRY_HASH",
     "ACCEPTED",
 ]
 
@@ -62,6 +67,14 @@ ARTIFACT_TREE = "b5d5f5cbe5ef53a59a2874d54b39460dbdbe970a"
 V2_FRAMEWORK_COMMIT = "fe0c2d116e4e4771dbe51dbc3193b7626fa39e89"
 V2_EVIDENCE_COMMIT = "fa2a7696a497254fd38251072eb39a278ff24d4d"
 OWNER_ACCEPTANCE_COMMIT = "f96ea78e0943e33f751afe2eb1709512445e9437"
+
+# Final accepted L2-A closure identities (the authoritative accepted Layer 1/L2-A
+# state that downstream stages bind to; supersedes the earlier owner/audit commit).
+L2A_CLOSURE_SOURCE_COMMIT = "c2ceed0cd8566442ca229eaa41d9a096c0b4ccea"
+L2A_CLOSURE_SOURCE_TREE = "e581ff76223210895ceff1521dabba751de72f9a"
+L2A_CLOSURE_EVIDENCE_COMMIT = "70d08daa7a5fce76ca347e1635507757ef792c88"
+L2A_CLOSURE_EVIDENCE_TREE = "eadb6d6f19d99a1f20de7bfb231771d832dc6114"
+ACCEPTED_FEATURE_REGISTRY_HASH = "0d8612707c6673060546511d8f5e8d1ba47048ef440e6c2dcf238fdc297f6e0c"
 
 #: The single frozen accepted-identity contract used by the entry-gate verifier.
 ACCEPTED = AcceptedPrerequisiteIdentity(

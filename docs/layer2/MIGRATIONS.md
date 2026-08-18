@@ -9,6 +9,20 @@ only from `MINOS_DATABASE_URL` via `migrations/env.py` (synchronous psycopg 3 en
 0001_l2b_initial   (down_revision = None)
 ```
 
+## Immutable revision (frozen snapshot)
+Revision `0001_l2b_initial` is a **frozen, self-contained snapshot**. It imports no
+ORM declarative base or model metadata and never bulk-emits or reflects the ORM schema
+— every schema, role, table, column, constraint, index, function, trigger, and grant
+is written with explicit Alembic operations. Consequently, replaying revision 0001
+always produces the exact L2-B inventory regardless of any later ORM changes (L2-C+);
+adding or removing a runtime ORM table does not change what revision 0001 creates or
+drops. The frozen inventory (7 schemas, 10 tables, 10 PK / 9 FK / 12 unique / 29 check
+constraints, 23 indexes, 2 functions, 7 triggers, 5 roles) and a deterministic
+migration-contract hash over the committed migration bytes + inventory are defined in
+`src/minos_engine/storage/migration_contract.py` and bound into the DB-READY gate.
+Ownership is established via `AUTHORIZATION minos_admin` + `SET ROLE minos_admin`
+(see `DATABASE_ROLES.md`).
+
 ## Upgrade order
 1. Create the five NOLOGIN roles (idempotent, no passwords).
 2. Create the seven application schemas.

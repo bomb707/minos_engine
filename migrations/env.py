@@ -10,11 +10,11 @@ from __future__ import annotations
 
 from alembic import context
 
-from minos_engine.storage import models as _models  # noqa: F401 - populate metadata
 from minos_engine.storage.database import create_db_engine, database_url
-from minos_engine.storage.metadata import Base
 
-target_metadata = Base.metadata
+# The versioned migrations are frozen, explicit snapshots and do not autogenerate
+# from ORM metadata, so no ORM Base/models are imported here (revision immutability).
+target_metadata = None
 
 
 def run_migrations_offline() -> None:
