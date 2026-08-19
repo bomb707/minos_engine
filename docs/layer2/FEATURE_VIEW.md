@@ -15,6 +15,11 @@ decision. `Layer2Service.select_config` remains blocked throughout L2-E.
 
 ## Feature inventory (authoritative; correction 7 — formal L2-A documentation erratum)
 
+*Scope note:* E0 proves only the **derived** inventory below. The committed column
+manifest itself (exactly 129 unique paths, contiguous indices 0..128, sorted-path
+order, the accepted registry hash, and a stable `feature_set_hash`) is an **E1 proof
+obligation** — not claimed here.
+
 **Erratum:** the L2-A registry *documentation* states 147 ELIGIBLE fields; the
 *executable registry* (`production_eligible_fields()` at registry hash `0d861270…`)
 yields **141**. The executable registry is authoritative. FEATURE-READY-v1 selects the
@@ -38,12 +43,15 @@ manifest from the registry function and fails on any drift.
 `selected_feature_values_hash` is required. This equivalence is proven by a permanent
 test (`test_feature_values_hash_domain_is_selected_set`) and re-proven by the gate.
 
-## Epoch-1 materialization (correction 1)
+## Materialization (correction 1 — snapshot-derived, no fixed counts)
 
-Train = **50**, validation = **10**, sealed test = **15**. Only **60 rows** are ever
-materialized (50 train + 10 validation). **No test matrix, test row, or test payload
-exists anywhere** — the matrices table structurally permits only
+Materialized rows derive from the frozen snapshot membership, never from constants:
+**train rows = frozen snapshot train members; validation rows = frozen snapshot
+validation members; test materialization = zero, always.** **No test matrix, test row,
+or test payload exists anywhere** — the matrices table structurally permits only
 `('train','validation')`, so test membership is rejected before it could be read.
+Epoch-1's 50/10/15 may be identified only as *historical derived evidence* in generated
+reports — it is never an L2-E invariant.
 
 ## Hash contracts (correction 5; all domain-separated, canonical JSON)
 
@@ -133,8 +141,9 @@ or changing any value, epoch, count, or bound identity changes the respective ha
   S2-pattern gate-contract verification, CI manifest-verifier step, tamper matrix
   (column/member reordering, value mutation, wrong set/registry hash, forged manifests,
   type-boundary violations, conflicting-idempotency, access denial).
-* **FEATURE-MATRIX-FROZEN-1** (epoch evidence): the built epoch-1 train(50) +
-  validation(10) matrices — committed metadata/hash manifests (no plaintext vectors),
+* **FEATURE-MATRIX-FROZEN-1** (epoch evidence): the built epoch-1 train +
+  validation matrices (row counts = their frozen snapshot partition memberships) —
+  committed metadata/hash manifests (no plaintext vectors),
   content-addressed artifacts inventoried by hash, payload + operational verification,
   own S/E closure.
 

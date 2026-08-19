@@ -51,27 +51,52 @@ def test_research_only_candidate_density_excluded() -> None:
 
 
 def test_feature_values_hash_domain_is_selected_set() -> None:
-    """Correction 6: the snapshot feature_values_hash covers EXACTLY the selected 129
-    BAM-only ELIGIBLE paths — extract_eligible_feature_values filters to
-    bam-profile-v1, so it is the valid source anchor for L2-E (no separate
-    selected_feature_values_hash needed)."""
-    import inspect
+    """Correction 6 (behavioral proof only — no source-string matching): the snapshot
+    feature_values_hash covers EXACTLY the selected 129 BAM-only ELIGIBLE paths, so it
+    is the valid source anchor for L2-E (no separate selected_feature_values_hash)."""
+    from minos_engine.layer2.ingest.contracts import (
+        canonical_feature_values_hash,
+        extract_eligible_feature_values,
+    )
 
-    from minos_engine.layer2.ingest import contracts as ingest_contracts
+    def build_doc() -> dict:
+        # a document carrying ALL 141 executable ELIGIBLE fields (129 BAM + 12 window)
+        doc: dict = {}
+        for path in _ELIGIBLE:
+            node = doc
+            parts = path.split(".")
+            for part in parts[:-1]:
+                node = node.setdefault(part, {})
+            node[parts[-1]] = 0.5 if _RECS[path].value_kind.value == "FRACTION" else 1.0
+        return doc
 
-    # structural proof: the extractor's filter admits exactly the BAM-only subset.
-    src = inspect.getsource(ingest_contracts.extract_eligible_feature_values)
-    assert 'source_schema != "bam-profile-v1"' in src  # window fields skipped
+    window = [p for p in _ELIGIBLE if _RECS[p].source_schema == "window-profile-v1"]
+    assert len(window) == 12
 
-    # behavioral proof: a document carrying ONLY the 129 selected paths extracts all
-    # of them; nothing outside the selected set is ever requested.
-    doc: dict = {}
-    for path in _BAM_ONLY:
-        node = doc
+    doc = build_doc()
+    values = extract_eligible_feature_values(doc)
+    # exactly the 129 BAM-only fields; every window field excluded.
+    assert set(values) == set(_BAM_ONLY) and len(values) == 129
+    assert all(w not in values for w in window)
+
+    base_hash = canonical_feature_values_hash(extract_eligible_feature_values(doc))
+
+    # mutate EVERY window value -> canonical feature hash UNCHANGED (outside domain).
+    mutated = build_doc()
+    for path in window:
+        node = mutated
         parts = path.split(".")
         for part in parts[:-1]:
-            node = node.setdefault(part, {})
-        node[parts[-1]] = 0.5 if _RECS[path].value_kind.value == "FRACTION" else 1.0
-    values = ingest_contracts.extract_eligible_feature_values(doc)
-    assert set(values) == set(_BAM_ONLY)
-    assert len(values) == 129
+            node = node[part]
+        node[parts[-1]] = 0.9999
+    assert canonical_feature_values_hash(extract_eligible_feature_values(mutated)) == base_hash
+
+    # mutate a single selected BAM value -> hash CHANGES (inside domain).
+    mutated2 = build_doc()
+    path = _BAM_ONLY[0]
+    node = mutated2
+    parts = path.split(".")
+    for part in parts[:-1]:
+        node = node[part]
+    node[parts[-1]] = 0.123456
+    assert canonical_feature_values_hash(extract_eligible_feature_values(mutated2)) != base_hash
