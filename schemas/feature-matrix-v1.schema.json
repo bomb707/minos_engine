@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://minos.engine/schemas/feature-matrix-v1.schema.json",
+  "title": "L2-E Logical Feature Matrix v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "epoch",
+    "snapshot_hash",
+    "partition",
+    "registry_hash",
+    "feature_set_hash",
+    "row_count",
+    "column_count",
+    "members",
+    "matrix_hash"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "feature-matrix-v1"
+    },
+    "epoch": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "snapshot_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "partition": {
+      "enum": [
+        "train",
+        "validation"
+      ]
+    },
+    "registry_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "feature_set_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "row_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "column_count": {
+      "type": "integer",
+      "exclusiveMinimum": 0
+    },
+    "members": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "dataset_id",
+          "vector_hash"
+        ],
+        "properties": {
+          "dataset_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "vector_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "matrix_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}
