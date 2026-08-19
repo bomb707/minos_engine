@@ -10,20 +10,27 @@ and the domain-separated canonical hash functions frozen in
 from __future__ import annotations
 
 from .contracts import (
+    AUTHORITATIVE_COLUMNS,
+    EXPECTED_COLUMN_COUNT,
     FEATURE_MATRIX_SCHEMA_VERSION,
     FEATURE_SET_SCHEMA_VERSION,
     FEATURE_VECTOR_SCHEMA_VERSION,
+    FROZEN_FEATURE_SET_HASH,
     FeatureColumn,
     FeatureMatrix,
     FeatureSetManifest,
     FeatureVector,
     build_feature_set_manifest,
+    canonical_feature_set,
     feature_set_hash,
     matrix_hash,
     vector_hash,
 )
 
 __all__ = [
+    "AUTHORITATIVE_COLUMNS",
+    "EXPECTED_COLUMN_COUNT",
+    "FROZEN_FEATURE_SET_HASH",
     "FEATURE_SET_SCHEMA_VERSION",
     "FEATURE_VECTOR_SCHEMA_VERSION",
     "FEATURE_MATRIX_SCHEMA_VERSION",
@@ -32,6 +39,7 @@ __all__ = [
     "FeatureVector",
     "FeatureMatrix",
     "build_feature_set_manifest",
+    "canonical_feature_set",
     "feature_set_hash",
     "vector_hash",
     "matrix_hash",

@@ -54,23 +54,21 @@
       "pattern": "^[0-9a-f]{64}$"
     },
     "registry_hash": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{64}$"
+      "const": "0d8612707c6673060546511d8f5e8d1ba47048ef440e6c2dcf238fdc297f6e0c"
     },
     "feature_set_hash": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{64}$"
+      "const": "7e867dfa5633044b69869be8a87fac564431a73a183aa0ab0b1b13158a7c176f"
     },
     "value_count": {
-      "type": "integer",
-      "exclusiveMinimum": 0
+      "const": 129
     },
     "values": {
       "type": "array",
-      "minItems": 1,
+      "minItems": 129,
       "items": {
         "type": "number"
-      }
+      },
+      "maxItems": 129
     },
     "vector_hash": {
       "type": "string",

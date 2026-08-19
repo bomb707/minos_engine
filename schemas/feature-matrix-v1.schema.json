@@ -35,20 +35,17 @@
       ]
     },
     "registry_hash": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{64}$"
+      "const": "0d8612707c6673060546511d8f5e8d1ba47048ef440e6c2dcf238fdc297f6e0c"
     },
     "feature_set_hash": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{64}$"
+      "const": "7e867dfa5633044b69869be8a87fac564431a73a183aa0ab0b1b13158a7c176f"
     },
     "row_count": {
       "type": "integer",
       "minimum": 0
     },
     "column_count": {
-      "type": "integer",
-      "exclusiveMinimum": 0
+      "const": 129
     },
     "members": {
       "type": "array",
