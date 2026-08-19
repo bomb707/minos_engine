@@ -286,6 +286,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     add_layer2_subparser(sub)
 
+    from .intake_commands import register_intake_commands
+
+    register_intake_commands(sub)
+
     return parser
 
 

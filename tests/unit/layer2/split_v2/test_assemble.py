@@ -167,7 +167,6 @@ def test_verify_fails_closed_before_source_committed(tmp_path) -> None:
         "split_policy_hash_bound",
         "accepted_split_frozen_unchanged",
         "v2_migration_immutable",
-        "alembic_head_includes_v2",
         "split_frozen_source_present",
         "split_frozen_evidence_present",
         "v2_source_descends_split_frozen",

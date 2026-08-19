@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://minos.engine/schemas/input-integrity-attestation-v1.schema.json",
+  "title": "Input Integrity Attestation v1",
+  "description": "Content-addressed integrity attestation produced by the intake package: binds BAM/BAI/FASTA/FAI byte hashes, the canonical region, and the identity tuple to a registered identity plus the SAM-compatible reference-contig MD5 cross-check, so Layer 2 never opens genomic files. Deterministic content only: no timestamps, paths, URIs, or machine provenance.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "generator",
+    "generator_version",
+    "dataset_id",
+    "round_id",
+    "chromosome",
+    "registry_snapshot_hash",
+    "bam_sha256",
+    "bai_sha256",
+    "reference_sha256",
+    "fai_sha256",
+    "region_hash",
+    "identity_tuple_hash",
+    "bam_sq_m5",
+    "computed_reference_m5",
+    "m5_status",
+    "attestation_hash"
+  ],
+  "properties": {
+    "schema_version": { "const": "input-integrity-attestation-v1" },
+    "generator": { "type": "string", "minLength": 1 },
+    "generator_version": { "type": "string", "minLength": 1 },
+    "dataset_id": { "type": "string", "minLength": 1 },
+    "round_id": { "type": "string", "pattern": "^[0-9a-f]+$" },
+    "chromosome": { "enum": ["chr18", "chr19", "chr20", "chr21", "chr22"] },
+    "registry_snapshot_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "bam_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "bai_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "reference_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "fai_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "region_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "identity_tuple_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "bam_sq_m5": {
+      "oneOf": [
+        { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+        { "type": "null" }
+      ]
+    },
+    "computed_reference_m5": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+    "m5_status": { "enum": ["MATCH", "ABSENT", "MISMATCH"] },
+    "attestation_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

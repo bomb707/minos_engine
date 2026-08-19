@@ -320,6 +320,68 @@ REQUIRED_CHECKS: dict[str, frozenset[str]] = {
             "service_still_blocked",
         }
     ),
+    # INGEST-READY — Layer 2 stage L2-D profile-ingestion CAPABILITY (corpus-independent;
+    # per-epoch corpus evidence is the separate PROFILE-SNAPSHOT-FROZEN-<epoch> family).
+    "INGEST-READY": frozenset(
+        {
+            # Accepted prerequisites (unchanged + verified).
+            "accepted_protocol_ready_unchanged",
+            "accepted_twin_ready_unchanged",
+            "accepted_l1_ready_unchanged",
+            "accepted_db_ready_unchanged",
+            "accepted_split_frozen_unchanged",
+            "accepted_split_frozen_v2_unchanged",
+            # Exact SPLIT-FROZEN-V2 closure ancestry (never current-HEAD substitution).
+            "split_frozen_v2_source_present",
+            "split_frozen_v2_source_tree_bound",
+            "split_frozen_v2_evidence_present",
+            "l2d_source_descends_split_frozen_v2",
+            "head_descends_l2d_source",
+            # Source evidence cross-binding.
+            "ingest_package_evidence_present",
+            "ingest_package_evidence_bound",
+            "attestation_schema_evidence_present",
+            "attestation_schema_evidence_bound",
+            "qualification_report_bytes_bound",
+            # Immutable single-head L2-D migration bindings.
+            "l2d_migration_immutable",
+            "l2d_migration_file_evidence_bound",
+            "l2d_migration_contract_bound",
+            "alembic_single_head_is_l2d",
+            "ci_asserts_head_0004",
+            # Test + static analysis.
+            "full_tests_passed",
+            "coverage_passed",
+            "ruff_passed",
+            "format_passed",
+            "mypy_passed",
+            # Real PostgreSQL 16 L2-D integration.
+            "postgres_16_verified",
+            "l2d_migration_lifecycle_passed",
+            "ingest_admission_passed",
+            "ingest_role_isolation_passed",
+            "sealed_test_profile_access_denied",
+            "legacy_profiles_reads_revoked",
+            "profile_snapshot_freeze_passed",
+            "three_artifact_contract_passed",
+            "exact_byte_hashing_passed",
+            "artifact_conflict_passed",
+            "idempotency_passed",
+            "content_conflict_passed",
+            "profile_id_conflict_passed",
+            "concurrent_serialization_passed",
+            "epoch_membership_passed",
+            "parquet_invariants_passed",
+            "fasta_bounds_passed",
+            "version_selection_passed",
+            "atomic_audit_passed",
+            "trainer_view_isolation_passed",
+            # Source integrity + stage gating.
+            "evidence_hashes_complete",
+            "required_source_tracked",
+            "service_still_blocked",
+        }
+    ),
 }
 
 

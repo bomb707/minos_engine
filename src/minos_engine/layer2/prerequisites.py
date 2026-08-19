@@ -54,6 +54,10 @@ __all__ = [
     "SPLIT_FROZEN_SOURCE_COMMIT",
     "SPLIT_FROZEN_SOURCE_TREE",
     "SPLIT_FROZEN_EVIDENCE_COMMIT",
+    "SPLIT_FROZEN_V2_GATE_HASH",
+    "SPLIT_FROZEN_V2_SOURCE_COMMIT",
+    "SPLIT_FROZEN_V2_SOURCE_TREE",
+    "SPLIT_FROZEN_V2_EVIDENCE_COMMIT",
     "ACCEPTED",
 ]
 
@@ -103,6 +107,18 @@ SPLIT_FROZEN_GATE_HASH = "5520328868f408fe705a9d6618e3d67c081fa4e0aaa8dd764bb933
 SPLIT_FROZEN_SOURCE_COMMIT = "5ff8c361acc19613f0db7e4f93f88fe4aab9bfd5"
 SPLIT_FROZEN_SOURCE_TREE = "49b49c53137528da309ebb39ee3a9e456f6ead4a"
 SPLIT_FROZEN_EVIDENCE_COMMIT = "b03ac174672a70c360f6678ca28e324b49852c26"
+
+# Accepted L2-C SPLIT-FROZEN-V2 (epoched split) closure identities — the corrected
+# closure (exact v1 inheritance, zero transitions) merged to dev via PR #1 and accepted
+# by the owner. L2-D (INGEST-READY) binds these and its qualified source must properly
+# descend the SPLIT-FROZEN-V2 evidence commit. A change to any of these is an explicit
+# owner acceptance decision (see update procedure above).
+#   * source commit (Commit Y): the corrected v2 source (inheritance + sealed test).
+#   * evidence commit (Commit Z): adds gates/split-frozen-v2.json + the closure report.
+SPLIT_FROZEN_V2_GATE_HASH = "6bd9f472720d56055e57ada0a6e955a8ab0b617a0fe849021a5b0ddfafd19392"
+SPLIT_FROZEN_V2_SOURCE_COMMIT = "8c641dd1363573ab685df49540561cfe818de17c"
+SPLIT_FROZEN_V2_SOURCE_TREE = "5d6569801e5e75aa398c3f0f835d3d189c506eee"
+SPLIT_FROZEN_V2_EVIDENCE_COMMIT = "a8940ac44eef72cbcbdc8f943a163e33f3a3b742"
 
 #: The single frozen accepted-identity contract used by the entry-gate verifier.
 ACCEPTED = AcceptedPrerequisiteIdentity(

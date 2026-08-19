@@ -78,3 +78,35 @@ class ScoringError(TwinError):
 
 class ParityError(TwinError):
     """A parity assessment is invalid or violates its declared level."""
+
+
+class IngestionError(MinosEngineError):
+    """Base for L2-D Layer 1 profile-ingestion failures (fail-closed admission)."""
+
+
+class AttestationMismatchError(IngestionError):
+    """Computed input identity does not match the registered identity (reject)."""
+
+
+class AdmissionRejectedError(IngestionError):
+    """A profile failed an admission rule (m5 MISMATCH, hash inequality, incomplete)."""
+
+
+class FeatureHashConflictError(IngestionError):
+    """The 4-way feature_values_hash equality (recomputed/JSON/artifact/DB) failed."""
+
+
+class ContentConflictError(IngestionError):
+    """Same ingestion_key resubmitted with DIFFERENT content (never overwritten)."""
+
+
+class ProfileIdConflictError(IngestionError):
+    """Same profile_id already accepted with a different identity or content."""
+
+
+class EpochMembershipError(IngestionError):
+    """The dataset is not a member of the requested split epoch's allocation set."""
+
+
+class ArtifactMetadataConflictError(IngestionError):
+    """An existing artifact row with this sha256 has conflicting size/media/kind."""

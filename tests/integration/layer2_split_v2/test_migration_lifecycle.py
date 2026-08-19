@@ -55,7 +55,7 @@ def _head(url: str) -> str | None:
 
 def test_v2_migration_lifecycle(pg_base_url: str) -> None:
     with scratch_database(pg_base_url, "minos_l2c_v2_life") as url:
-        alembic_upgrade(url, "head")
+        alembic_upgrade(url, _HEAD)
         assert _head(url) == _HEAD
         assert _tables(url, _V2_TABLES) == _V2_TABLES
 
@@ -96,7 +96,7 @@ def test_v2_migration_lifecycle(pg_base_url: str) -> None:
         assert sealed_grants == 0  # sealed at birth
 
         # second upgrade is a no-op
-        alembic_upgrade(url, "head")
+        alembic_upgrade(url, _HEAD)
         assert _head(url) == _HEAD
 
         # downgrade to v1 removes ONLY the v2 epoch objects; v1 L2-C tables remain intact
@@ -106,6 +106,6 @@ def test_v2_migration_lifecycle(pg_base_url: str) -> None:
         assert _tables(url, _V1_TABLES) == _V1_TABLES
 
         # re-upgrade succeeds
-        alembic_upgrade(url, "head")
+        alembic_upgrade(url, _HEAD)
         assert _head(url) == _HEAD
         assert _tables(url, _V2_TABLES) == _V2_TABLES
