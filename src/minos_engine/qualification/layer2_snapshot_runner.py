@@ -372,7 +372,7 @@ def verify_snapshot_gate(
 
 def _render_report(epoch: int, identities: dict[str, str], checks: dict[str, bool]) -> str:
     rows = "\n".join(f"| `{k}` | {'PASS' if v else 'FAIL'} |" for k, v in sorted(checks.items()))
-    ih = json.dumps({k: v for k, v in sorted(identities.items())}, indent=2)
+    ih = json.dumps(dict(sorted(identities.items())), indent=2)
     return f"""# PROFILE-SNAPSHOT-FROZEN-{epoch} — Qualification Report
 
 **Tool:** {SNAPSHOT_QUALIFIER_VERSION}
