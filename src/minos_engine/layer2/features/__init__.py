@@ -26,6 +26,28 @@ from .contracts import (
     matrix_hash,
     vector_hash,
 )
+from .errors import (
+    FeatureExtractionError,
+    FeatureValuesHashMismatchError,
+    ForbiddenPartitionError,
+    InvalidProfileDocumentError,
+    MatrixAssemblyError,
+    MissingFeatureError,
+    ProfileArtifactHashMismatchError,
+    SnapshotIdentityMismatchError,
+)
+from .extraction import (
+    ExtractionResult,
+    FrozenSnapshot,
+    MatrixBuild,
+    SnapshotMember,
+    VerificationResult,
+    assemble_matrix,
+    build_feature_vector,
+    build_partition_matrix,
+    extract_profile_features,
+    verify_matrix,
+)
 
 __all__ = [
     "AUTHORITATIVE_COLUMNS",
@@ -43,4 +65,22 @@ __all__ = [
     "feature_set_hash",
     "vector_hash",
     "matrix_hash",
+    "FeatureExtractionError",
+    "ProfileArtifactHashMismatchError",
+    "SnapshotIdentityMismatchError",
+    "FeatureValuesHashMismatchError",
+    "InvalidProfileDocumentError",
+    "MissingFeatureError",
+    "ForbiddenPartitionError",
+    "MatrixAssemblyError",
+    "SnapshotMember",
+    "FrozenSnapshot",
+    "ExtractionResult",
+    "MatrixBuild",
+    "VerificationResult",
+    "extract_profile_features",
+    "build_feature_vector",
+    "assemble_matrix",
+    "build_partition_matrix",
+    "verify_matrix",
 ]
