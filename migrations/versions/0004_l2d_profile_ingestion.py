@@ -66,7 +66,6 @@ _REVOKE_LEGACY: tuple[tuple[str, str], ...] = (
 # artifact ids/URIs, no bam/bai/reference/fai hashes, no region coordinates.
 _MEMBER_VIEW_COLUMNS = (
     "dr.dataset_id",
-    "dr.chromosome",
     "ps.epoch",
     "ps.snapshot_hash",
     "ps.split_manifest_hash",
@@ -140,10 +139,13 @@ def _create_bam_profiles() -> None:
         # complete profile document + exact artifact byte hashes + artifact references
         sa.Column("profile_document", postgresql.JSONB(), nullable=False),
         _sha("profile_sha256"),
+        _sha("profile_manifest_sha256"),
         _sha("windows_sha256"),
         _uuid("profile_artifact_id"),
+        _uuid("profile_manifest_artifact_id"),
         _uuid("windows_artifact_id"),
-        # location-independent content version key
+        # canonical ingestion identity (idempotency/conflict key) + content version key
+        _sha("ingestion_key"),
         _sha("content_hash"),
         _ts(),
         sa.PrimaryKeyConstraint("id", name="pk_bam_profiles"),
@@ -162,7 +164,13 @@ def _create_bam_profiles() -> None:
             ["catalog.artifacts.id"],
             name="fk_bam_profiles_windows_artifact_id_artifacts",
         ),
+        sa.ForeignKeyConstraint(
+            ["profile_manifest_artifact_id"],
+            ["catalog.artifacts.id"],
+            name="fk_bam_profiles_manifest_artifact_id_artifacts",
+        ),
         sa.UniqueConstraint("content_hash", name="uq_bam_profiles_content_hash"),
+        sa.UniqueConstraint("ingestion_key", name="uq_bam_profiles_ingestion_key"),
         sa.CheckConstraint(
             "m5_status IN ('MATCH', 'ABSENT')", name="ck_bam_profiles_m5_admissible"
         ),
@@ -186,6 +194,8 @@ def _create_bam_profiles() -> None:
         _hex_ck("l1_feature_values_hash", "ck_bam_profiles_l1_feature_values_hex"),
         _hex_ck("profiler_config_hash", "ck_bam_profiles_profiler_config_hex"),
         _hex_ck("profile_sha256", "ck_bam_profiles_profile_sha_hex"),
+        _hex_ck("profile_manifest_sha256", "ck_bam_profiles_manifest_sha_hex"),
+        _hex_ck("ingestion_key", "ck_bam_profiles_ingestion_key_hex"),
         _hex_ck("windows_sha256", "ck_bam_profiles_windows_sha_hex"),
         _hex_ck("content_hash", "ck_bam_profiles_content_hex"),
         schema="profiling",

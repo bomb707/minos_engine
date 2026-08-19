@@ -94,3 +94,19 @@ class AdmissionRejectedError(IngestionError):
 
 class FeatureHashConflictError(IngestionError):
     """The 4-way feature_values_hash equality (recomputed/JSON/artifact/DB) failed."""
+
+
+class ContentConflictError(IngestionError):
+    """Same ingestion_key resubmitted with DIFFERENT content (never overwritten)."""
+
+
+class ProfileIdConflictError(IngestionError):
+    """Same profile_id already accepted with a different identity or content."""
+
+
+class EpochMembershipError(IngestionError):
+    """The dataset is not a member of the requested split epoch's allocation set."""
+
+
+class ArtifactMetadataConflictError(IngestionError):
+    """An existing artifact row with this sha256 has conflicting size/media/kind."""

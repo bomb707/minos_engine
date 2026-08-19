@@ -290,6 +290,21 @@ jobs:
             echo "gates/split-frozen-v2.json not present (evidence lives in the v2 evidence commit)"
           fi
 
+      - name: Gate — INGEST-READY non-mutating check (evidence + v2 ancestry)
+        run: |
+          if [ -f gates/ingest-ready.json ]; then
+            python - <<'PY'
+          from pathlib import Path
+          from minos_engine.qualification.layer2_ingest_runner import verify_ingest_ready_gate
+          root = Path(".").resolve()
+          result = verify_ingest_ready_gate(root, root / "gates" / "ingest-ready.json", require_descends=True)
+          assert result.ok, f"INGEST-READY gate verification failed: {result.reasons}"
+          print("INGEST-READY gate verified:", result.gate_hash)
+          PY
+          else
+            echo "gates/ingest-ready.json not present (evidence lives in the L2-D evidence commit)"
+          fi
+
       - name: Upload test & coverage reports
         if: always()
         uses: actions/upload-artifact@v4

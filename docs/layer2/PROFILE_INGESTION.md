@@ -18,9 +18,9 @@ frozen v1/v2 split artifacts or any accepted gate.
 * A profile snapshot exists per split epoch; its `member_count` **equals the epoch's
   `sample_count`** — never a hardcoded corpus size. Corpus growth = new split epoch →
   new profile snapshot.
-* Freezing fails closed if any allocated identity lacks an accepted profile (incomplete
-  corpus) or has more than one accepted version (ambiguous — explicit owner version
-  selection required).
+* Freezing requires an EXPLICIT owner version selection (`{dataset_id: content_hash}`)
+  covering exactly the epoch's allocated identities; each selection must resolve to an
+  accepted `bam_profiles` row for that identity — no implicit version choice ever.
 * Sample removal is **prohibited**: split epochs are supersets of their parents
   (SPLIT-FROZEN-V2 invariant), and snapshot membership derives from them.
 * Model binding: any trained model must record the `profile_snapshots.snapshot_hash`
@@ -42,8 +42,20 @@ frozen v1/v2 split artifacts or any accepted gate.
    canonical_json(eligible_values))` over the production-ELIGIBLE scalar values; equality
    is enforced between validation-time and write-time recomputation, the typed column,
    and the stored JSONB re-derivation (conflict → typed failure + rollback).
-5. Rejected/partial attempts are recorded in `profiling.profile_ingest_attempts`
-   (separate transaction) and never weaken the accepted-row constraints.
+5. **Three-artifact contract**: profile JSON, profile-manifest JSON, and window parquet
+   are each hashed from exact bytes INSIDE the ingestion boundary (never caller-supplied
+   hashes), decoded from those bytes, and registered in `catalog.artifacts` with sha256 +
+   size + media type + kind; sha-row reuse requires exact metadata equality.
+6. **Epoch membership**: the dataset must be allocated in the requested split epoch
+   (joined through `split_snapshots`/`split_epoch_allocations`); non-members are rejected.
+7. **Idempotency/conflicts** via the canonical `ingestion_key`
+   (= canonical_hash({identity_tuple_hash, profile_id}), UNIQUE): identical resubmission
+   → idempotent success; same key with different content → `ContentConflictError`; a
+   reused profile_id under a different identity/content → `ProfileIdConflictError`; a
+   genuinely new profile version for the same identity appends a new row.
+8. The ADMITTED audit record commits in the SAME transaction as the accepted row
+   (an accepted row can never exist unaudited); REJECTED attempts are recorded in their
+   own transaction and never weaken the accepted-row constraints.
 
 ## Access-state machine (test exposure / consumption)
 
@@ -55,7 +67,8 @@ frozen v1/v2 split artifacts or any accepted gate.
 Trainer reads train membership only (`profiling.training_profile_members`); the evaluator
 reads validation membership only (`evaluation.validation_profile_members`). Views expose
 membership + integrity identity — no raw JSONB, artifact ids/URIs, file identity hashes,
-or region coordinates. New sealed cohorts (future epochs) inherit `SEALED` automatically
+region coordinates, or `chromosome` (L2-E owns the feature/join allowlist; `dataset_id`
+is the only join key). New sealed cohorts (future epochs) inherit `SEALED` automatically
 because test membership flows through the same ungranted views.
 
 ## Gates

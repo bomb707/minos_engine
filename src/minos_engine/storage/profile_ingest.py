@@ -2,44 +2,60 @@
 
 Storage-side counterpart of the pure ``layer2.ingest`` validation: this module owns every
 database write for L2-D. The intake producer has no write path; no application role holds
-INSERT on any L2-D table; writes run as the schema owner (``minos_admin``), exactly like
-the split persistence modules.
+INSERT on any L2-D table; writes run as the schema owner (``minos_admin``).
 
-``ingest_profile`` is fail-closed and two-phase:
-  1. **Admission** (own transaction): resolves the registered identity + the epoch's
-     ``registry_snapshot_hash`` from the database, runs the complete pure validator, then
-     independently re-extracts the canonical feature values from the exact document being
-     stored and requires equality with the validator's hash
-     (:class:`FeatureHashConflictError` otherwise — the 4-way equality rule: recomputed ==
-     validated == typed column == re-derivable from the stored JSONB). Parquet windows are
-     verified against the frozen Layer 1 Arrow schema and the manifest row count. Any
-     failure rolls the transaction back — nothing enters the accepted corpus.
-  2. **Attempt record** (separate transaction): every attempt, admitted or rejected, is
-     appended to ``profiling.profile_ingest_attempts`` with its reasons, so rejected or
-     partial operational attempts are preserved WITHOUT weakening the accepted-row
-     constraints.
+Trusted-boundary rules (owner corrections):
+  * **Exact-byte hashing inside the boundary**: the profile JSON, manifest JSON, and
+    windows parquet are read and SHA-256-hashed HERE, and the validated documents are
+    decoded from those exact bytes. A caller can never substitute a hash for content.
+  * **Three-artifact contract**: all three artifacts are registered in
+    ``catalog.artifacts`` with uri + sha256 + size_bytes + media_type + kind
+    (``provenance``); reuse of an existing sha row requires exact metadata equality
+    (:class:`ArtifactMetadataConflictError` otherwise).
+  * **Epoch membership**: the ingested dataset must be a member of the requested split
+    epoch's allocation set (joined through ``split_snapshots``/``split_epoch_allocations``
+    — never an arbitrary registry row), and its dataset/round/chromosome/identity-tuple
+    must match the attestation.
+  * **Idempotency/conflicts** via the canonical ``ingestion_key``
+    (= canonical_hash({identity_tuple_hash, profile_id})): same key + same content →
+    idempotent success returning the existing row; same key + different content →
+    :class:`ContentConflictError`; same profile_id under a different identity/content →
+    :class:`ProfileIdConflictError`; same identity with a genuinely new profile version →
+    append-only new row.
+  * **Atomic audit**: the ADMITTED attempt row commits in the SAME transaction as the
+    accepted row — an accepted scientific row can never exist without its audit record.
+    REJECTED attempts are recorded in their own transaction after rollback.
+  * **Windows parquet**: stream-hashed, exact ``WINDOW_ARROW_SCHEMA`` (no extra/missing
+    columns), row count == manifest, every row's profile_id == the profile, contig ==
+    the registered chromosome, and window coordinates within the registered region.
 
-``freeze_profile_snapshot`` builds the ``PROFILE-SNAPSHOT-FROZEN-<epoch>`` membership:
-one accepted ``bam_profiles`` version per identity in the epoch's split allocation set,
-member count equal to the epoch's ``sample_count`` (never a hardcoded corpus size), bound
-to the split snapshot id + split manifest hash + registry snapshot hash.
+``freeze_profile_snapshot`` requires an EXPLICIT owner version selection
+(``{dataset_id: content_hash}``) covering exactly the epoch's members; each selection is
+verified to resolve to an accepted row for that identity. Member count derives from the
+epoch's ``sample_count`` — never a hardcoded corpus size.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.exc import DBAPIError
 
 from minos_engine.common.errors import (
     AdmissionRejectedError,
+    ArtifactMetadataConflictError,
+    ContentConflictError,
     ContractValidationError,
+    EpochMembershipError,
     FeatureHashConflictError,
+    ProfileIdConflictError,
 )
-from minos_engine.common.hashing import canonical_hash, sha256_hex
+from minos_engine.common.hashing import canonical_hash
 from minos_engine.layer2.ingest.contracts import (
     InputIntegrityAttestation,
     canonical_feature_values_hash,
@@ -47,77 +63,170 @@ from minos_engine.layer2.ingest.contracts import (
 )
 from minos_engine.layer2.ingest.validation import validate_admission
 
-__all__ = ["ingest_profile", "freeze_profile_snapshot", "verify_windows_parquet"]
+__all__ = [
+    "ARTIFACT_KIND_PROFILE",
+    "ARTIFACT_KIND_MANIFEST",
+    "ARTIFACT_KIND_WINDOWS",
+    "IngestOutcome",
+    "ingestion_key_for",
+    "ingest_profile",
+    "freeze_profile_snapshot",
+    "verify_windows_parquet",
+]
+
+ARTIFACT_KIND_PROFILE = "l2d:profile-json"
+ARTIFACT_KIND_MANIFEST = "l2d:profile-manifest-json"
+ARTIFACT_KIND_WINDOWS = "l2d:window-parquet"
+_MEDIA_JSON = "application/json"
+_MEDIA_PARQUET = "application/vnd.apache.parquet"
+_CHUNK = 4 * 1024 * 1024
 
 
-def verify_windows_parquet(parquet_path: Path, expected_row_count: int) -> str:
-    """Verify the windows artifact against the frozen Layer 1 Arrow schema + row count.
+class IngestOutcome:
+    """Result of an ingestion: the accepted row id + whether it was idempotent."""
 
-    Returns the artifact's byte sha256. Storage may import the Layer 1 serializer
-    directly (the boundary restriction applies to the ``layer2`` package only).
+    __slots__ = ("row_id", "idempotent")
+
+    def __init__(self, row_id: str, *, idempotent: bool) -> None:
+        self.row_id = row_id
+        self.idempotent = idempotent
+
+
+def ingestion_key_for(identity_tuple_hash: str, profile_id: str) -> str:
+    """Canonical ingestion identity: one logical ingestion per (identity, profile)."""
+    return canonical_hash({"identity_tuple_hash": identity_tuple_hash, "profile_id": profile_id})
+
+
+def _stream_sha256(path: Path) -> tuple[str, int]:
+    h = hashlib.sha256()
+    size = 0
+    with path.open("rb") as fh:
+        while True:
+            chunk = fh.read(_CHUNK)
+            if not chunk:
+                break
+            size += len(chunk)
+            h.update(chunk)
+    return h.hexdigest(), size
+
+
+def verify_windows_parquet(
+    parquet_path: Path,
+    *,
+    expected_row_count: int,
+    profile_id: str,
+    chromosome: str,
+    region_start0: int,
+    region_end0_exclusive: int,
+) -> tuple[str, int]:
+    """Verify the windows artifact: exact schema, row identity, coordinates, invariants.
+
+    Returns ``(sha256, size_bytes)`` of the exact bytes. Storage may import the Layer 1
+    serializer directly (the boundary restriction applies to the ``layer2`` package only).
     """
     import pyarrow.parquet as pq
 
     from minos_engine.layer1.serializer import WINDOW_ARROW_SCHEMA
 
-    table = pq.read_table(parquet_path)
+    sha, size = _stream_sha256(parquet_path)
+    try:
+        table = pq.read_table(parquet_path)
+    except Exception as exc:  # noqa: BLE001 - corrupt/unreadable parquet
+        raise AdmissionRejectedError(f"windows parquet unreadable/corrupt: {exc}") from exc
     if not table.schema.equals(WINDOW_ARROW_SCHEMA):
-        raise AdmissionRejectedError("windows parquet schema != frozen Layer 1 window schema")
+        raise AdmissionRejectedError(
+            "windows parquet schema != frozen Layer 1 window schema (missing/extra/"
+            "retyped columns are rejected)"
+        )
     if table.num_rows != expected_row_count:
         raise AdmissionRejectedError(
             f"windows parquet rows {table.num_rows} != manifest windows_row_count "
             f"{expected_row_count}"
         )
-    return sha256_hex(parquet_path.read_bytes())
+    cols = {
+        name: table.column(name).to_pylist()
+        for name in ("profile_id", "contig", "start0", "end0", "length_bp")
+    }
+    for i in range(table.num_rows):
+        if cols["profile_id"][i] != profile_id:
+            raise AdmissionRejectedError(f"windows row {i}: profile_id mismatch")
+        if cols["contig"][i] != chromosome:
+            raise AdmissionRejectedError(f"windows row {i}: contig != {chromosome}")
+        s, e, ln = cols["start0"][i], cols["end0"][i], cols["length_bp"][i]
+        if not (region_start0 <= s < e <= region_end0_exclusive):
+            raise AdmissionRejectedError(f"windows row {i}: window outside region bounds")
+        if ln != e - s:
+            raise AdmissionRejectedError(f"windows row {i}: length_bp != end0 - start0")
+    return sha, size
 
 
-def _registry_identity(conn: Connection, dataset_id: str, epoch: int) -> dict[str, Any]:
+def _epoch_member_identity(conn: Connection, dataset_id: str, epoch: int) -> dict[str, Any]:
+    """Resolve the identity THROUGH the epoch's allocation membership (never an arbitrary
+    registry row). Fails closed if the dataset is not allocated in this epoch."""
     row = (
         conn.execute(
             text(
                 "SELECT dr.id AS registry_id, dr.dataset_id, dr.round_id, dr.chromosome, "
+                " dr.region_start0, dr.region_end0_exclusive, "
                 " dr.bam_sha256, dr.bai_sha256, dr.reference_sha256, dr.fai_sha256, "
-                " dr.region_hash, dr.identity_tuple_hash "
-                "FROM catalog.dataset_registry dr WHERE dr.dataset_id = :d"
+                " dr.region_hash, dr.identity_tuple_hash, "
+                " ss.registry_snapshot_hash "
+                "FROM catalog.split_epoch_allocations ea "
+                "JOIN catalog.split_snapshots ss "
+                "  ON ss.id = ea.snapshot_id AND ss.epoch = :e "
+                "JOIN catalog.dataset_registry dr ON dr.id = ea.dataset_registry_id "
+                "WHERE dr.dataset_id = :d"
             ),
-            {"d": dataset_id},
+            {"d": dataset_id, "e": epoch},
         )
         .mappings()
         .first()
     )
     if row is None:
-        raise ContractValidationError(f"dataset {dataset_id!r} is not registered")
-    snap = (
+        raise EpochMembershipError(f"dataset {dataset_id!r} is not a member of split epoch {epoch}")
+    return dict(row)
+
+
+def _register_artifact(
+    conn: Connection, *, uri: str, sha256: str, size_bytes: int, media_type: str, kind: str
+) -> str:
+    """Register an artifact, or reuse an existing sha row only on EXACT metadata match."""
+    existing = (
         conn.execute(
-            text("SELECT registry_snapshot_hash FROM catalog.split_snapshots WHERE epoch = :e"),
-            {"e": epoch},
+            text(
+                "SELECT id, size_bytes, media_type, provenance "
+                "FROM catalog.artifacts WHERE sha256 = :h"
+            ),
+            {"h": sha256},
         )
         .mappings()
         .first()
     )
-    if snap is None:
-        raise ContractValidationError(f"split epoch {epoch} is not persisted")
-    identity = dict(row)
-    identity["registry_snapshot_hash"] = snap["registry_snapshot_hash"]
-    return identity
-
-
-def _insert_artifact(conn: Connection, uri: str, sha256: str) -> str:
-    existing = conn.execute(
-        text("SELECT id FROM catalog.artifacts WHERE sha256 = :h"), {"h": sha256}
-    ).scalar()
     if existing is not None:
-        return str(existing)
+        if (
+            existing["size_bytes"] != size_bytes
+            or existing["media_type"] != media_type
+            or existing["provenance"] != kind
+        ):
+            raise ArtifactMetadataConflictError(
+                f"artifact {sha256[:12]}… exists with conflicting metadata "
+                f"(size={existing['size_bytes']}, media={existing['media_type']}, "
+                f"kind={existing['provenance']})"
+            )
+        return str(existing["id"])
     return str(
         conn.execute(
-            text("INSERT INTO catalog.artifacts (uri, sha256) VALUES (:u, :h) RETURNING id"),
-            {"u": uri, "h": sha256},
+            text(
+                "INSERT INTO catalog.artifacts (uri, sha256, size_bytes, media_type, "
+                " provenance) VALUES (:u, :h, :s, :m, :k) RETURNING id"
+            ),
+            {"u": uri, "h": sha256, "s": size_bytes, "m": media_type, "k": kind},
         ).scalar_one()
     )
 
 
 def _record_attempt(
-    engine: Engine,
+    conn: Connection,
     *,
     registry_id: str | None,
     profile_id: str,
@@ -126,70 +235,97 @@ def _record_attempt(
     attestation_hash: str | None,
     content_hash: str | None,
 ) -> None:
-    with engine.begin() as conn:
+    conn.execute(
+        text(
+            "INSERT INTO profiling.profile_ingest_attempts "
+            "(dataset_registry_id, profile_id, outcome, reasons, attestation_hash, "
+            " content_hash) VALUES (:r, :p, :o, CAST(:re AS jsonb), :a, :c)"
+        ),
+        {
+            "r": registry_id,
+            "p": profile_id,
+            "o": outcome,
+            "re": json.dumps(list(reasons)),
+            "a": attestation_hash,
+            "c": content_hash,
+        },
+    )
+
+
+def _existing_by_key(conn: Connection, ingestion_key: str) -> dict[str, Any] | None:
+    row = (
         conn.execute(
-            text(
-                "INSERT INTO profiling.profile_ingest_attempts "
-                "(dataset_registry_id, profile_id, outcome, reasons, attestation_hash, "
-                " content_hash) VALUES (:r, :p, :o, CAST(:re AS jsonb), :a, :c)"
-            ),
-            {
-                "r": registry_id,
-                "p": profile_id,
-                "o": outcome,
-                "re": json.dumps(list(reasons)),
-                "a": attestation_hash,
-                "c": content_hash,
-            },
+            text("SELECT id, content_hash FROM profiling.bam_profiles WHERE ingestion_key = :k"),
+            {"k": ingestion_key},
         )
+        .mappings()
+        .first()
+    )
+    return dict(row) if row else None
 
 
 def ingest_profile(
     engine: Engine,
     *,
     epoch: int,
-    profile_document: dict[str, Any],
-    manifest_document: dict[str, Any],
+    profile_json_path: Path,
+    manifest_json_path: Path,
+    windows_parquet_path: Path,
     attestation: InputIntegrityAttestation | dict[str, Any],
     profile_artifact_uri: str,
-    profile_artifact_sha256: str,
+    manifest_artifact_uri: str,
     windows_artifact_uri: str,
-    windows_parquet_path: Path,
-) -> str:
-    """Admit one COMPLETE profile into the accepted corpus; returns the new row id.
+) -> IngestOutcome:
+    """Admit one COMPLETE profile; exact bytes are hashed and decoded HERE.
 
-    Rejection raises the typed error AND records a REJECTED attempt; admission records an
-    ADMITTED attempt. The accepted insert and the attempt record are separate
-    transactions, so a rejected attempt survives the admission rollback.
+    Returns :class:`IngestOutcome`. Rejection raises the typed error AND records a
+    REJECTED attempt in its own transaction; admission commits the accepted row and its
+    ADMITTED audit record atomically.
     """
     att = (
         attestation
         if isinstance(attestation, InputIntegrityAttestation)
         else InputIntegrityAttestation.model_validate(attestation)
     )
+    # ---- trusted boundary: hash exact bytes, decode documents FROM those bytes ------
+    profile_bytes = profile_json_path.read_bytes()
+    manifest_bytes = manifest_json_path.read_bytes()
+    profile_sha256 = hashlib.sha256(profile_bytes).hexdigest()
+    manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+    try:
+        profile_document = json.loads(profile_bytes.decode("utf-8"))
+        manifest_document = json.loads(manifest_bytes.decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        raise AdmissionRejectedError(f"artifact bytes are not valid JSON: {exc}") from exc
+
     profile_id = str(profile_document.get("profile_id", "unknown"))
     registry_id: str | None = None
+    content_hash: str | None = None
     try:
         with engine.begin() as conn:
-            identity = _registry_identity(conn, att.dataset_id, epoch)
+            identity = _epoch_member_identity(conn, att.dataset_id, epoch)
             registry_id = str(identity.pop("registry_id"))
+            region_start0 = int(identity.pop("region_start0"))
+            region_end0 = int(identity.pop("region_end0_exclusive"))
 
-            windows_sha256 = verify_windows_parquet(
-                windows_parquet_path, int(manifest_document.get("windows_row_count", -1))
+            windows_sha256, windows_size = verify_windows_parquet(
+                windows_parquet_path,
+                expected_row_count=int(manifest_document.get("windows_row_count", -1)),
+                profile_id=profile_id,
+                chromosome=str(identity["chromosome"]),
+                region_start0=region_start0,
+                region_end0_exclusive=region_end0,
             )
             decision = validate_admission(
                 profile_document=profile_document,
                 manifest_document=manifest_document,
                 attestation=att,
                 registry_identity=identity,
-                profile_artifact_sha256=profile_artifact_sha256,
+                profile_artifact_sha256=profile_sha256,
                 windows_artifact_sha256=windows_sha256,
             )
             if not decision.admissible:
                 raise AdmissionRejectedError(f"profile {profile_id} rejected: {decision.reasons}")
-            # 4-way equality guard: re-extract from the EXACT document being stored and
-            # require equality with the validator's canonical hash before it becomes the
-            # typed column value + content_hash component.
             recomputed = canonical_feature_values_hash(
                 extract_eligible_feature_values(profile_document)
             )
@@ -198,23 +334,79 @@ def ingest_profile(
                     "canonical feature_values_hash diverged between validation and write"
                 )
 
-            profile_artifact_id = _insert_artifact(
-                conn, profile_artifact_uri, profile_artifact_sha256
-            )
-            windows_artifact_id = _insert_artifact(conn, windows_artifact_uri, windows_sha256)
-
             content_hash = canonical_hash(
                 {
                     "identity_tuple_hash": identity["identity_tuple_hash"],
                     "feature_values_hash": decision.feature_values_hash,
                     "l1_feature_values_hash": decision.l1_feature_values_hash,
-                    "profile_sha256": profile_artifact_sha256,
+                    "profile_sha256": profile_sha256,
+                    "profile_manifest_sha256": manifest_sha256,
                     "windows_sha256": windows_sha256,
                     "profiler_version": str(manifest_document["profiler_version"]),
                     "profiler_config_hash": str(manifest_document["profiler_config_hash"]),
                     "attestation_hash": att.attestation_hash,
                 }
             )
+            ingestion_key = ingestion_key_for(str(identity["identity_tuple_hash"]), profile_id)
+
+            # ---- idempotency / conflict resolution --------------------------------
+            existing = _existing_by_key(conn, ingestion_key)
+            if existing is not None:
+                if existing["content_hash"] == content_hash:
+                    _record_attempt(
+                        conn,
+                        registry_id=registry_id,
+                        profile_id=profile_id,
+                        outcome="ADMITTED",
+                        reasons=("idempotent-duplicate",),
+                        attestation_hash=att.attestation_hash,
+                        content_hash=content_hash,
+                    )
+                    return IngestOutcome(str(existing["id"]), idempotent=True)
+                raise ContentConflictError(
+                    f"ingestion_key {ingestion_key[:12]}… resubmitted with different content"
+                )
+            pid_row = (
+                conn.execute(
+                    text(
+                        "SELECT identity_tuple_hash, content_hash FROM profiling.bam_profiles "
+                        "WHERE profile_id = :p"
+                    ),
+                    {"p": profile_id},
+                )
+                .mappings()
+                .first()
+            )
+            if pid_row is not None:
+                raise ProfileIdConflictError(
+                    f"profile_id {profile_id} already accepted with different identity/content"
+                )
+
+            profile_artifact_id = _register_artifact(
+                conn,
+                uri=profile_artifact_uri,
+                sha256=profile_sha256,
+                size_bytes=len(profile_bytes),
+                media_type=_MEDIA_JSON,
+                kind=ARTIFACT_KIND_PROFILE,
+            )
+            manifest_artifact_id = _register_artifact(
+                conn,
+                uri=manifest_artifact_uri,
+                sha256=manifest_sha256,
+                size_bytes=len(manifest_bytes),
+                media_type=_MEDIA_JSON,
+                kind=ARTIFACT_KIND_MANIFEST,
+            )
+            windows_artifact_id = _register_artifact(
+                conn,
+                uri=windows_artifact_uri,
+                sha256=windows_sha256,
+                size_bytes=windows_size,
+                media_type=_MEDIA_PARQUET,
+                kind=ARTIFACT_KIND_WINDOWS,
+            )
+
             row_id = conn.execute(
                 text(
                     "INSERT INTO profiling.bam_profiles "
@@ -224,11 +416,13 @@ def ingest_profile(
                     " registry_snapshot_hash, profile_status, profiler_version, "
                     " profiler_config_hash, windows_row_count, feature_values_hash, "
                     " l1_feature_values_hash, eligible_value_count, profile_document, "
-                    " profile_sha256, windows_sha256, profile_artifact_id, "
-                    " windows_artifact_id, content_hash) "
+                    " profile_sha256, profile_manifest_sha256, windows_sha256, "
+                    " profile_artifact_id, profile_manifest_artifact_id, "
+                    " windows_artifact_id, ingestion_key, content_hash) "
                     "VALUES (:reg, :pid, :bam, :bai, :ref, :fai, :rh, :ith, :m5, :deg, "
                     " :ath, :rsh, 'COMPLETE', :pv, :pch, :wrc, :fvh, :l1h, :evc, "
-                    " CAST(:doc AS jsonb), :psha, :wsha, :pa, :wa, :ch) RETURNING id"
+                    " CAST(:doc AS jsonb), :psha, :msha, :wsha, :pa, :ma, :wa, :ik, :ch) "
+                    "RETURNING id"
                 ),
                 {
                     "reg": registry_id,
@@ -250,43 +444,87 @@ def ingest_profile(
                     "l1h": decision.l1_feature_values_hash,
                     "evc": decision.eligible_value_count,
                     "doc": json.dumps(profile_document),
-                    "psha": profile_artifact_sha256,
+                    "psha": profile_sha256,
+                    "msha": manifest_sha256,
                     "wsha": windows_sha256,
                     "pa": profile_artifact_id,
+                    "ma": manifest_artifact_id,
                     "wa": windows_artifact_id,
+                    "ik": ingestion_key,
                     "ch": content_hash,
                 },
             ).scalar_one()
-    except Exception as exc:
-        _record_attempt(
-            engine,
-            registry_id=registry_id,
-            profile_id=profile_id,
-            outcome="REJECTED",
-            reasons=(str(exc)[:500],),
-            attestation_hash=att.attestation_hash,
-            content_hash=None,
-        )
+            # atomic audit: the ADMITTED record commits WITH the accepted row.
+            _record_attempt(
+                conn,
+                registry_id=registry_id,
+                profile_id=profile_id,
+                outcome="ADMITTED",
+                reasons=(),
+                attestation_hash=att.attestation_hash,
+                content_hash=content_hash,
+            )
+            return IngestOutcome(str(row_id), idempotent=False)
+    except DBAPIError as exc:
+        # concurrent duplicate: the UNIQUE(ingestion_key) backstop fired — re-check and
+        # resolve as idempotent success or content conflict.
+        with engine.connect() as conn:
+            ik = ingestion_key_for(str(att.identity_tuple_hash), profile_id)
+            existing = _existing_by_key(conn, ik)
+        if existing is not None and content_hash is not None:
+            if existing["content_hash"] == content_hash:
+                with engine.begin() as conn:
+                    _record_attempt(
+                        conn,
+                        registry_id=registry_id,
+                        profile_id=profile_id,
+                        outcome="ADMITTED",
+                        reasons=("idempotent-duplicate-concurrent",),
+                        attestation_hash=att.attestation_hash,
+                        content_hash=content_hash,
+                    )
+                return IngestOutcome(str(existing["id"]), idempotent=True)
+            conflict = ContentConflictError("concurrent resubmission with different content")
+            _record_rejapi(engine, registry_id, profile_id, conflict, att)
+            raise conflict from exc
+        _record_rejapi(engine, registry_id, profile_id, exc, att)
         raise
-    _record_attempt(
-        engine,
-        registry_id=registry_id,
-        profile_id=profile_id,
-        outcome="ADMITTED",
-        reasons=(),
-        attestation_hash=att.attestation_hash,
-        content_hash=content_hash,
-    )
-    return str(row_id)
+    except Exception as exc:
+        _record_rejapi(engine, registry_id, profile_id, exc, att)
+        raise
 
 
-def freeze_profile_snapshot(conn: Connection, epoch: int) -> str:
-    """Freeze the epoch's profile snapshot; returns the new snapshot id.
+def _record_rejapi(
+    engine: Engine,
+    registry_id: str | None,
+    profile_id: str,
+    exc: Exception,
+    att: InputIntegrityAttestation,
+) -> None:
+    """Record a REJECTED attempt in its own transaction (survives the rollback)."""
+    try:
+        with engine.begin() as conn:
+            _record_attempt(
+                conn,
+                registry_id=registry_id,
+                profile_id=profile_id,
+                outcome="REJECTED",
+                reasons=(str(exc)[:500],),
+                attestation_hash=att.attestation_hash,
+                content_hash=None,
+            )
+    except Exception:  # noqa: BLE001, S110 - rejection logging must not mask the cause
+        pass
 
-    Membership is derived from the epoch's split allocations: every allocated identity
-    must have EXACTLY ONE accepted ``bam_profiles`` row (zero → incomplete corpus;
-    more than one → ambiguous version, requiring an explicit owner selection — both fail
-    closed). ``member_count`` must equal the split epoch's ``sample_count``.
+
+def freeze_profile_snapshot(conn: Connection, epoch: int, selections: dict[str, str]) -> str:
+    """Freeze the epoch's profile snapshot from an EXPLICIT owner version selection.
+
+    ``selections`` maps every member ``dataset_id`` to the exact accepted
+    ``content_hash`` chosen for this snapshot. Freezing verifies: the selection covers
+    exactly the epoch's allocated identities (no extras, no omissions), and each selected
+    content hash resolves to an accepted ``bam_profiles`` row for that identity. Member
+    count must equal the split epoch's ``sample_count``.
     """
     snap = (
         conn.execute(
@@ -302,33 +540,45 @@ def freeze_profile_snapshot(conn: Connection, epoch: int) -> str:
     if snap is None:
         raise ContractValidationError(f"split epoch {epoch} is not persisted")
 
-    rows = conn.execute(
+    alloc = conn.execute(
         text(
-            "SELECT ea.dataset_registry_id, ea.partition, dr.dataset_id, "
-            " bp.id AS bam_profile_id, bp.feature_values_hash, bp.content_hash, "
-            " count(bp.id) OVER (PARTITION BY ea.dataset_registry_id) AS n_versions "
+            "SELECT ea.dataset_registry_id, ea.partition, dr.dataset_id "
             "FROM catalog.split_epoch_allocations ea "
             "JOIN catalog.split_snapshots ss ON ss.id = ea.snapshot_id "
             "JOIN catalog.dataset_registry dr ON dr.id = ea.dataset_registry_id "
-            "LEFT JOIN profiling.bam_profiles bp "
-            "  ON bp.dataset_registry_id = ea.dataset_registry_id "
-            "WHERE ss.epoch = :e "
-            "ORDER BY dr.dataset_id"
+            "WHERE ss.epoch = :e ORDER BY dr.dataset_id"
         ),
         {"e": epoch},
     ).mappings()
+    members_in = {r["dataset_id"]: dict(r) for r in alloc}
+    if set(selections) != set(members_in):
+        missing = sorted(set(members_in) - set(selections))
+        extra = sorted(set(selections) - set(members_in))
+        raise ContractValidationError(
+            f"version selection must cover exactly the epoch members "
+            f"(missing={missing}, extra={extra})"
+        )
+
     members: list[dict[str, Any]] = []
-    for r in rows:
-        if r["bam_profile_id"] is None:
-            raise ContractValidationError(
-                f"identity {r['dataset_id']} has no accepted profile — corpus incomplete"
+    for dataset_id, m in sorted(members_in.items()):
+        chosen = (
+            conn.execute(
+                text(
+                    "SELECT id, feature_values_hash, content_hash "
+                    "FROM profiling.bam_profiles "
+                    "WHERE dataset_registry_id = :d AND content_hash = :c"
+                ),
+                {"d": m["dataset_registry_id"], "c": selections[dataset_id]},
             )
-        if int(r["n_versions"]) != 1:
+            .mappings()
+            .first()
+        )
+        if chosen is None:
             raise ContractValidationError(
-                f"identity {r['dataset_id']} has {r['n_versions']} accepted versions — "
-                "ambiguous; explicit version selection required"
+                f"selection for {dataset_id} does not resolve to an accepted row "
+                f"(content_hash {selections[dataset_id][:12]}…)"
             )
-        members.append(dict(r))
+        members.append({**m, **dict(chosen), "bam_profile_id": chosen["id"]})
     if len(members) != int(snap["sample_count"]):
         raise ContractValidationError(
             f"member count {len(members)} != epoch sample_count {snap['sample_count']}"

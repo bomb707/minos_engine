@@ -80,6 +80,7 @@ def test_member_views_hide_sensitive_columns(l2d_engine: Engine) -> None:
         "bai_sha256",
         "reference_sha256",
         "fai_sha256",
+        "chromosome",
         "region_start0",
         "region_end0_exclusive",
         "identity_tuple_hash",
@@ -87,3 +88,4 @@ def test_member_views_hide_sensitive_columns(l2d_engine: Engine) -> None:
     }
     assert forbidden.isdisjoint(cols), forbidden & cols
     assert {"dataset_id", "epoch", "partition", "feature_values_hash"} <= cols
+    assert "chromosome" not in cols  # L2-E owns the feature/join allowlist

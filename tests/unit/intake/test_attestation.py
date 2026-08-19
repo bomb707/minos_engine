@@ -105,7 +105,7 @@ def test_mismatch_when_m5_differs(corpus: Path) -> None:
 def test_sam_m5_normalization_case_insensitive(corpus: Path) -> None:
     # lowercase FASTA sequence hashes identically (SAM spec uppercases).
     _write_fasta(corpus / "chr18.fa", lowercase=True)
-    assert compute_reference_contig_m5(corpus / "chr18.fa", "chr18") == _M5
+    assert compute_reference_contig_m5(corpus / "chr18.fa", "chr18") == (_M5, 100)
 
 
 def test_multi_contig_bam_rejected(corpus: Path) -> None:
@@ -131,3 +131,18 @@ def test_hash_mismatch_fails_closed(corpus: Path) -> None:
 def test_missing_contig_fails_closed(corpus: Path) -> None:
     with pytest.raises(IngestionError):
         compute_reference_contig_m5(corpus / "chr18.fa", "chr19")
+
+
+def test_fasta_length_mismatch_fails_closed(corpus: Path) -> None:
+    # BAM @SQ declares 100 bases; a truncated FASTA contig must be rejected.
+    (corpus / "chr18.fa").write_text(">chr18 desc\n" + _SEQ[:60] + "\n", encoding="utf-8")
+    record = _record(corpus)
+    with pytest.raises(AttestationMismatchError):
+        attest_input(
+            bam_path=corpus / "input.bam",
+            bai_path=corpus / "input.bam.bai",
+            reference_path=corpus / "chr18.fa",
+            fai_path=corpus / "chr18.fa.fai",
+            registry_record=record,
+            registry_snapshot_hash="a" * 64,
+        )

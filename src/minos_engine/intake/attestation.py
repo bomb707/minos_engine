@@ -92,17 +92,18 @@ def read_bam_sq_entry(bam_path: Path) -> tuple[str, int, str | None]:
     return name, l_ref, m5
 
 
-def compute_reference_contig_m5(fasta_path: Path, contig: str) -> str:
-    """SAM-compatible MD5 of the normalized reference contig sequence.
+def compute_reference_contig_m5(fasta_path: Path, contig: str) -> tuple[str, int]:
+    """SAM-compatible MD5 + actual base length of the normalized reference contig.
 
     Normalization per the SAM spec: the exact contig sequence with all whitespace
-    removed, uppercased, hashed as bytes. Streams line-by-line; never loads the whole
-    FASTA. Fails closed if the contig is absent or empty.
+    removed, uppercased, hashed as bytes; the returned length is the actual base count
+    (the bounds anchor for @SQ/region cross-checks). Streams line-by-line; never loads
+    the whole FASTA. Fails closed if the contig is absent or empty.
     """
     digest = hashlib.md5()  # noqa: S324 - SAM-spec M5 identity, not a security use
     in_target = False
     seen = False
-    empty = True
+    length = 0
     with fasta_path.open("rb") as fh:
         for raw in fh:
             line = raw.strip()
@@ -115,12 +116,12 @@ def compute_reference_contig_m5(fasta_path: Path, contig: str) -> str:
                 continue
             if in_target and line:
                 digest.update(line.upper())
-                empty = False
+                length += len(line)
     if not seen:
         raise IngestionError(f"{fasta_path}: contig {contig!r} not present")
-    if empty:
+    if length == 0:
         raise IngestionError(f"{fasta_path}: contig {contig!r} has no sequence")
-    return digest.hexdigest()
+    return digest.hexdigest(), length
 
 
 def attest_input(
@@ -176,7 +177,15 @@ def attest_input(
     if identity_tuple_hash != str(expected["identity_tuple_hash"]):
         raise AttestationMismatchError("identity_tuple_hash does not match the registry")
 
-    reference_m5 = compute_reference_contig_m5(reference_path, contig)
+    reference_m5, fasta_length = compute_reference_contig_m5(reference_path, contig)
+    # bounds proof: the ACTUAL FASTA contig length anchors the @SQ length and the
+    # declared region — all three must agree (never trust declared bounds alone).
+    if fasta_length != sq_length:
+        raise AttestationMismatchError(
+            f"FASTA contig length {fasta_length} != BAM @SQ length {sq_length}"
+        )
+    if int(expected["region_end0_exclusive"]) - int(expected["region_start0"]) != fasta_length:
+        raise AttestationMismatchError("declared region does not fit the FASTA contig length")
     status = (
         M5Status.ABSENT
         if bam_sq_m5 is None
