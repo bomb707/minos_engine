@@ -143,3 +143,34 @@ or changing any value, epoch, count, or bound identity changes the respective ha
 E0 (this document + pins + inventory test) → E1 contracts → E2 extraction/verifiers →
 E3 migration + storage + grant boundary → E4 epoch-1 build + evidence →
 E5 gates/closures. Each step starts only on explicit owner authorization.
+
+## Count policy (frozen — owner clarification)
+
+L2-E **never applies split percentages**. L2-C owns percentage-based allocation (as the
+exact rational basis **10:2:3 over 15** — never floating-point constants); L2-D freezes
+the exact resulting membership; L2-E consumes the frozen snapshot membership **verbatim**
+(no reassignment, no re-rounding, grandfathered allocations consumed unchanged).
+
+Derived expectations (computed from the frozen snapshot, never hardcoded):
+
+* `expected_train_count`      = |frozen snapshot train members|
+* `expected_validation_count` = |frozen snapshot validation members|
+* `expected_test_count`       = |frozen snapshot test members|
+* `materialized_test_matrix_count` **== 0 always**
+
+For epoch 1 the values 50/10/15 may appear only as *derived evidence* in generated
+reports. No L2-E schema, qualifier, builder, required-check name, or test fixture may
+require those constants.
+
+Mandatory check names (generic; never partition-count-specific):
+
+* `train_matrix_count_matches_snapshot`
+* `validation_matrix_count_matches_snapshot`
+* `matrix_membership_matches_snapshot`
+* `sealed_test_matrix_absent`
+
+Required tests: at least **two non-75 synthetic snapshots with uneven chromosome sizes**
+proving (1) matrix counts derive from actual frozen membership; (2) no fixed 50/10/15
+assumption remains; (3) train and validation matrices exactly cover their snapshot
+partitions; (4) grandfathered allocations are consumed unchanged; (5) no test matrix is
+created.
