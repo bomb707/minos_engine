@@ -53,6 +53,12 @@ frozen v1/v2 split artifacts or any accepted gate.
    → idempotent success; same key with different content → `ContentConflictError`; a
    reused profile_id under a different identity/content → `ProfileIdConflictError`; a
    genuinely new profile version for the same identity appends a new row.
+   **A new immutable profile version REQUIRES a new `profile_id`** (enforced by DB
+   `UNIQUE(profile_id)`; Layer 1 derives profile_id from run content, so a genuinely
+   new version always carries one). Parquet window rows must additionally satisfy the
+   frozen serializer sequence contract: strictly increasing `window_id`, ascending
+   non-overlapping coordinates (windows may be a sample — gap-free coverage is not
+   part of the Layer 1 policy).
 8. The ADMITTED audit record commits in the SAME transaction as the accepted row
    (an accepted row can never exist unaudited); REJECTED attempts are recorded in their
    own transaction and never weaken the accepted-row constraints.

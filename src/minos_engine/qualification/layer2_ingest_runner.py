@@ -136,6 +136,34 @@ _CHECK_NODES: dict[str, tuple[str, ...]] = {
         "test_roles_and_views.py::test_legacy_profiles_reads_revoked",
     ),
     "profile_snapshot_freeze_passed": ("test_ingest.py::test_freeze_profile_snapshot_epoch1",),
+    # named per-behavior checks (owner item 5) — each proven by its dedicated test.
+    "three_artifact_contract_passed": (
+        "test_ingest.py::test_real_profile_admitted_with_three_artifacts",
+    ),
+    "exact_byte_hashing_passed": ("test_ingest.py::test_exact_bytes_hashed_in_boundary",),
+    "artifact_conflict_passed": ("test_ingest.py::test_artifact_metadata_conflict_rejected",),
+    "idempotency_passed": ("test_ingest.py::test_idempotent_resubmission_returns_existing_row",),
+    "content_conflict_passed": ("test_ingest.py::test_content_conflict_rejected",),
+    "profile_id_conflict_passed": ("test_concurrency.py::test_concurrent_profile_id_conflict",),
+    "concurrent_serialization_passed": ("test_concurrency.py",),
+    "epoch_membership_passed": ("test_ingest.py::test_non_member_epoch_ingestion_rejected",),
+    "parquet_invariants_passed": (
+        "test_ingest.py::test_parquet_row_identity_violation_rejected",
+        "test_ingest.py::test_parquet_extra_column_rejected",
+        "test_ingest.py::test_parquet_duplicate_rows_rejected",
+        "test_ingest.py::test_parquet_shuffled_order_rejected",
+        "test_ingest.py::test_parquet_overlap_rejected",
+        "test_ingest.py::test_parquet_bad_window_id_rejected",
+    ),
+    "fasta_bounds_passed": ("test_ingest.py::test_fasta_length_bounds_rejected",),
+    "version_selection_passed": (
+        "test_ingest.py::test_freeze_requires_explicit_version_selection",
+        "test_ingest.py::test_new_immutable_version_appends",
+    ),
+    "atomic_audit_passed": ("test_ingest.py::test_admitted_audit_is_atomic_with_row",),
+    "trainer_view_isolation_passed": (
+        "test_roles_and_views.py::test_member_views_hide_sensitive_columns",
+    ),
 }
 
 _FORBIDDEN_MIGRATION_TOKENS = (

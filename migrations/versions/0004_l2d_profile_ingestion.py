@@ -171,6 +171,8 @@ def _create_bam_profiles() -> None:
         ),
         sa.UniqueConstraint("content_hash", name="uq_bam_profiles_content_hash"),
         sa.UniqueConstraint("ingestion_key", name="uq_bam_profiles_ingestion_key"),
+        # concurrency-safe profile-id conflict enforcement (application SELECT is raceable)
+        sa.UniqueConstraint("profile_id", name="uq_bam_profiles_profile_id"),
         sa.CheckConstraint(
             "m5_status IN ('MATCH', 'ABSENT')", name="ck_bam_profiles_m5_admissible"
         ),

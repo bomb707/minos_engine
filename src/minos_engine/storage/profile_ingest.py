@@ -145,18 +145,34 @@ def verify_windows_parquet(
         )
     cols = {
         name: table.column(name).to_pylist()
-        for name in ("profile_id", "contig", "start0", "end0", "length_bp")
+        for name in ("profile_id", "contig", "window_id", "start0", "end0", "length_bp")
     }
+    # Row-sequence contract (frozen Layer 1 serializer): window_id strictly increasing
+    # (unique, ordered), coordinates ascending and non-overlapping. Windows may be a
+    # SAMPLE of the region (Layer 1 sampling policy), so gap-free coverage is NOT
+    # required — only ordering, uniqueness, and disjointness.
+    prev_id = None
+    prev_end = None
     for i in range(table.num_rows):
         if cols["profile_id"][i] != profile_id:
             raise AdmissionRejectedError(f"windows row {i}: profile_id mismatch")
         if cols["contig"][i] != chromosome:
             raise AdmissionRejectedError(f"windows row {i}: contig != {chromosome}")
+        wid = cols["window_id"][i]
+        if prev_id is not None and wid <= prev_id:
+            raise AdmissionRejectedError(
+                f"windows row {i}: window_id not strictly increasing "
+                "(duplicate/shuffled/reversed rows are rejected)"
+            )
+        prev_id = wid
         s, e, ln = cols["start0"][i], cols["end0"][i], cols["length_bp"][i]
         if not (region_start0 <= s < e <= region_end0_exclusive):
             raise AdmissionRejectedError(f"windows row {i}: window outside region bounds")
         if ln != e - s:
             raise AdmissionRejectedError(f"windows row {i}: length_bp != end0 - start0")
+        if prev_end is not None and s < prev_end:
+            raise AdmissionRejectedError(f"windows row {i}: windows overlap or are unsorted")
+        prev_end = e
     return sha, size
 
 
@@ -202,27 +218,39 @@ def _register_artifact(
         .mappings()
         .first()
     )
-    if existing is not None:
-        if (
-            existing["size_bytes"] != size_bytes
-            or existing["media_type"] != media_type
-            or existing["provenance"] != kind
-        ):
-            raise ArtifactMetadataConflictError(
-                f"artifact {sha256[:12]}… exists with conflicting metadata "
-                f"(size={existing['size_bytes']}, media={existing['media_type']}, "
-                f"kind={existing['provenance']})"
-            )
-        return str(existing["id"])
-    return str(
+    if existing is None:
+        # race-free: a concurrent insert of the same sha resolves via ON CONFLICT
+        # DO NOTHING + re-read — never an untyped uniqueness failure.
         conn.execute(
             text(
                 "INSERT INTO catalog.artifacts (uri, sha256, size_bytes, media_type, "
-                " provenance) VALUES (:u, :h, :s, :m, :k) RETURNING id"
+                " provenance) VALUES (:u, :h, :s, :m, :k) "
+                "ON CONFLICT (sha256) DO NOTHING"
             ),
             {"u": uri, "h": sha256, "s": size_bytes, "m": media_type, "k": kind},
-        ).scalar_one()
-    )
+        )
+        existing = (
+            conn.execute(
+                text(
+                    "SELECT id, size_bytes, media_type, provenance "
+                    "FROM catalog.artifacts WHERE sha256 = :h"
+                ),
+                {"h": sha256},
+            )
+            .mappings()
+            .one()
+        )
+    if (
+        existing["size_bytes"] != size_bytes
+        or existing["media_type"] != media_type
+        or existing["provenance"] != kind
+    ):
+        raise ArtifactMetadataConflictError(
+            f"artifact {sha256[:12]}… exists with conflicting metadata "
+            f"(size={existing['size_bytes']}, media={existing['media_type']}, "
+            f"kind={existing['provenance']})"
+        )
+    return str(existing["id"])
 
 
 def _record_attempt(
@@ -466,6 +494,15 @@ def ingest_profile(
             )
             return IngestOutcome(str(row_id), idempotent=False)
     except DBAPIError as exc:
+        # classify the constraint that fired (application pre-checks are raceable; the
+        # DB constraints are the concurrency-safe authority).
+        message = str(getattr(exc, "orig", exc))
+        if "uq_bam_profiles_profile_id" in message:
+            pid_conflict = ProfileIdConflictError(
+                f"profile_id {profile_id} already accepted (concurrent)"
+            )
+            _record_rejapi(engine, registry_id, profile_id, pid_conflict, att)
+            raise pid_conflict from exc
         # concurrent duplicate: the UNIQUE(ingestion_key) backstop fired — re-check and
         # resolve as idempotent success or content conflict.
         with engine.connect() as conn:

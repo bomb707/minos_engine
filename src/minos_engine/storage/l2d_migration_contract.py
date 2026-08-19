@@ -73,7 +73,7 @@ L2D_FROZEN_INVENTORY: dict[str, object] = {
         "views": 3,
         "primary_keys": 4,
         "foreign_keys": 9,
-        "unique_constraints": 6,
+        "unique_constraints": 7,
         "check_constraints": 33,
         "indexes": 3,
         "triggers": 4,
