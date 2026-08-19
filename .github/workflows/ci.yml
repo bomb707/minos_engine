@@ -305,6 +305,20 @@ jobs:
             echo "gates/ingest-ready.json not present (evidence lives in the L2-D evidence commit)"
           fi
 
+      - name: Gate — PROFILE-SNAPSHOT-FROZEN-1 offline verification
+        run: |
+          if [ -f gates/profile-snapshot-frozen-1.json ]; then
+            python - <<'PY'
+          from pathlib import Path
+          from minos_engine.qualification.layer2_snapshot_runner import verify_snapshot_offline
+          result = verify_snapshot_offline(Path(".").resolve(), 1)
+          assert result.ok, f"PROFILE-SNAPSHOT-FROZEN-1 offline verification failed: {result.reasons}"
+          print("PROFILE-SNAPSHOT-FROZEN-1 offline verification passed")
+          PY
+          else
+            echo "gates/profile-snapshot-frozen-1.json not present (evidence commit pending)"
+          fi
+
       - name: Upload test & coverage reports
         if: always()
         uses: actions/upload-artifact@v4

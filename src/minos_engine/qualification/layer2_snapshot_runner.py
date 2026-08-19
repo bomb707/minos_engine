@@ -1,32 +1,31 @@
 """PROFILE-SNAPSHOT-FROZEN-<epoch> qualification — per-epoch corpus evidence.
 
-Turns a frozen ``profiling.profile_snapshots`` row into independently verifiable
-evidence:
+Two verification levels:
 
-  * a canonical **member manifest** (one entry per member: dataset/round/chromosome/
-    partition, identity tuple, selected content hash, feature-values hash, profile id,
-    all three artifact byte hashes, attestation hash, m5 state + integrity level,
-    profiler version/config) bound to the split manifest + registry snapshot;
-  * a content-addressed **artifact inventory** over every generated profile JSON,
-    profile-manifest JSON, windows parquet, and attestation artifact, so later integrity
-    verification never has to trust the database blindly;
-  * an independent **snapshot-hash recomputation**: the frozen ``snapshot_hash`` is
-    reproduced from the member manifest alone (same canonical formula the freeze used),
-    so committed material suffices to re-derive it;
-  * a :class:`GateArtifact` (``PROFILE-SNAPSHOT-FROZEN-<epoch>``) whose mandatory checks
-    are computed from the live store + committed manifests, and a verifier that
-    recomputes every binding.
+  * **Offline** (:func:`verify_snapshot_offline`): needs NO PostgreSQL store. Every
+    property derivable from the committed artifacts — snapshot gate, member manifest,
+    selection manifest, artifact inventory, the accepted split epoch-1 manifest, and the
+    accepted INGEST-READY gate — is recomputed and compared. Embedded hash fields are
+    never trusted: ``member_manifest_hash`` and ``inventory_hash`` are recomputed from
+    content, the snapshot hash is re-derived from members, identities are compared
+    against the accepted v2 epoch-1 registry, profiler identity against the accepted
+    Layer 1 constants, and the INGEST-READY gate is genuinely verified (canonical hash,
+    pinned identities, promotion, ancestry) — never assumed.
+  * **Operational** (:func:`verify_snapshot_gate`): everything offline PLUS the live
+    store and the corpus directory: exact attestation bytes are hashed and parsed per
+    member (canonical attestation-hash recomputation vs the stored row and manifest),
+    the artifact inventory is REBUILT from ``corpus_dir`` and compared hash-for-hash
+    with the committed inventory, view counts / sealed-test denial / append-only are
+    proven live, and the ingest-attempt log shows zero failures.
 
-m5 semantics (corrected wording): SAM ``@SQ:M5`` is a BAM-header tag — FASTA files never
-carry it. In epoch 1 all 75 BAM headers lack ``@SQ:M5`` while the computed
-reference-contig MD5 was available for every sample, so all 75 attestations are
-``ABSENT``/integrity-degraded (never ``MATCH``, never ``MISMATCH``).
+m5 semantics: SAM ``@SQ:M5`` is a BAM-header tag (FASTA files never carry it). In epoch 1
+all 75 BAM headers lack ``@SQ:M5`` while the computed reference-contig MD5 was available
+for every sample → 75× ``ABSENT``/integrity-degraded, 0 MATCH, 0 MISMATCH.
 """
 
 from __future__ import annotations
 
 import json
-import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -52,17 +51,18 @@ __all__ = [
     "recompute_snapshot_hash",
     "build_artifact_inventory",
     "assemble_snapshot_gate",
+    "verify_snapshot_offline",
     "verify_snapshot_gate",
+    "write_snapshot_outputs",
     "SnapshotGateVerification",
 ]
 
-_HEX64 = re.compile(r"^[0-9a-f]{64}$")
-
-SNAPSHOT_QUALIFIER_VERSION = "layer2-profile-snapshot-qualifier-v1"
+SNAPSHOT_QUALIFIER_VERSION = "layer2-profile-snapshot-qualifier-v2"
 MEMBER_MANIFEST_PATH = "manifests/profile_snapshot_epoch1_members.json"
 SELECTIONS_PATH = "manifests/profile_snapshot_epoch1_selections.json"
 INVENTORY_PATH = "manifests/profile_snapshot_epoch1_artifact_inventory.json"
 REPORT_PATH = "reports/PROFILE_SNAPSHOT_FROZEN_1_REPORT.md"
+CI_WORKFLOW = ".github/workflows/ci.yml"
 
 _EXPECTED_COUNTS = {"train": 50, "validation": 10, "test": 15}
 _CHROMS = ("chr18", "chr19", "chr20", "chr21", "chr22")
@@ -127,12 +127,7 @@ def build_member_manifest(conn: Connection, epoch: int) -> dict[str, Any]:
 
 
 def recompute_snapshot_hash(member_manifest: dict[str, Any]) -> str:
-    """Reproduce the frozen snapshot hash from the member manifest ALONE.
-
-    Mirrors ``storage.profile_ingest.freeze_profile_snapshot`` exactly: canonical hash
-    over epoch + split/registry bindings + per-member (dataset_id, partition,
-    content_hash, feature_values_hash) sorted by dataset_id.
-    """
+    """Reproduce the frozen snapshot hash from the member manifest ALONE (freeze formula)."""
     members = sorted(member_manifest["members"], key=lambda m: str(m["dataset_id"]))
     return canonical_hash(
         {
@@ -160,8 +155,7 @@ def build_artifact_inventory(corpus_dir: Path, member_manifest: dict[str, Any]) 
         rdir = corpus_dir / rid
         files = {}
         for name in _ARTIFACT_FILES:
-            p = rdir / name
-            data = p.read_bytes()
+            data = (rdir / name).read_bytes()
             files[name] = {"sha256": sha256_hex(data), "size_bytes": len(data)}
         entries.append({"dataset_id": m["dataset_id"], "round_id": rid, "artifacts": files})
     content = {"schema_version": "profile-snapshot-artifact-inventory-v1", "entries": entries}
@@ -170,8 +164,141 @@ def build_artifact_inventory(corpus_dir: Path, member_manifest: dict[str, Any]) 
     return inv
 
 
-def _view_count(conn: Connection, sql: str) -> int:
-    return int(conn.execute(text(sql)).scalar() or 0)
+def _verify_ingest_ready(root: Path) -> bool:
+    """REAL verification of the accepted INGEST-READY gate — never assumed."""
+    from minos_engine.gates.verifier import load_gate
+    from minos_engine.qualification.layer2_ingest_runner import verify_ingest_ready_gate
+
+    try:
+        gate = load_gate(root / "gates" / "ingest-ready.json")
+        if gate.gate_hash != PRE.INGEST_READY_GATE_HASH:
+            return False
+        if gate.qualified_source_git_sha != PRE.INGEST_READY_SOURCE_COMMIT:
+            return False
+        result = verify_ingest_ready_gate(
+            root, root / "gates" / "ingest-ready.json", require_descends=True
+        )
+        return result.ok
+    except Exception:  # noqa: BLE001 - fail closed
+        return False
+
+
+def ci_verifies_snapshot_gate(root: Path, epoch: int) -> bool:
+    path = root / CI_WORKFLOW
+    if not path.exists():
+        return False
+    content = path.read_text(encoding="utf-8")
+    return f"profile-snapshot-frozen-{epoch}.json" in content and (
+        "verify_snapshot_offline" in content
+    )
+
+
+def _offline_checks(
+    root: Path,
+    epoch: int,
+    member_manifest: dict[str, Any],
+    inventory: dict[str, Any],
+    selections: dict[str, str],
+) -> tuple[dict[str, bool], dict[str, str]]:
+    v2 = json.loads((root / "manifests/layer2_dataset_split_v2_epoch1.json").read_text())
+    members = member_manifest["members"]
+    per_chrom: dict[str, int] = {}
+    per_part: dict[str, int] = {}
+    m5_counts: dict[str, int] = {}
+    degraded = 0
+    for m in members:
+        per_chrom[m["chromosome"]] = per_chrom.get(m["chromosome"], 0) + 1
+        per_part[m["partition"]] = per_part.get(m["partition"], 0) + 1
+        m5_counts[m["m5_status"]] = m5_counts.get(m["m5_status"], 0) + 1
+        degraded += 1 if m["integrity_degraded"] else 0
+    ids = [m["dataset_id"] for m in members]
+    inv_entries = inventory.get("entries", [])
+    inv_by_round = {e["round_id"]: e for e in inv_entries}
+    reg = {
+        s["dataset_id"]: (s["round_id"], s["chromosome"], s["identity_tuple_hash"], s["partition"])
+        for s in v2["samples"]
+    }
+    mm_content = {k: v for k, v in member_manifest.items() if k != "member_manifest_hash"}
+    inv_content = {k: v for k, v in inventory.items() if k != "inventory_hash"}
+
+    checks: dict[str, bool] = {
+        "epoch_binding_exact": member_manifest["epoch"] == epoch
+        and member_manifest["split_manifest_hash"] == v2["manifest_hash"],
+        "registry_binding_exact": member_manifest["registry_snapshot_hash"]
+        == v2["registry_snapshot_hash"]
+        and all(m["registry_snapshot_hash"] == v2["registry_snapshot_hash"] for m in members),
+        "member_count_75": len(members) == 75 and member_manifest["member_count"] == 75,
+        "members_unique_identities": len(set(ids)) == 75,
+        "partitions_50_10_15": per_part == _EXPECTED_COUNTS,
+        "per_chromosome_15": all(per_chrom.get(c) == 15 for c in _CHROMS),
+        "partitions_match_split_allocations": all(
+            m["dataset_id"] in reg and reg[m["dataset_id"]][3] == m["partition"] for m in members
+        ),
+        "identities_match_registry": all(
+            m["dataset_id"] in reg
+            and reg[m["dataset_id"]][0] == m["round_id"]
+            and reg[m["dataset_id"]][1] == m["chromosome"]
+            and reg[m["dataset_id"]][2] == m["identity_tuple_hash"]
+            for m in members
+        ),
+        "profiler_identity_exact": all(
+            m["profiler_version"] == PRE.PROFILER_VERSION
+            and m["profiler_config_hash"] == PRE.PROFILER_CONFIG_HASH
+            for m in members
+        ),
+        "all_profiles_complete": all(m["profile_status"] == "COMPLETE" for m in members),
+        "selected_versions_unique_and_explicit": set(selections) == set(ids)
+        and all(selections[m["dataset_id"]] == m["content_hash"] for m in members),
+        "member_manifest_canonical_integrity": canonical_hash(mm_content)
+        == member_manifest.get("member_manifest_hash"),
+        "inventory_canonical_integrity": canonical_hash(inv_content)
+        == inventory.get("inventory_hash"),
+        "inventory_four_artifacts_each": len(inv_entries) == 75
+        and len({e["round_id"] for e in inv_entries}) == 75
+        and all(set(e["artifacts"]) == set(_ARTIFACT_FILES) for e in inv_entries),
+        "artifact_bindings_complete": all(
+            inv_by_round.get(str(m["round_id"]), {"artifacts": {}})
+            .get("artifacts", {})
+            .get("bam-profile-v1.json", {})
+            .get("sha256")
+            == m["profile_sha256"]
+            and inv_by_round[str(m["round_id"])]["artifacts"]["profile-manifest-v1.json"]["sha256"]
+            == m["profile_manifest_sha256"]
+            and inv_by_round[str(m["round_id"])]["artifacts"]["window-profile-v1.parquet"]["sha256"]
+            == m["windows_sha256"]
+            for m in members
+        ),
+        "attestation_bound": all(
+            isinstance(m["attestation_hash"], str) and len(m["attestation_hash"]) == 64
+            for m in members
+        ),
+        "m5_counts_recorded": m5_counts.get("MATCH", 0) == 0 and m5_counts.get("ABSENT", 0) == 75,
+        "m5_mismatch_count_zero": m5_counts.get("MISMATCH", 0) == 0,
+        "degraded_integrity_count_75": degraded == 75,
+        "snapshot_hash_recomputed": recompute_snapshot_hash(member_manifest)
+        == member_manifest["snapshot_hash"],
+        "accepted_ingest_ready_bound": _verify_ingest_ready(root),
+        "ci_verifies_snapshot_gate": ci_verifies_snapshot_gate(root, epoch),
+    }
+    identities = {
+        "snapshot_hash": str(member_manifest["snapshot_hash"]),
+        "member_manifest_hash": canonical_hash(mm_content),
+        "selection_manifest_hash": canonical_hash(dict(sorted(selections.items()))),
+        "artifact_inventory_hash": canonical_hash(inv_content),
+        "split_manifest_hash": str(member_manifest["split_manifest_hash"]),
+        "registry_snapshot_hash": str(member_manifest["registry_snapshot_hash"]),
+        "m5_match_count": "0",
+        "m5_absent_count": "75",
+        "m5_mismatch_count": "0",
+        "degraded_integrity_count": "75",
+        "rejected_attempt_count": "0",
+        "accepted_ingest_ready_gate_hash": PRE.INGEST_READY_GATE_HASH,
+        "ingest_ready_source_commit": PRE.INGEST_READY_SOURCE_COMMIT,
+        "ingest_ready_evidence_commit": PRE.INGEST_READY_EVIDENCE_COMMIT,
+        "accepted_profiler_version": PRE.PROFILER_VERSION,
+        "accepted_profiler_config_hash": PRE.PROFILER_CONFIG_HASH,
+    }
+    return checks, identities
 
 
 def _sealed_denied(conn: Connection) -> bool:
@@ -200,95 +327,73 @@ def _append_only(conn: Connection) -> bool:
     return True
 
 
-def _compute_checks(
-    root: Path,
+def _attestations_exactly_bound(corpus_dir: Path, members: list[dict[str, Any]]) -> bool:
+    """Hash + parse EXACT attestation bytes per member and rebind every field."""
+    from minos_engine.layer2.ingest.contracts import InputIntegrityAttestation, M5Status
+
+    for m in members:
+        p = corpus_dir / str(m["round_id"]) / "input-integrity-attestation-v1.json"
+        try:
+            raw_bytes = p.read_bytes()
+            att = InputIntegrityAttestation.model_validate(json.loads(raw_bytes.decode("utf-8")))
+        except Exception:  # noqa: BLE001
+            return False
+        if att.attestation_hash != m["attestation_hash"]:
+            return False
+        if att.dataset_id != m["dataset_id"]:
+            return False
+        if att.identity_tuple_hash != m["identity_tuple_hash"]:
+            return False
+        if att.registry_snapshot_hash != m["registry_snapshot_hash"]:
+            return False
+        if att.m5_status.value != m["m5_status"]:
+            return False
+        if att.m5_status is M5Status.ABSENT and (
+            att.bam_sq_m5 is not None or len(att.computed_reference_m5) != 32
+        ):
+            return False
+    return True
+
+
+def _operational_checks(
     conn: Connection,
-    epoch: int,
+    corpus_dir: Path,
     member_manifest: dict[str, Any],
-    inventory: dict[str, Any],
-    selections: dict[str, str],
-) -> tuple[dict[str, bool], dict[str, str]]:
-    """The mandatory-check set + bound identities, shared by assemble and verify."""
-    v2 = json.loads((root / "manifests/layer2_dataset_split_v2_epoch1.json").read_text())
-    members = member_manifest["members"]
-    per_chrom: dict[str, int] = {}
-    per_part: dict[str, int] = {}
-    for m in members:
-        per_chrom[m["chromosome"]] = per_chrom.get(m["chromosome"], 0) + 1
-        per_part[m["partition"]] = per_part.get(m["partition"], 0) + 1
-    m5_counts = {"MATCH": 0, "ABSENT": 0}
-    degraded = 0
-    for m in members:
-        m5_counts[m["m5_status"]] = m5_counts.get(m["m5_status"], 0) + 1
-        degraded += 1 if m["integrity_degraded"] else 0
-    ids = [m["dataset_id"] for m in members]
-    inv_by_round = {e["round_id"]: e["artifacts"] for e in inventory["entries"]}
-
-    # v2 epoch-1 partition assignment per dataset (exact allocation binding).
-    v2_parts = {s["dataset_id"]: s["partition"] for s in v2["samples"]}
-
-    checks: dict[str, bool] = {
-        "epoch_binding_exact": member_manifest["epoch"] == epoch
-        and member_manifest["split_manifest_hash"] == v2["manifest_hash"],
-        "registry_binding_exact": member_manifest["registry_snapshot_hash"]
-        == v2["registry_snapshot_hash"]
-        and all(m["registry_snapshot_hash"] == v2["registry_snapshot_hash"] for m in members),
-        "member_count_75": len(members) == 75 and member_manifest["member_count"] == 75,
-        "members_unique_identities": len(set(ids)) == 75,
-        "partitions_50_10_15": per_part == _EXPECTED_COUNTS,
-        "per_chromosome_15": all(per_chrom.get(c) == 15 for c in _CHROMS),
-        "partitions_match_split_allocations": all(
-            v2_parts.get(m["dataset_id"]) == m["partition"] for m in members
+    committed_inventory: dict[str, Any],
+) -> dict[str, bool]:
+    rebuilt = build_artifact_inventory(corpus_dir, member_manifest)
+    rebuilt_content = {k: v for k, v in rebuilt.items() if k != "inventory_hash"}
+    committed_content = {k: v for k, v in committed_inventory.items() if k != "inventory_hash"}
+    rejected = int(
+        conn.execute(
+            text(
+                "SELECT count(*) FROM profiling.profile_ingest_attempts WHERE outcome = 'REJECTED'"
+            )
+        ).scalar()
+        or 0
+    )
+    return {
+        "operational_artifact_bytes_reverified": canonical_hash(rebuilt_content)
+        == canonical_hash(committed_content),
+        "attestation_files_exactly_bound": _attestations_exactly_bound(
+            corpus_dir, member_manifest["members"]
         ),
-        "all_profiles_complete": all(m["profile_status"] == "COMPLETE" for m in members),
-        "selected_versions_unique_and_explicit": set(selections) == set(ids)
-        and all(selections[m["dataset_id"]] == m["content_hash"] for m in members),
-        "artifact_bindings_complete": all(
-            _HEX64.match(str(m[k]))
-            for m in members
-            for k in ("profile_sha256", "profile_manifest_sha256", "windows_sha256")
-        ),
-        "artifact_inventory_bound": all(
-            inv_by_round.get(str(m["round_id"]), {}).get("bam-profile-v1.json", {}).get("sha256")
-            == m["profile_sha256"]
-            and inv_by_round[str(m["round_id"])]["profile-manifest-v1.json"]["sha256"]
-            == m["profile_manifest_sha256"]
-            and inv_by_round[str(m["round_id"])]["window-profile-v1.parquet"]["sha256"]
-            == m["windows_sha256"]
-            for m in members
-        ),
-        "attestation_bound": all(_HEX64.match(str(m["attestation_hash"])) for m in members),
-        "m5_counts_recorded": m5_counts.get("MATCH", 0) == 0 and m5_counts.get("ABSENT", 0) == 75,
-        "degraded_integrity_count_75": degraded == 75,
-        "trainer_view_count_50": _view_count(
-            conn, "SELECT count(*) FROM profiling.training_profile_members"
+        "zero_ingestion_failures": rejected == 0,
+        "trainer_view_count_50": int(
+            conn.execute(text("SELECT count(*) FROM profiling.training_profile_members")).scalar()
+            or 0
         )
         == 50,
-        "validation_view_count_10": _view_count(
-            conn, "SELECT count(*) FROM evaluation.validation_profile_members"
+        "validation_view_count_10": int(
+            conn.execute(
+                text("SELECT count(*) FROM evaluation.validation_profile_members")
+            ).scalar()
+            or 0
         )
         == 10,
         "sealed_test_denied": _sealed_denied(conn),
         "snapshot_tables_append_only": _append_only(conn),
-        "snapshot_hash_recomputed": recompute_snapshot_hash(member_manifest)
-        == member_manifest["snapshot_hash"],
-        "accepted_ingest_ready_bound": True,  # identity recorded below; presence check
     }
-    identities = {
-        "snapshot_hash": str(member_manifest["snapshot_hash"]),
-        "member_manifest_hash": str(member_manifest["member_manifest_hash"]),
-        "selection_manifest_hash": canonical_hash(dict(sorted(selections.items()))),
-        "artifact_inventory_hash": str(inventory["inventory_hash"]),
-        "split_manifest_hash": str(member_manifest["split_manifest_hash"]),
-        "registry_snapshot_hash": str(member_manifest["registry_snapshot_hash"]),
-        "m5_match_count": "0",
-        "m5_absent_count": "75",
-        "degraded_integrity_count": "75",
-        "accepted_ingest_ready_gate_hash": PRE.INGEST_READY_GATE_HASH,
-        "ingest_ready_source_commit": PRE.INGEST_READY_SOURCE_COMMIT,
-        "ingest_ready_evidence_commit": PRE.INGEST_READY_EVIDENCE_COMMIT,
-    }
-    return checks, identities
 
 
 def assemble_snapshot_gate(
@@ -301,11 +406,12 @@ def assemble_snapshot_gate(
     qualified_source_tree_sha: str,
     created_at: str | None = None,
 ) -> tuple[GateArtifact, dict[str, Any], dict[str, Any], str]:
-    """Build the gate + member manifest + inventory + report markdown from the store."""
+    """Build gate + member manifest + inventory + report (offline + operational checks)."""
     member_manifest = build_member_manifest(conn, epoch)
     inventory = build_artifact_inventory(corpus_dir, member_manifest)
     selections = json.loads((root / SELECTIONS_PATH).read_text())
-    checks, identities = _compute_checks(root, conn, epoch, member_manifest, inventory, selections)
+    checks, identities = _offline_checks(root, epoch, member_manifest, inventory, selections)
+    checks.update(_operational_checks(conn, corpus_dir, member_manifest, inventory))
     report = _render_report(epoch, identities, checks)
     identities["qualification_report_hash"] = sha256_hex(report.encode())
     evidence = tuple(
@@ -339,33 +445,54 @@ class SnapshotGateVerification(BaseModel):
     reasons: tuple[str, ...] = ()
 
 
-def verify_snapshot_gate(
-    root: Path, conn: Connection, epoch: int, corpus_dir: Path
-) -> SnapshotGateVerification:
-    """Recompute every binding from the store + committed files vs the committed gate."""
+def _load_committed(
+    root: Path, epoch: int
+) -> tuple[GateArtifact, dict[str, Any], dict[str, Any], dict[str, str]]:
     from minos_engine.gates.verifier import load_gate
 
     gate = load_gate(root / gate_path(epoch))
-    committed_members = json.loads((root / MEMBER_MANIFEST_PATH).read_text())
-    committed_inventory = json.loads((root / INVENTORY_PATH).read_text())
+    members = json.loads((root / MEMBER_MANIFEST_PATH).read_text())
+    inventory = json.loads((root / INVENTORY_PATH).read_text())
     selections = json.loads((root / SELECTIONS_PATH).read_text())
+    return gate, members, inventory, selections
+
+
+def _gate_binding_checks(gate: GateArtifact, identities: dict[str, str]) -> dict[str, bool]:
+    return {
+        "gate_canonical_integrity": gate.gate_hash == gate.compute_hash(),
+        "gate_binds_member_manifest": gate.input_hashes.get("member_manifest_hash")
+        == identities["member_manifest_hash"],
+        "gate_binds_snapshot_hash": gate.input_hashes.get("snapshot_hash")
+        == identities["snapshot_hash"],
+        "gate_binds_inventory": gate.input_hashes.get("artifact_inventory_hash")
+        == identities["artifact_inventory_hash"],
+        "gate_binds_selections": gate.input_hashes.get("selection_manifest_hash")
+        == identities["selection_manifest_hash"],
+    }
+
+
+def verify_snapshot_offline(root: Path, epoch: int) -> SnapshotGateVerification:
+    """Committed-artifact verification only — no PostgreSQL, no corpus directory."""
+    gate, members, inventory, selections = _load_committed(root, epoch)
+    checks, identities = _offline_checks(root, epoch, members, inventory, selections)
+    checks.update(_gate_binding_checks(gate, identities))
+    reasons = tuple(f"{k} failed" for k, v in checks.items() if not v)
+    return SnapshotGateVerification(ok=all(checks.values()), checks=checks, reasons=reasons)
+
+
+def verify_snapshot_gate(
+    root: Path, conn: Connection, epoch: int, corpus_dir: Path
+) -> SnapshotGateVerification:
+    """Offline verification PLUS live-store + exact-artifact-byte re-verification."""
+    gate, committed_members, committed_inventory, selections = _load_committed(root, epoch)
     live_members = build_member_manifest(conn, epoch)
-    checks, identities = _compute_checks(
-        root, conn, epoch, live_members, committed_inventory, selections
-    )
-    checks["gate_canonical_integrity"] = gate.gate_hash == gate.compute_hash()
+    checks, identities = _offline_checks(root, epoch, live_members, committed_inventory, selections)
+    checks.update(_gate_binding_checks(gate, identities))
     checks["committed_member_manifest_matches_store"] = (
-        committed_members["member_manifest_hash"] == live_members["member_manifest_hash"]
+        canonical_hash({k: v for k, v in committed_members.items() if k != "member_manifest_hash"})
+        == identities["member_manifest_hash"]
     )
-    checks["gate_binds_member_manifest"] = (
-        gate.input_hashes.get("member_manifest_hash") == live_members["member_manifest_hash"]
-    )
-    checks["gate_binds_snapshot_hash"] = gate.input_hashes.get("snapshot_hash") == str(
-        live_members["snapshot_hash"]
-    )
-    checks["gate_binds_inventory"] = gate.input_hashes.get("artifact_inventory_hash") == str(
-        committed_inventory["inventory_hash"]
-    )
+    checks.update(_operational_checks(conn, corpus_dir, live_members, committed_inventory))
     reasons = tuple(f"{k} failed" for k, v in checks.items() if not v)
     return SnapshotGateVerification(ok=all(checks.values()), checks=checks, reasons=reasons)
 
@@ -377,10 +504,13 @@ def _render_report(epoch: int, identities: dict[str, str], checks: dict[str, boo
 
 **Tool:** {SNAPSHOT_QUALIFIER_VERSION}
 
-> Generated from the operational store + committed manifests. The frozen snapshot hash
-> is independently reproducible from the committed member manifest (same canonical
-> formula as the freeze). m5 semantics: SAM `@SQ:M5` is a BAM-header tag (FASTA files
-> never carry it); in epoch {epoch} all 75 BAM headers lack `@SQ:M5` while the computed
+> Two verification levels: OFFLINE (committed artifacts only — gate, member manifest,
+> selections, inventory, accepted split + INGEST-READY identities; embedded hashes never
+> trusted, everything recomputed) and OPERATIONAL (live store + exact artifact bytes:
+> attestations re-parsed and re-hashed per member, inventory rebuilt from the corpus and
+> compared hash-for-hash, zero ingestion failures, view counts, sealed-test denial,
+> append-only). m5 semantics: SAM `@SQ:M5` is a BAM-header tag (FASTA files never carry
+> it); in epoch {epoch} all 75 BAM headers lack `@SQ:M5` while the computed
 > reference-contig MD5 was available for every sample, so all 75 attestations are
 > ABSENT/integrity-degraded (0 MATCH, 0 MISMATCH). Raw BAMs are not committed; the
 > content-addressed artifact inventory permits later integrity verification without
