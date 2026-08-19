@@ -78,3 +78,19 @@ class ScoringError(TwinError):
 
 class ParityError(TwinError):
     """A parity assessment is invalid or violates its declared level."""
+
+
+class IngestionError(MinosEngineError):
+    """Base for L2-D Layer 1 profile-ingestion failures (fail-closed admission)."""
+
+
+class AttestationMismatchError(IngestionError):
+    """Computed input identity does not match the registered identity (reject)."""
+
+
+class AdmissionRejectedError(IngestionError):
+    """A profile failed an admission rule (m5 MISMATCH, hash inequality, incomplete)."""
+
+
+class FeatureHashConflictError(IngestionError):
+    """The 4-way feature_values_hash equality (recomputed/JSON/artifact/DB) failed."""

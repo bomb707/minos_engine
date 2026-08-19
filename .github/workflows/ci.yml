@@ -132,10 +132,38 @@ jobs:
           done
           psql "$MINOS_DATABASE_URL" -c "SELECT version();"
 
-      - name: Alembic upgrade head — confirm L2-C v2 head 0003_l2c_split_v2_epochs
+      - name: Alembic upgrade head — confirm L2-D head 0004_l2d_profile_ingestion
         run: |
           alembic upgrade head
+          alembic current | grep 0004_l2d_profile_ingestion
+
+      - name: Alembic downgrade to 0003_l2c_split_v2_epochs (L2-D removed, v2 retained)
+        run: |
+          alembic downgrade 0003_l2c_split_v2_epochs
           alembic current | grep 0003_l2c_split_v2_epochs
+          python - <<'PY'
+          from sqlalchemy import create_engine, text
+          from minos_engine.storage.database import database_url
+          l2d = ("bam_profiles", "profile_ingest_attempts", "profile_snapshots", "profile_snapshot_members")
+          v2 = ("split_snapshots", "split_epoch_allocations")
+          eng = create_engine(database_url())
+          with eng.connect() as c:
+              present_l2d = c.execute(
+                  text("SELECT count(*) FROM information_schema.tables WHERE table_name = ANY(:n)"),
+                  {"n": list(l2d)},
+              ).scalar()
+              present_v2 = c.execute(
+                  text("SELECT count(*) FROM information_schema.tables WHERE table_name = ANY(:n)"),
+                  {"n": list(v2)},
+              ).scalar()
+              trainer_restored = c.execute(
+                  text("SELECT has_table_privilege('minos_trainer','profiling.profiles','SELECT')")
+              ).scalar()
+          eng.dispose()
+          assert present_l2d == 0, f"L2-D objects not removed on downgrade to 0003: {present_l2d}"
+          assert present_v2 == 2, f"v2 epoch objects lost on downgrade to 0003: {present_v2}"
+          assert trainer_restored, "legacy profiling.profiles trainer grant not restored"
+          PY
 
       - name: Alembic downgrade to 0002_l2c_dataset_split (v2 removed, v1 retained)
         run: |
@@ -203,10 +231,10 @@ jobs:
           assert n == 0, f"stage schemas not removed: {n}"
           PY
 
-      - name: Alembic re-upgrade head — confirm L2-C v2 head 0003_l2c_split_v2_epochs
+      - name: Alembic re-upgrade head — confirm L2-D head 0004_l2d_profile_ingestion
         run: |
           alembic upgrade head
-          alembic current | grep 0003_l2c_split_v2_epochs
+          alembic current | grep 0004_l2d_profile_ingestion
 
       - name: Migration immutability + frozen inventory tests
         run: pytest tests/integration/layer2_db/test_migration_immutability.py -q
@@ -225,6 +253,9 @@ jobs:
 
       - name: L2-C v2 (epoched split) PostgreSQL integration tests (must not skip in CI)
         run: pytest tests/integration/layer2_split_v2 -q
+
+      - name: L2-D ingest integration suite (real PostgreSQL 16)
+        run: pytest tests/integration/layer2_ingest -q
 
       - name: Gate — DB-READY (immutable L2-B lineage base, if present)
         run: |
