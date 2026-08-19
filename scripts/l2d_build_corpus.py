@@ -56,9 +56,7 @@ def ensure_schema(engine) -> None:
     import subprocess
 
     with engine.connect() as c:
-        have = c.execute(
-            text("SELECT to_regclass('catalog.split_snapshots') IS NOT NULL")
-        ).scalar()
+        have = c.execute(text("SELECT to_regclass('catalog.split_snapshots') IS NOT NULL")).scalar()
     if not have:
         url = engine.url.render_as_string(hide_password=False)
         subprocess.run(
@@ -76,6 +74,10 @@ def ensure_split(engine) -> dict:
     v1 = json.loads((ROOT / "manifests/layer2_dataset_split_v1.json").read_text())
     v2 = json.loads((ROOT / "manifests/layer2_dataset_split_v2_epoch1.json").read_text())
     with engine.begin() as c:
+        # hard precondition: Alembic current is EXACTLY the L2-D head.
+        head = c.execute(text("SELECT version_num FROM alembic_version")).scalar()
+        if head not in (None, "0004_l2d_profile_ingestion"):
+            raise RuntimeError(f"alembic current {head!r} != 0004_l2d_profile_ingestion")
         n = c.execute(text("SELECT count(*) FROM catalog.dataset_registry")).scalar()
         if n == 0:
             persist_manifest(c, DatasetSplitManifest.model_validate(v1))
@@ -84,7 +86,40 @@ def ensure_split(engine) -> dict:
         if e == 0:
             persist_epoch(c, v2, v1_manifest=v1)
             log("split: v2 epoch-1 persisted")
+    verify_split_state(engine, v1, v2)
     return {"v1": v1, "v2": v2}
+
+
+def verify_split_state(engine, v1: dict, v2: dict) -> None:
+    """Verify the persisted split against the COMMITTED manifests, even when the
+    tables were already populated (never trust prior runs)."""
+    with engine.connect() as c:
+        head = c.execute(text("SELECT version_num FROM alembic_version")).scalar()
+        assert head == "0004_l2d_profile_ingestion", head
+        snap = c.execute(
+            text(
+                "SELECT manifest_hash, registry_snapshot_hash, sample_count "
+                "FROM catalog.split_snapshots WHERE epoch = 1"
+            )
+        ).one()
+        assert snap.manifest_hash == v2["manifest_hash"], "split manifest hash drift"
+        assert snap.registry_snapshot_hash == v2["registry_snapshot_hash"], "registry drift"
+        assert snap.sample_count == 75
+        rows = c.execute(
+            text(
+                "SELECT dr.dataset_id, dr.identity_tuple_hash, ea.partition "
+                "FROM catalog.split_epoch_allocations ea "
+                "JOIN catalog.split_snapshots ss ON ss.id = ea.snapshot_id "
+                "JOIN catalog.dataset_registry dr ON dr.id = ea.dataset_registry_id "
+                "WHERE ss.epoch = 1"
+            )
+        ).all()
+        db = {r.dataset_id: (r.identity_tuple_hash, r.partition) for r in rows}
+        expected = {
+            s["dataset_id"]: (s["identity_tuple_hash"], s["partition"]) for s in v2["samples"]
+        }
+        assert db == expected, "epoch-1 identities/allocations drift vs committed manifest"
+    log("split: verified against committed manifests (75 identities + allocations)")
 
 
 def round_paths(sample: dict) -> dict[str, Path]:
@@ -104,6 +139,19 @@ def build_one(engine, v1s: dict, v2: dict, cfg, svc) -> str | None:
     out.mkdir(parents=True, exist_ok=True)
     marker = out / "INGESTED"
     if marker.exists():
+        # marker must resolve to the expected accepted row (exact content hash).
+        row_id = marker.read_text().strip().split("\n")[0]
+        with engine.connect() as c:
+            row = c.execute(
+                text(
+                    "SELECT bp.content_hash, dr.dataset_id FROM profiling.bam_profiles bp "
+                    "JOIN catalog.dataset_registry dr ON dr.id = bp.dataset_registry_id "
+                    "WHERE bp.id = :i"
+                ),
+                {"i": row_id},
+            ).first()
+        if row is None or row.dataset_id != v1s["dataset_id"]:
+            raise RuntimeError(f"stale INGESTED marker for {v1s['dataset_id']}")
         return v1s["dataset_id"]
     paths = round_paths(v1s)
     profile_p = out / "bam-profile-v1.json"
@@ -117,8 +165,7 @@ def build_one(engine, v1s: dict, v2: dict, cfg, svc) -> str | None:
             reference_path=str(paths["reference"]),
             fai_path=str(paths["fai"]),
             region_source=(
-                f"{v1s['chromosome']}:{v1s['region_start0'] + 1}-"
-                f"{v1s['region_end0_exclusive']}"
+                f"{v1s['chromosome']}:{v1s['region_start0'] + 1}-{v1s['region_end0_exclusive']}"
             ),
             region_coordinate_convention="one_based_inclusive",
             budget_seconds=1800,
@@ -143,15 +190,28 @@ def build_one(engine, v1s: dict, v2: dict, cfg, svc) -> str | None:
         att = json.loads(att_p.read_text())
     else:
         record = {
-            **{k: v1s[k] for k in (
-                "dataset_id", "round_id", "chromosome", "bam_sha256", "bai_sha256",
-                "reference_sha256", "fai_sha256", "region_start0",
-                "region_end0_exclusive", "region_hash", "identity_tuple_hash",
-            )},
+            **{
+                k: v1s[k]
+                for k in (
+                    "dataset_id",
+                    "round_id",
+                    "chromosome",
+                    "bam_sha256",
+                    "bai_sha256",
+                    "reference_sha256",
+                    "fai_sha256",
+                    "region_start0",
+                    "region_end0_exclusive",
+                    "region_hash",
+                    "identity_tuple_hash",
+                )
+            },
         }
         att = attest_input(
-            bam_path=paths["bam"], bai_path=paths["bai"],
-            reference_path=paths["reference"], fai_path=paths["fai"],
+            bam_path=paths["bam"],
+            bai_path=paths["bai"],
+            reference_path=paths["reference"],
+            fai_path=paths["fai"],
             registry_record=record,
             registry_snapshot_hash=v2["registry_snapshot_hash"],
         ).model_dump(mode="json")
@@ -193,27 +253,49 @@ def main() -> int:
     if len(done) != 75:
         log("HOLD: corpus incomplete; freeze not attempted")
         return 1
-    # explicit version selection: exactly one accepted version per identity at epoch 1.
+    # explicit version selection: exactly one accepted version per identity (fail
+    # closed on zero/multiple unless a committed selection already names one; never
+    # rely on dict overwrite).
+    sel_committed = ROOT / "manifests/profile_snapshot_epoch1_selections.json"
     with engine.connect() as c:
         rows = c.execute(
             text(
-                "SELECT dr.dataset_id, bp.content_hash FROM profiling.bam_profiles bp "
-                "JOIN catalog.dataset_registry dr ON dr.id = bp.dataset_registry_id"
+                "SELECT dr.dataset_id, array_agg(bp.content_hash) AS hashes "
+                "FROM profiling.bam_profiles bp "
+                "JOIN catalog.dataset_registry dr ON dr.id = bp.dataset_registry_id "
+                "GROUP BY dr.dataset_id"
             )
         ).all()
-    selections = {r[0]: r[1] for r in rows}
+    versions = {r.dataset_id: list(r.hashes) for r in rows}
+    prior = json.loads(sel_committed.read_text()) if sel_committed.exists() else {}
+    selections: dict[str, str] = {}
+    for ds, hashes in sorted(versions.items()):
+        if len(hashes) == 1:
+            selections[ds] = hashes[0]
+        elif ds in prior and prior[ds] in hashes:
+            selections[ds] = prior[ds]  # explicit committed selection resolves ambiguity
+        else:
+            log(f"HOLD: {ds} has {len(hashes)} accepted versions and no committed selection")
+            return 1
+    if len(selections) != 75 or len(set(selections)) != 75:
+        log(f"HOLD: expected 75 unique epoch identities, got {len(selections)}")
+        return 1
     sel_p = ROOT / "manifests/profile_snapshot_epoch1_selections.json"
     sel_p.write_text(canonical_json_str(selections) + "\n")
     with engine.begin() as c:
         snap_id = freeze_profile_snapshot(c, EPOCH, selections)
     with engine.connect() as c:
-        snap = c.execute(
-            text(
-                "SELECT epoch, member_count, snapshot_hash, split_manifest_hash, "
-                "registry_snapshot_hash FROM profiling.profile_snapshots WHERE id = :i"
-            ),
-            {"i": snap_id},
-        ).mappings().one()
+        snap = (
+            c.execute(
+                text(
+                    "SELECT epoch, member_count, snapshot_hash, split_manifest_hash, "
+                    "registry_snapshot_hash FROM profiling.profile_snapshots WHERE id = :i"
+                ),
+                {"i": snap_id},
+            )
+            .mappings()
+            .one()
+        )
     evidence = dict(snap)
     (ROOT / "reports").mkdir(exist_ok=True)
     (ROOT / "reports/PROFILE_SNAPSHOT_FROZEN_1.json").write_text(

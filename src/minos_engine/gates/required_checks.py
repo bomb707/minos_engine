@@ -382,6 +382,31 @@ REQUIRED_CHECKS: dict[str, frozenset[str]] = {
             "service_still_blocked",
         }
     ),
+    # PROFILE-SNAPSHOT-FROZEN-1 — L2-D epoch-1 corpus evidence (operational snapshot).
+    "PROFILE-SNAPSHOT-FROZEN-1": frozenset(
+        {
+            "epoch_binding_exact",
+            "registry_binding_exact",
+            "member_count_75",
+            "members_unique_identities",
+            "partitions_50_10_15",
+            "per_chromosome_15",
+            "partitions_match_split_allocations",
+            "all_profiles_complete",
+            "selected_versions_unique_and_explicit",
+            "artifact_bindings_complete",
+            "artifact_inventory_bound",
+            "attestation_bound",
+            "m5_counts_recorded",
+            "degraded_integrity_count_75",
+            "trainer_view_count_50",
+            "validation_view_count_10",
+            "sealed_test_denied",
+            "snapshot_tables_append_only",
+            "snapshot_hash_recomputed",
+            "accepted_ingest_ready_bound",
+        }
+    ),
 }
 
 
