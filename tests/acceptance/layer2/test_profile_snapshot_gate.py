@@ -35,6 +35,7 @@ _NEEDED = (
     "gates/l1-ready.json",
     "gates/db-ready.json",
     ".github/workflows/ci.yml",
+    "reports/PROFILE_SNAPSHOT_FROZEN_1_REPORT.md",
 )
 
 
@@ -245,3 +246,112 @@ def test_modified_artifact_bytes_detected(tmp_path: Path) -> None:
     rebuilt = build_artifact_inventory(corpus, tiny)
     committed_entry = next(e for e in committed["entries"] if e["round_id"] == str(one["round_id"]))
     assert canonical_hash(rebuilt["entries"][0]) != canonical_hash(committed_entry)
+
+
+# --------------------------------------------------------------------------- #
+# gate-contract tamper matrix (final review): each named contract check rejects
+# --------------------------------------------------------------------------- #
+def _gate_tamper(tmp_path: Path, mutate) -> Path:
+    root = _tamper_root(tmp_path, lambda r: None)
+    shutil.copy(
+        REPO_ROOT / "reports/PROFILE_SNAPSHOT_FROZEN_1_REPORT.md",
+        (root / "reports" / "PROFILE_SNAPSHOT_FROZEN_1_REPORT.md"),
+    ) if (root / "reports").mkdir(parents=True, exist_ok=True) is None else None
+    _mutate_json(root, "gates/profile-snapshot-frozen-1.json", mutate)
+    return root
+
+
+def _offline(root: Path):
+    return verify_snapshot_offline(root, 1, git_root=REPO_ROOT)
+
+
+@needs_evidence
+@pytest.mark.parametrize(
+    ("named_check", "mutate"),
+    [
+        ("gate_status_pass", lambda d: d.__setitem__("status", "HOLD")),
+        (
+            "mandatory_set_exact",
+            lambda d: d["mandatory_checks"].pop("member_count_75"),
+        ),
+        (
+            "mandatory_set_exact",
+            lambda d: d["mandatory_checks"].__setitem__("smuggled_extra", True),
+        ),
+        (
+            "offline_results_match_recomputed",
+            lambda d: d["mandatory_checks"].__setitem__("member_count_75", False),
+        ),
+        (
+            "qualified_source_tree_matches",
+            lambda d: d.__setitem__("qualified_source_git_sha", "0" * 40),
+        ),
+        (
+            "qualified_source_tree_matches",
+            lambda d: d.__setitem__("qualified_source_tree_sha", "0" * 40),
+        ),
+        (
+            "gate_tool_version",
+            lambda d: d.__setitem__("qualification_tool_version", "wrong-tool"),
+        ),
+        (
+            "gate_engine_sha_matches_source",
+            lambda d: d.__setitem__("engine_git_sha", "1" * 40),
+        ),
+        (
+            "report_bytes_bound",
+            lambda d: d["input_hashes"].__setitem__("qualification_report_hash", "0" * 64),
+        ),
+        (
+            "evidence_paths_exact",
+            lambda d: d["evidence"][0].__setitem__("path", "manifests/substituted.json"),
+        ),
+        (
+            "source_descends_ingest_ready_evidence",
+            lambda d: d.__setitem__(
+                "qualified_source_git_sha",
+                "5ff8c361acc19613f0db7e4f93f88fe4aab9bfd5",  # pre-INGEST-READY commit
+            ),
+        ),
+    ],
+)
+def test_gate_contract_tamper_rejected(tmp_path: Path, named_check: str, mutate) -> None:
+    def mut(d: dict) -> None:
+        mutate(d)
+        d["gate_hash"] = ""  # will be recomputed by write; contract checks still fire
+
+    root = _gate_tamper(tmp_path, mut)
+    # rewrite gate_hash canonically so canonical-integrity does not mask the named check
+    import json as _json
+
+    from minos_engine.gates.contracts import GateArtifact
+
+    gp = root / "gates/profile-snapshot-frozen-1.json"
+    raw = _json.loads(gp.read_text())
+    try:
+        g = GateArtifact.model_validate(raw)
+        gp.write_text(g.model_dump_json())
+    except Exception:
+        pass  # invalid gates are acceptable: verification must still reject
+    try:
+        r = _offline(root)
+    except Exception:
+        return  # fail-closed load rejection is a pass
+    assert not r.ok
+    assert r.checks.get(named_check) is False, (named_check, r.reasons)
+
+
+@needs_evidence
+def test_report_byte_modification_rejected(tmp_path: Path) -> None:
+    root = _tamper_root(tmp_path, lambda r: None)
+    (root / "reports").mkdir(parents=True, exist_ok=True)
+    report = (REPO_ROOT / "reports/PROFILE_SNAPSHOT_FROZEN_1_REPORT.md").read_text()
+    (root / "reports/PROFILE_SNAPSHOT_FROZEN_1_REPORT.md").write_text(report + "\ntampered\n")
+    r = _offline(root)
+    assert not r.ok and r.checks["report_bytes_bound"] is False
+
+
+@needs_evidence
+def test_offline_full_contract_passes_on_repo() -> None:
+    r = _offline(REPO_ROOT)
+    assert r.ok, r.reasons

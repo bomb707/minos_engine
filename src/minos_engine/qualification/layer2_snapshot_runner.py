@@ -471,11 +471,88 @@ def _gate_binding_checks(gate: GateArtifact, identities: dict[str, str]) -> dict
     }
 
 
-def verify_snapshot_offline(root: Path, epoch: int) -> SnapshotGateVerification:
+#: Operational-only assertions: recorded true in the gate, classified as operational
+#: (live-store) facts — NOT offline-recomputable.
+OPERATIONAL_CHECKS: frozenset[str] = frozenset(
+    {
+        "attestation_files_exactly_bound",
+        "operational_artifact_bytes_reverified",
+        "zero_ingestion_failures",
+        "trainer_view_count_50",
+        "validation_view_count_10",
+        "sealed_test_denied",
+        "snapshot_tables_append_only",
+    }
+)
+
+_EVIDENCE_PATHS = (SELECTIONS_PATH, MEMBER_MANIFEST_PATH, INVENTORY_PATH)
+
+
+def _gate_contract_checks(
+    root: Path,
+    gate: GateArtifact,
+    identities: dict[str, str],
+    recomputed: dict[str, bool],
+    epoch: int,
+    git_root: Path,
+) -> dict[str, bool]:
+    """Full fail-closed gate contract (items 1-16 of the final review)."""
+    from minos_engine.gates.required_checks import required_checks_for
+    from minos_engine.qualification import git_tree as G
+
+    src = gate.qualified_source_git_sha or ""
+    required = required_checks_for(gate.gate_name)
+    committed = gate.mandatory_checks
+    report_path = root / REPORT_PATH
+    report_hash = sha256_hex(report_path.read_bytes()) if report_path.exists() else ""
+    ev_by_path = {e.path: e for e in gate.evidence}
+    return {
+        "gate_status_pass": gate.status is GateStatus.PASS,
+        "gate_name_exact": gate.gate_name == gate_name(epoch),
+        "gate_schema_version": gate.schema_version == "gate-artifact-v1",
+        "gate_tool_version": gate.qualification_tool_version == SNAPSHOT_QUALIFIER_VERSION,
+        "gate_engine_sha_matches_source": bool(src) and gate.engine_git_sha == src,
+        "qualified_source_present": bool(src) and G.is_commit(git_root, src),
+        "qualified_source_tree_matches": bool(src)
+        and G.commit_tree_sha(git_root, src) == gate.qualified_source_tree_sha,
+        "head_descends_qualified_source": bool(src) and G.is_ancestor(git_root, src, "HEAD"),
+        "source_descends_ingest_ready_evidence": bool(src)
+        and G.is_ancestor(git_root, PRE.INGEST_READY_EVIDENCE_COMMIT, src),
+        "mandatory_set_exact": set(committed) == set(required),
+        "mandatory_all_true": all(committed.get(k) is True for k in committed),
+        "offline_results_match_recomputed": all(
+            committed.get(k) == v for k, v in recomputed.items() if k not in OPERATIONAL_CHECKS
+        ),
+        "operational_checks_recorded_true": all(
+            committed.get(k) is True for k in OPERATIONAL_CHECKS
+        ),
+        "evidence_paths_exact": tuple(sorted(ev_by_path)) == tuple(sorted(_EVIDENCE_PATHS)),
+        "evidence_hashes_recomputed": all(
+            ev_by_path.get(p) is not None
+            and ev_by_path[p].sha256
+            == {
+                SELECTIONS_PATH: identities["selection_manifest_hash"],
+                MEMBER_MANIFEST_PATH: identities["member_manifest_hash"],
+                INVENTORY_PATH: identities["artifact_inventory_hash"],
+            }[p]
+            for p in _EVIDENCE_PATHS
+        ),
+        "report_bytes_bound": bool(report_hash)
+        and gate.input_hashes.get("qualification_report_hash") == report_hash,
+    }
+
+
+def verify_snapshot_offline(
+    root: Path, epoch: int, *, git_root: Path | None = None
+) -> SnapshotGateVerification:
     """Committed-artifact verification only — no PostgreSQL, no corpus directory."""
     gate, members, inventory, selections = _load_committed(root, epoch)
     checks, identities = _offline_checks(root, epoch, members, inventory, selections)
+    recomputed_offline = dict(checks)  # offline-recomputable mandatory results ONLY
     checks.update(_gate_binding_checks(gate, identities))
+    checks.update(
+        _gate_contract_checks(root, gate, identities, recomputed_offline, epoch, git_root or root)
+    )
     reasons = tuple(f"{k} failed" for k, v in checks.items() if not v)
     return SnapshotGateVerification(ok=all(checks.values()), checks=checks, reasons=reasons)
 
