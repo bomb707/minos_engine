@@ -58,6 +58,10 @@ __all__ = [
     "SPLIT_FROZEN_V2_SOURCE_COMMIT",
     "SPLIT_FROZEN_V2_SOURCE_TREE",
     "SPLIT_FROZEN_V2_EVIDENCE_COMMIT",
+    "INGEST_READY_GATE_HASH",
+    "INGEST_READY_SOURCE_COMMIT",
+    "INGEST_READY_SOURCE_TREE",
+    "INGEST_READY_EVIDENCE_COMMIT",
     "ACCEPTED",
 ]
 
@@ -119,6 +123,15 @@ SPLIT_FROZEN_V2_GATE_HASH = "6bd9f472720d56055e57ada0a6e955a8ab0b617a0fe849021a5
 SPLIT_FROZEN_V2_SOURCE_COMMIT = "8c641dd1363573ab685df49540561cfe818de17c"
 SPLIT_FROZEN_V2_SOURCE_TREE = "5d6569801e5e75aa398c3f0f835d3d189c506eee"
 SPLIT_FROZEN_V2_EVIDENCE_COMMIT = "a8940ac44eef72cbcbdc8f943a163e33f3a3b742"
+
+# Accepted L2-D INGEST-READY closure identities (capability gate; per-epoch
+# PROFILE-SNAPSHOT-FROZEN evidence is separate). Owner-accepted after the corrective
+# review rounds; CI green on both commits. A change to any of these is an explicit
+# owner acceptance decision (see update procedure above).
+INGEST_READY_GATE_HASH = "91f55da0bfe4df8620508ddb9566a0fd9ed838ca1beb2d2522bcb655d8061599"
+INGEST_READY_SOURCE_COMMIT = "87835a99918812172343eabb7a1e8037e317eaec"
+INGEST_READY_SOURCE_TREE = "06e8f6ab9832f382624c06b986f207cc75810247"
+INGEST_READY_EVIDENCE_COMMIT = "5ed620a6371f771be2cfead8caeb712bf4701121"
 
 #: The single frozen accepted-identity contract used by the entry-gate verifier.
 ACCEPTED = AcceptedPrerequisiteIdentity(
