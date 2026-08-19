@@ -1,0 +1,202 @@
+{
+  "created_at": "2026-08-19T05:26:39.263091+00:00",
+  "engine_git_sha": "87835a99918812172343eabb7a1e8037e317eaec",
+  "evidence": [
+    {
+      "description": "src/minos_engine/layer2/ingest",
+      "kind": "directory",
+      "path": "src/minos_engine/layer2/ingest",
+      "sha256": "b0c1574017d916837270b4a16fe51a087050aeca82201c3eed805a86b29a1fca",
+      "size_bytes": null
+    },
+    {
+      "description": "src/minos_engine/intake/attestation.py",
+      "kind": "file",
+      "path": "src/minos_engine/intake/attestation.py",
+      "sha256": "8c9a1c4bad52139d060523712225fc7a70b9dfd6c842276903aea2e5331e69dc",
+      "size_bytes": 8871
+    },
+    {
+      "description": "src/minos_engine/storage/profile_ingest.py",
+      "kind": "file",
+      "path": "src/minos_engine/storage/profile_ingest.py",
+      "sha256": "2749400c5e312821ba8afe43271004a45f88b2bc9511eea02e277f61d1394a37",
+      "size_bytes": 28067
+    },
+    {
+      "description": "src/minos_engine/storage/l2d_migration_contract.py",
+      "kind": "file",
+      "path": "src/minos_engine/storage/l2d_migration_contract.py",
+      "sha256": "731bd3e514cfca84a533648ee4380fe60bc87d011444233bcc651adce693aa1d",
+      "size_bytes": 3227
+    },
+    {
+      "description": "src/minos_engine/qualification/layer2_ingest_runner.py",
+      "kind": "file",
+      "path": "src/minos_engine/qualification/layer2_ingest_runner.py",
+      "sha256": "fc7730625aeacebdd5589b41442bc4dbf5453c795c44a35c80bcfa7113ddec92",
+      "size_bytes": 28338
+    },
+    {
+      "description": "migrations/versions/0004_l2d_profile_ingestion.py",
+      "kind": "file",
+      "path": "migrations/versions/0004_l2d_profile_ingestion.py",
+      "sha256": "f540ba7f5c88ada0e1da9948f5bc7ae97d37dc3cbb1394b192c8c498e739ae0e",
+      "size_bytes": 17728
+    },
+    {
+      "description": "schemas/input-integrity-attestation-v1.schema.json",
+      "kind": "file",
+      "path": "schemas/input-integrity-attestation-v1.schema.json",
+      "sha256": "3e13e627a484fd6fdd188a6011217636c0f694ded388596af7805c77f8d501a6",
+      "size_bytes": 2268
+    },
+    {
+      "description": "gates/protocol-ready.json",
+      "kind": "file",
+      "path": "gates/protocol-ready.json",
+      "sha256": "edb57817829a4d4f7f359f12dd626d8333d07f505c8ef5349f22d79ff93d8cf9",
+      "size_bytes": 4022
+    },
+    {
+      "description": "gates/twin-ready.json",
+      "kind": "file",
+      "path": "gates/twin-ready.json",
+      "sha256": "2edffacdddeaf21125715be18b14e77947e063b8a29dfb2bd43b171a864cddde",
+      "size_bytes": 4198
+    },
+    {
+      "description": "gates/l1-ready.json",
+      "kind": "file",
+      "path": "gates/l1-ready.json",
+      "sha256": "d7099a12a2a93e447fd97cab3a4eec1a1a27a90b9262351ec7f576259946d951",
+      "size_bytes": 5499
+    },
+    {
+      "description": "gates/db-ready.json",
+      "kind": "file",
+      "path": "gates/db-ready.json",
+      "sha256": "49741ccaefa84115705b8107da761e1c561fc32959111c7fa9316d1d7c6a585a",
+      "size_bytes": 7023
+    },
+    {
+      "description": "gates/split-frozen.json",
+      "kind": "file",
+      "path": "gates/split-frozen.json",
+      "sha256": "9af40f1bdc07ba7a10a2b3e46fb68ddc91b7eff1a88eac19083a9af9b252f5cf",
+      "size_bytes": 8970
+    },
+    {
+      "description": "gates/split-frozen-v2.json",
+      "kind": "file",
+      "path": "gates/split-frozen-v2.json",
+      "sha256": "a4872e36a478e877f4bf6787198e80863d0fa5257e7e07507649656c9c2c24c3",
+      "size_bytes": 9466
+    },
+    {
+      "description": "docs/layer2/PROFILE_INGESTION.md",
+      "kind": "file",
+      "path": "docs/layer2/PROFILE_INGESTION.md",
+      "sha256": "e932b1d38bf0e5a099ffa16c4087ceaebf05586deedd6a0a71b6ed9e02becbd2",
+      "size_bytes": 6093
+    },
+    {
+      "description": ".github/workflows/ci.yml",
+      "kind": "file",
+      "path": ".github/workflows/ci.yml",
+      "sha256": "58cfca09ed13a4c5b5732da4409af5b712533b9a1581d0f5c577fd493aa7f451",
+      "size_bytes": 13235
+    },
+    {
+      "description": "tests/integration/layer2_ingest",
+      "kind": "directory",
+      "path": "tests/integration/layer2_ingest",
+      "sha256": "87d3426b2153858465dd28963cd29c7860e11de53efc53f91245a3599db485d3",
+      "size_bytes": null
+    }
+  ],
+  "gate_hash": "91f55da0bfe4df8620508ddb9566a0fd9ed838ca1beb2d2522bcb655d8061599",
+  "gate_name": "INGEST-READY",
+  "input_hashes": {
+    "accepted_db_ready_gate_hash": "259986a0423a1b8317bb4c6b1a1cb9213708444a8a6764fc8c7703cf80499698",
+    "accepted_l1_ready_gate_hash": "aeabfea898edd09f68dbe5662b9aebe9dc87d69c97a10b7c8fb3e9d913b5ef5b",
+    "accepted_protocol_ready_gate_hash": "b9cda0bab329b36a0a62b4b7e9ba9b797fc22b46c1055f76db26b591311a1675",
+    "accepted_split_frozen_gate_hash": "5520328868f408fe705a9d6618e3d67c081fa4e0aaa8dd764bb933aea866c702",
+    "accepted_split_frozen_v2_gate_hash": "6bd9f472720d56055e57ada0a6e955a8ab0b617a0fe849021a5b0ddfafd19392",
+    "accepted_twin_ready_gate_hash": "3464fb7604fd6b18d9008bafa9e3cf1ad18d7d440d22806bbe043a11d3e9b22a",
+    "alembic_head_revision": "0004_l2d_profile_ingestion",
+    "attestation_schema_hash": "3e13e627a484fd6fdd188a6011217636c0f694ded388596af7805c77f8d501a6",
+    "attestation_schema_version": "input-integrity-attestation-v1",
+    "evidence_payload_paths": "[\"reports/LAYER2_L2D_INGEST_READY_REPORT.md\"]",
+    "ingest_integration_collected": "33",
+    "ingest_integration_passed": "33",
+    "ingest_package_hash": "b0c1574017d916837270b4a16fe51a087050aeca82201c3eed805a86b29a1fca",
+    "l2d_migration_contract_hash": "6541b10aabebb03d8accfeaf3e568be882c7eb45baa10445e1b92f8e22786c20",
+    "l2d_migration_file_hash": "f540ba7f5c88ada0e1da9948f5bc7ae97d37dc3cbb1394b192c8c498e739ae0e",
+    "python_runtime": "CPython 3.12",
+    "qualification_report_hash": "fa1fe176c37101c7856648f8b0d27edc3207d8eff4b68c00399b97b62a18167f",
+    "split_frozen_v2_evidence_commit": "a8940ac44eef72cbcbdc8f943a163e33f3a3b742",
+    "split_frozen_v2_source_commit": "8c641dd1363573ab685df49540561cfe818de17c",
+    "split_frozen_v2_source_tree": "5d6569801e5e75aa398c3f0f835d3d189c506eee",
+    "test_collected": "1048",
+    "test_failed": "0",
+    "test_passed": "1047",
+    "test_skipped": "1"
+  },
+  "mandatory_checks": {
+    "accepted_db_ready_unchanged": true,
+    "accepted_l1_ready_unchanged": true,
+    "accepted_protocol_ready_unchanged": true,
+    "accepted_split_frozen_unchanged": true,
+    "accepted_split_frozen_v2_unchanged": true,
+    "accepted_twin_ready_unchanged": true,
+    "alembic_single_head_is_l2d": true,
+    "artifact_conflict_passed": true,
+    "atomic_audit_passed": true,
+    "attestation_schema_evidence_bound": true,
+    "attestation_schema_evidence_present": true,
+    "ci_asserts_head_0004": true,
+    "concurrent_serialization_passed": true,
+    "content_conflict_passed": true,
+    "coverage_passed": true,
+    "epoch_membership_passed": true,
+    "evidence_hashes_complete": true,
+    "exact_byte_hashing_passed": true,
+    "fasta_bounds_passed": true,
+    "format_passed": true,
+    "full_tests_passed": true,
+    "head_descends_l2d_source": true,
+    "idempotency_passed": true,
+    "ingest_admission_passed": true,
+    "ingest_package_evidence_bound": true,
+    "ingest_package_evidence_present": true,
+    "ingest_role_isolation_passed": true,
+    "l2d_migration_contract_bound": true,
+    "l2d_migration_file_evidence_bound": true,
+    "l2d_migration_immutable": true,
+    "l2d_migration_lifecycle_passed": true,
+    "l2d_source_descends_split_frozen_v2": true,
+    "legacy_profiles_reads_revoked": true,
+    "mypy_passed": true,
+    "parquet_invariants_passed": true,
+    "postgres_16_verified": true,
+    "profile_id_conflict_passed": true,
+    "profile_snapshot_freeze_passed": true,
+    "qualification_report_bytes_bound": true,
+    "required_source_tracked": true,
+    "ruff_passed": true,
+    "sealed_test_profile_access_denied": true,
+    "service_still_blocked": true,
+    "split_frozen_v2_evidence_present": true,
+    "split_frozen_v2_source_present": true,
+    "split_frozen_v2_source_tree_bound": true,
+    "three_artifact_contract_passed": true,
+    "trainer_view_isolation_passed": true,
+    "version_selection_passed": true
+  },
+  "qualification_tool_version": "layer2-ingest-qualifier-v1",
+  "qualified_source_git_sha": "87835a99918812172343eabb7a1e8037e317eaec",
+  "qualified_source_tree_sha": "06e8f6ab9832f382624c06b986f207cc75810247",
+  "schema_version": "gate-artifact-v1",
+  "status": "PASS"
+}
