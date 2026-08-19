@@ -62,6 +62,8 @@ __all__ = [
     "INGEST_READY_SOURCE_COMMIT",
     "INGEST_READY_SOURCE_TREE",
     "INGEST_READY_EVIDENCE_COMMIT",
+    "PROFILE_SNAPSHOT_FROZEN_1_GATE_HASH",
+    "PROFILE_SNAPSHOT_1_HASH",
     "ACCEPTED",
 ]
 
@@ -132,6 +134,14 @@ INGEST_READY_GATE_HASH = "91f55da0bfe4df8620508ddb9566a0fd9ed838ca1beb2d2522bcb6
 INGEST_READY_SOURCE_COMMIT = "87835a99918812172343eabb7a1e8037e317eaec"
 INGEST_READY_SOURCE_TREE = "06e8f6ab9832f382624c06b986f207cc75810247"
 INGEST_READY_EVIDENCE_COMMIT = "5ed620a6371f771be2cfead8caeb712bf4701121"
+
+# Accepted L2-D epoch-1 corpus evidence (externally accepted; S2 55f4a472 / E2 0281a87e,
+# CI-green, merged to dev 24184347). Immutable L2-E prerequisites: the FEATURE-VIEW may
+# consume ONLY this frozen snapshot. A change is an explicit owner acceptance decision.
+PROFILE_SNAPSHOT_FROZEN_1_GATE_HASH = (
+    "d48c530e97fc26e85396467afa862eba5da5359707f036a33060d6e5bff30f31"
+)
+PROFILE_SNAPSHOT_1_HASH = "cf717ebb44e76a3408e975e027b51139df28d643dd1616c5edbce3643182c4c7"
 
 #: The single frozen accepted-identity contract used by the entry-gate verifier.
 ACCEPTED = AcceptedPrerequisiteIdentity(
