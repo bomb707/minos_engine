@@ -1,6 +1,6 @@
 {
-  "created_at": "2026-08-19T09:29:52.426647+00:00",
-  "engine_git_sha": "40a0f178baf2ea6150c313a8d641f53b8ab9cb3c",
+  "created_at": "2026-08-19T09:46:44.826214+00:00",
+  "engine_git_sha": "55f4a4724dba444f12c8b88ce67175ee3165e443",
   "evidence": [
     {
       "description": "manifests/profile_snapshot_epoch1_selections.json",
@@ -24,7 +24,7 @@
       "size_bytes": null
     }
   ],
-  "gate_hash": "32c2c9d7df85d53ad8c9b7c0a06a7c018fabeb217accd54d53e9e1d2d032fd9f",
+  "gate_hash": "d48c530e97fc26e85396467afa862eba5da5359707f036a33060d6e5bff30f31",
   "gate_name": "PROFILE-SNAPSHOT-FROZEN-1",
   "input_hashes": {
     "accepted_ingest_ready_gate_hash": "91f55da0bfe4df8620508ddb9566a0fd9ed838ca1beb2d2522bcb655d8061599",
@@ -77,8 +77,8 @@
     "zero_ingestion_failures": true
   },
   "qualification_tool_version": "layer2-profile-snapshot-qualifier-v2",
-  "qualified_source_git_sha": "40a0f178baf2ea6150c313a8d641f53b8ab9cb3c",
-  "qualified_source_tree_sha": "83a71dfb3eb5f8df584a403bc7236ea4f6b2cd87",
+  "qualified_source_git_sha": "55f4a4724dba444f12c8b88ce67175ee3165e443",
+  "qualified_source_tree_sha": "e023339fb1bee827471c73169fcea4813a9a1705",
   "schema_version": "gate-artifact-v1",
   "status": "PASS"
 }
