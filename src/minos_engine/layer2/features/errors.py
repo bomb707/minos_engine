@@ -18,6 +18,11 @@ __all__ = [
     "MissingFeatureError",
     "ForbiddenPartitionError",
     "MatrixAssemblyError",
+    "InvalidMemberManifestError",
+    "MemberManifestHashMismatchError",
+    "SnapshotHashMismatchError",
+    "RegistrySnapshotMismatchError",
+    "ProfilerIdentityMismatchError",
 ]
 
 
@@ -55,3 +60,28 @@ class ForbiddenPartitionError(FeatureExtractionError):
 class MatrixAssemblyError(FeatureExtractionError):
     """The supplied vector set does not exactly cover the snapshot partition
     membership (missing, duplicate, or extra vectors)."""
+
+
+class InvalidMemberManifestError(FeatureExtractionError):
+    """The member-manifest bytes are not a valid profile-snapshot-members-v1 document
+    (encoding, JSON, duplicate keys, or structural violation)."""
+
+
+class MemberManifestHashMismatchError(FeatureExtractionError):
+    """The recomputed canonical member_manifest_hash disagrees with the declared or
+    expected accepted value."""
+
+
+class SnapshotHashMismatchError(FeatureExtractionError):
+    """A supplied snapshot_hash does not equal the hash recomputed with the accepted
+    PROFILE-SNAPSHOT-FROZEN freeze formula."""
+
+
+class RegistrySnapshotMismatchError(FeatureExtractionError):
+    """A member's registry_snapshot_hash disagrees with the manifest binding or the
+    expected pinned registry snapshot."""
+
+
+class ProfilerIdentityMismatchError(FeatureExtractionError):
+    """A member's profiler_version/profiler_config_hash is not the accepted profiler
+    identity pinned in layer2.prerequisites."""

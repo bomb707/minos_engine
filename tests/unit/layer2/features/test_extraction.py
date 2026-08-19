@@ -1,8 +1,9 @@
-"""E2: exact-byte extraction, four-way binding, snapshot-derived assembly, verifier.
+"""E2: exact-byte extraction, four-way binding, verified-manifest snapshots, verifier.
 
 All profile documents are SYNTHETIC, generated from the accepted ``bam-profile-v1``
-JSON schema itself (no corpus access, no fixed 75/50/10/15 anywhere). Two non-75
-snapshots with uneven chromosome membership prove assignments are consumed verbatim.
+JSON schema itself (no corpus access, no fixed 75/50/10/15 anywhere). Snapshots are
+derived through the verified member-manifest boundary; two non-75 snapshots with uneven
+chr18–chr22 membership prove assignments are consumed verbatim.
 """
 
 from __future__ import annotations
@@ -14,19 +15,26 @@ from typing import Any
 
 import pytest
 
+from minos_engine.common.hashing import canonical_hash
 from minos_engine.layer2.features.contracts import (
     AUTHORITATIVE_COLUMNS,
     FROZEN_FEATURE_SET_HASH,
     canonical_feature_set,
+    matrix_hash,
     vector_hash,
 )
 from minos_engine.layer2.features.errors import (
     FeatureValuesHashMismatchError,
     ForbiddenPartitionError,
+    InvalidMemberManifestError,
     InvalidProfileDocumentError,
     MatrixAssemblyError,
+    MemberManifestHashMismatchError,
     MissingFeatureError,
     ProfileArtifactHashMismatchError,
+    ProfilerIdentityMismatchError,
+    RegistrySnapshotMismatchError,
+    SnapshotHashMismatchError,
     SnapshotIdentityMismatchError,
 )
 from minos_engine.layer2.features.extraction import (
@@ -36,20 +44,33 @@ from minos_engine.layer2.features.extraction import (
     build_feature_vector,
     build_partition_matrix,
     extract_profile_features,
+    load_member_manifest,
     verify_matrix,
+    verify_matrix_payload,
 )
 from minos_engine.layer2.ingest.contracts import (
     canonical_feature_values_hash,
     extract_eligible_feature_values,
 )
 from minos_engine.layer2.ingest.validation import l1_feature_values_hash_from_document
+from minos_engine.layer2.prerequisites import (
+    PROFILE_SNAPSHOT_1_HASH,
+    PROFILER_CONFIG_HASH,
+    PROFILER_VERSION,
+)
 from minos_engine.schema_registry import load_schema, validate_against
+from tests.conftest import REPO_ROOT
+
+_SPLIT_H = hashlib.sha256(b"synthetic-split-manifest").hexdigest()
+_REG_H = hashlib.sha256(b"synthetic-registry-snapshot").hexdigest()
+
+#: The accepted committed epoch-1 member-manifest hash (external trust anchor).
+_ACCEPTED_MEMBER_MANIFEST_HASH = "2461751f2de4114fbf29114a4cff76b81e394c790e58e2788dd2b7c28b8e6c9b"
+
 
 # --------------------------------------------------------------------------- #
 # synthetic profile documents, generated from the accepted schema itself
 # --------------------------------------------------------------------------- #
-
-
 def _gen(schema: dict[str, Any], root: dict[str, Any] | None = None) -> Any:
     """Produce a schema-conforming instance (fills ALL declared properties)."""
     root = root if root is not None else schema
@@ -139,6 +160,49 @@ def make_doc(
     return doc
 
 
+def _member_dict(
+    dataset_id: str,
+    partition: str,
+    *,
+    seed: int = 0,
+    chromosome: str = "chr18",
+    doc: dict[str, Any] | None = None,
+    compute_hashes: bool = True,
+) -> tuple[dict[str, Any], bytes]:
+    """A FULL manifest-member row (all provenance fields) plus its profile payload."""
+    profile_id = hashlib.md5(dataset_id.encode(), usedforsecurity=False).hexdigest()
+    if doc is None:
+        doc = make_doc(profile_id, seed=seed)
+    payload = json.dumps(doc).encode("utf-8")
+    if compute_hashes:
+        fvh = canonical_feature_values_hash(extract_eligible_feature_values(doc))
+        l1: str | None = l1_feature_values_hash_from_document(doc)
+    else:
+        fvh, l1 = "0" * 64, None
+    row = {
+        "dataset_id": dataset_id,
+        "round_id": hashlib.md5(f"round:{dataset_id}".encode(), usedforsecurity=False).hexdigest(),
+        "chromosome": chromosome,
+        "partition": partition,
+        "identity_tuple_hash": hashlib.sha256(f"identity:{dataset_id}".encode()).hexdigest(),
+        "content_hash": hashlib.sha256(f"content:{dataset_id}".encode()).hexdigest(),
+        "feature_values_hash": fvh,
+        "l1_feature_values_hash": l1 if l1 is not None else "0" * 64,
+        "profile_id": doc.get("profile_id", profile_id),
+        "profile_sha256": hashlib.sha256(payload).hexdigest(),
+        "profile_manifest_sha256": hashlib.sha256(f"pm:{dataset_id}".encode()).hexdigest(),
+        "windows_sha256": hashlib.sha256(f"win:{dataset_id}".encode()).hexdigest(),
+        "attestation_hash": hashlib.sha256(f"att:{dataset_id}".encode()).hexdigest(),
+        "m5_status": "ABSENT",
+        "integrity_degraded": True,
+        "profile_status": "COMPLETE",
+        "profiler_version": PROFILER_VERSION,
+        "profiler_config_hash": PROFILER_CONFIG_HASH,
+        "registry_snapshot_hash": _REG_H,
+    }
+    return row, payload
+
+
 def make_member(
     dataset_id: str,
     partition: str,
@@ -148,46 +212,67 @@ def make_member(
     doc: dict[str, Any] | None = None,
     compute_hashes: bool = True,
 ) -> tuple[SnapshotMember, bytes]:
-    profile_id = hashlib.md5(dataset_id.encode(), usedforsecurity=False).hexdigest()
-    if doc is None:
-        doc = make_doc(profile_id, seed=seed)
-    payload = json.dumps(doc).encode("utf-8")
-    if compute_hashes:
-        fvh = canonical_feature_values_hash(extract_eligible_feature_values(doc))
-        l1 = l1_feature_values_hash_from_document(doc)
-    else:
-        fvh, l1 = "0" * 64, None
-    member = SnapshotMember(
-        dataset_id=dataset_id,
-        profile_id=doc.get("profile_id", profile_id),
-        partition=partition,  # type: ignore[arg-type]
-        content_hash=hashlib.sha256(f"content:{dataset_id}".encode()).hexdigest(),
-        feature_values_hash=fvh,
-        profile_sha256=hashlib.sha256(payload).hexdigest(),
-        l1_feature_values_hash=l1,
+    row, payload = _member_dict(
+        dataset_id,
+        partition,
+        seed=seed,
         chromosome=chromosome,
+        doc=doc,
+        compute_hashes=compute_hashes,
     )
-    return member, payload
+    if not compute_hashes:
+        row["l1_feature_values_hash"] = None  # skip the L1 chain for invalid docs
+    return SnapshotMember(**row), payload
+
+
+def _freeze_hash(epoch: int, rows: list[dict[str, Any]]) -> str:
+    return canonical_hash(
+        {
+            "epoch": epoch,
+            "split_manifest_hash": _SPLIT_H,
+            "registry_snapshot_hash": _REG_H,
+            "members": [
+                {
+                    "dataset_id": r["dataset_id"],
+                    "partition": r["partition"],
+                    "content_hash": r["content_hash"],
+                    "feature_values_hash": r["feature_values_hash"],
+                }
+                for r in sorted(rows, key=lambda r: str(r["dataset_id"]))
+            ],
+        }
+    )
+
+
+def make_manifest_bytes(
+    spec: list[tuple[str, str, str]], *, epoch: int = 1
+) -> tuple[bytes, dict[str, bytes]]:
+    rows: list[dict[str, Any]] = []
+    payloads: dict[str, bytes] = {}
+    for i, (dataset_id, chromosome, partition) in enumerate(spec):
+        row, payload = _member_dict(dataset_id, partition, seed=i, chromosome=chromosome)
+        rows.append(row)
+        payloads[dataset_id] = payload
+    rows.sort(key=lambda r: str(r["dataset_id"]))
+    content: dict[str, Any] = {
+        "schema_version": "profile-snapshot-members-v1",
+        "epoch": epoch,
+        "split_manifest_hash": _SPLIT_H,
+        "registry_snapshot_hash": _REG_H,
+        "snapshot_hash": _freeze_hash(epoch, rows),
+        "member_count": len(rows),
+        "members": rows,
+    }
+    manifest = {**content, "member_manifest_hash": canonical_hash(content)}
+    return json.dumps(manifest).encode("utf-8"), payloads
 
 
 def make_snapshot(
     spec: list[tuple[str, str, str]], *, epoch: int = 1
-) -> tuple[FrozenSnapshot, dict[str, bytes]]:
-    """spec rows: (dataset_id, chromosome, partition) — consumed verbatim."""
-    members: list[SnapshotMember] = []
-    payloads: dict[str, bytes] = {}
-    for i, (dataset_id, chromosome, partition) in enumerate(spec):
-        member, payload = make_member(dataset_id, partition, seed=i, chromosome=chromosome)
-        members.append(member)
-        payloads[dataset_id] = payload
-    snapshot = FrozenSnapshot(
-        epoch=epoch,
-        snapshot_hash=hashlib.sha256(
-            f"synthetic-snapshot:{epoch}:{len(spec)}".encode()
-        ).hexdigest(),
-        members=tuple(members),
-    )
-    return snapshot, payloads
+) -> tuple[FrozenSnapshot, dict[str, bytes], bytes]:
+    """Derive every synthetic snapshot through the VERIFIED manifest boundary."""
+    manifest_bytes, payloads = make_manifest_bytes(spec, epoch=epoch)
+    return load_member_manifest(manifest_bytes), payloads, manifest_bytes
 
 
 #: Snapshot A: 9 members, uneven chromosomes (4×chr18, 3×chr20, 2×chr21),
@@ -204,7 +289,7 @@ _SPEC_A = [
     ("ds-a21-09", "chr21", "test"),
 ]
 
-#: Snapshot B: 6 members (5×chr19, 1×chrX), train=1 / validation=3 / test=2 —
+#: Snapshot B: 6 members (5×chr19, 1×chr22), train=1 / validation=3 / test=2 —
 #: a grandfathered allocation no percentage rule would ever produce.
 _SPEC_B = [
     ("ds-b19-01", "chr19", "train"),
@@ -212,17 +297,17 @@ _SPEC_B = [
     ("ds-b19-03", "chr19", "validation"),
     ("ds-b19-04", "chr19", "validation"),
     ("ds-b19-05", "chr19", "test"),
-    ("ds-bx-06", "chrX", "test"),
+    ("ds-b22-06", "chr22", "test"),
 ]
 
 
 @pytest.fixture(scope="module")
-def snap_a() -> tuple[FrozenSnapshot, dict[str, bytes]]:
+def snap_a() -> tuple[FrozenSnapshot, dict[str, bytes], bytes]:
     return make_snapshot(_SPEC_A)
 
 
 @pytest.fixture(scope="module")
-def snap_b() -> tuple[FrozenSnapshot, dict[str, bytes]]:
+def snap_b() -> tuple[FrozenSnapshot, dict[str, bytes], bytes]:
     return make_snapshot(_SPEC_B, epoch=2)
 
 
@@ -230,8 +315,19 @@ def _provider(payloads: dict[str, bytes]):
     return lambda member: payloads[member.dataset_id]
 
 
+def _core_member(dataset_id: str, partition: str) -> SnapshotMember:
+    return SnapshotMember(
+        dataset_id=dataset_id,
+        profile_id=hashlib.md5(dataset_id.encode(), usedforsecurity=False).hexdigest(),
+        partition=partition,  # type: ignore[arg-type]
+        content_hash=hashlib.sha256(f"c:{dataset_id}".encode()).hexdigest(),
+        feature_values_hash=hashlib.sha256(f"f:{dataset_id}".encode()).hexdigest(),
+        profile_sha256=hashlib.sha256(f"p:{dataset_id}".encode()).hexdigest(),
+    )
+
+
 # --------------------------------------------------------------------------- #
-# item 1 — exact-byte extraction boundary
+# exact-byte extraction boundary
 # --------------------------------------------------------------------------- #
 def test_exact_byte_profile_sha_mismatch() -> None:
     member, payload = make_member("ds-x-01", "train")
@@ -334,7 +430,7 @@ def test_window_fields_completely_excluded() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# item 2 — four-way binding + typed failures
+# four-way binding + typed failures
 # --------------------------------------------------------------------------- #
 def test_profile_identity_mismatch_rejected() -> None:
     member, payload = make_member("ds-x-07", "train")
@@ -381,10 +477,172 @@ def test_test_member_rejected_before_bytes_are_touched() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# item 3 — snapshot-derived assembly (verbatim, uneven, no percentages)
+# FrozenSnapshot independent self-binding (freeze formula)
+# --------------------------------------------------------------------------- #
+def test_snapshot_hash_is_recomputed_and_supplied_mismatch_rejected() -> None:
+    members = (_core_member("ds-s-01", "train"), _core_member("ds-s-02", "validation"))
+    snapshot = FrozenSnapshot(
+        epoch=1, split_manifest_hash=_SPLIT_H, registry_snapshot_hash=_REG_H, members=members
+    )
+    # the auto-filled hash IS the freeze formula over the core member fields.
+    expected = canonical_hash(
+        {
+            "epoch": 1,
+            "split_manifest_hash": _SPLIT_H,
+            "registry_snapshot_hash": _REG_H,
+            "members": [
+                {
+                    "dataset_id": m.dataset_id,
+                    "partition": m.partition,
+                    "content_hash": m.content_hash,
+                    "feature_values_hash": m.feature_values_hash,
+                }
+                for m in sorted(members, key=lambda m: m.dataset_id)
+            ],
+        }
+    )
+    assert snapshot.snapshot_hash == expected
+    with pytest.raises(SnapshotHashMismatchError):
+        FrozenSnapshot(
+            epoch=1,
+            split_manifest_hash=_SPLIT_H,
+            registry_snapshot_hash=_REG_H,
+            members=members,
+            snapshot_hash="0" * 64,
+        )
+
+
+def test_snapshot_tampering_with_retained_hash_rejected() -> None:
+    members = (_core_member("ds-s-01", "train"), _core_member("ds-s-02", "validation"))
+    snapshot = FrozenSnapshot(
+        epoch=1, split_manifest_hash=_SPLIT_H, registry_snapshot_hash=_REG_H, members=members
+    )
+    old_hash = snapshot.snapshot_hash
+    member_tampers = (
+        {"partition": "validation"},
+        {"dataset_id": "ds-zz-99"},
+        {"content_hash": "0" * 64},
+        {"feature_values_hash": "0" * 64},
+    )
+    for update in member_tampers:
+        tampered = (members[0].model_copy(update=update), members[1])
+        with pytest.raises(SnapshotHashMismatchError):
+            FrozenSnapshot(
+                epoch=1,
+                split_manifest_hash=_SPLIT_H,
+                registry_snapshot_hash=_REG_H,
+                members=tampered,
+                snapshot_hash=old_hash,
+            )
+    top_tampers = (
+        {"epoch": 2},
+        {"split_manifest_hash": "e" * 64},
+        {"registry_snapshot_hash": "e" * 64},
+    )
+    for update in top_tampers:
+        kwargs: dict[str, Any] = {
+            "epoch": 1,
+            "split_manifest_hash": _SPLIT_H,
+            "registry_snapshot_hash": _REG_H,
+            "members": members,
+            "snapshot_hash": old_hash,
+        }
+        kwargs.update(update)
+        with pytest.raises(SnapshotHashMismatchError):
+            FrozenSnapshot(**kwargs)
+
+
+# --------------------------------------------------------------------------- #
+# verified member-manifest boundary (provenance binding)
+# --------------------------------------------------------------------------- #
+def test_committed_epoch1_manifest_verifies_against_accepted_identities() -> None:
+    data = (REPO_ROOT / "manifests" / "profile_snapshot_epoch1_members.json").read_bytes()
+    snapshot = load_member_manifest(
+        data, expected_member_manifest_hash=_ACCEPTED_MEMBER_MANIFEST_HASH
+    )
+    # the derived snapshot reproduces the ACCEPTED frozen snapshot identity.
+    assert snapshot.snapshot_hash == PROFILE_SNAPSHOT_1_HASH
+    assert snapshot.epoch == 1
+    assert all(
+        m.chromosome in ("chr18", "chr19", "chr20", "chr21", "chr22") for m in snapshot.members
+    )
+    assert all(
+        m.profiler_version == PROFILER_VERSION and m.profiler_config_hash == PROFILER_CONFIG_HASH
+        for m in snapshot.members
+    )
+
+
+def test_manifest_duplicate_key_and_structure_rejected(snap_a) -> None:
+    _, _, manifest_bytes = snap_a
+    dup = b'{"schema_version": "profile-snapshot-members-v1", ' + manifest_bytes[1:]
+    with pytest.raises(InvalidMemberManifestError, match="duplicate JSON key"):
+        load_member_manifest(dup)
+    raw = json.loads(manifest_bytes)
+    del raw["members"][0]["profile_sha256"]  # structural: a required field is gone
+    with pytest.raises(InvalidMemberManifestError):
+        load_member_manifest(json.dumps(raw).encode())
+
+
+def test_manifest_hash_binds_profile_sha256_and_all_provenance(snap_a) -> None:
+    _, _, manifest_bytes = snap_a
+    original_hash = json.loads(manifest_bytes)["member_manifest_hash"]
+    raw = json.loads(manifest_bytes)
+    raw["members"][0]["profile_sha256"] = "0" * 64
+    # 1) swapped profile_sha256 with the old manifest hash: rejected.
+    with pytest.raises(MemberManifestHashMismatchError):
+        load_member_manifest(json.dumps(raw).encode())
+    # 2) even a self-consistent re-hash cannot preserve the ACCEPTED manifest hash —
+    #    the trusted anchor detects the swap (snapshot_hash alone would not, which is
+    #    exactly why provenance must come from the verified manifest).
+    content = {k: v for k, v in raw.items() if k != "member_manifest_hash"}
+    raw["member_manifest_hash"] = canonical_hash(content)
+    assert raw["member_manifest_hash"] != original_hash
+    with pytest.raises(MemberManifestHashMismatchError):
+        load_member_manifest(json.dumps(raw).encode(), expected_member_manifest_hash=original_hash)
+
+
+def test_manifest_snapshot_hash_recomputed_independently(snap_a) -> None:
+    _, _, manifest_bytes = snap_a
+    raw = json.loads(manifest_bytes)
+    raw["snapshot_hash"] = "0" * 64
+    content = {k: v for k, v in raw.items() if k != "member_manifest_hash"}
+    raw["member_manifest_hash"] = canonical_hash(content)  # internally consistent
+    with pytest.raises(SnapshotHashMismatchError):
+        load_member_manifest(json.dumps(raw).encode())
+
+
+def test_manifest_registry_and_profiler_bindings(snap_a) -> None:
+    _, _, manifest_bytes = snap_a
+
+    def _rebind(raw: dict[str, Any]) -> bytes:
+        content = {k: v for k, v in raw.items() if k != "member_manifest_hash"}
+        raw["member_manifest_hash"] = canonical_hash(content)
+        return json.dumps(raw).encode()
+
+    raw = json.loads(manifest_bytes)
+    raw["members"][0]["registry_snapshot_hash"] = "0" * 64
+    with pytest.raises(RegistrySnapshotMismatchError):
+        load_member_manifest(_rebind(raw))
+
+    raw = json.loads(manifest_bytes)
+    raw["members"][0]["profiler_config_hash"] = "0" * 64
+    with pytest.raises(ProfilerIdentityMismatchError):
+        load_member_manifest(_rebind(raw))
+
+    raw = json.loads(manifest_bytes)
+    raw["members"][0]["profiler_version"] = "other-profiler"
+    with pytest.raises(ProfilerIdentityMismatchError):
+        load_member_manifest(_rebind(raw))
+
+    with pytest.raises(RegistrySnapshotMismatchError):
+        load_member_manifest(manifest_bytes, expected_registry_snapshot_hash="0" * 64)
+
+
+# --------------------------------------------------------------------------- #
+# snapshot-derived assembly (verbatim, uneven, no percentages)
 # --------------------------------------------------------------------------- #
 def test_two_uneven_snapshots_build_exact_membership(snap_a, snap_b) -> None:
-    for (snapshot, payloads), train_n, val_n in ((snap_a, 4, 2), (snap_b, 1, 3)):
+    for (snapshot, payloads, manifest_bytes), train_n, val_n in ((snap_a, 4, 2), (snap_b, 1, 3)):
         for partition, expected_n in (("train", train_n), ("validation", val_n)):
             build = build_partition_matrix(snapshot, partition, _provider(payloads))
             expected_ids = sorted(
@@ -395,14 +653,14 @@ def test_two_uneven_snapshots_build_exact_membership(snap_a, snap_b) -> None:
             assert build.matrix.column_count == 129
             assert build.matrix.epoch == snapshot.epoch
             assert build.matrix.snapshot_hash == snapshot.snapshot_hash
-            result = verify_matrix(
-                build.matrix, snapshot, build.vectors, payload_provider=_provider(payloads)
+            result = verify_matrix_payload(
+                build.matrix, manifest_bytes, build.vectors, _provider(payloads)
             )
             assert result.ok, result.failed()
 
 
 def test_grandfathered_assignments_consumed_unchanged(snap_b) -> None:
-    snapshot, payloads = snap_b
+    snapshot, payloads, _ = snap_b
     # validation(3) > train(1): an allocation no percentage policy would produce —
     # consumed verbatim, no reallocation, no split arithmetic.
     train = build_partition_matrix(snapshot, "train", _provider(payloads)).matrix
@@ -412,7 +670,7 @@ def test_grandfathered_assignments_consumed_unchanged(snap_b) -> None:
 
 
 def test_empty_partition_yields_zero_row_matrix() -> None:
-    snapshot, payloads = make_snapshot(
+    snapshot, payloads, _ = make_snapshot(
         [("ds-c-01", "chr18", "train"), ("ds-c-02", "chr20", "train")], epoch=5
     )
     build = build_partition_matrix(snapshot, "validation", _provider(payloads))
@@ -420,7 +678,7 @@ def test_empty_partition_yields_zero_row_matrix() -> None:
 
 
 def test_test_partition_rejected_before_payload_access(snap_a) -> None:
-    snapshot, _ = snap_a
+    snapshot, _, _ = snap_a
     calls: list[str] = []
 
     def sentinel(member: SnapshotMember) -> bytes:
@@ -437,7 +695,7 @@ def test_test_partition_rejected_before_payload_access(snap_a) -> None:
 
 
 def test_provider_invoked_only_for_requested_partition(snap_a) -> None:
-    snapshot, payloads = snap_a
+    snapshot, payloads, _ = snap_a
     train_ids = {m.dataset_id for m in snapshot.members if m.partition == "train"}
     calls: list[str] = []
 
@@ -451,7 +709,7 @@ def test_provider_invoked_only_for_requested_partition(snap_a) -> None:
 
 
 def test_assemble_missing_extra_duplicate_rejected(snap_a) -> None:
-    snapshot, payloads = snap_a
+    snapshot, payloads, _ = snap_a
     build = build_partition_matrix(snapshot, "train", _provider(payloads))
     vectors = list(build.vectors)
     with pytest.raises(MatrixAssemblyError, match="missing"):
@@ -470,7 +728,7 @@ def test_assemble_missing_extra_duplicate_rejected(snap_a) -> None:
 
 
 def test_assemble_rejects_wrong_bindings(snap_a) -> None:
-    snapshot, payloads = snap_a
+    snapshot, payloads, _ = snap_a
     members = snapshot.members_for("train")
     good = [
         build_feature_vector(
@@ -519,7 +777,7 @@ def test_assemble_rejects_wrong_bindings(snap_a) -> None:
 
 
 def test_cross_partition_isolation(snap_a) -> None:
-    snapshot, payloads = snap_a
+    snapshot, payloads, _ = snap_a
     train = build_partition_matrix(snapshot, "train", _provider(payloads)).matrix
     validation = build_partition_matrix(snapshot, "validation", _provider(payloads)).matrix
     train_ids = {m.dataset_id for m in train.members}
@@ -532,23 +790,71 @@ def test_cross_partition_isolation(snap_a) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# item 4 — non-mutating verifier: recompute, never repair
+# non-mutating verifier: recompute, never repair
 # --------------------------------------------------------------------------- #
 def test_verifier_passes_logical_and_payload_levels(snap_a) -> None:
-    snapshot, payloads = snap_a
+    snapshot, payloads, manifest_bytes = snap_a
     build = build_partition_matrix(snapshot, "train", _provider(payloads))
     logical = verify_matrix(build.matrix, snapshot, build.vectors)
     assert logical.ok, logical.failed()
-    payload = verify_matrix(
-        build.matrix, snapshot, build.vectors, payload_provider=_provider(payloads)
+    assert "feature_values_hashes_recomputed_from_vectors" in logical.checks
+    assert "vector_values_valid_for_column_kinds" in logical.checks
+    assert "feature_values_hashes_recomputed_from_bytes" not in logical.checks
+    payload = verify_matrix_payload(
+        build.matrix, manifest_bytes, build.vectors, _provider(payloads)
     )
     assert payload.ok, payload.failed()
+    assert payload.checks["member_manifest_verified"]
     assert "feature_values_hashes_recomputed_from_bytes" in payload.checks
-    assert "feature_values_hashes_recomputed_from_bytes" not in logical.checks
+    assert "vector_values_match_recomputed_extraction" in payload.checks
+
+
+def _consistent_forgery(build, index: int, new_value: float):
+    """Mutate one value, recompute vector_hash, rebind the MatrixMember, recompute
+    matrix_hash — but keep the OLD feature_values_hash."""
+    v0 = build.vectors[0]
+    values = list(v0.values)
+    values[index] = new_value
+    forged = v0.model_copy(update={"values": tuple(values)})
+    forged = forged.model_copy(update={"vector_hash": vector_hash(forged)})
+    members = list(build.matrix.members)
+    pos = next(i for i, m in enumerate(members) if m.dataset_id == v0.dataset_id)
+    members[pos] = members[pos].model_copy(update={"vector_hash": forged.vector_hash})
+    matrix = build.matrix.model_copy(update={"members": tuple(members)})
+    matrix = matrix.model_copy(update={"matrix_hash": matrix_hash(matrix)})
+    vectors = [forged] + [v for v in build.vectors if v.dataset_id != v0.dataset_id]
+    return matrix, vectors
+
+
+def test_consistent_forgery_fails_specifically_via_fvh_recompute(snap_a) -> None:
+    snapshot, payloads, _ = snap_a
+    build = build_partition_matrix(snapshot, "train", _provider(payloads))
+    real_index = next(
+        i for i, c in enumerate(canonical_feature_set().columns) if c.value_kind == "REAL"
+    )
+    matrix, vectors = _consistent_forgery(build, real_index, 0.777)
+    result = verify_matrix(matrix, snapshot, vectors)
+    assert not result.ok
+    # vector_hash, member binding and matrix_hash were all consistently re-forged —
+    # ONLY the value-level recompute catches it.
+    assert result.failed() == ("feature_values_hashes_recomputed_from_vectors",)
+
+
+def test_invalid_fraction_forgery_rejected_logically(snap_a) -> None:
+    snapshot, payloads, _ = snap_a
+    build = build_partition_matrix(snapshot, "train", _provider(payloads))
+    fraction_index = next(
+        i for i, c in enumerate(canonical_feature_set().columns) if c.value_kind == "FRACTION"
+    )
+    matrix, vectors = _consistent_forgery(build, fraction_index, 1.5)
+    result = verify_matrix(matrix, snapshot, vectors)
+    assert not result.ok
+    assert "vector_values_valid_for_column_kinds" in result.failed()
+    assert "feature_values_hashes_recomputed_from_vectors" in result.failed()
 
 
 def test_verifier_detects_vector_tampering(snap_a) -> None:
-    snapshot, payloads = snap_a
+    snapshot, payloads, _ = snap_a
     build = build_partition_matrix(snapshot, "train", _provider(payloads))
     tampered_values = list(build.vectors[0].values)
     tampered_values[5] = 0.9999
@@ -567,7 +873,7 @@ def test_verifier_detects_vector_tampering(snap_a) -> None:
 
 
 def test_verifier_detects_matrix_tampering(snap_a) -> None:
-    snapshot, payloads = snap_a
+    snapshot, payloads, _ = snap_a
     build = build_partition_matrix(snapshot, "train", _provider(payloads))
     matrix = build.matrix
     reordered = matrix.model_copy(update={"members": tuple(reversed(matrix.members))})
@@ -597,25 +903,31 @@ def test_verifier_detects_matrix_tampering(snap_a) -> None:
 
 
 def test_verifier_detects_wrong_snapshot(snap_a, snap_b) -> None:
-    snapshot_a, payloads_a = snap_a
-    snapshot_b, _ = snap_b
+    snapshot_a, payloads_a, _ = snap_a
+    snapshot_b, _, _ = snap_b
     build = build_partition_matrix(snapshot_a, "train", _provider(payloads_a))
     result = verify_matrix(build.matrix, snapshot_b, build.vectors)
     assert not result.ok
     assert "partition_membership_matches_snapshot" in result.failed()
 
 
-def test_verifier_payload_level_detects_byte_divergence(snap_a) -> None:
-    snapshot, payloads = snap_a
+def test_payload_verifier_detects_byte_divergence(snap_a) -> None:
+    snapshot, payloads, manifest_bytes = snap_a
     build = build_partition_matrix(snapshot, "train", _provider(payloads))
     corrupted = dict(payloads)
     first_train = build.matrix.members[0].dataset_id
     corrupted[first_train] = corrupted[first_train] + b" "
-    result = verify_matrix(
-        build.matrix, snapshot, build.vectors, payload_provider=_provider(corrupted)
+    result = verify_matrix_payload(
+        build.matrix, manifest_bytes, build.vectors, _provider(corrupted)
     )
     assert not result.ok
     assert "feature_values_hashes_recomputed_from_bytes" in result.failed()
+    # swapped payloads: the wrong member's bytes fail the manifest-bound profile_sha256.
+    swapped = dict(payloads)
+    ids = [m.dataset_id for m in build.matrix.members[:2]]
+    swapped[ids[0]], swapped[ids[1]] = swapped[ids[1]], swapped[ids[0]]
+    result2 = verify_matrix_payload(build.matrix, manifest_bytes, build.vectors, _provider(swapped))
+    assert "feature_values_hashes_recomputed_from_bytes" in result2.failed()
 
 
 def test_select_config_remains_blocked() -> None:

@@ -11,15 +11,22 @@ BAM ELIGIBLE paths in canonical feature-manifest order (the 12 window-profile fi
 are bound by the parquet artifact hash and are ignored completely here), and enforces
 the four-way feature integrity binding before a :class:`FeatureVector` is constructed.
 
-Matrix assembly consumes a frozen snapshot representation VERBATIM: partition
-assignments are never recomputed, no percentages are ever applied, and test members are
-never read — ``partition="test"`` is rejected before any member payload is inspected.
-Counts derive from exact selected membership; ``column_count`` stays the frozen 129.
+Snapshot trust is INDEPENDENT, not asserted: :class:`FrozenSnapshot` recomputes its own
+``snapshot_hash`` with the accepted PROFILE-SNAPSHOT-FROZEN freeze formula and rejects
+any supplied hash that differs; :func:`load_member_manifest` derives a snapshot ONLY
+from exact committed member-manifest bytes — recomputing ``member_manifest_hash`` from
+the parsed canonical content (which binds ``profile_sha256`` and every other provenance
+field), re-verifying ``snapshot_hash``, and binding the accepted profiler identity and
+the manifest's registry snapshot. Matrix assembly consumes partition assignments
+VERBATIM: no percentages, no allocation, and test members are never read —
+``partition="test"`` is rejected before any member payload is inspected. Counts derive
+from exact selected membership; ``column_count`` stays the frozen 129.
 
-Verification (:func:`verify_matrix`) is non-mutating and recomputes rather than trusts:
-logical level always (membership, ordering, uniqueness, counts, bindings, vector and
-matrix hashes); payload level additionally re-extracts every member's exact bytes when a
-payload provider is supplied. It returns named checks — it never repairs anything.
+Verification recomputes rather than trusts and never repairs: :func:`verify_matrix`
+(logical) re-derives membership, ordering, counts, bindings, vector/matrix hashes AND
+the canonical feature-values hash from each vector's own values;
+:func:`verify_matrix_payload` starts from verified member-manifest bytes and re-extracts
+every member's exact profile bytes.
 """
 
 from __future__ import annotations
@@ -29,15 +36,17 @@ import json
 from collections.abc import Callable, Sequence
 from typing import Any, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from minos_engine.common.errors import AdmissionRejectedError, ContractValidationError
+from minos_engine.common.hashing import canonical_hash
 from minos_engine.layer2.feature_registry import REGISTRY_HASH
 from minos_engine.layer2.ingest.contracts import (
     canonical_feature_values_hash,
     extract_eligible_feature_values,
 )
 from minos_engine.layer2.ingest.validation import l1_feature_values_hash_from_document
+from minos_engine.layer2.prerequisites import PROFILER_CONFIG_HASH, PROFILER_VERSION
 from minos_engine.schema_registry import validate_against
 
 from .contracts import (
@@ -57,63 +66,129 @@ from .errors import (
     FeatureExtractionError,
     FeatureValuesHashMismatchError,
     ForbiddenPartitionError,
+    InvalidMemberManifestError,
     InvalidProfileDocumentError,
     MatrixAssemblyError,
+    MemberManifestHashMismatchError,
     MissingFeatureError,
     ProfileArtifactHashMismatchError,
+    ProfilerIdentityMismatchError,
+    RegistrySnapshotMismatchError,
+    SnapshotHashMismatchError,
     SnapshotIdentityMismatchError,
 )
 
 __all__ = [
     "PROFILE_SCHEMA_NAME",
+    "MEMBER_MANIFEST_SCHEMA_VERSION",
     "MATRIX_PARTITIONS",
+    "SUPPORTED_CHROMOSOMES",
     "SnapshotMember",
     "FrozenSnapshot",
+    "ManifestMember",
+    "MemberManifestDocument",
     "ExtractionResult",
     "MatrixBuild",
     "VerificationResult",
     "PayloadProvider",
+    "load_member_manifest",
     "extract_profile_features",
     "build_feature_vector",
     "assemble_matrix",
     "build_partition_matrix",
     "verify_matrix",
+    "verify_matrix_payload",
 ]
 
 PROFILE_SCHEMA_NAME = "bam-profile-v1"
+MEMBER_MANIFEST_SCHEMA_VERSION = "profile-snapshot-members-v1"
 
 #: The only partitions a matrix may ever be built for. Test is structurally forbidden.
 MATRIX_PARTITIONS: tuple[str, ...] = ("train", "validation")
 
+#: The dataset registry supports exactly these chromosome identities.
+SUPPORTED_CHROMOSOMES: tuple[str, ...] = ("chr18", "chr19", "chr20", "chr21", "chr22")
+
 MemberPartition = Literal["train", "validation", "test"]
+Chromosome = Literal["chr18", "chr19", "chr20", "chr21", "chr22"]
+
+_HEX64 = r"^[0-9a-f]{64}$"
 
 
 class SnapshotMember(BaseModel):
-    """One frozen snapshot member: identity + partition assignment, consumed VERBATIM."""
+    """One frozen snapshot member: identity + partition assignment, consumed VERBATIM.
+
+    The core fields participate in the snapshot freeze formula; the provenance fields
+    (present whenever the member was derived from a verified member manifest) bind the
+    exact artifact bytes and profiler identity consumed later.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     dataset_id: str = Field(min_length=1)
     profile_id: str = Field(min_length=1)
     partition: MemberPartition
-    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
-    feature_values_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
-    profile_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    l1_feature_values_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    chromosome: str | None = None
+    content_hash: str = Field(pattern=_HEX64)
+    feature_values_hash: str = Field(pattern=_HEX64)
+    profile_sha256: str = Field(pattern=_HEX64)
+    l1_feature_values_hash: str | None = Field(default=None, pattern=_HEX64)
+    chromosome: Chromosome | None = None
     profile_status: Literal["COMPLETE"] = "COMPLETE"
+    # provenance (from the verified member manifest)
+    round_id: str | None = Field(default=None, pattern=r"^[0-9a-f]+$")
+    identity_tuple_hash: str | None = Field(default=None, pattern=_HEX64)
+    registry_snapshot_hash: str | None = Field(default=None, pattern=_HEX64)
+    profile_manifest_sha256: str | None = Field(default=None, pattern=_HEX64)
+    windows_sha256: str | None = Field(default=None, pattern=_HEX64)
+    attestation_hash: str | None = Field(default=None, pattern=_HEX64)
+    profiler_version: str | None = None
+    profiler_config_hash: str | None = Field(default=None, pattern=_HEX64)
+    integrity_degraded: bool | None = None
+    m5_status: Literal["MATCH", "ABSENT"] | None = None
+
+
+def _freeze_formula_hash(
+    epoch: int,
+    split_manifest_hash: str,
+    registry_snapshot_hash: str,
+    members: Sequence[SnapshotMember],
+) -> str:
+    """The accepted PROFILE-SNAPSHOT-FROZEN freeze formula (storage layer, verbatim)."""
+    return canonical_hash(
+        {
+            "epoch": epoch,
+            "split_manifest_hash": split_manifest_hash,
+            "registry_snapshot_hash": registry_snapshot_hash,
+            "members": [
+                {
+                    "dataset_id": m.dataset_id,
+                    "partition": m.partition,
+                    "content_hash": m.content_hash,
+                    "feature_values_hash": m.feature_values_hash,
+                }
+                for m in sorted(members, key=lambda m: m.dataset_id)
+            ],
+        }
+    )
 
 
 class FrozenSnapshot(BaseModel):
-    """An explicit frozen snapshot representation: epoch, snapshot identity, and the
-    complete member list with partition assignments consumed verbatim — this module
-    NEVER applies percentages or performs split allocation."""
+    """An explicit frozen snapshot representation, INDEPENDENTLY self-binding.
+
+    ``snapshot_hash`` is always recomputed with the accepted freeze formula from
+    ``epoch`` + ``split_manifest_hash`` + ``registry_snapshot_hash`` + the ordered core
+    member fields; a supplied hash that differs is rejected (typed). Partition
+    assignments are consumed verbatim — this module NEVER applies percentages or
+    performs split allocation.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     epoch: int = Field(ge=1)
-    snapshot_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    split_manifest_hash: str = Field(pattern=_HEX64)
+    registry_snapshot_hash: str = Field(pattern=_HEX64)
     members: tuple[SnapshotMember, ...] = Field(min_length=1)
+    snapshot_hash: str = Field(default="")
 
     @model_validator(mode="after")
     def _bind(self) -> FrozenSnapshot:
@@ -123,6 +198,16 @@ class FrozenSnapshot(BaseModel):
         pids = [m.profile_id for m in self.members]
         if len(set(pids)) != len(pids):
             raise ValueError("duplicate profile_id in snapshot members")
+        expected = _freeze_formula_hash(
+            self.epoch, self.split_manifest_hash, self.registry_snapshot_hash, self.members
+        )
+        if self.snapshot_hash == "":
+            object.__setattr__(self, "snapshot_hash", expected)
+        elif self.snapshot_hash != expected:
+            raise SnapshotHashMismatchError(
+                "supplied snapshot_hash does not equal the hash recomputed with the "
+                "accepted freeze formula"
+            )
         return self
 
     def members_for(self, partition: str) -> tuple[SnapshotMember, ...]:
@@ -139,6 +224,57 @@ class FrozenSnapshot(BaseModel):
         )
 
 
+class ManifestMember(BaseModel):
+    """One member row of the committed profile_snapshot_epoch_members manifest —
+    every provenance field is REQUIRED and strictly validated."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    dataset_id: str = Field(min_length=1)
+    round_id: str = Field(pattern=r"^[0-9a-f]+$")
+    chromosome: Chromosome
+    partition: MemberPartition
+    identity_tuple_hash: str = Field(pattern=_HEX64)
+    content_hash: str = Field(pattern=_HEX64)
+    feature_values_hash: str = Field(pattern=_HEX64)
+    l1_feature_values_hash: str = Field(pattern=_HEX64)
+    profile_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    profile_sha256: str = Field(pattern=_HEX64)
+    profile_manifest_sha256: str = Field(pattern=_HEX64)
+    windows_sha256: str = Field(pattern=_HEX64)
+    attestation_hash: str = Field(pattern=_HEX64)
+    m5_status: Literal["MATCH", "ABSENT"]  # MISMATCH never enters an accepted snapshot
+    integrity_degraded: bool
+    profile_status: Literal["COMPLETE"]
+    profiler_version: str = Field(min_length=1)
+    profiler_config_hash: str = Field(pattern=_HEX64)
+    registry_snapshot_hash: str = Field(pattern=_HEX64)
+
+
+class MemberManifestDocument(BaseModel):
+    """The committed profile-snapshot-members-v1 manifest, strictly modeled."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    schema_version: Literal["profile-snapshot-members-v1"]
+    epoch: int = Field(ge=1)
+    member_count: int = Field(ge=1)
+    member_manifest_hash: str = Field(pattern=_HEX64)
+    members: tuple[ManifestMember, ...] = Field(min_length=1)
+    registry_snapshot_hash: str = Field(pattern=_HEX64)
+    snapshot_hash: str = Field(pattern=_HEX64)
+    split_manifest_hash: str = Field(pattern=_HEX64)
+
+    @model_validator(mode="after")
+    def _bind(self) -> MemberManifestDocument:
+        if self.member_count != len(self.members):
+            raise ValueError("member_count does not match members")
+        ids = [m.dataset_id for m in self.members]
+        if len(set(ids)) != len(ids):
+            raise ValueError("duplicate dataset_id in manifest members")
+        return self
+
+
 class ExtractionResult(BaseModel):
     """The ONLY extraction output: ordered values + recomputed canonical hash.
 
@@ -148,7 +284,7 @@ class ExtractionResult(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     values: tuple[float, ...]
-    feature_values_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    feature_values_hash: str = Field(pattern=_HEX64)
 
     @model_validator(mode="after")
     def _bind(self) -> ExtractionResult:
@@ -197,18 +333,126 @@ def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, value in pairs:
         if key in out:
-            raise InvalidProfileDocumentError(f"duplicate JSON key in profile document: {key}")
+            raise InvalidProfileDocumentError(f"duplicate JSON key: {key}")
         out[key] = value
     return out
 
 
-def extract_profile_features(profile_bytes: bytes, member: SnapshotMember) -> ExtractionResult:
-    """Exact-byte extraction boundary (item 1) + hash recomputation (item 2, partial).
+# --------------------------------------------------------------------------- #
+# verified member-manifest boundary (snapshot provenance)
+# --------------------------------------------------------------------------- #
+def load_member_manifest(
+    manifest_bytes: bytes,
+    *,
+    expected_member_manifest_hash: str | None = None,
+    expected_registry_snapshot_hash: str | None = None,
+) -> FrozenSnapshot:
+    """Derive a FrozenSnapshot ONLY from exact, verified member-manifest bytes.
 
-    Hashes the RECEIVED bytes (never a caller-supplied hash), decodes/parses those same
-    bytes, validates against the accepted schema, binds identity, and extracts exactly
-    the authoritative 129 BAM ELIGIBLE paths in canonical feature-manifest order.
+    Recomputes ``member_manifest_hash`` from the exact parsed canonical content (binding
+    ``profile_sha256`` and every other provenance field — a caller cannot replace any of
+    them while keeping a trusted hash), independently re-verifies ``snapshot_hash`` with
+    the accepted freeze formula, requires every member to carry the manifest's registry
+    snapshot, and binds the accepted profiler identity pinned in prerequisites.
     """
+    try:
+        text = manifest_bytes.decode("utf-8")
+        raw = json.loads(text, object_pairs_hook=_no_duplicate_keys)
+    except InvalidProfileDocumentError as exc:
+        raise InvalidMemberManifestError(str(exc)) from exc
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise InvalidMemberManifestError(f"invalid member-manifest bytes: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise InvalidMemberManifestError("member manifest is not a JSON object")
+    try:
+        document = MemberManifestDocument.model_validate(raw)
+    except ValidationError as exc:
+        raise InvalidMemberManifestError(f"member manifest is structurally invalid: {exc}") from exc
+
+    # the canonical hash is recomputed from the EXACT parsed content, never trusted.
+    content = {k: v for k, v in raw.items() if k != "member_manifest_hash"}
+    recomputed_manifest_hash = canonical_hash(content)
+    if recomputed_manifest_hash != document.member_manifest_hash:
+        raise MemberManifestHashMismatchError(
+            "recomputed member_manifest_hash does not match the declared value"
+        )
+    if (
+        expected_member_manifest_hash is not None
+        and recomputed_manifest_hash != expected_member_manifest_hash
+    ):
+        raise MemberManifestHashMismatchError(
+            "recomputed member_manifest_hash does not match the expected accepted value"
+        )
+
+    members = tuple(
+        SnapshotMember(
+            dataset_id=m.dataset_id,
+            profile_id=m.profile_id,
+            partition=m.partition,
+            content_hash=m.content_hash,
+            feature_values_hash=m.feature_values_hash,
+            profile_sha256=m.profile_sha256,
+            l1_feature_values_hash=m.l1_feature_values_hash,
+            chromosome=m.chromosome,
+            profile_status=m.profile_status,
+            round_id=m.round_id,
+            identity_tuple_hash=m.identity_tuple_hash,
+            registry_snapshot_hash=m.registry_snapshot_hash,
+            profile_manifest_sha256=m.profile_manifest_sha256,
+            windows_sha256=m.windows_sha256,
+            attestation_hash=m.attestation_hash,
+            profiler_version=m.profiler_version,
+            profiler_config_hash=m.profiler_config_hash,
+            integrity_degraded=m.integrity_degraded,
+            m5_status=m.m5_status,
+        )
+        for m in document.members
+    )
+
+    # snapshot_hash is verified INDEPENDENTLY with the accepted freeze formula.
+    recomputed_snapshot_hash = _freeze_formula_hash(
+        document.epoch, document.split_manifest_hash, document.registry_snapshot_hash, members
+    )
+    if recomputed_snapshot_hash != document.snapshot_hash:
+        raise SnapshotHashMismatchError(
+            "manifest snapshot_hash does not equal the freeze-formula recompute"
+        )
+
+    for m in document.members:
+        if m.registry_snapshot_hash != document.registry_snapshot_hash:
+            raise RegistrySnapshotMismatchError(
+                f"{m.dataset_id}: member registry_snapshot_hash differs from the manifest"
+            )
+        if m.profiler_version != PROFILER_VERSION or m.profiler_config_hash != PROFILER_CONFIG_HASH:
+            raise ProfilerIdentityMismatchError(
+                f"{m.dataset_id}: profiler identity is not the accepted "
+                f"{PROFILER_VERSION}/{PROFILER_CONFIG_HASH[:12]}…"
+            )
+    if (
+        expected_registry_snapshot_hash is not None
+        and document.registry_snapshot_hash != expected_registry_snapshot_hash
+    ):
+        raise RegistrySnapshotMismatchError(
+            "manifest registry_snapshot_hash does not match the expected pinned value"
+        )
+
+    return FrozenSnapshot(
+        epoch=document.epoch,
+        split_manifest_hash=document.split_manifest_hash,
+        registry_snapshot_hash=document.registry_snapshot_hash,
+        members=members,
+        snapshot_hash=document.snapshot_hash,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# exact-byte extraction boundary
+# --------------------------------------------------------------------------- #
+def extract_profile_features(profile_bytes: bytes, member: SnapshotMember) -> ExtractionResult:
+    """Exact-byte extraction boundary: hash the RECEIVED bytes (never a caller-supplied
+    hash), decode/parse those same bytes, validate against the accepted schema, bind
+    identity, and extract exactly the authoritative 129 BAM ELIGIBLE paths in canonical
+    feature-manifest order."""
     received_sha256 = hashlib.sha256(profile_bytes).hexdigest()
     if received_sha256 != member.profile_sha256:
         raise ProfileArtifactHashMismatchError(
@@ -287,8 +531,8 @@ def build_feature_vector(
     epoch: int,
     snapshot_hash: str,
 ) -> FeatureVector:
-    """Four-way feature integrity binding (item 2): construct a FeatureVector only after
-    every check passes. Test members are rejected BEFORE their bytes are inspected."""
+    """Four-way feature integrity binding: construct a FeatureVector only after every
+    check passes. Test members are rejected BEFORE their bytes are inspected."""
     if member.partition not in MATRIX_PARTITIONS:
         raise ForbiddenPartitionError(
             f"{member.dataset_id}: partition {member.partition!r} is forbidden — "
@@ -345,11 +589,30 @@ def _check_vector_bindings(
         )
 
 
+def _recompute_feature_values_hash_from_vector(vector: FeatureVector) -> str:
+    """Recompute the canonical feature-values hash from the vector's OWN values:
+    exactly 129 values, each validated against its canonical column kind, keyed by
+    canonical column path in manifest order."""
+    columns = canonical_feature_set().columns
+    if len(vector.values) != EXPECTED_COLUMN_COUNT:
+        raise MissingFeatureError(
+            f"{vector.dataset_id}: vector does not carry exactly {EXPECTED_COLUMN_COUNT} values"
+        )
+    payload: dict[str, Any] = {}
+    for column, value in zip(columns, vector.values, strict=True):
+        try:
+            validate_value_for_kind(column.value_kind, value, column.path)
+        except ValueError as exc:
+            raise MissingFeatureError(f"{vector.dataset_id}: {exc}") from exc
+        payload[column.path] = value
+    return canonical_feature_values_hash(payload)
+
+
 def assemble_matrix(
     snapshot: FrozenSnapshot, partition: str, vectors: Sequence[FeatureVector]
 ) -> FeatureMatrix:
-    """Snapshot-derived matrix assembly (item 3): exactly all snapshot members of the
-    requested train/validation partition, verbatim, no percentages, no test access."""
+    """Snapshot-derived matrix assembly: exactly all snapshot members of the requested
+    train/validation partition, verbatim, no percentages, no test access."""
     checked = _require_matrix_partition(partition)
     expected = {m.dataset_id: m for m in snapshot.members_for(checked)}
     ids = [v.dataset_id for v in vectors]
@@ -403,18 +666,17 @@ def build_partition_matrix(
     return MatrixBuild(matrix=matrix, vectors=vectors)
 
 
+# --------------------------------------------------------------------------- #
+# non-mutating verification: recompute, never repair
+# --------------------------------------------------------------------------- #
 def verify_matrix(
     matrix: FeatureMatrix,
     snapshot: FrozenSnapshot,
     vectors: Sequence[FeatureVector],
-    payload_provider: PayloadProvider | None = None,
 ) -> VerificationResult:
-    """Non-mutating verification (item 4): recompute rather than trust.
-
-    Logical level always; when ``payload_provider`` is supplied the per-member exact
-    bytes are re-hashed and re-extracted (payload level). Returns named checks — an
-    invalid matrix is reported, never repaired.
-    """
+    """LOGICAL verification: recompute rather than trust — membership, ordering,
+    uniqueness, counts, identity bindings, vector/matrix hashes, and the canonical
+    feature-values hash re-derived from each vector's own values."""
     checks: dict[str, bool] = {}
     checks["partition_is_train_or_validation"] = matrix.partition in MATRIX_PARTITIONS
     checks["registry_identity_accepted"] = matrix.registry_hash == REGISTRY_HASH
@@ -451,12 +713,14 @@ def verify_matrix(
     bindings_ok = True
     feature_hash_bindings_ok = True
     members_bind_vectors_ok = True
+    kinds_ok = True
+    fvh_recompute_ok = True
     for matrix_member in matrix.members:
         row_vector = by_id.get(matrix_member.dataset_id)
         snapshot_member = expected.get(matrix_member.dataset_id)
         if row_vector is None or snapshot_member is None:
             vector_hashes_ok = bindings_ok = feature_hash_bindings_ok = False
-            members_bind_vectors_ok = False
+            members_bind_vectors_ok = kinds_ok = fvh_recompute_ok = False
             continue
         if vector_hash(row_vector) != row_vector.vector_hash:
             vector_hashes_ok = False
@@ -468,33 +732,80 @@ def verify_matrix(
             feature_hash_bindings_ok = False
         except FeatureExtractionError:
             bindings_ok = False
+        # recompute the canonical feature-values hash from the vector's OWN values.
+        try:
+            recomputed_fvh = _recompute_feature_values_hash_from_vector(row_vector)
+        except FeatureExtractionError:
+            kinds_ok = False
+            fvh_recompute_ok = False
+            continue
+        if (
+            recomputed_fvh != row_vector.feature_values_hash
+            or recomputed_fvh != snapshot_member.feature_values_hash
+        ):
+            fvh_recompute_ok = False
     checks["vector_hashes_recomputed_match"] = vector_hashes_ok
     checks["matrix_members_bind_vector_hashes"] = members_bind_vectors_ok
     checks["vector_bindings_match_snapshot"] = bindings_ok
     checks["feature_values_hash_bindings_match"] = feature_hash_bindings_ok
+    checks["vector_values_valid_for_column_kinds"] = kinds_ok
+    checks["feature_values_hashes_recomputed_from_vectors"] = fvh_recompute_ok
     checks["matrix_hash_recomputed_match"] = matrix_hash(matrix) == matrix.matrix_hash
 
-    if payload_provider is not None:
-        payload_ok = True
-        values_ok = True
-        for dataset_id in member_ids:
-            row_vector = by_id.get(dataset_id)
-            snapshot_member = expected.get(dataset_id)
-            if row_vector is None or snapshot_member is None:
-                payload_ok = values_ok = False
-                continue
-            try:
-                result = extract_profile_features(
-                    payload_provider(snapshot_member), snapshot_member
-                )
-            except FeatureExtractionError:
-                payload_ok = values_ok = False
-                continue
-            if result.feature_values_hash != snapshot_member.feature_values_hash:
-                payload_ok = False
-            if result.values != row_vector.values:
-                values_ok = False
-        checks["feature_values_hashes_recomputed_from_bytes"] = payload_ok
-        checks["vector_values_match_recomputed_extraction"] = values_ok
+    return VerificationResult(checks=checks)
+
+
+def verify_matrix_payload(
+    matrix: FeatureMatrix,
+    member_manifest_bytes: bytes,
+    vectors: Sequence[FeatureVector],
+    payload_provider: PayloadProvider,
+    *,
+    expected_member_manifest_hash: str | None = None,
+    expected_registry_snapshot_hash: str | None = None,
+) -> VerificationResult:
+    """PAYLOAD verification, starting from VERIFIED member-manifest bytes (never from
+    arbitrary SnapshotMember instances): re-derives the snapshot through
+    :func:`load_member_manifest`, runs the full logical verification, then re-extracts
+    every member's exact profile bytes — proving the bytes match the manifest-bound
+    ``profile_sha256``, the extracted values match the vector, the recomputed
+    feature-values hash matches both vector and manifest, and the profile identity and
+    L1 hash match the full member binding."""
+    snapshot = load_member_manifest(
+        member_manifest_bytes,
+        expected_member_manifest_hash=expected_member_manifest_hash,
+        expected_registry_snapshot_hash=expected_registry_snapshot_hash,
+    )
+    checks = dict(verify_matrix(matrix, snapshot, vectors).checks)
+    checks["member_manifest_verified"] = True  # load_member_manifest is fail-closed
+
+    by_id = {v.dataset_id: v for v in vectors}
+    if matrix.partition in MATRIX_PARTITIONS:
+        expected = {m.dataset_id: m for m in snapshot.members_for(matrix.partition)}
+    else:
+        expected = {}
+    payload_ok = True
+    values_ok = True
+    for matrix_member in matrix.members:
+        row_vector = by_id.get(matrix_member.dataset_id)
+        snapshot_member = expected.get(matrix_member.dataset_id)
+        if row_vector is None or snapshot_member is None:
+            payload_ok = values_ok = False
+            continue
+        try:
+            # binds exact bytes (profile_sha256), profile identity and L1 hash.
+            result = extract_profile_features(payload_provider(snapshot_member), snapshot_member)
+        except FeatureExtractionError:
+            payload_ok = values_ok = False
+            continue
+        if (
+            result.feature_values_hash != snapshot_member.feature_values_hash
+            or result.feature_values_hash != row_vector.feature_values_hash
+        ):
+            payload_ok = False
+        if result.values != row_vector.values:
+            values_ok = False
+    checks["feature_values_hashes_recomputed_from_bytes"] = payload_ok
+    checks["vector_values_match_recomputed_extraction"] = values_ok
 
     return VerificationResult(checks=checks)

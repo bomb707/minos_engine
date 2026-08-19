@@ -67,7 +67,12 @@ def test_no_split_allocation_behavior_membership_is_verbatim() -> None:
             ("train", "validation", "validation", "validation", "validation", "test", "test")
         )
     )
-    snapshot = FrozenSnapshot(epoch=9, snapshot_hash="d" * 64, members=members)
+    snapshot = FrozenSnapshot(
+        epoch=9,
+        split_manifest_hash="d" * 64,
+        registry_snapshot_hash="e" * 64,
+        members=members,
+    )
     assert [m.dataset_id for m in snapshot.members_for("train")] == ["ds-00"]
     assert len(snapshot.members_for("validation")) == 4
     # counts derive ONLY from the verbatim assignments — nothing was moved or scaled.
@@ -122,7 +127,12 @@ def test_test_partition_has_no_contract_surface() -> None:
             profile_sha256="c" * 64,
         ),
     )
-    snapshot = FrozenSnapshot(epoch=1, snapshot_hash="d" * 64, members=members)
+    snapshot = FrozenSnapshot(
+        epoch=1,
+        split_manifest_hash="d" * 64,
+        registry_snapshot_hash="e" * 64,
+        members=members,
+    )
     with pytest.raises(ForbiddenPartitionError):
         snapshot.members_for("test")
     with pytest.raises(ValidationError):
