@@ -22,19 +22,19 @@ _FROZEN_SET_HASH = "7e867dfa5633044b69869be8a87fac564431a73a183aa0ab0b1b13158a7c
 
 
 def _vector(**overrides):
-    base = dict(
-        epoch=1,
-        dataset_id="minos-chr18-0000000000000001",
-        profile_id="p1",
-        content_hash="b" * 64,
-        feature_values_hash="c" * 64,
-        partition="train",
-        snapshot_hash="d" * 64,
-        registry_hash=_MANIFEST.registry_hash,
-        feature_set_hash=_MANIFEST.feature_set_hash,
-        value_count=129,
-        values=tuple(0.5 for _ in range(129)),
-    )
+    base = {
+        "epoch": 1,
+        "dataset_id": "minos-chr18-0000000000000001",
+        "profile_id": "p1",
+        "content_hash": "b" * 64,
+        "feature_values_hash": "c" * 64,
+        "partition": "train",
+        "snapshot_hash": "d" * 64,
+        "registry_hash": _MANIFEST.registry_hash,
+        "feature_set_hash": _MANIFEST.feature_set_hash,
+        "value_count": 129,
+        "values": tuple(0.5 for _ in range(129)),
+    }
     base.update(overrides)
     return FeatureVector(**base)
 
@@ -163,16 +163,16 @@ def test_tampered_vector_hash_rejected() -> None:
 
 
 def _matrix(members, **overrides):
-    base = dict(
-        epoch=1,
-        snapshot_hash="d" * 64,
-        partition="train",
-        registry_hash=_MANIFEST.registry_hash,
-        feature_set_hash=_MANIFEST.feature_set_hash,
-        row_count=len(members),
-        column_count=129,
-        members=tuple(members),
-    )
+    base = {
+        "epoch": 1,
+        "snapshot_hash": "d" * 64,
+        "partition": "train",
+        "registry_hash": _MANIFEST.registry_hash,
+        "feature_set_hash": _MANIFEST.feature_set_hash,
+        "row_count": len(members),
+        "column_count": 129,
+        "members": tuple(members),
+    }
     base.update(overrides)
     return FeatureMatrix(**base)
 
