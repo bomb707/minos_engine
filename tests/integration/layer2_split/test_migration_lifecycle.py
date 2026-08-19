@@ -69,7 +69,7 @@ def _l2b_table_count(url: str) -> int:
 
 def test_l2c_migration_lifecycle(pg_base_url: str):
     with scratch_database(pg_base_url, "minos_l2c_life") as url:
-        alembic_upgrade(url, "head")
+        alembic_upgrade(url, _HEAD)
         assert _head(url) == _HEAD
         assert _tables(url) == _L2C_TABLES
         # L2-C objects are owned by minos_admin.
@@ -96,7 +96,7 @@ def test_l2c_migration_lifecycle(pg_base_url: str):
         assert views == {"training_dataset_allocations", "locked_allocations"}
 
         # second upgrade is a no-op
-        alembic_upgrade(url, "head")
+        alembic_upgrade(url, _HEAD)
         assert _head(url) == _HEAD
 
         # downgrade removes ONLY L2-C objects; L2-B (10 tables) remains intact
@@ -106,6 +106,6 @@ def test_l2c_migration_lifecycle(pg_base_url: str):
         assert _l2b_table_count(url) == 10
 
         # re-upgrade succeeds
-        alembic_upgrade(url, "head")
+        alembic_upgrade(url, _HEAD)
         assert _head(url) == _HEAD
         assert _tables(url) == _L2C_TABLES

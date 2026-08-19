@@ -143,6 +143,29 @@ def evidence_payload_hash(items: list[tuple[str, str, str]]) -> str:
     return canonical_hash(canonical)
 
 
+def _l2c_revision_in_lineage() -> bool:
+    """True iff the accepted L2-C revision ``0002`` is in the current migration lineage.
+
+    Relaxed from an exact head match: additive migrations added *after* L2-C (the v2 epoch
+    registry, L2-D ingestion, …) advance the Alembic head past ``0002``, which must not
+    break the accepted SPLIT-FROZEN v1 gate. The revision must remain a genuine ancestor
+    of (or equal to) the current head — never merely a stale recorded string.
+    """
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    try:
+        script = ScriptDirectory.from_config(Config("alembic.ini"))
+        head = script.get_current_head()
+        if head is None:
+            return False
+        return any(
+            r.revision == L2C_MIGRATION_REVISION for r in script.iterate_revisions(head, "base")
+        )
+    except Exception:  # noqa: BLE001 - a missing/unreadable script dir fails closed
+        return False
+
+
 def _inv_path_safe(p: str) -> bool:
     """A portable, dataset-root-relative POSIX path with no traversal/abs/URI/drive."""
     if not p:
@@ -673,7 +696,7 @@ def assemble_split_result(
         "l2c_migration_immutable": l2c_migration_immutable(root),
         "l2c_migration_file_evidence_bound": _HEX64.match(migration_sha) is not None,
         "l2c_migration_contract_bound": _HEX64.match(migration_sha) is not None,
-        "alembic_head_is_l2c": alembic_head() == L2C_MIGRATION_REVISION,
+        "alembic_head_is_l2c": _l2c_revision_in_lineage(),
         "total_sample_count_75": len(manifest.samples) == TOTAL_SAMPLES,
         "partition_totals_50_10_15": manifest.counts == PARTITION_TOTALS,
         "per_chromosome_10_2_3": per_chrom_ok,
@@ -755,7 +778,7 @@ def verify_split_frozen_gate(
         "python_runtime_is_3_12": is_supported_runtime(),
         "evidence_verified": integrity.ok,
         "required_checks_and_promotion": promotion.ok,
-        "alembic_head_is_l2c": alembic_head() == L2C_MIGRATION_REVISION
+        "alembic_head_is_l2c": _l2c_revision_in_lineage()
         and gih("alembic_head_revision") == L2C_MIGRATION_REVISION,
         "l2c_migration_immutable": l2c_migration_immutable(root),
         "accepted_protocol_ready_unchanged": _accepted_gate_unchanged(
