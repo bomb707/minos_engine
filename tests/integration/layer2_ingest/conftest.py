@@ -40,7 +40,7 @@ def l2d_artifacts(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     from tests.layer1_fixtures import build_dataset, simple_reads
 
     tmp = tmp_path_factory.mktemp("l2d_corpus")
-    contig_len = 5000
+    contig_len = 300_000  # >= 3 primary windows (100kbp)
     ds = build_dataset(
         tmp, simple_reads(contig_len, n_pairs=40), contig=CONTIG, contig_len=contig_len
     )

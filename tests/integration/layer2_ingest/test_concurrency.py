@@ -93,22 +93,87 @@ def test_concurrent_same_content_idempotent(fresh_env: dict[str, Any]) -> None:
     assert _row_count(fresh_env) == 1
 
 
+def _competing_content_set(env: dict[str, Any], tmp: Path) -> tuple[Path, Path]:
+    """A SECOND, internally-valid artifact set: same profile_id/identity, new content.
+
+    The manifest's profile_sha256 is recomputed over the mutated bytes so the set
+    independently passes ordinary admission — only the simultaneous submission with the
+    original set can produce the content conflict.
+    """
+    import hashlib
+
+    doc = json.loads(Path(env["profile_path"]).read_text(encoding="utf-8"))
+    doc["warnings"] = ["variant-bytes"]  # changes bytes; profile_id/identity unchanged
+    profile = tmp / "profile.json"
+    profile.write_text(json.dumps(doc), encoding="utf-8")
+    man = json.loads(Path(env["manifest_path"]).read_text(encoding="utf-8"))
+    man["profile_sha256"] = hashlib.sha256(profile.read_bytes()).hexdigest()
+    manifest = tmp / "manifest.json"
+    manifest.write_text(json.dumps(man), encoding="utf-8")
+    return profile, manifest
+
+
+def _assert_admissible(env: dict[str, Any], profile: Path, manifest: Path) -> None:
+    """Prove an artifact set passes ordinary (non-concurrent) admission validation."""
+    import hashlib
+
+    from minos_engine.layer2.ingest.validation import validate_admission
+    from tests.integration.layer2_ingest.conftest import registry_record
+
+    identity = dict(registry_record(env))
+    identity["registry_snapshot_hash"] = "7" * 64
+    decision = validate_admission(
+        profile_document=json.loads(profile.read_text(encoding="utf-8")),
+        manifest_document=json.loads(manifest.read_text(encoding="utf-8")),
+        attestation=env["attestation"],
+        registry_identity=identity,
+        profile_artifact_sha256=hashlib.sha256(profile.read_bytes()).hexdigest(),
+        windows_artifact_sha256=hashlib.sha256(Path(env["windows_path"]).read_bytes()).hexdigest(),
+    )
+    assert decision.admissible, decision.reasons
+
+
 def test_concurrent_different_content_conflict(fresh_env: dict[str, Any], tmp_path: Path) -> None:
-    """Same key + different content concurrently: one row, one ContentConflictError."""
-    doc = json.loads(Path(fresh_env["profile_path"]).read_text(encoding="utf-8"))
-    doc["warnings"] = ["variant-bytes"]
-    mutated = tmp_path / "profile.json"
-    mutated.write_text(json.dumps(doc), encoding="utf-8")
+    """Same key + different content concurrently: exactly one non-idempotent admission,
+    exactly one typed ContentConflictError, one accepted row, and the conflict audited."""
+    import hashlib
+
+    profile_b, manifest_b = _competing_content_set(fresh_env, tmp_path)
+    # both competing inputs independently pass ordinary admission validation.
+    _assert_admissible(fresh_env, Path(fresh_env["profile_path"]), Path(fresh_env["manifest_path"]))
+    _assert_admissible(fresh_env, profile_b, manifest_b)
+
     r = _race(
         fresh_env,
         _ingest_call(fresh_env),
-        _ingest_call(fresh_env, profile_json_path=mutated),
+        _ingest_call(fresh_env, profile_json_path=profile_b, manifest_json_path=manifest_b),
     )
     errors = [x for x in r if isinstance(x, Exception)]
     successes = [x for x in r if not isinstance(x, Exception)]
     assert len(successes) == 1 and len(errors) == 1, r
-    assert isinstance(errors[0], ContentConflictError | Exception)
+    assert successes[0].idempotent is False  # exactly one real admission
+    assert isinstance(errors[0], ContentConflictError), errors[0]  # strictly typed
     assert _row_count(fresh_env) == 1
+
+    sha_a = hashlib.sha256(Path(fresh_env["profile_path"]).read_bytes()).hexdigest()
+    sha_b = hashlib.sha256(profile_b.read_bytes()).hexdigest()
+    eng = create_engine(normalize_database_url(fresh_env["url"]))
+    try:
+        with eng.connect() as c:
+            accepted_sha = c.execute(
+                text("SELECT profile_sha256 FROM profiling.bam_profiles")
+            ).scalar_one()
+            rejected = c.execute(
+                text(
+                    "SELECT count(*) FROM profiling.profile_ingest_attempts "
+                    "WHERE outcome = 'REJECTED'"
+                )
+            ).scalar()
+    finally:
+        eng.dispose()
+    losing_sha = sha_b if accepted_sha == sha_a else sha_a
+    assert accepted_sha in (sha_a, sha_b) and losing_sha != accepted_sha
+    assert rejected is not None and rejected >= 1  # the conflict is audited
 
 
 def test_concurrent_profile_id_conflict(fresh_env: dict[str, Any], tmp_path: Path) -> None:

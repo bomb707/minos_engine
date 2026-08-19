@@ -153,6 +153,7 @@ _CHECK_NODES: dict[str, tuple[str, ...]] = {
         "test_ingest.py::test_parquet_duplicate_rows_rejected",
         "test_ingest.py::test_parquet_shuffled_order_rejected",
         "test_ingest.py::test_parquet_overlap_rejected",
+        "test_ingest.py::test_parquet_decreasing_coordinates_rejected",
         "test_ingest.py::test_parquet_bad_window_id_rejected",
     ),
     "fasta_bounds_passed": ("test_ingest.py::test_fasta_length_bounds_rejected",),

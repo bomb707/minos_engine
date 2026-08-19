@@ -164,13 +164,19 @@ def test_idempotent_resubmission_returns_existing_row(
 def test_content_conflict_rejected(
     admitted, l2d_env: dict[str, Any], l2d_engine: Engine, tmp_path: Path
 ) -> None:
-    """Same ingestion key (identity+profile_id) with different bytes -> CONTENT_CONFLICT."""
+    """Same ingestion key with DIFFERENT (independently valid) content -> typed conflict."""
+    import hashlib
+
     doc = json.loads(Path(l2d_env["profile_path"]).read_text(encoding="utf-8"))
-    doc["warnings"] = ["tampered-but-plausible"]  # changes bytes, keeps profile_id
+    doc["warnings"] = ["variant-bytes"]  # changes bytes, keeps profile_id/identity
     mutated = tmp_path / "profile.json"
     mutated.write_text(json.dumps(doc), encoding="utf-8")
-    with pytest.raises((ContentConflictError, AdmissionRejectedError, IngestionError)):
-        _ingest(l2d_env, l2d_engine, profile_json_path=mutated)
+    man = json.loads(Path(l2d_env["manifest_path"]).read_text(encoding="utf-8"))
+    man["profile_sha256"] = hashlib.sha256(mutated.read_bytes()).hexdigest()
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps(man), encoding="utf-8")
+    with pytest.raises(ContentConflictError):  # strictly typed — never a generic reject
+        _ingest(l2d_env, l2d_engine, profile_json_path=mutated, manifest_json_path=manifest)
 
 
 def test_artifact_metadata_conflict_rejected(
@@ -393,60 +399,103 @@ def _mutate_parquet(env: dict[str, Any], tmp: Path, mutate):
     return out
 
 
+def _set_cols(t, **updates):
+    import pyarrow as pa
+
+    types = {
+        "window_id": pa.int32(),
+        "start0": pa.int64(),
+        "end0": pa.int64(),
+        "length_bp": pa.int64(),
+    }
+    for name, values in updates.items():
+        i = t.schema.get_field_index(name)
+        t = t.set_column(i, name, pa.array(values, types[name]))
+    return t
+
+
 def test_parquet_duplicate_rows_rejected(
     admitted, l2d_env: dict[str, Any], l2d_engine: Engine, tmp_path: Path
 ) -> None:
-    import pyarrow as pa
+    """A duplicated row WITHIN the declared row count reaches the sequence invariant."""
 
-    bad = _mutate_parquet(l2d_env, tmp_path, lambda t: pa.concat_tables([t.slice(0, 1), t]))
-    with pytest.raises((AdmissionRejectedError, IngestionError)):
+    def dup_row(t):
+        w = t.column("window_id").to_pylist()
+        s0 = t.column("start0").to_pylist()
+        e0 = t.column("end0").to_pylist()
+        ln = t.column("length_bp").to_pylist()
+        w[1], s0[1], e0[1], ln[1] = w[0], s0[0], e0[0], ln[0]  # row 1 := copy of row 0
+        return _set_cols(t, window_id=w, start0=s0, end0=e0, length_bp=ln)
+
+    bad = _mutate_parquet(l2d_env, tmp_path, dup_row)
+    with pytest.raises(AdmissionRejectedError, match="strictly increasing"):
         _ingest(l2d_env, l2d_engine, windows_parquet_path=bad)
 
 
 def test_parquet_shuffled_order_rejected(
     admitted, l2d_env: dict[str, Any], l2d_engine: Engine, tmp_path: Path
 ) -> None:
+    """Reversed rows (same count) reach the window_id ordering invariant."""
     bad = _mutate_parquet(
         l2d_env,
         tmp_path,
-        lambda t: t.take(list(range(t.num_rows - 1, -1, -1))),  # reversed
+        lambda t: t.take(list(range(t.num_rows - 1, -1, -1))),
     )
-    with pytest.raises((AdmissionRejectedError, IngestionError)):
+    with pytest.raises(AdmissionRejectedError, match="strictly increasing"):
         _ingest(l2d_env, l2d_engine, windows_parquet_path=bad)
 
 
 def test_parquet_overlap_rejected(
     admitted, l2d_env: dict[str, Any], l2d_engine: Engine, tmp_path: Path
 ) -> None:
-    import pyarrow as pa
+    """Overlapping coordinates with CONSISTENT length_bp reject specifically as overlap."""
 
     def overlap(t):
-        start0 = t.column("start0").to_pylist()
-        if len(start0) < 2:
-            start0 = start0 * 2
-        start0[1] = start0[0]  # second window restarts inside the first
-        i = t.schema.get_field_index("start0")
-        return t.set_column(i, "start0", pa.array(start0[: t.num_rows], pa.int64()))
+        s0 = t.column("start0").to_pylist()
+        e0 = t.column("end0").to_pylist()
+        ln = t.column("length_bp").to_pylist()
+        # window 1 restarts inside window 0; end unchanged; length kept consistent.
+        s0[1] = s0[0] + max(1, (e0[0] - s0[0]) // 2)
+        ln[1] = e0[1] - s0[1]
+        return _set_cols(t, start0=s0, end0=e0, length_bp=ln)
 
     bad = _mutate_parquet(l2d_env, tmp_path, overlap)
-    with pytest.raises((AdmissionRejectedError, IngestionError)):
+    with pytest.raises(AdmissionRejectedError, match="overlap"):
+        _ingest(l2d_env, l2d_engine, windows_parquet_path=bad)
+
+
+def test_parquet_decreasing_coordinates_rejected(
+    admitted, l2d_env: dict[str, Any], l2d_engine: Engine, tmp_path: Path
+) -> None:
+    """Coordinates that go BACKWARD while window_id stays strictly increasing."""
+
+    def backward(t):
+        s0 = t.column("start0").to_pylist()
+        e0 = t.column("end0").to_pylist()
+        ln = t.column("length_bp").to_pylist()
+        # rows 0/1 swap coordinate blocks; window_id untouched (still increasing).
+        s0[0], s0[1] = s0[1], s0[0]
+        e0[0], e0[1] = e0[1], e0[0]
+        ln[0], ln[1] = ln[1], ln[0]
+        return _set_cols(t, start0=s0, end0=e0, length_bp=ln)
+
+    bad = _mutate_parquet(l2d_env, tmp_path, backward)
+    with pytest.raises(AdmissionRejectedError, match="overlap or are unsorted"):
         _ingest(l2d_env, l2d_engine, windows_parquet_path=bad)
 
 
 def test_parquet_bad_window_id_rejected(
     admitted, l2d_env: dict[str, Any], l2d_engine: Engine, tmp_path: Path
 ) -> None:
-    import pyarrow as pa
+    """A duplicate window index (coordinates untouched) reaches the id invariant."""
 
     def dup_ids(t):
         ids = t.column("window_id").to_pylist()
-        if len(ids) >= 2:
-            ids[1] = ids[0]  # duplicate window index
-        i = t.schema.get_field_index("window_id")
-        return t.set_column(i, "window_id", pa.array(ids, pa.int32()))
+        ids[1] = ids[0]
+        return _set_cols(t, window_id=ids)
 
     bad = _mutate_parquet(l2d_env, tmp_path, dup_ids)
-    with pytest.raises((AdmissionRejectedError, IngestionError)):
+    with pytest.raises(AdmissionRejectedError, match="strictly increasing"):
         _ingest(l2d_env, l2d_engine, windows_parquet_path=bad)
 
 
