@@ -1,8 +1,14 @@
-"""§5: the private Core mappings (l2f_tables) match the real schema created by 0006.
+"""§5: the private Core mappings (l2f_tables) agree with the schema created by 0006.
 
-Fails if the migration changes without the Core mapping (or vice-versa). External target
-stubs are excluded from the owned-table comparison. Triggers/ownership/grants are the
-migration/introspection contract's responsibility, not the Core mapping's.
+Scope of this parity check (precise — it does NOT prove a full 1:1 schema match): for each
+owned table it compares column *names* + nullability, primary-key *columns*, foreign-key
+*names* + local columns + referred (schema.table, columns), unique-constraint *names* +
+columns, check-constraint *names*, and explicit index *names* + columns. It deliberately
+does NOT compare SQL types, server defaults, CHECK expressions, PK/constraint *names* on the
+PK, FK options (ON UPDATE/DELETE/MATCH/deferrable), triggers, ownership or grants — those are
+the responsibility of the exhaustive static/live introspection contract deferred to the final
+F3-A increment. External target stubs are excluded from the owned-table comparison. The check
+still fails if the migration and the Core mapping diverge on any dimension it does compare.
 """
 
 from __future__ import annotations

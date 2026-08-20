@@ -8,9 +8,11 @@ is not implemented and is **not** claimed anywhere below.
 ## Scope of this document (F3-A)
 
 F3-A freezes the **database foundation** — migration `0006_l2f_experiment_plan`, its
-frozen migration contract, and the private SQLAlchemy Core table mappings. The pure
-`ExperimentPlan` builder (F3-B), persistence + bounded enqueue (F3-C), the verifier and
-full attack matrix (F3-D), and F4–F7 are unimplemented and unauthorized here.
+frozen migration contract, the private SQLAlchemy Core table mappings, and the seeded
+direct-SQL constraint attack matrix + populated lifecycle (F3-A4). The pure
+`ExperimentPlan` builder (F3-B), persistence + bounded enqueue (F3-C), the Python plan
+verifier and its logical attack matrix (F3-D), and F4–F7 are unimplemented and unauthorized
+here.
 
 ### Private Core table mappings (not `Base.metadata`)
 
@@ -22,14 +24,27 @@ fingerprint). Migration `0006` remains the authoritative DDL; the mappings never
 `l2f_external_target_stub` declarations (FK-resolution only, never owned/created).
 `L2F_OWNED_TABLES` (5) and `L2F_EXTERNAL_TARGET_STUBS` (6) are exported. Tests prove
 importing `l2f_tables` leaves `Base.metadata`, `storage_schema_hash()`
-(`4508728723…`), and `role_policy_hash()` (`1dfe6e56…`) unchanged, and a scratch-PG parity
-test proves the mappings match `0006` exactly (columns/types/nullability/PK/FKs/UNIQUEs/
-CHECKs/indexes) — so neither the migration nor the mapping can drift silently.
+(`4508728723…`), and `role_policy_hash()` (`1dfe6e56…`) unchanged. A scratch-PG parity test
+(`test_l2f_tables_parity`) checks a **precisely scoped** subset — for each owned table it
+compares column names + nullability, PK columns, FK names + local/referred columns, UNIQUE
+names + columns, CHECK constraint **names**, and explicit index names + columns. It does
+**not** yet compare SQL types, server defaults, CHECK **expressions**, PK/FK constraint
+options, triggers, ownership or grants (those are the exhaustive introspection contract,
+deferred below), so it is **not** a full 1:1 schema proof — but it fails if the migration and
+mapping diverge on any dimension it does compare.
 
-> **F3-A still open:** the **seeded direct-SQL attack matrix** (behaviorally exercising
-> each constraint against a full valid graph), the **populated** `0005↔0006` lifecycle,
-> and the **exhaustive** static-inventory / live-schema introspection contract (+ frozen
-> `0006` byte SHA) are the remaining corrective F3-A items and are **not** yet committed.
+The seeded direct-SQL constraint behaviour is proven separately (F3-A4): a deterministic
+valid graph (`l2f_seed`) drives a 49-case attack matrix (`test_l2f_attack_matrix`,
+`l2f_attacks`) that reaches each FK/UNIQUE/CHECK by name and each immutability trigger by its
+stable SQLSTATE/message, plus positive controls (permitted job status/claim updates, valid
+inserts) and a populated `0005↔0006` lifecycle (`test_l2f_populated_lifecycle`).
+
+> **F3-A still open:** the **exhaustive** static-inventory + live-schema introspection
+> contract (SQL types, server defaults, CHECK expressions, PK/FK constraint options, index
+> definitions, triggers, ownership, grants), the frozen `0006` byte SHA + final F3-A contract
+> hash, and the final documentation closure are the remaining corrective F3-A items and are
+> **not** yet committed. The seeded attack matrix and populated lifecycle above **are** now
+> committed.
 
 ## Why legacy tables are forbidden
 
@@ -100,9 +115,11 @@ foreign key**, not a trigger and not a caller-supplied `partition` value:
   and `feature_values_hash` are **shared columns** across the snapshot-member and
   matrix-member FKs, the two lineages are forced to agree (same dataset, matching
   feature-values), and `member_index` is the frozen matrix index.
-- **plan config → payload**: FK `(config_payload_id, config_hash)` → `l2f_config_payloads
-  (id, config_hash)`; and the payload FK `(artifact_id, config_hash)` →
-  `catalog.artifacts(id, sha256)` proves `artifact.sha256 == config_hash` (exact-byte
+- **plan config → payload**: FK `(config_payload_id, config_hash, parameter_space_hash)` →
+  `l2f_config_payloads(id, config_hash, parameter_space_hash)` (so a plan-config cannot forge
+  a config_hash or bind a payload from a different parameter space); and the payload's own FK
+  `(artifact_id, config_hash, media_type)` → `catalog.artifacts(id, sha256, media_type)`
+  proves `artifact.sha256 == config_hash` at the canonical CONFIG media type (exact-byte
   payload binding for F5 reconstruction).
 - **job → member/config of same plan**: FKs `(plan_member_id, plan_id)` and
   `(plan_config_id, plan_id)` → the plan-scoped composite targets, so a job can never mix
