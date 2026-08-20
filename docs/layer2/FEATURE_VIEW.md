@@ -253,3 +253,27 @@ test metadata are never committed.
 
 `FEATURE-VIEW-READY` and `FEATURE-MATRIX-FROZEN-1` are **E5**, not E4, and are not
 generated here.
+
+## E5 — feature-view contract, verifier, and access layer (source)
+
+* **Canonical contract** (`layer2/features/feature_view.py`): `FeatureViewManifest` binds
+  version/epoch/partition, feature-set + registry hash, the 129 ordered columns,
+  snapshot/split/registry identities, matrix_hash, artifact_sha256, row_count, and the
+  ordered member identities (dataset_id, index, vector_hash, feature_values_hash). Its
+  `feature_view_hash` is a pure function of that content — no timestamp, UUID, path,
+  credential, database URL, or machine value participates, so identical accepted inputs
+  always produce the same identity. `test` is not a nameable partition.
+* **Independent verifier** (`storage/feature_view_verify.py`): reconstructs the matrix
+  from the PINNED accepted snapshot + the real accepted profile bytes, derives the
+  feature set INTERNALLY (never caller-supplied), and cross-binds the independently
+  derived matrix_hash / artifact_sha256 / member order / vector+value hashes against the
+  operational DB row **and** the physical Parquet bytes. A consistently-rehashed tamper
+  (self-consistent but wrong matrix) is rejected because it no longer matches the
+  independently reconstructed accepted identity.
+* **Access layer** (`storage/feature_view_access.py`): `open_train_feature_view` /
+  `open_validation_feature_view` — fail-closed, no arbitrary partition, no caller
+  artifact/path/matrix/order/registry override, no `test` access, returns a verified
+  immutable view. Exposes no training/HPO/ranking/prediction/`select_config`.
+
+The two gates (`FEATURE-VIEW-READY`, `FEATURE-MATRIX-FROZEN-1`) bind the final E5 source
+commit and are closed under the repository's S/E two-commit evidence model.
