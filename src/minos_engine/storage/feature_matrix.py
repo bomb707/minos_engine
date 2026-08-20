@@ -94,6 +94,7 @@ from minos_engine.layer2.features.matrix_parquet import (
     serialize_matrix,
     verify_matrix_artifact,
 )
+from minos_engine.storage.database import verify_operational_engine_identity
 from minos_engine.storage.matrix_access import PartitionArtifactPublisher
 
 __all__ = [
@@ -768,8 +769,23 @@ def build_accepted_epoch1_feature_matrix(
     and writes through the owner-side :class:`PartitionArtifactPublisher` (both frozen
     partition credentials validated at construction) — never a bare caller-supplied
     ``artifact_root``.
+
+    Fail-closed ordering (defense in depth):
+      1. the accepted epoch-1 manifest is loaded + identity-verified (pinned trust
+         anchors) — a pure check that precedes ANY database access;
+      2. a forbidden partition is rejected — also before any database access;
+      3. the canonical operational-store identity guard runs as the FIRST database
+         access and a hard precondition of the mutation path: the connected engine must
+         be bound to the canonical operational store (``current_database()`` ==
+         ``minos_engine_db``), so the E4 production write path can only ever mutate the
+         real operational database, never a scratch/staging/mistargeted one.
     """
     snapshot = load_accepted_epoch1_member_manifest(member_manifest_bytes)
+    if partition not in MATRIX_PARTITIONS:
+        raise ForbiddenPartitionError(
+            f"partition {partition!r} is forbidden: matrices exist only for {MATRIX_PARTITIONS}"
+        )
+    verify_operational_engine_identity(engine)
     return _build_feature_matrix(engine, snapshot, partition, publisher=publisher)
 
 

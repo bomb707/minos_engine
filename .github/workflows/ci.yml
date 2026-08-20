@@ -17,7 +17,9 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: minos_ci
+          # Canonical operational database name (owner decision) — CI exercises the
+          # real operational identity, not a throwaway CI-only name.
+          POSTGRES_DB: minos_engine_db
         ports:
           - 5432:5432
         options: >-
@@ -27,8 +29,10 @@ jobs:
           --health-retries 20
 
     env:
-      # Credentials are confined to CI test configuration; never committed.
-      MINOS_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/minos_ci
+      # Credentials are confined to CI test configuration; never committed. The
+      # database name is the canonical operational name (minos_engine_db) so CI
+      # exercises the operational-identity guard against the real name.
+      MINOS_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/minos_engine_db
 
     steps:
       # Full history: qualification verifies historical commits/trees/blobs

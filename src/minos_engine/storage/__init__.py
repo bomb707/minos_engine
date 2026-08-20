@@ -8,6 +8,6 @@ rules only — no scientific or practice-dataset records are populated.
 
 from __future__ import annotations
 
-from .constants import ROLES, SCHEMAS
+from .constants import CANONICAL_OPERATIONAL_DATABASE_NAME, ROLES, SCHEMAS
 
-__all__ = ["SCHEMAS", "ROLES"]
+__all__ = ["SCHEMAS", "ROLES", "CANONICAL_OPERATIONAL_DATABASE_NAME"]

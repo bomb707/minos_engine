@@ -12,6 +12,13 @@ Configuration comes only from `MINOS_DATABASE_URL` (no committed credentials, no
 hard-coded host, no SQLite fallback). Importing `minos_engine` opens no connection;
 engine/session creation is explicit (`storage/database.py`) and fails closed.
 
+The persistent operational store is the single PostgreSQL database
+**`minos_engine_db`** (`CANONICAL_OPERATIONAL_DATABASE_NAME`); all stages share it and
+each migration adds schema to it. A typed, fail-closed identity guard
+(`verify_operational_database_identity`, using live `SELECT current_database()`) gates
+production/accepted operational mutations on that exact name; scratch/synthetic
+databases stay name-independent. See `MIGRATIONS.md` for the full contract.
+
 ## Schema ownership (seven schemas)
 | Schema | Purpose |
 |---|---|
