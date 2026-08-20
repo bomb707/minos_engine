@@ -111,56 +111,120 @@ to CI test configuration and never appear in committed files, logs, or reports.
 
 ## DBA runbook — adopt the canonical operational database name
 
-If an existing operational store is on a database that is **not** `minos_engine_db`,
-the operator (DBA) performs a one-time, data-preserving migration. **Creating a new,
-empty `minos_engine_db` is NOT a migration** — it would abandon the corpus, snapshot,
-migrations, roles, grants, and evidence lineage. The existing database, its Alembic
-revision, the accepted `profile_snapshots` row, the profile corpus, `catalog.artifacts`,
-roles, and grants must all be carried over intact and verified afterward.
+The audited operational store is on the cluster at **host `127.0.0.1`, port `5433`**,
+in the database **`postgres`** (data directory `/home/hr/bittensor/minos_l2d_db`, Alembic
+`0004_l2d_profile_ingestion`, 75-profile corpus, accepted epoch-1 snapshot). It must be
+carried onto the canonical database `minos_engine_db` **without data loss**. Because the
+source is literally `postgres` — the cluster's default maintenance database — an in-place
+`ALTER DATABASE ... RENAME` is not used; the procedure is a **verified dump/restore into
+a new `minos_engine_db` on the same `127.0.0.1:5433` cluster**, keeping the source
+`postgres` database untouched as the rollback source.
 
-The database name is a database *inside* a cluster; the cluster/data-directory path is
-unchanged by this procedure. Run every step manually as a DBA — nothing here is
-automated by the engine, and the engine never renames or drops a database.
+Rules for this runbook:
 
-1. **Backup (mandatory first).** Take a verified logical backup of the source database
-   (roles/grants included), e.g. `pg_dump -Fc <source_db> -f minos_pre_rename.dump` plus
-   `pg_dumpall --roles-only -f minos_roles.sql`. Confirm the dump restores in a scratch
-   cluster before proceeding.
-2. **Stop writers / drain connections.** Quiesce all services that hold
-   `MINOS_DATABASE_URL`; confirm zero application sessions
-   (`SELECT * FROM pg_stat_activity WHERE datname = '<source_db>'`).
-3. **Use a maintenance connection.** Connect to a *different* maintenance database
-   (typically `postgres`) so the source database has no open sessions — you cannot
-   rename or drop the database you are connected through.
-4. **Adopt the name — choose ONE:**
-   * **(a) In-place rename** (preferred when the source has a dedicated operational
-     name): `ALTER DATABASE <source_db> RENAME TO minos_engine_db;`. Fast, preserves
-     everything, no data copy.
-     *If the source database is literally `postgres`, do NOT rename it* — `postgres` is
-     the cluster's default maintenance database; keep it and use path (b) instead.
-   * **(b) Verified dump/restore** (required when the source is `postgres`, or across
-     clusters): `createdb minos_engine_db` on the target, restore the roles then the
-     dump into it (`pg_restore -d minos_engine_db minos_pre_rename.dump`), leaving the
-     source untouched until verification passes.
-5. **Update the DSN.** Point `MINOS_DATABASE_URL` at `.../minos_engine_db` (name only;
-   host/port/socket unchanged). No default DSN or hard-coded host is introduced.
-6. **Post-migration verification (must all pass before re-enabling writers):**
-   * `SELECT current_database()` → `minos_engine_db`;
-   * `SELECT version_num FROM alembic_version` equals the pre-migration revision
-     (e.g. `0004_l2d_profile_ingestion`) — no accidental upgrade/downgrade;
-   * the accepted epoch-1 `profile_snapshots` row is present with the pinned identity
-     (`snapshot_hash`, `split_manifest_hash`, `registry_snapshot_hash`, `member_count`);
-   * corpus counts preserved (`profiling.bam_profiles`, `profiling.dataset_registry`,
-     `profiling.profile_snapshot_members`, `catalog.artifacts`);
-   * the five MINOS roles and their grants exist (`\du`, `has_table_privilege(...)`),
-     ownership by `minos_admin` intact;
-   * the fail-closed identity guard now passes at the accepted write boundary.
-7. **Retain the source until verified.** For path (b), keep the source database
-   read-only until every check above passes; only then decommission it per policy
-   (never a broad `DROP` before verification).
+- **Creating a new, empty `minos_engine_db` is NOT a migration.** The corpus, Alembic
+  revision, accepted snapshot, `catalog.artifacts`, roles, grants, and evidence lineage
+  must all be carried over and verified.
+- A database name is a database *inside* a cluster; the cluster / data-directory path
+  (`/home/hr/bittensor/minos_l2d_db`) is unchanged. The engine never creates, renames, or
+  drops a database — every step here is a manual DBA action.
+- **`pg_dump` preserves database objects and database-level grants (GRANTs on schemas,
+  tables, sequences, functions), but PostgreSQL roles are cluster-wide and live outside
+  any one database.** Back the roles up separately with `pg_dumpall --roles-only`. On the
+  same `127.0.0.1:5433` cluster the roles already exist, so the roles dump is for
+  disaster-recovery / cross-cluster restore; do not assume `pg_dump` carries roles.
+- **Every command is fully cluster-qualified** with `-h 127.0.0.1 -p 5433`. Never run an
+  unqualified `createdb minos_engine_db`, `pg_dump postgres`, or
+  `pg_restore -d minos_engine_db` — those can silently target a different default cluster
+  (e.g. a local socket cluster on 5432).
+- **Do not update the operational `MINOS_DATABASE_URL` until the restore and the full
+  Phase A identity/count/hash verification succeed.** Phase A and Phase B are separate,
+  each independently verified — never combine "successful restore" and "successful 0005
+  migration" into one unchecked step.
 
-Only after this runbook completes and the source-contract commit is accepted does the
-real operational identity satisfy the guard. E4 stays unauthorized until both hold.
+### Phase A — preserve the current store on `minos_engine_db`
+
+1. **Verified logical backup of the source `postgres` (objects + DB-level grants):**
+   ```bash
+   pg_dump  -h 127.0.0.1 -p 5433 -d postgres -Fc -f minos_postgres_0004.dump
+   pg_restore -l minos_postgres_0004.dump >/dev/null   # dump is readable/intact
+   ```
+2. **Roles-only backup (cluster-wide, separate from `pg_dump`):**
+   ```bash
+   pg_dumpall -h 127.0.0.1 -p 5433 --roles-only -f minos_roles.sql
+   ```
+3. **Record the source database owner / encoding / collation / ctype** (to reproduce
+   exactly on the target):
+   ```bash
+   psql -h 127.0.0.1 -p 5433 -d postgres -tAF'|' -c \
+     "SELECT pg_catalog.pg_get_userbyid(datdba), pg_encoding_to_char(encoding), \
+             datcollate, datctype FROM pg_database WHERE datname='postgres'"
+   ```
+4. **Stop writers for the final cutover.** Quiesce every service holding
+   `MINOS_DATABASE_URL`; confirm zero application sessions on the source:
+   ```bash
+   psql -h 127.0.0.1 -p 5433 -d postgres -c \
+     "SELECT count(*) FROM pg_stat_activity WHERE datname='postgres' AND application_name NOT LIKE 'psql%'"
+   ```
+5. **Create `minos_engine_db` on the SAME `127.0.0.1:5433` cluster**, reproducing the
+   recorded owner/encoding/collation/ctype (use `-T template0` so collation/ctype can be
+   set explicitly). Substitute the values captured in step 3:
+   ```bash
+   createdb -h 127.0.0.1 -p 5433 -O <owner> -E <encoding> \
+            --lc-collate='<collate>' --lc-ctype='<ctype>' -T template0 minos_engine_db
+   ```
+   (On a *different* cluster you would first `psql -h <newhost> -p <newport> -d postgres
+   -f minos_roles.sql` to recreate the cluster-wide roles; on `127.0.0.1:5433` they
+   already exist.)
+6. **Restore the backup into `minos_engine_db` (source `postgres` left untouched):**
+   ```bash
+   pg_restore -h 127.0.0.1 -p 5433 -d minos_engine_db --exit-on-error minos_postgres_0004.dump
+   ```
+7. **Phase-A verification — ALL must pass before touching the DSN:**
+   ```bash
+   psql -h 127.0.0.1 -p 5433 -d minos_engine_db -c "SELECT current_database()"     # minos_engine_db
+   psql -h 127.0.0.1 -p 5433 -d minos_engine_db -c "SELECT version_num FROM alembic_version"  # 0004_l2d_profile_ingestion
+   ```
+   * accepted epoch-1 `profiling.profile_snapshots` row unchanged — `snapshot_hash` =
+     `cf717ebb44e76a3408e975e027b51139df28d643dd1616c5edbce3643182c4c7`,
+     `split_manifest_hash` = `b23cd5716ab46033f7ea0bf123cc9b2a5f401fa37dbffddba8d4201f5ea76145`,
+     `registry_snapshot_hash` = `3e60aa65aeed8969e29ebeef83024f6fa2285a13c155d7d6dc0c601d1e94f675`,
+     `member_count` = `75`;
+   * corpus counts preserved: `profiling.bam_profiles` = 75, `catalog.dataset_registry`
+     = 75, `profiling.profile_snapshot_members` = 75, `catalog.artifacts` = 225;
+   * the five MINOS roles exist cluster-wide and grants/ownership are intact
+     (`\du`; `has_table_privilege('minos_trainer','catalog.artifacts','SELECT')`; objects
+     owned by `minos_admin`).
+8. **Only now update `MINOS_DATABASE_URL`** to the `minos_engine_db` database on
+   `127.0.0.1:5433` (name only; host/port unchanged; no default DSN or hard-coded host).
+   The source `postgres` database remains as the rollback source.
+
+### Phase B — advance the L2-E schema (only after Phase A passes)
+
+With the restored `0004` database verified and the DSN pointing at `minos_engine_db`:
+
+```bash
+alembic upgrade 0005_l2e_feature_view      # MINOS_DATABASE_URL -> minos_engine_db @127.0.0.1:5433
+alembic current | grep 0005_l2e_feature_view
+```
+
+Phase-B verification — ALL must pass:
+
+* `alembic current` is exactly `0005_l2e_feature_view`;
+* the three L2-E tables exist: `profiling.feature_sets`, `profiling.feature_matrices`,
+  `profiling.feature_matrix_members`;
+* the accepted L2-D snapshot hashes, members, `profiling.bam_profiles` and
+  `catalog.artifacts` counts are **unchanged** from Phase A (re-run the step-7 checks);
+* migration 0005 privilege delta holds: `minos_trainer` no longer has
+  `catalog.artifacts` `SELECT`, and `minos_evaluator` still has none;
+* the fail-closed operational identity guard passes (a connection to `minos_engine_db`
+  satisfies `verify_operational_database_identity`);
+* no E4 output exists yet: `profiling.feature_matrices` and
+  `profiling.feature_matrix_members` are empty and no matrix-kind `catalog.artifacts`
+  rows are present.
+
+Only after this runbook completes **and** the source-contract commit is accepted does
+the real operational identity satisfy the guard. E4 stays unauthorized until both hold.
 
 ## Credential handling
 No credentials are committed. `MINOS_DATABASE_URL` is the only source of connection

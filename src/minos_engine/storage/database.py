@@ -31,7 +31,6 @@ __all__ = [
     "session_scope",
     "connected_database_name",
     "verify_operational_database_identity",
-    "verify_operational_engine_identity",
 ]
 
 _PSYCOPG_PREFIX = "postgresql+psycopg://"
@@ -122,16 +121,22 @@ def connected_database_name(conn: Connection) -> str:
 
 
 def verify_operational_database_identity(conn: Connection) -> str:
-    """Fail closed unless the CONNECTED database is the canonical operational store.
+    """Fail closed unless THIS connection's database is the canonical operational store.
 
-    Queries the live session (``current_database()``) and requires it to equal
-    :data:`CANONICAL_OPERATIONAL_DATABASE_NAME`. Because the decision comes from the
-    connected server and not the DSN text, a URL that merely mentions the canonical
-    name (e.g. in a host, role, or ``application_name``) while resolving to a different
-    database is rejected. Returns the confirmed name on success.
+    Queries the live session (``current_database()``) on the exact connection handed in
+    and requires it to equal :data:`CANONICAL_OPERATIONAL_DATABASE_NAME`. Because the
+    decision comes from the connected server and not the DSN text, a URL that merely
+    mentions the canonical name (e.g. in a host, role, or ``application_name``) while
+    resolving to a different database is rejected. Returns the confirmed name on success.
 
-    This is intended only for production/accepted operational mutation boundaries; it
-    must NOT be wired into generic helpers or synthetic/scratch tests.
+    Verification is bound to the connection it is called on. A PostgreSQL connection
+    cannot switch databases mid-session, so one check per connection is sufficient — but
+    it is also NECESSARY: verifying one connection says nothing about a *different*
+    connection (even from the same engine), which could resolve to another database.
+    Callers must therefore verify the exact connection they read/write through, and must
+    NOT rely on a prior check made on a separate throwaway connection. Intended only for
+    production/accepted operational mutation boundaries; never wired into generic helpers
+    or synthetic/scratch tests.
     """
     name = connected_database_name(conn)
     if name != CANONICAL_OPERATIONAL_DATABASE_NAME:
@@ -140,13 +145,3 @@ def verify_operational_database_identity(conn: Connection) -> str:
             f"{CANONICAL_OPERATIONAL_DATABASE_NAME!r}; refusing operational mutation"
         )
     return name
-
-
-def verify_operational_engine_identity(engine: Engine) -> str:
-    """Open one connection and apply :func:`verify_operational_database_identity`.
-
-    Convenience for operational write boundaries that hold an :class:`Engine` (e.g. the
-    accepted epoch-1 feature-matrix builder). Fail-closed with the same typed error.
-    """
-    with engine.connect() as conn:
-        return verify_operational_database_identity(conn)

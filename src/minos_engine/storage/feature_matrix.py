@@ -94,7 +94,7 @@ from minos_engine.layer2.features.matrix_parquet import (
     serialize_matrix,
     verify_matrix_artifact,
 )
-from minos_engine.storage.database import verify_operational_engine_identity
+from minos_engine.storage.database import verify_operational_database_identity
 from minos_engine.storage.matrix_access import PartitionArtifactPublisher
 
 __all__ = [
@@ -528,10 +528,22 @@ def _persist_feature_matrix(
     matrix: FeatureMatrix,
     vectors: tuple[FeatureVector, ...],
     publisher: PartitionArtifactPublisher,
+    require_operational_identity: bool = False,
 ) -> PersistedFeatureMatrix:
     """Serialize, verify, publish (immutable no-clobber), and persist in ONE
     transaction. Trusts NO caller-supplied hash/size/path: bytes come from
-    :func:`serialize_matrix` here, and the artifact is read back and re-verified."""
+    :func:`serialize_matrix` here, and the artifact is read back and re-verified.
+
+    ``require_operational_identity`` defaults to ``False`` (the name-independent
+    behaviour used by low-level persistence-mechanics tests on scratch databases). The
+    production path never relies on that default: :func:`_build_feature_matrix` always
+    threads an explicit value, and the accepted builder passes ``True``. When set (the
+    accepted production path), the
+    EXACT transactional connection is identity-verified immediately after the
+    transaction begins — before any advisory lock, read-back, insert, artifact
+    registration, or publication — so a mutation can only ever land on the canonical
+    operational database. A failure here happens before ``published`` is ever assigned,
+    so rollback leaves zero matrix/member/artifact rows and no published artifact."""
     manifest = build_feature_set_manifest()
     if matrix.feature_set_hash != manifest.feature_set_hash:
         raise ContractValidationError("matrix does not bind the canonical feature set")
@@ -568,6 +580,13 @@ def _persist_feature_matrix(
     published: PublishedArtifact | None = None
     committed = False
     try:
+        # (0) identity-verify the EXACT transactional connection FIRST — before advisory
+        # locks, reads, inserts, artifact registration, or publication. A prior check on
+        # a separate engine connection is NOT sufficient; this binds the guarantee to the
+        # connection the writes actually run on.
+        if require_operational_identity:
+            verify_operational_database_identity(conn)
+
         # serialize concurrent publishers of the same content across processes.
         conn.execute(
             text("SELECT pg_advisory_xact_lock(:k)"), {"k": _advisory_key(artifact_sha256)}
@@ -774,19 +793,26 @@ def build_accepted_epoch1_feature_matrix(
       1. the accepted epoch-1 manifest is loaded + identity-verified (pinned trust
          anchors) — a pure check that precedes ANY database access;
       2. a forbidden partition is rejected — also before any database access;
-      3. the canonical operational-store identity guard runs as the FIRST database
-         access and a hard precondition of the mutation path: the connected engine must
-         be bound to the canonical operational store (``current_database()`` ==
-         ``minos_engine_db``), so the E4 production write path can only ever mutate the
-         real operational database, never a scratch/staging/mistargeted one.
+      3. ``require_operational_identity=True`` is threaded through so the canonical
+         operational-store identity guard runs on the EXACT connections that actually
+         read and write — the read connection inside :func:`_build_feature_matrix`
+         (before the snapshot read or any payload resolution) and the transactional
+         connection inside :func:`_persist_feature_matrix` (immediately after the
+         transaction begins, before any advisory lock, insert, artifact registration, or
+         publication). Each connection is verified once (a PostgreSQL session cannot
+         switch databases); a check on any other/earlier connection is never treated as
+         sufficient. The E4 production write path can therefore only ever mutate the real
+         operational database (``current_database()`` == ``minos_engine_db``), never a
+         scratch/staging/mistargeted one.
     """
     snapshot = load_accepted_epoch1_member_manifest(member_manifest_bytes)
     if partition not in MATRIX_PARTITIONS:
         raise ForbiddenPartitionError(
             f"partition {partition!r} is forbidden: matrices exist only for {MATRIX_PARTITIONS}"
         )
-    verify_operational_engine_identity(engine)
-    return _build_feature_matrix(engine, snapshot, partition, publisher=publisher)
+    return _build_feature_matrix(
+        engine, snapshot, partition, publisher=publisher, require_operational_identity=True
+    )
 
 
 def build_feature_matrix_with_trust(
@@ -800,13 +826,17 @@ def build_feature_matrix_with_trust(
     """TEST-ONLY generic builder for synthetic snapshots under an explicit complete trust
     bundle. It constructs a :class:`PartitionArtifactPublisher` from the (test-provisioned)
     ``artifact_root`` — which itself validates the roots. Production imports and calls ONLY
-    :func:`build_accepted_epoch1_feature_matrix` with an explicit publisher."""
+    :func:`build_accepted_epoch1_feature_matrix` with an explicit publisher. It runs with
+    ``require_operational_identity=False`` so synthetic snapshots on arbitrarily named
+    scratch databases stay usable — the canonical-name guard is never imposed here."""
     snapshot = load_member_manifest_with_trust(member_manifest_bytes, trust)
     publisher = PartitionArtifactPublisher(
         train_root=artifact_root / "l2e" / "train",
         validation_root=artifact_root / "l2e" / "validation",
     )
-    return _build_feature_matrix(engine, snapshot, partition, publisher=publisher)
+    return _build_feature_matrix(
+        engine, snapshot, partition, publisher=publisher, require_operational_identity=False
+    )
 
 
 def _build_feature_matrix(
@@ -815,6 +845,7 @@ def _build_feature_matrix(
     partition: str,
     *,
     publisher: PartitionArtifactPublisher,
+    require_operational_identity: bool,
 ) -> PersistedFeatureMatrix:
     # test is rejected BEFORE any payload read, artifact write, or DB access.
     if partition not in MATRIX_PARTITIONS:
@@ -823,6 +854,10 @@ def _build_feature_matrix(
         )
     members = snapshot.members_for(partition)  # verbatim membership; counts derive here
     with engine.connect() as conn:
+        # identity-verify the EXACT read connection FIRST — before the snapshot identity
+        # read or ANY payload-source resolution — on the accepted production path.
+        if require_operational_identity:
+            verify_operational_database_identity(conn)
         _verify_operational_snapshot(conn, snapshot)
         payload_paths = {m.dataset_id: _payload_source(conn, m) for m in members}
 
@@ -836,4 +871,5 @@ def _build_feature_matrix(
         matrix=build.matrix,
         vectors=build.vectors,
         publisher=publisher,
+        require_operational_identity=require_operational_identity,
     )
