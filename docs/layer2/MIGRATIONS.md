@@ -111,45 +111,72 @@ to CI test configuration and never appear in committed files, logs, or reports.
 
 ## DBA runbook — adopt the canonical operational database name
 
-The audited operational store is on the cluster at **host `127.0.0.1`, port `5433`**,
-in the database **`postgres`** (data directory `/home/hr/bittensor/minos_l2d_db`, Alembic
-`0004_l2d_profile_ingestion`, 75-profile corpus, accepted epoch-1 snapshot). It must be
-carried onto the canonical database `minos_engine_db` **without data loss**. Because the
-source is literally `postgres` — the cluster's default maintenance database — an in-place
-`ALTER DATABASE ... RENAME` is not used; the procedure is a **verified dump/restore into
-a new `minos_engine_db` on the same `127.0.0.1:5433` cluster**, keeping the source
-`postgres` database untouched as the rollback source.
+The audited operational store is on the cluster at **host `127.0.0.1`, port `5433`**
+(data directory `/home/hr/bittensor/minos_l2d_db`, Alembic `0004_l2d_profile_ingestion`,
+75-profile corpus, accepted epoch-1 snapshot). It is carried onto the canonical database
+`minos_engine_db` **without data loss**.
+
+> **Completed operation (record).** The owner performed a direct, in-place rename
+> `ALTER DATABASE postgres RENAME TO minos_engine_db;` on the `127.0.0.1:5433` cluster.
+> No dump/restore or database copy was performed and the data directory is unchanged.
+> Post-rename verification confirmed `current_database() = minos_engine_db`, Alembic still
+> `0004_l2d_profile_ingestion`, the three accepted epoch-1 snapshot hashes and
+> `member_count = 75` unchanged, corpus counts `bam_profiles=75 / catalog.dataset_registry=75
+> / profile_snapshot_members=75 / catalog.artifacts=225`, roles/ownership/grants intact,
+> and the operational identity guard passing. The schema was then advanced with
+> `alembic upgrade 0005_l2e_feature_view` (Phase B below).
+
+**On renaming `postgres`.** An in-place `ALTER DATABASE postgres RENAME TO minos_engine_db`
+is a valid, data-preserving PostgreSQL operation and was the method used here. Renaming
+the default maintenance database is *not* prohibited by PostgreSQL — it only requires that
+no session is connected to it at the time (use another maintenance database such as
+`template1` for the rename), and that other tooling not rely on a database literally named
+`postgres`. The dump/restore procedure documented below as an **alternative** is a
+conservative option for cross-cluster moves or when an explicit copy is preferred; it is
+**not** a PostgreSQL requirement for a `postgres` source.
 
 Rules for this runbook:
 
 - **Creating a new, empty `minos_engine_db` is NOT a migration.** The corpus, Alembic
   revision, accepted snapshot, `catalog.artifacts`, roles, grants, and evidence lineage
-  must all be carried over and verified.
+  must all be carried over and verified. (The in-place rename preserves all of these by
+  construction — nothing is copied or recreated.)
 - A database name is a database *inside* a cluster; the cluster / data-directory path
   (`/home/hr/bittensor/minos_l2d_db`) is unchanged. The engine never creates, renames, or
-  drops a database — every step here is a manual DBA action.
-- **`pg_dump` preserves database objects and database-level grants (GRANTs on schemas,
-  tables, sequences, functions), but PostgreSQL roles are cluster-wide and live outside
-  any one database.** Back the roles up separately with `pg_dumpall --roles-only`. On the
-  same `127.0.0.1:5433` cluster the roles already exist, so the roles dump is for
-  disaster-recovery / cross-cluster restore; do not assume `pg_dump` carries roles.
+  drops a database — every rename/restore step here is a manual DBA action.
 - **Every command is fully cluster-qualified** with `-h 127.0.0.1 -p 5433`. Never run an
   unqualified `createdb minos_engine_db`, `pg_dump postgres`, or
   `pg_restore -d minos_engine_db` — those can silently target a different default cluster
   (e.g. a local socket cluster on 5432).
-- **Do not update the operational `MINOS_DATABASE_URL` until the restore and the full
-  Phase A identity/count/hash verification succeed.** Phase A and Phase B are separate,
-  each independently verified — never combine "successful restore" and "successful 0005
-  migration" into one unchecked step.
+- **Do not update the operational `MINOS_DATABASE_URL` until the rename (or restore) and
+  the full Phase A identity/count/hash verification succeed.** Phase A and Phase B are
+  separate, each independently verified — never combine "successful rename/restore" and
+  "successful 0005 migration" into one unchecked step.
 
-### Phase A — preserve the current store on `minos_engine_db`
+### Phase A — adopt `minos_engine_db` and preserve the current store
+
+**Method used — in-place rename** (data-preserving; the data directory is unchanged):
+
+```bash
+# From a maintenance connection that is NOT the database being renamed (e.g. template1),
+# with all writers stopped and no sessions on the source database:
+psql -h 127.0.0.1 -p 5433 -d template1 -c 'ALTER DATABASE postgres RENAME TO minos_engine_db;'
+```
+
+Then run the Phase-A verification (step "Phase-A verification" below) and only afterwards
+update `MINOS_DATABASE_URL`.
+
+**Alternative — verified dump/restore** (for cross-cluster moves or when an explicit copy
+is preferred; keeps the source untouched as a rollback source):
 
 1. **Verified logical backup of the source `postgres` (objects + DB-level grants):**
    ```bash
    pg_dump  -h 127.0.0.1 -p 5433 -d postgres -Fc -f minos_postgres_0004.dump
    pg_restore -l minos_postgres_0004.dump >/dev/null   # dump is readable/intact
    ```
-2. **Roles-only backup (cluster-wide, separate from `pg_dump`):**
+2. **Roles-only backup (cluster-wide, separate from `pg_dump`).** `pg_dump` preserves
+   database objects and database-level grants, but PostgreSQL roles are cluster-wide and
+   live outside any one database:
    ```bash
    pg_dumpall -h 127.0.0.1 -p 5433 --roles-only -f minos_roles.sql
    ```
