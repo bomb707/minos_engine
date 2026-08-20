@@ -115,10 +115,31 @@ def test_manifest_is_exactly_49_unique_grouped(seeded: tuple[Connection, SeededG
     )
 
 
+def _assert_isolation(conn: Connection, atk: Attack) -> None:
+    """Prove the attack can only reach its declared mechanism before running it.
+
+    Non-target composite-FK/unique targets the row satisfies must already exist; the single
+    target tuple the row is missing must be absent; any fixed-value CHECK it violates must be
+    false. This makes the isolated cases correct independent of FK evaluation order.
+    """
+    iso = atk.isolation
+    if iso is None:
+        return
+    for sql, params in iso.present:
+        n = conn.execute(text(sql), params).scalar_one()
+        assert n >= 1, f"{atk.name}: isolation 'present' tuple missing ({sql!r})"
+    for sql, params in iso.absent:
+        n = conn.execute(text(sql), params).scalar_one()
+        assert n == 0, f"{atk.name}: isolation 'absent' tuple unexpectedly present ({sql!r})"
+    if iso.check_false is not None:
+        assert iso.check_false is False, f"{atk.name}: the violated CHECK is not actually false"
+
+
 @pytest.mark.parametrize("name", ATTACK_NAMES)
 def test_attack_reaches_named_invariant(seeded: tuple[Connection, SeededGraph], name: str) -> None:
     conn, graph = seeded
     atk = attacks_by_name(graph)[name]
+    _assert_isolation(conn, atk)
     err = _attempt(conn, atk)
 
     assert err is not None, f"{name}: expected rejection but the statement succeeded"

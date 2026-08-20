@@ -34,17 +34,26 @@ deferred below), so it is **not** a full 1:1 schema proof — but it fails if th
 mapping diverge on any dimension it does compare.
 
 The seeded direct-SQL constraint behaviour is proven separately (F3-A4): a deterministic
-valid graph (`l2f_seed`) drives a 49-case attack matrix (`test_l2f_attack_matrix`,
-`l2f_attacks`) that reaches each FK/UNIQUE/CHECK by name and each immutability trigger by its
-stable SQLSTATE/message, plus positive controls (permitted job status/claim updates, valid
-inserts) and a populated `0005↔0006` lifecycle (`test_l2f_populated_lifecycle`).
+valid graph (`l2f_seed`) drives a **curated 49-case** attack matrix (`test_l2f_attack_matrix`,
+`l2f_attacks`) in which **each of the 49 selected attacks reaches its declared named
+mechanism** — a specific FK/UNIQUE/CHECK constraint (asserted by `constraint_name`) or a
+specific immutability trigger (asserted by its stable SQLSTATE/message). Each case is
+constructed and, where a competing constraint could otherwise fire, proven by explicit
+isolation checks (the non-target composite-FK/unique targets exist and the single target
+tuple is absent) to reach exactly one mechanism independent of PostgreSQL's FK evaluation
+order. The matrix is a **curated selection, not exhaustive coverage of every FK/UNIQUE/CHECK**
+in `0006`; the exhaustive constraint inventory remains the next (final) F3-A increment. Also
+committed: positive controls (permitted job status/claim updates preserve scientific identity;
+every table accepts a valid new row) and a populated `0005↔0006` lifecycle
+(`test_l2f_populated_lifecycle`) that proves a downgrade preserves the complete upstream row
+snapshot and the full `0005` ownership/grant/role/constraint/index state exactly.
 
 > **F3-A still open:** the **exhaustive** static-inventory + live-schema introspection
-> contract (SQL types, server defaults, CHECK expressions, PK/FK constraint options, index
-> definitions, triggers, ownership, grants), the frozen `0006` byte SHA + final F3-A contract
-> hash, and the final documentation closure are the remaining corrective F3-A items and are
-> **not** yet committed. The seeded attack matrix and populated lifecycle above **are** now
-> committed.
+> contract (every FK/UNIQUE/CHECK by name, SQL types, server defaults, CHECK expressions,
+> PK/FK constraint options, index definitions, triggers, ownership, grants), the frozen `0006`
+> byte SHA + final F3-A contract hash, and the final documentation closure are the remaining
+> corrective F3-A items and are **not** yet committed. The seeded attack matrix and populated
+> lifecycle above **are** now committed.
 
 ## Why legacy tables are forbidden
 

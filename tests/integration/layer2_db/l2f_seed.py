@@ -51,6 +51,9 @@ from sqlalchemy import Connection, text
 CONFIG_MEDIA_TYPE = "application/vnd.minos.l2f-config+json"
 CONFIG_SCHEMA_VERSION = "l2f-config-payload-v1"
 _OTHER_MEDIA_TYPE = "application/octet-stream"
+#: a deterministic non-canonical media type used both on a probe artifact and on the
+#: media-type CHECK attack row, so that attack's artifact FK passes and only the CHECK fails.
+CK_MEDIA_WRONG = "application/x-not-l2f-config"
 
 _NS = uuid.UUID("0000000f-2f2f-2f2f-2f2f-00000000f2f2")
 
@@ -119,6 +122,20 @@ class UpstreamRefs:
     ps_b: str
     grh: str
     epp: str
+    # dedicated single-constraint isolation probes (F3-A4 corrective)
+    d_mdr: str  # dataset that is an MA matrix member but NOT an SA snapshot member
+    fmm_mdr: str
+    fvh_mdr: str
+    mdr_index: int
+    d_mfvh: str  # dataset whose SA snapshot-member fvh differs from its MA matrix-member fvh
+    bam_mfvh: str
+    psm_mfvh: str
+    fmm_mfvh: str
+    fvh_mfvh_snap: str
+    fvh_mfvh_mat: str
+    mfvh_index: int
+    ar_ckmedia: str  # artifact carrying a non-canonical media_type (exact-tuple FK target)
+    ch_ckmedia: str
 
 
 @dataclass(frozen=True)
@@ -679,6 +696,82 @@ def seed_upstream_graph(conn: Connection) -> UpstreamRefs:
         {"id": ar["WM"], "uri": "mem://wm", "sha256": ch["WM"], "media_type": _OTHER_MEDIA_TYPE},
     )
 
+    # ---- single-constraint isolation probes (F3-A4 corrective) ----
+    # D_MDR: an MA matrix member that is NOT an SA snapshot member. Lets the
+    # mismatched-dataset attack pass the matrix-member FK while the snapshot-member composite
+    # tuple is absent.
+    d_mdr, fmm_mdr, fvh_mdr, mdr_index = U("dsr:MDR"), U("fmm:MA:MDR"), H("fvh:MDR"), 6
+    _insert(conn, "catalog", "dataset_registry", _dataset_row("MDR", 0))
+    _insert(
+        conn,
+        "profiling",
+        "feature_matrix_members",
+        {
+            "id": fmm_mdr,
+            "feature_matrix_id": ma,
+            "dataset_registry_id": d_mdr,
+            "member_index": mdr_index,
+            "vector_hash": H("vec:MA:MDR"),
+            "feature_values_hash": fvh_mdr,
+        },
+    )
+    # D_MFVH: a dataset whose SA snapshot-member feature_values_hash differs from its MA
+    # matrix-member feature_values_hash (both DB-valid; the two hashes are independent
+    # columns). Lets the mismatched-fvh attack pass the matrix-member FK (using the matrix
+    # hash) while the snapshot-member composite tuple (which has the other hash) is absent.
+    d_mfvh, bam_mfvh = U("dsr:MFVH"), U("bam:MFVH")
+    psm_mfvh, fmm_mfvh = U("psm:SA:MFVH"), U("fmm:MA:MFVH")
+    fvh_mfvh_snap, fvh_mfvh_mat, mfvh_index = H("fvh:MFVH:snap"), H("fvh:MFVH:mat"), 7
+    _insert(conn, "catalog", "dataset_registry", _dataset_row("MFVH", 1))
+    _insert(
+        conn,
+        "profiling",
+        "bam_profiles",
+        _bam_row("MFVH", d_mfvh, agen),
+        jsonb_cols=("profile_document",),
+    )
+    _insert(
+        conn,
+        "profiling",
+        "profile_snapshot_members",
+        {
+            "id": psm_mfvh,
+            "profile_snapshot_id": sa,
+            "bam_profile_id": bam_mfvh,
+            "dataset_registry_id": d_mfvh,
+            "partition": "train",
+            "feature_values_hash": fvh_mfvh_snap,
+        },
+    )
+    _insert(
+        conn,
+        "profiling",
+        "feature_matrix_members",
+        {
+            "id": fmm_mfvh,
+            "feature_matrix_id": ma,
+            "dataset_registry_id": d_mfvh,
+            "member_index": mfvh_index,
+            "vector_hash": H("vec:MA:MFVH"),
+            "feature_values_hash": fvh_mfvh_mat,
+        },
+    )
+    # AR_CKMEDIA: an artifact with a non-canonical media_type whose exact (id, sha256,
+    # media_type) tuple backs the media-type CHECK attack row, so its composite artifact FK
+    # passes and only the fixed-media-type CHECK can fail.
+    ar_ckmedia, ch_ckmedia = U("ar:ckmedia"), H("cfg_ckmedia")
+    _insert(
+        conn,
+        "catalog",
+        "artifacts",
+        {
+            "id": ar_ckmedia,
+            "uri": "mem://ckmedia",
+            "sha256": ch_ckmedia,
+            "media_type": CK_MEDIA_WRONG,
+        },
+    )
+
     conn.execute(text("RESET ROLE"))
     return UpstreamRefs(
         sa=sa,
@@ -714,6 +807,19 @@ def seed_upstream_graph(conn: Connection) -> UpstreamRefs:
         ps_b=ps_b,
         grh=grh,
         epp=epp,
+        d_mdr=d_mdr,
+        fmm_mdr=fmm_mdr,
+        fvh_mdr=fvh_mdr,
+        mdr_index=mdr_index,
+        d_mfvh=d_mfvh,
+        bam_mfvh=bam_mfvh,
+        psm_mfvh=psm_mfvh,
+        fmm_mfvh=fmm_mfvh,
+        fvh_mfvh_snap=fvh_mfvh_snap,
+        fvh_mfvh_mat=fvh_mfvh_mat,
+        mfvh_index=mfvh_index,
+        ar_ckmedia=ar_ckmedia,
+        ch_ckmedia=ch_ckmedia,
     )
 
 
@@ -912,14 +1018,29 @@ EXPECTED_ROW_COUNTS = {
     "l2f_experiment_jobs": 4,
 }
 
-# expected upstream seeded row counts (asserted by the populated lifecycle test)
+# expected upstream seeded row counts (asserted by the populated lifecycle test).
+# Includes the three F3-A4 isolation probes: +2 datasets (D_MDR, D_MFVH), +1 bam_profile
+# (D_MFVH), +1 SA snapshot member (D_MFVH), +2 MA matrix members (D_MDR, D_MFVH).
 EXPECTED_UPSTREAM_COUNTS = {
-    ("catalog", "dataset_registry"): 9,
-    ("profiling", "bam_profiles"): 9,
+    ("catalog", "dataset_registry"): 11,
+    ("profiling", "bam_profiles"): 10,
     ("catalog", "split_snapshots"): 2,
     ("profiling", "profile_snapshots"): 2,
     ("profiling", "feature_sets"): 2,
     ("profiling", "feature_matrices"): 3,
-    ("profiling", "profile_snapshot_members"): 9,
-    ("profiling", "feature_matrix_members"): 9,
+    ("profiling", "profile_snapshot_members"): 10,
+    ("profiling", "feature_matrix_members"): 11,
 }
+
+# every upstream table the seed writes (for the exact full-snapshot preservation check)
+UPSTREAM_TABLES_IN_PK_ORDER = (
+    ("catalog", "artifacts"),
+    ("catalog", "dataset_registry"),
+    ("catalog", "split_snapshots"),
+    ("profiling", "bam_profiles"),
+    ("profiling", "profile_snapshots"),
+    ("profiling", "feature_sets"),
+    ("profiling", "feature_matrices"),
+    ("profiling", "profile_snapshot_members"),
+    ("profiling", "feature_matrix_members"),
+)
