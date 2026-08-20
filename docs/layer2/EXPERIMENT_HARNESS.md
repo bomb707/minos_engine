@@ -5,55 +5,81 @@ experiment planning over the frozen L2-E train membership. It does **not** score
 select, optimize, train, or activate `Layer2Service.select_config`. `HARNESS-READY` (F7)
 is not implemented and is **not** claimed anywhere below.
 
-## Scope of this document (F3-A)
+## Scope of this document (F3-A) — COMPLETE
 
-F3-A freezes the **database foundation** — migration `0006_l2f_experiment_plan`, its
-frozen migration contract, the private SQLAlchemy Core table mappings, and the seeded
-direct-SQL constraint attack matrix + populated lifecycle (F3-A4). The pure
-`ExperimentPlan` builder (F3-B), persistence + bounded enqueue (F3-C), the Python plan
-verifier and its logical attack matrix (F3-D), and F4–F7 are unimplemented and unauthorized
-here.
+**The F3-A database foundation is complete.** It comprises migration `0006_l2f_experiment_plan`
+(frozen by its byte SHA and a domain-separated contract hash), the private SQLAlchemy Core
+table mappings, an exhaustive frozen static schema inventory proven equal to the live schema,
+the 47-case direct-SQL constraint attack matrix with isolation proofs, and a populated
+`0005↔0006` lifecycle that restores the exact upstream data and `0005` structure/security.
+The pure `ExperimentPlan` builder (F3-B), persistence + bounded enqueue (F3-C), the Python
+plan verifier and its logical attack matrix (F3-D), and F4–F7 are **unimplemented and
+unauthorized**. `HARNESS-READY` (F7) is **not** issued, and `Layer2Service.select_config`
+remains blocked.
+
+### Migration 0006 frozen by byte SHA + contract hash
+
+`storage/l2f_migration_contract.py` freezes `L2F_MIGRATION_SHA256` (the exact SHA-256 of the
+authoritative migration file) and `L2F_CONTRACT_HASH` (a domain/version-separated canonical
+hash over the migration SHA, revision lineage, accepted prior-migration byte hashes, and the
+full static inventory — with no self-reference in its preimage). Tests recompute both and
+require exact equality, prove per-section mutation sensitivity, and re-assert that migrations
+`0001–0005` are byte-identical.
 
 ### Private Core table mappings (not `Base.metadata`)
 
-`storage/l2f_tables.py` defines the five owned tables as SQLAlchemy Core `Table` objects
-on a **dedicated private `l2f_metadata`** — deliberately **not** the L2-B declarative
+`storage/l2f_tables.py` defines the five owned tables as SQLAlchemy Core `Table` objects on a
+**dedicated private `l2f_metadata`** — deliberately **not** the L2-B declarative
 `Base.metadata` (adding them there would silently change the accepted DB-READY storage
-fingerprint). Migration `0006` remains the authoritative DDL; the mappings never call
-`create_all`/`drop_all`. External L2-D/L2-E tables referenced by composite FKs are minimal
-`l2f_external_target_stub` declarations (FK-resolution only, never owned/created).
-`L2F_OWNED_TABLES` (5) and `L2F_EXTERNAL_TARGET_STUBS` (6) are exported. Tests prove
-importing `l2f_tables` leaves `Base.metadata`, `storage_schema_hash()`
-(`4508728723…`), and `role_policy_hash()` (`1dfe6e56…`) unchanged. A scratch-PG parity test
-(`test_l2f_tables_parity`) checks a **precisely scoped** subset — for each owned table it
-compares column names + nullability, PK columns, FK names + local/referred columns, UNIQUE
-names + columns, CHECK constraint **names**, and explicit index names + columns. It does
-**not** yet compare SQL types, server defaults, CHECK **expressions**, PK/FK constraint
-options, triggers, ownership or grants (those are the exhaustive introspection contract,
-deferred below), so it is **not** a full 1:1 schema proof — but it fails if the migration and
-mapping diverge on any dimension it does compare.
+fingerprint `storage_schema_hash()` `4508728723…` / `role_policy_hash()` `1dfe6e56…`, which
+tests prove is unchanged). Migration `0006` remains the authoritative DDL; the mappings never
+call `create_all`/`drop_all` on any production path. External L2-D/L2-E tables referenced by
+composite FKs are minimal `l2f_external_target_stub` declarations (FK-resolution only, never
+owned/created). `L2F_OWNED_TABLES` (5) and `L2F_EXTERNAL_TARGET_STUBS` (6) are exported.
 
-The seeded direct-SQL constraint behaviour is proven separately (F3-A4): a deterministic
-valid graph (`l2f_seed`) drives a **curated 49-case** attack matrix (`test_l2f_attack_matrix`,
-`l2f_attacks`) in which **each of the 49 selected attacks reaches its declared named
-mechanism** — a specific FK/UNIQUE/CHECK constraint (asserted by `constraint_name`) or a
-specific immutability trigger (asserted by its stable SQLSTATE/message). Each case is
-constructed and, where a competing constraint could otherwise fire, proven by explicit
-isolation checks (the non-target composite-FK/unique targets exist and the single target
-tuple is absent) to reach exactly one mechanism independent of PostgreSQL's FK evaluation
-order. The matrix is a **curated selection, not exhaustive coverage of every FK/UNIQUE/CHECK**
-in `0006`; the exhaustive constraint inventory remains the next (final) F3-A increment. Also
-committed: positive controls (permitted job status/claim updates preserve scientific identity;
-every table accepts a valid new row) and a populated `0005↔0006` lifecycle
-(`test_l2f_populated_lifecycle`) that proves a downgrade preserves the complete upstream row
-snapshot and the full `0005` ownership/grant/role/constraint/index state exactly.
+The parity test (`test_l2f_tables_parity`) now proves a **full mapping-relevant schema match**:
+it materializes the private `l2f_metadata` via `create_all` into an isolated throwaway scratch
+database and compares it, using the shared normalized introspector, against an alembic-built
+`0006` on every mapping dimension — ordered columns, exact PostgreSQL types, nullability,
+normalized server defaults, PK name + columns, FK names/columns/targets/options, UNIQUE
+names/columns, CHECK names + **normalized expressions**, and explicit **index definitions**.
+Triggers, ownership and grants are the migration/live-inventory responsibility, not the Core
+mapping's.
 
-> **F3-A still open:** the **exhaustive** static-inventory + live-schema introspection
-> contract (every FK/UNIQUE/CHECK by name, SQL types, server defaults, CHECK expressions,
-> PK/FK constraint options, index definitions, triggers, ownership, grants), the frozen `0006`
-> byte SHA + final F3-A contract hash, and the final documentation closure are the remaining
-> corrective F3-A items and are **not** yet committed. The seeded attack matrix and populated
-> lifecycle above **are** now committed.
+### Exhaustive static + live schema equality
+
+`storage/l2f_introspect.py` is a reusable read-only normalized introspector built entirely
+from `pg_catalog` + `aclexplode` (never `information_schema` grant views). The frozen
+owner-reviewed `L2F_STATIC_INVENTORY` enumerates every owned table's ordered
+columns/types/nullability/defaults, every PK/UNIQUE/CHECK/FK with full definitions and options,
+every index, the six composite targets, the six triggers, the job function, ownership and exact
+ACLs, and the absence of application-role table grants. `test_l2f_static_inventory` proves live
+`0006` equals the frozen inventory exactly and that an explicit `0005→0006→0005→0006` lifecycle
+re-derives it and restores the captured normalized `0005` state exactly.
+
+### Curated 47-case behavioral attack matrix
+
+A deterministic valid graph (`l2f_seed`) drives a **curated 47-case** attack matrix
+(`test_l2f_attack_matrix`, `l2f_attacks`) — 12 plan, 10 plan-member, 10 config/payload, 15
+job/immutability. Each of the 47 selected attacks reaches its declared named mechanism: a
+specific FK/UNIQUE/CHECK constraint (asserted by `constraint_name`) or a specific immutability
+trigger (asserted by stable SQLSTATE/message), with explicit isolation checks where a competing
+constraint could otherwise fire, so each is correct independent of PostgreSQL's FK evaluation
+order. The matrix is a **curated selection, not exhaustive coverage of every FK/UNIQUE/CHECK**;
+the exhaustive constraint inventory above is the authority for full coverage. One member case,
+`member_duplicate_logical_membership`, is a **single three-constraint equivalence class**: a
+fully FK-valid duplicate plan-member necessarily collides with all three member UNIQUE
+constraints at once (`uq_l2f_pm_plan_snapshot_member` / `uq_l2f_pm_plan_matrix_member` /
+`uq_l2f_pm_plan_member_index`) because the composite-FK graph fixes the dataset, feature-values
+hash and matrix index — so it asserts SQLSTATE `23505` with an observed constraint from that
+set, not one isolatable invariant. Positive controls (permitted job status/claim updates
+preserve scientific identity; every table accepts a valid new row) and the populated
+`0005↔0006` lifecycle (`test_l2f_populated_lifecycle`) — which proves a downgrade preserves the
+complete upstream row snapshot and the full `0005` ownership/grant/role/constraint/index/ACL
+state exactly — are included.
+
+The operational `minos_engine_db` remains at `0005`; `0006` is never applied operationally in
+any F3-A step. F3-B and later stages remain unauthorized.
 
 ## Why legacy tables are forbidden
 

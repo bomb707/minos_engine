@@ -1,23 +1,26 @@
-"""F3-A4: populated ``0005 -> 0006 -> 0005 -> 0006`` migration lifecycle (scratch PG only).
+"""F3-A: populated ``0005 -> 0006 -> 0005 -> 0006`` migration lifecycle (scratch PG only).
 
-Unlike ``test_l2f_migration_lifecycle`` (empty schema lifecycle), this test starts from a
-genuinely populated ``0005`` database, captures a **complete** deterministic snapshot of every
-seeded upstream row (all columns, ordered by primary key) plus the full ``0005`` structural
-and security state (ownership, grants for the five MINOS roles and PUBLIC, schema privileges,
-function ownership/grants, constraints, explicit indexes, roles and memberships), then:
+Starts from a genuinely populated ``0005`` database and proves the downgrade is an exact,
+destructive teardown of only the L2-F stage:
 
-  upgrade -> seed L2-F -> downgrade (while populated) -> re-upgrade -> reseed
+* a **complete** deterministic snapshot of every seeded upstream row (all columns, PK order)
+  is byte/logically unchanged across the downgrade and re-upgrade; and
+* the **full normalized structure + security state** — captured with the shared introspector
+  (``full_structural_state``), which uses raw ``pg_catalog`` + ``aclexplode`` (never
+  ``information_schema`` grant views) and therefore includes PUBLIC, grantor, grantee, grant
+  option, table/schema/function ACLs, default ACLs, function signatures and role-membership
+  options — is restored exactly.
 
-and proves the downgrade is an exact, destructive teardown of only the L2-F stage: the upstream
-rows are byte/logically unchanged, the captured ``0005`` structural/security state is exactly
-restored, the five L2-F tables + six composite targets + six L2-F triggers + the L2-F job
-function are gone, and shared pre-0006 functions survive.
+Post-downgrade it also proves the five L2-F tables, six composite targets, six L2-F triggers
+and the L2-F job function are gone while shared pre-0006 functions survive.
 
 This lifecycle is destructive and MUST NEVER run against the operational ``minos_engine_db``;
 it only ever touches an ephemeral scratch database.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 import pytest
 from sqlalchemy import Engine, create_engine, text
@@ -28,6 +31,7 @@ from tests.integration.layer2_db.conftest import (
     alembic_upgrade,
     scratch_database,
 )
+from tests.integration.layer2_db.l2f_introspect import full_structural_state
 from tests.integration.layer2_db.l2f_seed import (
     EXPECTED_ROW_COUNTS,
     EXPECTED_UPSTREAM_COUNTS,
@@ -55,23 +59,16 @@ _L2F_TRIGGERS = (
     "trg_l2f_jobs_identity_immutable",
     "trg_l2f_jobs_no_delete",
 )
-_APP_ROLES = ("minos_admin", "minos_live", "minos_runner", "minos_trainer", "minos_evaluator")
-_SCHEMAS = ("profiling", "catalog", "experiments")
-_FN_SCHEMAS = ("audit", "profiling", "catalog", "experiments")
+_SCHEMAS = ["profiling", "catalog", "experiments"]
+_ROLES = ["minos_admin", "minos_live", "minos_runner", "minos_trainer", "minos_evaluator"]
 
 
-def _rows(engine: Engine, sql: str, **p: object) -> list[tuple]:
-    with engine.connect() as c:
-        return [tuple(r) for r in c.execute(text(sql), p).all()]
-
-
-def _scalar(engine: Engine, sql: str, **p: object) -> object:
+def _scalar(engine: Engine, sql: str, **p: object) -> Any:
     with engine.connect() as c:
         return c.execute(text(sql), p).scalar_one()
 
 
 def _capture_upstream_rows(engine: Engine) -> dict[str, list[dict]]:
-    """Full ordered snapshot of every seeded upstream table (all columns, PK order)."""
     snap: dict[str, list[dict]] = {}
     with engine.connect() as c:
         for schema, table in UPSTREAM_TABLES_IN_PK_ORDER:
@@ -80,90 +77,9 @@ def _capture_upstream_rows(engine: Engine) -> dict[str, list[dict]]:
     return snap
 
 
-def _capture_structural_state(engine: Engine) -> dict[str, list]:
-    grantees = [*_APP_ROLES, "PUBLIC"]
-    schema_privs = []
-    for role in _APP_ROLES:
-        for schema in _SCHEMAS:
-            for priv in ("USAGE", "CREATE"):
-                has = _scalar(
-                    engine, "SELECT has_schema_privilege(:r, :s, :p)", r=role, s=schema, p=priv
-                )
-                schema_privs.append((role, schema, priv, bool(has)))
-    return {
-        "table_owners": sorted(
-            _rows(
-                engine,
-                "SELECT schemaname, tablename, tableowner FROM pg_tables WHERE schemaname = ANY(:s)",
-                s=list(_SCHEMAS),
-            )
-        ),
-        "schema_owners": sorted(
-            _rows(
-                engine,
-                "SELECT nspname, pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = ANY(:s)",
-                s=list(_SCHEMAS),
-            )
-        ),
-        "table_grants": sorted(
-            _rows(
-                engine,
-                "SELECT grantee, table_schema, table_name, privilege_type "
-                "FROM information_schema.role_table_grants "
-                "WHERE table_schema = ANY(:s) AND grantee = ANY(:g)",
-                s=list(_SCHEMAS),
-                g=grantees,
-            )
-        ),
-        "schema_privileges": sorted(schema_privs),
-        "constraints": sorted(
-            _rows(
-                engine,
-                "SELECT n.nspname, cl.relname, c.conname, c.contype "
-                "FROM pg_constraint c JOIN pg_class cl ON cl.oid = c.conrelid "
-                "JOIN pg_namespace n ON n.oid = cl.relnamespace WHERE n.nspname = ANY(:s)",
-                s=list(_SCHEMAS),
-            )
-        ),
-        "indexes": sorted(
-            _rows(
-                engine,
-                "SELECT schemaname, tablename, indexname FROM pg_indexes WHERE schemaname = ANY(:s)",
-                s=list(_SCHEMAS),
-            )
-        ),
-        "roles": sorted(
-            _rows(
-                engine, "SELECT rolname FROM pg_roles WHERE rolname = ANY(:g)", g=list(_APP_ROLES)
-            )
-        ),
-        "role_memberships": sorted(
-            _rows(
-                engine,
-                "SELECT pg_get_userbyid(m.roleid), pg_get_userbyid(m.member) FROM pg_auth_members m "
-                "WHERE pg_get_userbyid(m.roleid) = ANY(:g) OR pg_get_userbyid(m.member) = ANY(:g)",
-                g=list(_APP_ROLES),
-            )
-        ),
-        "functions": sorted(
-            _rows(
-                engine,
-                "SELECT n.nspname, p.proname, pg_get_userbyid(p.proowner) FROM pg_proc p "
-                "JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = ANY(:s)",
-                s=list(_FN_SCHEMAS),
-            )
-        ),
-        "function_grants": sorted(
-            _rows(
-                engine,
-                "SELECT grantee, routine_schema, routine_name, privilege_type "
-                "FROM information_schema.role_routine_grants "
-                "WHERE routine_schema = ANY(:s) AND grantee = ANY(:g)",
-                s=list(_FN_SCHEMAS),
-                g=grantees,
-            )
-        ),
-    }
+def _capture_structural(engine: Engine) -> dict[str, Any]:
+    with engine.connect() as c:
+        return full_structural_state(c, _SCHEMAS, _ROLES)
 
 
 def _l2f_table_count(engine: Engine) -> int:
@@ -187,27 +103,24 @@ def test_populated_downgrade_preserves_0005_exactly(lifecycle_url: str) -> None:
     url = lifecycle_url
     engine = create_engine(normalize_database_url(url))
     try:
-        # 1) upgrade explicitly to 0005 and 2) confirm the exact revision.
+        # 1) upgrade explicitly to 0005 and confirm the exact revision.
         alembic_upgrade(url, _PREV)
         assert _scalar(engine, "SELECT version_num FROM alembic_version") == _PREV
         assert _l2f_table_count(engine) == 0
 
-        # 3) seed the complete upstream graph WHILE STILL AT 0005.
+        # 2) seed the complete upstream graph WHILE STILL AT 0005.
         with engine.connect() as conn, conn.begin():
             refs = seed_upstream_graph(conn)
         for (schema, table), expected in EXPECTED_UPSTREAM_COUNTS.items():
             n = _scalar(engine, f"SELECT count(*) FROM {schema}.{table}")  # noqa: S608
             assert n == expected, f"{schema}.{table}: {n} != {expected}"
 
-        # 4) complete upstream row snapshot + 5) 0005 structural/security fingerprint.
+        # 3) complete upstream row snapshot + full normalized 0005 structure/security state.
         upstream_before = _capture_upstream_rows(engine)
-        structural_before = _capture_structural_state(engine)
+        structural_before = _capture_structural(engine)
 
-        # 6) upgrade the populated 0005 -> 0006.
+        # 4) upgrade the populated 0005 -> 0006; seed L2-F; verify counts.
         alembic_upgrade(url, _HEAD)
-        assert _scalar(engine, "SELECT version_num FROM alembic_version") == _HEAD
-
-        # 7) seed the L2-F graph and verify expected counts.
         with engine.connect() as conn, conn.begin():
             seed_l2f_graph(conn, refs)
         assert _l2f_table_count(engine) == 5
@@ -215,19 +128,20 @@ def test_populated_downgrade_preserves_0005_exactly(lifecycle_url: str) -> None:
             n = _scalar(engine, f"SELECT count(*) FROM experiments.{table}")  # noqa: S608
             assert n == expected, f"{table}: {n} != {expected}"
 
-        # 8) downgrade the populated 0006 -> 0005.
+        # 5) downgrade the populated 0006 -> 0005.
         alembic_downgrade(url, _PREV)
         assert _scalar(engine, "SELECT version_num FROM alembic_version") == _PREV
 
-        # 9a) the complete upstream row snapshot is EXACTLY unchanged (all columns, all rows).
+        # 6a) the complete upstream row snapshot is EXACTLY unchanged (all columns, all rows).
         assert _capture_upstream_rows(engine) == upstream_before
+        # 6b) the full normalized 0005 structure + security state is EXACTLY restored
+        # (tables/columns/constraints/indexes/triggers/functions/schema+table+function ACLs,
+        # default ACLs, roles and membership options).
+        assert _capture_structural(engine) == structural_before
 
-        # 9b) the captured 0005 structural/security state is EXACTLY restored.
-        assert _capture_structural_state(engine) == structural_before
-
-        # 9c) all five L2-F tables are absent.
+        # 6c) all five L2-F tables are absent.
         assert _l2f_table_count(engine) == 0
-        # 9d) all six additive composite UNIQUE targets are absent.
+        # 6d) all six additive composite UNIQUE targets are absent.
         assert (
             _scalar(
                 engine,
@@ -236,7 +150,7 @@ def test_populated_downgrade_preserves_0005_exactly(lifecycle_url: str) -> None:
             )
             == 0
         )
-        # 9e) all six L2-F triggers disappeared with their tables.
+        # 6e) all six L2-F triggers disappeared with their tables.
         assert (
             _scalar(
                 engine,
@@ -245,8 +159,7 @@ def test_populated_downgrade_preserves_0005_exactly(lifecycle_url: str) -> None:
             )
             == 0
         )
-        # 9f) the L2-F job identity function is absent; the shared 0001 append-only function
-        # (and other pre-0006 functions) survive.
+        # 6f) the L2-F job function is absent; the shared 0001 append-only function survives.
         assert (
             _scalar(
                 engine,
@@ -265,16 +178,16 @@ def test_populated_downgrade_preserves_0005_exactly(lifecycle_url: str) -> None:
             == 1
         )
 
-        # 10) re-upgrade the still-populated 0005 -> 0006.
+        # 7) re-upgrade the still-populated 0005 -> 0006.
         alembic_upgrade(url, _HEAD)
         assert _l2f_table_count(engine) == 5
         for table in _L2F_TABLES:
             assert _scalar(engine, f"SELECT count(*) FROM experiments.{table}") == 0  # noqa: S608
 
-        # 11) upstream rows remain byte/logically identical after the re-upgrade.
+        # upstream rows remain byte/logically identical after the re-upgrade.
         assert _capture_upstream_rows(engine) == upstream_before
 
-        # 12) reseed the L2-F graph against the surviving upstream and prove it works again.
+        # 8) reseed the L2-F graph against the surviving upstream and prove it works again.
         with engine.connect() as conn, conn.begin():
             seed_l2f_graph(conn, refs)
         for table, expected in EXPECTED_ROW_COUNTS.items():

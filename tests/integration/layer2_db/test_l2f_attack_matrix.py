@@ -3,7 +3,7 @@
 On real PostgreSQL 16 (scratch only) this:
 
 * seeds a complete, internally valid upstream + L2-F graph (``l2f_seed``);
-* proves the 49-case attack manifest is exactly 49 unique, correctly grouped cases whose
+* proves the 47-case attack manifest is exactly 47 unique, correctly grouped cases whose
   build order matches the frozen ``ATTACK_NAMES``;
 * executes every attack independently in its own SAVEPOINT and asserts the exact PostgreSQL
   failure mechanism — SQLSTATE plus the named constraint (FK/UNIQUE/CHECK) or the stable
@@ -96,19 +96,19 @@ def test_seed_row_counts(seeded: tuple[Connection, SeededGraph]) -> None:
         assert n == expected, f"{table}: seeded {n}, expected {expected}"
 
 
-def test_manifest_is_exactly_49_unique_grouped(seeded: tuple[Connection, SeededGraph]) -> None:
+def test_manifest_is_exactly_47_unique_grouped(seeded: tuple[Connection, SeededGraph]) -> None:
     _, graph = seeded
     attacks = build_attacks(graph)
     names = [a.name for a in attacks]
-    assert len(names) == TOTAL_ATTACKS == 49
-    assert len(set(names)) == 49, "case names must be unique"
+    assert len(names) == TOTAL_ATTACKS == 47
+    assert len(set(names)) == 47, "case names must be unique"
     assert tuple(names) == ATTACK_NAMES, "build order must match the frozen manifest"
     assert (
         dict(Counter(a.group for a in attacks))
         == GROUP_COUNTS
         == {
             "plan": 12,
-            "member": 12,
+            "member": 10,
             "config": 10,
             "job": 15,
         }
@@ -150,9 +150,15 @@ def test_attack_reaches_named_invariant(seeded: tuple[Connection, SeededGraph], 
     )
     diag = orig.diag  # type: ignore[union-attr]
     if atk.mechanism == "constraint":
-        assert diag.constraint_name == atk.expect, (
-            f"{name}: expected constraint {atk.expect}, observed {diag.constraint_name}"
-        )
+        if atk.expect_any is not None:
+            # behavioral equivalence class: observed constraint must be one of the set.
+            assert diag.constraint_name in atk.expect_any, (
+                f"{name}: expected constraint in {atk.expect_any}, observed {diag.constraint_name}"
+            )
+        else:
+            assert diag.constraint_name == atk.expect, (
+                f"{name}: expected constraint {atk.expect}, observed {diag.constraint_name}"
+            )
     else:
         message = diag.message_primary or ""
         assert atk.expect in message, (

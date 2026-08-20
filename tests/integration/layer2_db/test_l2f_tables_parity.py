@@ -1,94 +1,93 @@
-"""§5: the private Core mappings (l2f_tables) agree with the schema created by 0006.
+"""F3-A: the private Core mappings (l2f_tables) produce the SAME schema as migration 0006.
 
-Scope of this parity check (precise — it does NOT prove a full 1:1 schema match): for each
-owned table it compares column *names* + nullability, primary-key *columns*, foreign-key
-*names* + local columns + referred (schema.table, columns), unique-constraint *names* +
-columns, check-constraint *names*, and explicit index *names* + columns. It deliberately
-does NOT compare SQL types, server defaults, CHECK expressions, PK/constraint *names* on the
-PK, FK options (ON UPDATE/DELETE/MATCH/deferrable), triggers, ownership or grants — those are
-the responsibility of the exhaustive static/live introspection contract deferred to the final
-F3-A increment. External target stubs are excluded from the owned-table comparison. The check
-still fails if the migration and the Core mapping diverge on any dimension it does compare.
+Strengthened (F3-A closure) to a full mapping-relevant comparison. Both sides are built and
+introspected identically with the normalized introspector: one scratch database is upgraded by
+alembic to ``0006``; a second scratch database materializes the private ``l2f_metadata`` via
+``create_all`` (into throwaway schemas — never ``Base.metadata``, never the operational DB).
+For the five owned tables the test asserts equality of:
+
+* ordered columns — name, exact PostgreSQL type (format_type), nullability, normalized server
+  default, identity/generated attributes, collation;
+* every constraint — PK/UNIQUE/CHECK/FK by name, ordered columns, full normalized
+  ``pg_get_constraintdef`` (so CHECK expressions and FK targets/columns match), and FK options
+  (match type, ON UPDATE/DELETE, deferrable/deferred/validated);
+* every index — name and full normalized ``pg_get_indexdef``.
+
+Triggers, ownership and grants are deliberately out of scope for the Core mapping (they are the
+migration/live-inventory responsibility) — the mapping never declares them.
 """
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
-import sqlalchemy as sa
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import Connection, create_engine, text
 
 from minos_engine.storage.database import normalize_database_url
-from minos_engine.storage.l2f_tables import L2F_OWNED_TABLES
+from minos_engine.storage.l2f_tables import L2F_OWNED_TABLES, l2f_metadata
 from tests.integration.layer2_db.conftest import alembic_upgrade, scratch_database
+from tests.integration.layer2_db.l2f_introspect import (
+    introspect_constraints,
+    introspect_indexes,
+    introspect_table,
+)
 
-_SCHEMA = "experiments"
+_HEAD = "0006_l2f_experiment_plan"
+_OWNED = [("experiments", t.name) for t in L2F_OWNED_TABLES]
 
 
-def _mapping_view(table: sa.Table) -> dict[str, object]:
-    cols = {c.name: bool(c.nullable) for c in table.columns}
-    pk = tuple(c.name for c in table.primary_key.columns)
-    fks: dict[str, tuple] = {}
-    for fk in table.foreign_key_constraints:
-        assert fk.name
-        local = tuple(fk.column_keys)
-        elems = list(fk.elements)
-        target_tbl = elems[0].column.table
-        target = f"{target_tbl.schema}.{target_tbl.name}"
-        tcols = tuple(e.column.name for e in elems)
-        fks[fk.name] = (local, target, tcols)
-    uniq = {
-        c.name: tuple(col.name for col in c.columns)
-        for c in table.constraints
-        if isinstance(c, sa.UniqueConstraint) and c.name
+def _owned_view(conn: Connection) -> dict[str, Any]:
+    """Mapping-relevant schema view of the five owned tables (no owner/acl/persistence)."""
+    return {
+        "columns": {f"{s}.{t}": introspect_table(conn, s, t)["columns"] for s, t in _OWNED},
+        "constraints": introspect_constraints(conn, _OWNED),
+        "indexes": introspect_indexes(conn, _OWNED),
     }
-    checks = {c.name for c in table.constraints if isinstance(c, sa.CheckConstraint) and c.name}
-    idx = {i.name: tuple(col.name for col in i.columns) for i in table.indexes if i.name}
-    return {"cols": cols, "pk": pk, "fks": fks, "uniq": uniq, "checks": checks, "idx": idx}
-
-
-def _db_view(insp: sa.Inspector, name: str) -> dict[str, object]:
-    cols = {c["name"]: bool(c["nullable"]) for c in insp.get_columns(name, schema=_SCHEMA)}
-    pk = tuple(insp.get_pk_constraint(name, schema=_SCHEMA)["constrained_columns"])
-    fks: dict[str, tuple] = {}
-    for fk in insp.get_foreign_keys(name, schema=_SCHEMA):
-        assert fk["name"]
-        target = f"{fk['referred_schema']}.{fk['referred_table']}"
-        fks[fk["name"]] = (tuple(fk["constrained_columns"]), target, tuple(fk["referred_columns"]))
-    uniq = {
-        u["name"]: tuple(u["column_names"])
-        for u in insp.get_unique_constraints(name, schema=_SCHEMA)
-        if u["name"]
-    }
-    checks = {c["name"] for c in insp.get_check_constraints(name, schema=_SCHEMA) if c["name"]}
-    # exclude indexes that merely back a UNIQUE/PK constraint (SQLAlchemy Table.indexes
-    # holds only EXPLICIT Index() objects; PostgreSQL reports constraint-backed ones too).
-    idx = {
-        i["name"]: tuple(i["column_names"])
-        for i in insp.get_indexes(name, schema=_SCHEMA)
-        if i["name"] and not i.get("duplicates_constraint")
-    }
-    return {"cols": cols, "pk": pk, "fks": fks, "uniq": uniq, "checks": checks, "idx": idx}
 
 
 @pytest.fixture(scope="module")
-def upgraded_url(pg_base_url: str):
-    with scratch_database(pg_base_url, "minos_l2f_parity") as url:
-        alembic_upgrade(url, "0006_l2f_experiment_plan")
-        yield url
+def migration_view(pg_base_url: str) -> dict[str, Any]:
+    with scratch_database(pg_base_url, "minos_l2f_parity_mig") as url:
+        alembic_upgrade(url, _HEAD)
+        engine = create_engine(normalize_database_url(url))
+        try:
+            with engine.connect() as conn:
+                return _owned_view(conn)
+        finally:
+            engine.dispose()
 
 
-def test_core_mappings_match_migration_schema(upgraded_url: str) -> None:
-    engine = create_engine(normalize_database_url(upgraded_url))
-    try:
-        insp = inspect(engine)
-        for table in L2F_OWNED_TABLES:
-            mv = _mapping_view(table)
-            dv = _db_view(insp, table.name)
-            assert mv["cols"] == dv["cols"], f"{table.name}: columns/nullability differ"
-            assert set(mv["pk"]) == set(dv["pk"]), f"{table.name}: PK differs"
-            assert mv["fks"] == dv["fks"], f"{table.name}: FKs differ"
-            assert mv["uniq"] == dv["uniq"], f"{table.name}: UNIQUEs differ"
-            assert mv["checks"] == dv["checks"], f"{table.name}: CHECKs differ"
-            assert mv["idx"] == dv["idx"], f"{table.name}: indexes differ"
-    finally:
-        engine.dispose()
+@pytest.fixture(scope="module")
+def mapping_view(pg_base_url: str) -> dict[str, Any]:
+    with scratch_database(pg_base_url, "minos_l2f_parity_map") as url:
+        engine = create_engine(normalize_database_url(url))
+        try:
+            with engine.begin() as conn:
+                for schema in ("experiments", "profiling", "catalog"):
+                    conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
+            # materialize the PRIVATE Core metadata only, in an isolated throwaway database.
+            l2f_metadata.create_all(engine)
+            with engine.connect() as conn:
+                return _owned_view(conn)
+        finally:
+            engine.dispose()
+
+
+def test_core_mapping_columns_match_migration(
+    migration_view: dict[str, Any], mapping_view: dict[str, Any]
+) -> None:
+    assert mapping_view["columns"] == migration_view["columns"]
+
+
+def test_core_mapping_constraints_match_migration(
+    migration_view: dict[str, Any], mapping_view: dict[str, Any]
+) -> None:
+    # includes PK/UNIQUE/CHECK/FK names, ordered columns, full definitions and FK options.
+    assert mapping_view["constraints"] == migration_view["constraints"]
+
+
+def test_core_mapping_indexes_match_migration(
+    migration_view: dict[str, Any], mapping_view: dict[str, Any]
+) -> None:
+    assert mapping_view["indexes"] == migration_view["indexes"]

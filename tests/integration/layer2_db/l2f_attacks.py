@@ -1,4 +1,4 @@
-"""The 49-case L2-F direct-SQL constraint attack manifest (F3-A4).
+"""The 47-case L2-F direct-SQL constraint attack manifest (F3-A4).
 
 Each case is a single, independently meaningful attempt to violate exactly one PostgreSQL
 invariant of the ``0006`` schema against the seeded valid graph. A case declares its target
@@ -6,8 +6,11 @@ operation, the mutation, the expected SQLSTATE, and the expected named constrain
 mechanism. Cases are executed one at a time inside a SAVEPOINT and rolled back so they cannot
 contaminate one another (see ``test_l2f_attack_matrix``).
 
-Grouping and count are frozen: 12 plan + 12 plan-member + 10 config/payload + 15
-job/immutability = 49 unique cases.
+Grouping and count are frozen: 12 plan + 10 plan-member + 10 config/payload + 15
+job/immutability = 47 unique cases. (The member group is 10: the three separately-named
+member-duplicate cases were collapsed into one canonical ``member_duplicate_logical_membership``
+equivalence-class case, since those three UNIQUE constraints are not independently isolatable
+against the deployed composite-FK graph.)
 """
 
 from __future__ import annotations
@@ -61,6 +64,10 @@ class Attack:
     sql: str | None = None  # for op in ('update','delete')
     params: dict[str, Any] | None = None
     isolation: Isolation | None = None
+    #: for a behavioral equivalence class (constraint mechanism only): the observed
+    #: constraint_name must be one of these. Used by the member-duplicate case, whose three
+    #: member UNIQUE constraints are mutually inseparable under the complete composite-FK graph.
+    expect_any: tuple[str, ...] | None = None
 
 
 def _ins(
@@ -73,8 +80,20 @@ def _ins(
     row: dict[str, Any],
     op: str = "insert",
     iso: Isolation | None = None,
+    expect_any: tuple[str, ...] | None = None,
 ) -> Attack:
-    return Attack(name, group, op, table, sqlstate, mech, expect, row=row, isolation=iso)
+    return Attack(
+        name,
+        group,
+        op,
+        table,
+        sqlstate,
+        mech,
+        expect,
+        row=row,
+        isolation=iso,
+        expect_any=expect_any,
+    )
 
 
 # ---- SQL fragments for isolation existence checks ----
@@ -456,59 +475,50 @@ def build_attacks(g: SeededGraph) -> list[Attack]:
             ),
         )
     )
-    # duplicate snapshot member: reuse Plan A's D1 snapshot-member id while keeping the matrix
-    # member (D7) and member_index (2) unenrolled, so exactly ONE unique index — (plan, psm) —
-    # can collide (the other two unique targets are proven absent). PostgreSQL enforces unique
-    # indexes during row insertion, so this is the raised mechanism regardless of FK order.
-    _dup_snap = g.new_member(profile_snapshot_member_id=g.psm[("SA", "D1")])
-    A(
-        _ins(
-            "member_duplicate_snapshot_member",
-            "member",
-            PM,
-            UNIQUE,
-            "constraint",
-            "uq_l2f_pm_plan_snapshot_member",
-            _dup_snap,
-            iso=Isolation(
-                present=((_PM_UQ_SNAPSHOT, _pm_iso(_dup_snap)),),
-                absent=((_PM_UQ_MATRIX, _pm_iso(_dup_snap)), (_PM_UQ_INDEX, _pm_iso(_dup_snap))),
-            ),
-        )
+    # duplicate logical membership: a COMPLETELY FK-valid duplicate of Plan A's D1 member.
+    # Because the snapshot-member and matrix-member composite FKs fix the dataset, the
+    # feature-values hash and the frozen matrix index, a fully-valid duplicate necessarily
+    # collides with ALL THREE member UNIQUE constraints at once:
+    #   uq_l2f_pm_plan_snapshot_member (plan_id, profile_snapshot_member_id)
+    #   uq_l2f_pm_plan_matrix_member   (plan_id, feature_matrix_member_id)
+    #   uq_l2f_pm_plan_member_index    (plan_id, member_index)
+    # These three form one behavioral equivalence class under the complete composite-FK graph;
+    # they are NOT independently isolatable against the deployed schema (proven by the earlier
+    # three-way attempt). We therefore assert one canonical case: SQLSTATE 23505 with an observed
+    # constraint drawn from the equivalence set, and prove every composite-FK target tuple and
+    # all three member-unique target tuples already exist (so the duplicate is genuinely valid
+    # and the collision is over the logical membership, not a forged/absent tuple).
+    _dup_member = g.new_member(
+        profile_snapshot_member_id=g.psm[("SA", "D1")],
+        feature_matrix_member_id=g.fmm[("MA", "D1")],
+        bam_profile_id=g.bam["D1"],
+        dataset_registry_id=g.dsr["D1"],
+        feature_values_hash=g.fvh["D1"],
+        member_index=g.fmm_index[("MA", "D1")],
     )
-    # duplicate matrix member: reuse Plan A's D1 matrix-member id; psm (D7) and index (2) stay
-    # unenrolled, so only the (plan, fmm) unique can collide.
-    _dup_mat = g.new_member(feature_matrix_member_id=g.fmm[("MA", "D1")])
     A(
         _ins(
-            "member_duplicate_matrix_member",
+            "member_duplicate_logical_membership",
             "member",
             PM,
             UNIQUE,
             "constraint",
-            "uq_l2f_pm_plan_matrix_member",
-            _dup_mat,
+            "uq_l2f_pm_plan_snapshot_member",  # representative; observed may be any of the set
+            _dup_member,
             iso=Isolation(
-                present=((_PM_UQ_MATRIX, _pm_iso(_dup_mat)),),
-                absent=((_PM_UQ_SNAPSHOT, _pm_iso(_dup_mat)), (_PM_UQ_INDEX, _pm_iso(_dup_mat))),
+                present=(
+                    (_PM_PLAN_TUPLE, _pm_iso(_dup_member)),
+                    (_PM_SNAPSHOT_TUPLE, _pm_iso(_dup_member)),
+                    (_PM_MATRIX_TUPLE, _pm_iso(_dup_member)),
+                    (_PM_UQ_SNAPSHOT, _pm_iso(_dup_member)),
+                    (_PM_UQ_MATRIX, _pm_iso(_dup_member)),
+                    (_PM_UQ_INDEX, _pm_iso(_dup_member)),
+                ),
             ),
-        )
-    )
-    # duplicate member_index: reuse Plan A's index 0; psm and fmm (D7) stay unenrolled, so only
-    # the (plan, member_index) unique can collide.
-    _dup_idx = g.new_member(member_index=0)
-    A(
-        _ins(
-            "member_duplicate_member_index",
-            "member",
-            PM,
-            UNIQUE,
-            "constraint",
-            "uq_l2f_pm_plan_member_index",
-            _dup_idx,
-            iso=Isolation(
-                present=((_PM_UQ_INDEX, _pm_iso(_dup_idx)),),
-                absent=((_PM_UQ_SNAPSHOT, _pm_iso(_dup_idx)), (_PM_UQ_MATRIX, _pm_iso(_dup_idx))),
+            expect_any=(
+                "uq_l2f_pm_plan_snapshot_member",
+                "uq_l2f_pm_plan_matrix_member",
+                "uq_l2f_pm_plan_member_index",
             ),
         )
     )
@@ -849,10 +859,10 @@ def build_attacks(g: SeededGraph) -> list[Attack]:
 
 
 # frozen expected group tallies
-GROUP_COUNTS = {"plan": 12, "member": 12, "config": 10, "job": 15}
-TOTAL_ATTACKS = 49
+GROUP_COUNTS = {"plan": 12, "member": 10, "config": 10, "job": 15}
+TOTAL_ATTACKS = 47
 
-#: Frozen ordered manifest of the 49 case names. ``build_attacks`` must reproduce this
+#: Frozen ordered manifest of the 47 case names. ``build_attacks`` must reproduce this
 #: exactly (a drift guard asserts equality); parametrized tests iterate this tuple.
 ATTACK_NAMES: tuple[str, ...] = (
     # plan (12)
@@ -868,7 +878,7 @@ ATTACK_NAMES: tuple[str, ...] = (
     "plan_invalid_derived_counts",
     "plan_duplicate_plan_hash",
     "plan_duplicate_logical_identity",
-    # plan member (12)
+    # plan member (10)
     "member_validation_snapshot_member",
     "member_test_snapshot_member",
     "member_snapshot_from_another_snapshot",
@@ -878,9 +888,7 @@ ATTACK_NAMES: tuple[str, ...] = (
     "member_mismatched_feature_values_hash",
     "member_wrong_member_index",
     "member_cross_plan_lineage",
-    "member_duplicate_snapshot_member",
-    "member_duplicate_matrix_member",
-    "member_duplicate_member_index",
+    "member_duplicate_logical_membership",
     # config / payload (10)
     "config_artifact_sha_ne_config_hash",
     "config_wrong_artifact_media_type",
