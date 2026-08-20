@@ -14,8 +14,10 @@ import pytest
 
 from minos_engine.common.errors import MatrixAccessError, StageNotReadyError
 from minos_engine.layer2.features.contracts import build_feature_set_manifest
+from minos_engine.layer2.features.errors import MatrixArtifactIntegrityError
 from minos_engine.layer2.features.extraction import MATRIX_PARTITIONS
 from minos_engine.storage import feature_matrix as fm
+from minos_engine.storage.feature_matrix import _artifact_uri_to_path
 from minos_engine.storage.feature_matrix_production import (
     CREDENTIAL_PROOF_ROOT,
     PRODUCTION_PARTITIONS,
@@ -91,6 +93,26 @@ def test_frozen_129_ordered_columns() -> None:
     manifest = build_feature_set_manifest()
     assert manifest.column_count == 129
     assert [c.index for c in manifest.columns] == list(range(129))
+
+
+# profile-artifact URI resolution: operational file:// URIs and bare paths both resolve;
+# other schemes / non-local hosts are rejected fail-closed (Path('file:///x') is wrong).
+def test_artifact_uri_to_path_resolves_file_uri_and_plain_path() -> None:
+    assert _artifact_uri_to_path("file:///home/x/bam-profile-v1.json") == Path(
+        "/home/x/bam-profile-v1.json"
+    )
+    assert _artifact_uri_to_path("file://localhost/srv/y.json") == Path("/srv/y.json")
+    assert _artifact_uri_to_path("/home/x/y.json") == Path("/home/x/y.json")
+    # percent-encoded path component is decoded
+    assert _artifact_uri_to_path("file:///home/a%20b/y.json") == Path("/home/a b/y.json")
+
+
+@pytest.mark.parametrize(
+    "bad", ["s3://bucket/key", "http://h/x", "file://remotehost/x", "relative/x"]
+)
+def test_artifact_uri_to_path_rejects_unsupported(bad: str) -> None:
+    with pytest.raises(MatrixArtifactIntegrityError):
+        _artifact_uri_to_path(bad)
 
 
 # (proof 11) select_config remains blocked

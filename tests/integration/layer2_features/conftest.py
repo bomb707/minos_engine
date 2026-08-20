@@ -364,7 +364,9 @@ def seed_snapshot(
             payload = payload_path.read_bytes()
             artifact_ids: dict[str, str] = {}
             for kind, uri, sha in (
-                ("l2d:profile-json", str(payload_path), str(m["profile_sha256"])),
+                # profile artifacts are stored as file:// URIs in the operational store
+                # (L2-D ingestion) — mirror that here so the build exercises URI resolution.
+                ("l2d:profile-json", payload_path.as_uri(), str(m["profile_sha256"])),
                 (
                     "l2d:profile-manifest-json",
                     f"{payload_path}.manifest",

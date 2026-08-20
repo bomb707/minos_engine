@@ -23,6 +23,7 @@ from minos_engine.layer2.features.extraction import (
 )
 from minos_engine.layer2.features.matrix_parquet import verify_matrix_artifact
 from minos_engine.storage.feature_matrix import (
+    _artifact_uri_to_path,
     build_accepted_epoch1_feature_matrix,
     build_feature_matrix_with_trust,
 )
@@ -199,7 +200,7 @@ def test_builder_reads_exact_artifact_bytes_not_jsonb(l2e_engine, snap_a, built)
         ).all()
     assert rows
     for row in rows:
-        payload = Path(row.uri).read_bytes()
+        payload = _artifact_uri_to_path(row.uri).read_bytes()
         assert hashlib.sha256(payload).hexdigest() == row.profile_sha256
 
 

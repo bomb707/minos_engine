@@ -51,6 +51,8 @@ import struct
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
@@ -279,6 +281,28 @@ def _verify_operational_snapshot(conn: Connection, snapshot: FrozenSnapshot) -> 
     return str(row["id"])
 
 
+def _artifact_uri_to_path(uri: str) -> Path:
+    """Resolve a stored ``catalog.artifacts`` URI to a local filesystem path.
+
+    Operational profile artifacts (L2-D ingestion) are stored as ``file://`` URIs;
+    synthetic test fixtures use bare absolute paths. Both resolve here. Any other scheme,
+    or a ``file://`` URI naming a non-local host, is rejected fail-closed — a stored URI
+    is never handed to ``Path`` verbatim (``Path('file:///x')`` silently yields the wrong
+    location)."""
+    if uri.startswith("file:"):
+        parsed = urlparse(uri)
+        if parsed.netloc not in ("", "localhost"):
+            raise MatrixArtifactIntegrityError(
+                f"profile artifact URI names a non-local host: {uri!r}"
+            )
+        return Path(url2pathname(parsed.path))
+    if uri.startswith("/"):
+        return Path(uri)
+    raise MatrixArtifactIntegrityError(
+        f"unsupported profile artifact URI {uri!r} (expected an absolute path or file:// URI)"
+    )
+
+
 def _payload_source(conn: Connection, member: SnapshotMember) -> Path:
     """Resolve the EXACT accepted profile artifact for one member (never JSONB)."""
     row = (
@@ -304,7 +328,7 @@ def _payload_source(conn: Connection, member: SnapshotMember) -> Path:
             f"{member.dataset_id}: operational profile_sha256 does not match the "
             "manifest-bound value"
         )
-    return Path(str(row["uri"]))
+    return _artifact_uri_to_path(str(row["uri"]))
 
 
 # --------------------------------------------------------------------------- #
