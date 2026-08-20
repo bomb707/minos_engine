@@ -369,6 +369,95 @@ def test_publisher_requires_distinct_partition_gids(tmp_path) -> None:
         )
 
 
+def test_publisher_credential_revalidated_at_use_time(tmp_path) -> None:
+    """credential_for() re-checks the frozen credential; a root chmod'd, chgrp'd or
+    replaced AFTER construction is rejected before any use."""
+    base = provision_test_roots(tmp_path)
+    publisher = PartitionArtifactPublisher(
+        train_root=base / "l2e" / "train",
+        validation_root=base / "l2e" / "validation",
+    )
+    train = base / "l2e" / "train"
+    # baseline: revalidation passes.
+    root, gid = publisher.credential_for("train")
+    assert root == train.resolve() and gid == train.stat().st_gid
+
+    # (chmod) mode changed after construction → rejected.
+    train.chmod(0o2755)
+    with pytest.raises(MatrixAccessError, match="mode changed"):
+        publisher.credential_for("train")
+    train.chmod(0o2750)  # restore
+
+    # (chgrp) gid changed after construction → rejected.
+    other_gid = next(g for g in os.getgroups() if g != train.stat().st_gid)
+    os.chown(train, os.getuid(), other_gid)
+    with pytest.raises(MatrixAccessError, match="gid changed"):
+        publisher.credential_for("train")
+    os.chown(train, os.getuid(), gid)  # restore
+    train.chmod(0o2750)
+
+    # (replacement) the directory is swapped for a DIFFERENT inode → rejected. The
+    # replacement inode is allocated while the original still exists (so it differs),
+    # then atomically renamed into place.
+    replacement = base / "l2e" / "train_replacement"
+    replacement.mkdir()
+    os.chown(replacement, os.getuid(), gid)
+    replacement.chmod(0o2750)
+    assert replacement.stat().st_ino != train.stat().st_ino
+    os.rename(replacement, train)
+    with pytest.raises(MatrixAccessError, match="inode changed|replaced"):
+        publisher.credential_for("train")
+
+
+def test_credential_revalidation_precedes_publication(l2e_engine, extra_snaps, tmp_path) -> None:
+    """If the root is replaced after publisher construction, the build fails at the
+    credential re-check BEFORE any DB row or artifact is written."""
+    from minos_engine.layer2.features.extraction import (
+        build_partition_matrix,
+        load_member_manifest_with_trust,
+    )
+    from minos_engine.storage.feature_matrix import _persist_feature_matrix
+
+    base = provision_test_roots(tmp_path)
+    publisher = PartitionArtifactPublisher(
+        train_root=base / "l2e" / "train",
+        validation_root=base / "l2e" / "validation",
+    )
+    # swap the train root for a DIFFERENT inode after construction (allocate then rename).
+    train = base / "l2e" / "train"
+    gid = train.stat().st_gid
+    replacement = base / "l2e" / "train_replacement"
+    replacement.mkdir()
+    os.chown(replacement, os.getuid(), gid)
+    replacement.chmod(0o2750)
+    os.rename(replacement, train)
+
+    snap = extra_snaps[3]  # a fresh identity (epoch 3 train, never built)
+    snapshot = load_member_manifest_with_trust(snap.manifest_bytes, snap.trust)
+    build = build_partition_matrix(
+        snapshot, "train", lambda m: snap.payload_paths[m.dataset_id].read_bytes()
+    )
+    with pytest.raises(MatrixAccessError, match="inode changed|replaced"):
+        _persist_feature_matrix(
+            l2e_engine,
+            snapshot=snapshot,
+            matrix=build.matrix,
+            vectors=build.vectors,
+            publisher=publisher,
+        )
+    # nothing was written for this identity.
+    with l2e_engine.connect() as conn:
+        n = conn.execute(
+            text(
+                "SELECT count(*) FROM profiling.feature_matrices fm "
+                "JOIN profiling.profile_snapshots ps ON ps.id = fm.profile_snapshot_id "
+                "WHERE ps.epoch = 3 AND fm.partition = 'train'"
+            )
+        ).scalar_one()
+    assert n == 0
+    assert list((base / "l2e" / "train").glob("*.parquet")) == []
+
+
 def test_production_builder_requires_publisher_not_bare_root(matrix_publisher) -> None:
     import inspect
 

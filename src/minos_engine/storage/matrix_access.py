@@ -248,8 +248,16 @@ class PartitionArtifactPublisher:
                 "train and validation roots must carry DISTINCT partition gids "
                 "(same-UID same-group roots are not partition isolation)"
             )
+        # retain the validated inode identity + gid so the credential can be re-checked
+        # at USE time (a root swapped/chmod'd/chgrp'd after construction is rejected).
+        train_st = train.stat()
+        validation_st = validation.stat()
         self._roots: dict[str, Path] = {"train": train, "validation": validation}
         self._gids: dict[str, int] = {"train": train_gid, "validation": validation_gid}
+        self._inode: dict[str, tuple[int, int]] = {
+            "train": (train_st.st_dev, train_st.st_ino),
+            "validation": (validation_st.st_dev, validation_st.st_ino),
+        }
 
     def partition_root(self, partition: str) -> Path:
         if partition not in self._roots:
@@ -260,6 +268,44 @@ class PartitionArtifactPublisher:
         if partition not in self._gids:
             raise MatrixAccessError(f"unknown partition {partition!r}")
         return self._gids[partition]
+
+    def credential_for(self, partition: str) -> tuple[Path, int]:
+        """RE-VALIDATE the frozen partition credential at USE time and return
+        ``(root, gid)``. The root must still be the SAME (dev, inode), a non-symlink
+        directory owned by the writer uid with EXACT mode ``0o2750`` and the unchanged
+        partition gid. Called before any DB mutation / publication so a root that was
+        replaced, chmod'd or chgrp'd after construction is rejected up front."""
+        if partition not in self._roots:
+            raise MatrixAccessError(f"unknown partition {partition!r}")
+        root = self._roots[partition]
+        expected_gid = self._gids[partition]
+        expected_dev, expected_ino = self._inode[partition]
+        if root.is_symlink():
+            raise MatrixAccessError(f"{partition} root {root} became a symlink")
+        try:
+            st = root.stat()
+        except OSError as exc:
+            raise MatrixAccessError(
+                f"{partition} root {root} is no longer accessible: {exc}"
+            ) from exc
+        if not stat.S_ISDIR(st.st_mode):
+            raise MatrixAccessError(f"{partition} root {root} is no longer a directory")
+        if (st.st_dev, st.st_ino) != (expected_dev, expected_ino):
+            raise MatrixAccessError(
+                f"{partition} root {root} was replaced since construction (inode changed)"
+            )
+        if st.st_uid != os.getuid():
+            raise MatrixAccessError(f"{partition} root {root} is no longer owned by the writer uid")
+        if stat.S_IMODE(st.st_mode) != _DIR_MODE:
+            raise MatrixAccessError(
+                f"{partition} root {root} mode changed to {oct(stat.S_IMODE(st.st_mode))} "
+                f"(expected {oct(_DIR_MODE)})"
+            )
+        if st.st_gid != expected_gid:
+            raise MatrixAccessError(
+                f"{partition} root {root} gid changed to {st.st_gid} (expected {expected_gid})"
+            )
+        return root, expected_gid
 
 
 # --------------------------------------------------------------------------- #

@@ -256,30 +256,108 @@ def test_publish_is_immutable_no_clobber_and_round_trips(tmp_path, vectors) -> N
     assert leftovers == []
 
 
-def test_publish_unlinks_created_inode_if_fsync_fails_after_link(tmp_path, vectors, monkeypatch):
-    """A failure AFTER os.link (here: fsync_directory) must unlink the just-created inode
-    and leave no final or temporary artifact."""
+def _fresh_root(tmp_path):
+    import os
+
+    root = tmp_path / "l2e" / "train"
+    root.mkdir(parents=True)
+    return root, os.getgid()
+
+
+def test_publish_fd_close_failure_before_link_leaves_no_final(tmp_path, vectors, monkeypatch):
+    """(a) A temp-fd close failure happens BEFORE os.link, so no final name is created."""
+    import os
+
+    payload = serialize_matrix(_matrix(vectors), vectors)
+    root, gid = _fresh_root(tmp_path)
+    sha = hashlib.sha256(payload).hexdigest()
+    real_close = os.close
+
+    def _boom_close(fd):
+        real_close(fd)  # actually close to avoid an fd leak
+        raise OSError("injected fd close failure before link")
+
+    monkeypatch.setattr(os, "close", _boom_close)
+    with pytest.raises(OSError, match="close failure"):
+        publish_matrix_artifact(payload, partition_root=root, gid=gid)
+    monkeypatch.undo()
+    assert not (root / f"{sha}.parquet").exists()  # link never happened
+    assert list(root.glob(".tmp-*")) == []
+
+
+def test_publish_temp_unlink_failure_after_link_leaves_no_residue(tmp_path, vectors, monkeypatch):
+    """(b) A temp-link removal failure AFTER os.link leaves no final or temp residue."""
+
+    import minos_engine.layer2.features.matrix_parquet as mp
+
+    payload = serialize_matrix(_matrix(vectors), vectors)
+    root, gid = _fresh_root(tmp_path)
+    sha = hashlib.sha256(payload).hexdigest()
+
+    def _boom_remove(path):
+        raise OSError("injected temp unlink failure after link")
+
+    monkeypatch.setattr(mp, "_remove_temp", _boom_remove)
+    with pytest.raises(OSError, match="temp unlink failure"):
+        publish_matrix_artifact(payload, partition_root=root, gid=gid)
+    monkeypatch.undo()
+    assert not (root / f"{sha}.parquet").exists()
+    assert list(root.glob(".tmp-*")) == []
+
+
+def test_publish_dir_fsync_failure_after_link_leaves_no_residue(tmp_path, vectors, monkeypatch):
+    """(c) A directory fsync failure AFTER os.link leaves no final or temp residue."""
+
+    import minos_engine.layer2.features.matrix_parquet as mp
+
+    payload = serialize_matrix(_matrix(vectors), vectors)
+    root, gid = _fresh_root(tmp_path)
+    sha = hashlib.sha256(payload).hexdigest()
+
+    real_fsync_dir = mp.fsync_directory
+
+    def _boom_fsync(directory):
+        # only the FIRST (post-link) fsync fails; cleanup's fsync is allowed to succeed.
+        mp.fsync_directory = real_fsync_dir  # noqa: B010
+        raise OSError("injected directory fsync failure after link")
+
+    monkeypatch.setattr(mp, "fsync_directory", _boom_fsync)
+    with pytest.raises(OSError, match="fsync failure"):
+        publish_matrix_artifact(payload, partition_root=root, gid=gid)
+    monkeypatch.undo()
+    assert not (root / f"{sha}.parquet").exists()
+    assert list(root.glob(".tmp-*")) == []
+
+
+def test_publish_never_removes_a_concurrent_winner(tmp_path, vectors, monkeypatch):
+    """(d) If the final path is REPLACED by a different inode before cleanup, the failure
+    handler must NOT remove that concurrent winner (inode identity guard)."""
     import os
 
     import minos_engine.layer2.features.matrix_parquet as mp
 
     payload = serialize_matrix(_matrix(vectors), vectors)
-    root = tmp_path / "l2e" / "train"
-    root.mkdir(parents=True)
+    root, gid = _fresh_root(tmp_path)
     sha = hashlib.sha256(payload).hexdigest()
+    final = root / f"{sha}.parquet"
+    winner_bytes = b"a-different-winner-inode"
 
-    calls = {"n": 0}
+    def _swap_then_fail(directory):
+        # simulate a concurrent process replacing our inode with a DIFFERENT one. The
+        # winner inode is allocated while our inode still exists (so its inode number
+        # differs), then atomically renamed into place.
+        winner_tmp = root / "winner.tmp"
+        winner_tmp.write_bytes(winner_bytes)
+        assert winner_tmp.stat().st_ino != final.stat().st_ino
+        os.rename(winner_tmp, final)
+        raise OSError("injected failure after a concurrent replacement")
 
-    def _flaky_fsync_dir(directory) -> None:
-        calls["n"] += 1
-        raise OSError("injected directory fsync failure after link")
-
-    monkeypatch.setattr(mp, "fsync_directory", _flaky_fsync_dir)
-    with pytest.raises(OSError, match="injected"):
-        publish_matrix_artifact(payload, partition_root=root, gid=os.getgid())
+    monkeypatch.setattr(mp, "fsync_directory", _swap_then_fail)
+    with pytest.raises(OSError, match="concurrent replacement"):
+        publish_matrix_artifact(payload, partition_root=root, gid=gid)
     monkeypatch.undo()
-    # neither the final content-addressed file nor any temp file remains.
-    assert not (root / f"{sha}.parquet").exists()
+    # the concurrent winner survives (our cleanup only removes OUR exact inode).
+    assert final.exists() and final.read_bytes() == winner_bytes
     assert list(root.glob(".tmp-*")) == []
 
 

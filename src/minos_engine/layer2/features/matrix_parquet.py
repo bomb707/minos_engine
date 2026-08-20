@@ -242,51 +242,83 @@ def publish_matrix_artifact(payload: bytes, *, partition_root: Path, gid: int) -
         _verify_inode_credential(final_path, gid)
         return PublishedArtifact(artifact_sha256, final_path, len(payload), created=False)
 
+    # --- Phase 1: write the temp inode and COMPLETE every temp-fd operation, including
+    # the close, BEFORE os.link creates the final name. -----------------------------
     tmp_fd, tmp_name = tempfile.mkstemp(prefix=f".tmp-{artifact_sha256}-", dir=partition_root)
     tmp_path = Path(tmp_name)
-    created = False
+    fd_open = True
     try:
-        with os.fdopen(tmp_fd, "wb", closefd=False) as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(tmp_fd)
-        # apply the partition credential to the INODE before it is linked into place.
-        os.fchmod(tmp_fd, ARTIFACT_FILE_MODE)
+        mv = memoryview(payload)
+        while mv:
+            mv = mv[os.write(tmp_fd, mv) :]
+        os.fsync(tmp_fd)
+        os.fchmod(tmp_fd, ARTIFACT_FILE_MODE)  # partition credential on the INODE
         os.fchown(tmp_fd, -1, gid)
         os.fsync(tmp_fd)
+        os.close(tmp_fd)  # closed BEFORE link — a close failure leaves no final name
+        fd_open = False
         if hashlib.sha256(tmp_path.read_bytes()).hexdigest() != artifact_sha256:
             raise MatrixArtifactIntegrityError(  # pragma: no cover - local write is stable
                 "written artifact bytes do not hash to the expected artifact_sha256"
             )
-        try:
-            os.link(tmp_path, final_path)  # atomic, no-clobber
-            created = True
-        except FileExistsError:
-            # a concurrent publisher won; verify bytes + credential, reuse its inode.
-            _verify_existing_bytes(final_path, artifact_sha256)
-            _verify_inode_credential(final_path, gid)
-            created = False
-    finally:
-        os.close(tmp_fd)
+    except BaseException:
+        if fd_open:
+            with contextlib.suppress(OSError):
+                os.close(tmp_fd)
         with contextlib.suppress(FileNotFoundError):
             tmp_path.unlink()
+        raise
 
-    # Once WE created the final inode, ANY failure before returning (fsync, verify) must
-    # unlink ONLY that inode and fsync the directory after removing it — never touch a
-    # pre-existing/concurrent winner's inode.
-    if created:
-        try:
-            fsync_directory(partition_root)
-            _verify_inode_credential(final_path, gid)
-        except BaseException:
-            with contextlib.suppress(FileNotFoundError):
-                final_path.unlink()
-            with contextlib.suppress(OSError):
-                fsync_directory(partition_root)
-            raise
-    else:
+    # --- Phase 2: atomic no-clobber link. ------------------------------------------
+    try:
+        os.link(tmp_path, final_path)  # fails closed if the target already exists
+    except FileExistsError:
+        # a concurrent publisher won; verify bytes + credential, reuse its inode.
+        with contextlib.suppress(FileNotFoundError):
+            tmp_path.unlink()
+        _verify_existing_bytes(final_path, artifact_sha256)
+        _verify_inode_credential(final_path, gid)
+        return PublishedArtifact(artifact_sha256, final_path, len(payload), created=False)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            tmp_path.unlink()
+        raise
+
+    # --- Phase 3: WE created the final inode. Record its identity, then wrap EVERY
+    # remaining operation (temp-link removal, dir fsync, final verify) so any failure
+    # removes ONLY this exact inode — never a concurrent replacement/winner. --------
+    st = os.lstat(final_path)
+    created_dev, created_ino = st.st_dev, st.st_ino
+    try:
+        _remove_temp(tmp_path)
         fsync_directory(partition_root)
-    return PublishedArtifact(artifact_sha256, final_path, len(payload), created=created)
+        _verify_inode_credential(final_path, gid)
+    except BaseException:
+        _unlink_if_same_inode(final_path, created_dev, created_ino)
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)  # direct removal — never via the patchable seam
+        with contextlib.suppress(OSError):
+            fsync_directory(partition_root)
+        raise
+    return PublishedArtifact(artifact_sha256, final_path, len(payload), created=True)
+
+
+def _remove_temp(path: Path) -> None:
+    """Remove a temp link (best-effort seam; a missing file is fine)."""
+    with contextlib.suppress(FileNotFoundError):
+        path.unlink()
+
+
+def _unlink_if_same_inode(path: Path, dev: int, ino: int) -> None:
+    """Unlink ``path`` ONLY if ``lstat`` proves it still names exactly ``(dev, ino)`` and
+    is not a symlink — so a concurrent replacement/winner is never removed."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return
+    if not stat.S_ISLNK(st.st_mode) and st.st_dev == dev and st.st_ino == ino:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(path)
 
 
 def _verify_existing_bytes(path: Path, expected_sha256: str) -> None:

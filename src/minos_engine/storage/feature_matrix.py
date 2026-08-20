@@ -550,10 +550,12 @@ def _persist_feature_matrix(
             + ", ".join(sorted(k for k, v in payload_checks.items() if not v))
         )
 
-    # the owner-side publisher validated both partition roots (exist, non-symlink, exact
-    # 0o2750, writer-owned, distinct gids, disjoint) at construction — no auto-create.
-    root = publisher.partition_root(matrix.partition)
-    gid = publisher.partition_gid(matrix.partition)
+    # (4) RE-VALIDATE the frozen partition credential at USE time — BEFORE any DB
+    # mutation or publication. The publisher re-checks that the root is still the same
+    # (dev, inode), a non-symlink directory owned by the writer uid with exact mode
+    # 0o2750 and the unchanged partition gid; a root swapped/chmod'd/chgrp'd since
+    # construction is rejected here, before anything is written.
+    root, gid = publisher.credential_for(matrix.partition)
     final_path = root / f"{artifact_sha256}.parquet"
 
     conn = engine.connect()
