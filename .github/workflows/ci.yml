@@ -136,10 +136,30 @@ jobs:
           done
           psql "$MINOS_DATABASE_URL" -c "SELECT version();"
 
-      - name: Alembic upgrade head — confirm L2-E head 0005_l2e_feature_view
+      - name: Alembic upgrade head — confirm L2-F head 0006_l2f_experiment_plan
         run: |
           alembic upgrade head
+          alembic current | grep 0006_l2f_experiment_plan
+
+      - name: Alembic downgrade to 0005 (L2-F removed, L2-E retained) then re-upgrade
+        run: |
+          alembic downgrade 0005_l2e_feature_view
           alembic current | grep 0005_l2e_feature_view
+          python - <<'PY'
+          from sqlalchemy import create_engine, text
+          from minos_engine.storage.database import database_url
+          l2f = ("l2f_experiment_plans","l2f_experiment_plan_members","l2f_config_payloads",
+                 "l2f_experiment_plan_configs","l2f_experiment_jobs")
+          e = create_engine(database_url())
+          with e.connect() as c:
+              present = c.execute(text("SELECT count(*) FROM information_schema.tables WHERE table_schema='experiments' AND table_name = ANY(:n)"), {"n": list(l2f)}).scalar()
+              targets = c.execute(text("SELECT count(*) FROM pg_constraint WHERE conname LIKE 'uq_l2f%'")).scalar()
+          e.dispose()
+          assert present == 0, f"L2-F tables not removed on downgrade to 0005: {present}"
+          assert targets == 0, f"L2-F composite targets not removed on downgrade: {targets}"
+          PY
+          alembic upgrade 0006_l2f_experiment_plan
+          alembic current | grep 0006_l2f_experiment_plan
 
       - name: Alembic downgrade to 0004_l2d_profile_ingestion (L2-E removed, L2-D retained)
         run: |
@@ -267,10 +287,10 @@ jobs:
           assert n == 0, f"stage schemas not removed: {n}"
           PY
 
-      - name: Alembic re-upgrade head — confirm L2-E head 0005_l2e_feature_view
+      - name: Alembic re-upgrade head — confirm L2-F head 0006_l2f_experiment_plan
         run: |
           alembic upgrade head
-          alembic current | grep 0005_l2e_feature_view
+          alembic current | grep 0006_l2f_experiment_plan
           python - <<'PY'
           from sqlalchemy import create_engine, text
           from minos_engine.storage.database import database_url

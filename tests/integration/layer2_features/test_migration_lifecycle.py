@@ -80,12 +80,18 @@ def _artifact_select(url: str, role: str) -> bool:
     )
 
 
-def test_single_head_is_0005() -> None:
+def test_single_head_with_0005_in_lineage() -> None:
+    # exactly one Alembic head, and 0005 (L2-E) is on that head's lineage. The head itself
+    # advances with later stages (e.g. 0006 L2-F), so this L2-E test binds 0005's presence
+    # in the lineage rather than head equality.
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
-    heads = ScriptDirectory.from_config(Config("alembic.ini")).get_heads()
-    assert heads == [_HEAD]
+    script = ScriptDirectory.from_config(Config("alembic.ini"))
+    heads = script.get_heads()
+    assert len(heads) == 1
+    lineage = {r.revision for r in script.walk_revisions(base="base", head=heads[0])}
+    assert _HEAD in lineage
 
 
 @pytest.fixture(scope="module")
@@ -102,7 +108,9 @@ def test_full_lifecycle_0004_0005_0004_0005(lifecycle_url: str) -> None:
     assert _artifact_select(url, "minos_evaluator") is False
     assert not any(_has_table(url, t) for t in _TABLES)
 
-    alembic_upgrade(url, "head")
+    # pin explicitly to 0005 (not "head"): this is the L2-E lifecycle, unaffected by later
+    # stages (0006+) that may advance the head.
+    alembic_upgrade(url, _HEAD)
     assert _scalar(url, "SELECT version_num FROM alembic_version") == _HEAD
     assert all(_has_table(url, t) for t in _TABLES)
     # stage-specific privilege delta applied.

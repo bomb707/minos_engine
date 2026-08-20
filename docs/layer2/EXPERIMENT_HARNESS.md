@@ -1,0 +1,102 @@
+# L2-F — Offline Experiment Harness
+
+The L2-F harness performs **offline** deterministic GATK CONFIG candidate generation and
+experiment planning over the frozen L2-E train membership. It does **not** score, rank,
+select, optimize, train, or activate `Layer2Service.select_config`. `HARNESS-READY` (F7)
+is not implemented and is **not** claimed anywhere below.
+
+## Scope of this document (F3-A)
+
+F3-A freezes only the **database foundation** — migration `0006_l2f_experiment_plan`, its
+SQLAlchemy models, and its frozen migration contract. The pure `ExperimentPlan` builder
+(F3-B), persistence + bounded enqueue (F3-C), the verifier and full attack matrix (F3-D),
+and F4–F7 are unimplemented and unauthorized here.
+
+## Why legacy tables are forbidden
+
+- `experiments.jobs.profile_id` foreign-keys to legacy **`profiling.profiles`**, a
+  compatibility-only table that is **not** the accepted L2-D profile store. No accepted
+  L2-F row may reference it.
+- The authoritative accepted profiles live in **`profiling.bam_profiles`**, selected
+  through the frozen `profile_snapshots` → `profile_snapshot_members` → `feature_matrices`
+  → `feature_matrix_members` lineage.
+- `catalog.gatk_configs` stores only `config_hash` + `parameter_space_hash` — it does not
+  durably bind the canonical CONFIG payload F5 needs. L2-F therefore introduces its own
+  content-addressed payload binding.
+
+Legacy `profiling.profiles`, `experiments.jobs`, and `experiments.results` are left
+byte-identical; migrations 0001–0005 are unchanged (their byte SHAs are pinned in
+`storage/l2f_migration_contract.py`).
+
+## Five-table normalized design (`0006`, additive)
+
+1. `experiments.l2f_experiment_plans` — immutable plan identity: `profile_snapshot_id`,
+   `train_feature_matrix_id`, `partition='train'`, `feature_set_id`, all accepted identity
+   hashes, derived `train_member_count`/`candidate_count`/`logical_job_count`, `plan_hash`.
+2. `experiments.l2f_experiment_plan_members` — the ordered complete train-member inventory.
+3. `experiments.l2f_config_payloads` — durable `config_hash` → canonical CONFIG payload
+   binding (content-addressed via `catalog.artifacts`).
+4. `experiments.l2f_experiment_plan_configs` — the ordered complete candidate inventory of
+   one plan (proves a job's `config_index` belongs to the plan's candidate set).
+5. `experiments.l2f_experiment_jobs` — logical jobs; scientific identity immutable,
+   status/claim metadata mutable (F4 owns claiming — no claim code or grants here).
+
+## Relational train-only proof (declarative, not a caller partition flag)
+
+Because 0001–0005 may not be edited, `0006` **additively** adds reversible composite
+UNIQUE constraints to the immutable target tables (`feature_matrices`,
+`profile_snapshot_members`, `feature_matrix_members`, `catalog.artifacts`) so they can be
+composite-FK targets. Every cross-table invariant is then enforced by a **composite
+foreign key**, not a trigger and not a caller-supplied `partition` value:
+
+- **plan → train matrix**: FK `(train_feature_matrix_id, profile_snapshot_id, partition,
+  train_matrix_hash, feature_set_id)` → `feature_matrices(id, profile_snapshot_id,
+  partition, matrix_hash, feature_set_id)` with `CHECK(partition='train')` — the matrix
+  must belong to the plan's snapshot, be partition `train`, and carry the recorded hashes.
+- **plan member → plan**: FK `(plan_id, profile_snapshot_id, feature_matrix_id)` →
+  `l2f_experiment_plans(id, profile_snapshot_id, train_feature_matrix_id)`.
+- **plan member → snapshot member**: FK on `(profile_snapshot_member_id, profile_snapshot_id,
+  dataset_registry_id, bam_profile_id, partition, feature_values_hash)` with
+  `CHECK(partition='train')` — proves it is that snapshot's **train** member, of that
+  dataset, selecting that exact `bam_profile`, with that `feature_values_hash`.
+- **plan member → matrix member**: FK on `(feature_matrix_member_id, feature_matrix_id,
+  dataset_registry_id, member_index, feature_values_hash)`. Because `dataset_registry_id`
+  and `feature_values_hash` are **shared columns** across the snapshot-member and
+  matrix-member FKs, the two lineages are forced to agree (same dataset, matching
+  feature-values), and `member_index` is the frozen matrix index.
+- **plan config → payload**: FK `(config_payload_id, config_hash)` → `l2f_config_payloads
+  (id, config_hash)`; and the payload FK `(artifact_id, config_hash)` →
+  `catalog.artifacts(id, sha256)` proves `artifact.sha256 == config_hash` (exact-byte
+  payload binding for F5 reconstruction).
+- **job → member/config of same plan**: FKs `(plan_member_id, plan_id)` and
+  `(plan_config_id, plan_id)` → the plan-scoped composite targets, so a job can never mix
+  rows from different plans.
+
+Direct SQL cannot insert a validation/test member, a member from another snapshot/matrix,
+a mismatched dataset/feature-values/index, a substituted `bam_profile`, or a cross-plan
+job — the composite FKs reject it at the database boundary.
+
+## Config-payload reconstruction contract
+
+The canonical CONFIG payload is the **canonical JSON bytes of `effective_config`** stored
+as a content-addressed `catalog.artifacts` row whose `sha256 == config_hash`. F5 rebuilds
+the exact CONFIG byte-for-byte from that artifact; a hash without a reconstructable
+payload is forbidden. (Publication code is F3-C, not F3-A.)
+
+## Immutability, grants, lifecycle
+
+- Plans, members, config payloads, and plan-configs are fully append-only (reusing
+  `audit.minos_reject_mutation`). Jobs are identity-immutable with mutable status/claim
+  (trigger `minos_l2f_reject_job_identity_change`).
+- All five tables and functions are owned by `minos_admin`; **no** grants to
+  `minos_live`/`minos_runner`/`minos_trainer`/`minos_evaluator` in F3-A (F4 owns claim
+  authority). Downgrade restores exactly the 0005 schema, grants, and composite targets.
+- Alembic head advances to `0006_l2f_experiment_plan` (down_revision `0005`); single head;
+  `0005↔0006` lifecycle is CI-verified on scratch PostgreSQL only. `0006` is **never**
+  applied to the operational `minos_engine_db` in this source step.
+
+## Not in F3-A / unauthorized
+
+`ExperimentPlan` builder, `plan_hash`/`job_key` formulas (F3-B), persistence, bounded
+enqueue, and the verifier (F3-C/D); `claim_next_job`, execution, results, scoring (F4+);
+`HARNESS-READY` (F7); `select_config` (blocked). No operational data is created.
