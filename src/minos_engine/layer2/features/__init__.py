@@ -1,10 +1,20 @@
-"""L2-E production feature view — pure contracts (no DB, no file I/O, no extraction).
+"""L2-E production feature view — contracts, extraction, verification, serialization.
 
-E1 scope: the canonical feature-set column manifest (derived from the frozen L2-A
-registry), the immutable FeatureSetManifest / FeatureVector / FeatureMatrix contracts,
-and the domain-separated canonical hash functions frozen in
-``docs/layer2/FEATURE_VIEW.md``. Matrices exist only for the ``train`` and
-``validation`` partitions — there is NO test-partition contract.
+E1 (pure contracts): the canonical feature-set column manifest derived from the frozen
+L2-A registry, the immutable FeatureSetManifest / FeatureVector / FeatureMatrix
+contracts, and the domain-separated canonical hash functions frozen in
+``docs/layer2/FEATURE_VIEW.md``.
+
+E2 (pure extraction + verification): the exact-byte profile extraction boundary, the
+four-way feature-values-hash binding, the independently self-binding FrozenSnapshot,
+the verified member-manifest provenance boundary (accepted epoch-1 pins; mandatory
+trust bundles), verbatim snapshot-derived matrix assembly, and the non-mutating
+logical/payload verifiers.
+
+E3 adds the frozen canonical Parquet serialization (:mod:`.matrix_parquet`); the
+operational build/persist/access paths live in ``minos_engine.storage``. Matrices
+exist only for the ``train`` and ``validation`` partitions — there is NO
+test-partition contract, and ``Layer2Service.select_config`` stays blocked.
 """
 
 from __future__ import annotations

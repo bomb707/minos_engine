@@ -202,14 +202,23 @@ def l2d_migration_immutable(root: Path) -> bool:
 
 
 def _l2d_revision_is_head() -> bool:
-    """True iff 0004 is the SINGLE Alembic head (fork-free lineage)."""
+    """True iff the Alembic lineage is fork-free (SINGLE head) and 0004 lies on it.
+
+    Frozen intent: a fork-free lineage carrying the L2-D revision. Owner-authorized
+    later stages (0005_l2e_feature_view, E3) extend the SAME single lineage on top of
+    0004 — the check keeps failing closed on any fork and on any lineage that drops
+    the L2-D revision, while accepting authorized descendants of it.
+    """
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     try:
         script = ScriptDirectory.from_config(Config("alembic.ini"))
         heads = script.get_heads()
-        return heads == [L2D_MIGRATION_REVISION]
+        if len(heads) != 1:
+            return False
+        lineage = {rev.revision for rev in script.walk_revisions("base", heads[0])}
+        return L2D_MIGRATION_REVISION in lineage
     except Exception:  # noqa: BLE001 - fail closed
         return False
 

@@ -110,3 +110,13 @@ class EpochMembershipError(IngestionError):
 
 class ArtifactMetadataConflictError(IngestionError):
     """An existing artifact row with this sha256 has conflicting size/media/kind."""
+
+
+class MatrixConflictError(IngestionError):
+    """A feature matrix with the same logical identity (snapshot, partition, feature
+    set) exists with a DIFFERENT matrix_hash or artifact binding (never overwritten)."""
+
+
+class MatrixAccessError(MinosEngineError):
+    """The partition-scoped matrix artifact retrieval boundary rejected the request
+    (unknown role, invisible matrix, path escape, wrong partition, or byte mismatch)."""

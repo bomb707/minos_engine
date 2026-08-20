@@ -132,10 +132,42 @@ jobs:
           done
           psql "$MINOS_DATABASE_URL" -c "SELECT version();"
 
-      - name: Alembic upgrade head — confirm L2-D head 0004_l2d_profile_ingestion
+      - name: Alembic upgrade head — confirm L2-E head 0005_l2e_feature_view
         run: |
           alembic upgrade head
+          alembic current | grep 0005_l2e_feature_view
+
+      - name: Alembic downgrade to 0004_l2d_profile_ingestion (L2-E removed, L2-D retained)
+        run: |
+          alembic downgrade 0004_l2d_profile_ingestion
           alembic current | grep 0004_l2d_profile_ingestion
+          python - <<'PY'
+          from sqlalchemy import create_engine, text
+          from minos_engine.storage.database import database_url
+          l2e = ("feature_sets", "feature_matrices", "feature_matrix_members")
+          l2d = ("bam_profiles", "profile_ingest_attempts", "profile_snapshots", "profile_snapshot_members")
+          eng = create_engine(database_url())
+          with eng.connect() as c:
+              present_l2e = c.execute(
+                  text("SELECT count(*) FROM information_schema.tables WHERE table_name = ANY(:n)"),
+                  {"n": list(l2e)},
+              ).scalar()
+              present_l2d = c.execute(
+                  text("SELECT count(*) FROM information_schema.tables WHERE table_name = ANY(:n)"),
+                  {"n": list(l2d)},
+              ).scalar()
+              trainer_artifacts = c.execute(
+                  text("SELECT has_table_privilege('minos_trainer','catalog.artifacts','SELECT')")
+              ).scalar()
+              evaluator_artifacts = c.execute(
+                  text("SELECT has_table_privilege('minos_evaluator','catalog.artifacts','SELECT')")
+              ).scalar()
+          eng.dispose()
+          assert present_l2e == 0, f"L2-E objects not removed on downgrade to 0004: {present_l2e}"
+          assert present_l2d == 4, f"L2-D objects lost on downgrade to 0004: {present_l2d}"
+          assert trainer_artifacts, "trainer catalog.artifacts SELECT not restored on downgrade"
+          assert not evaluator_artifacts, "evaluator must never gain catalog.artifacts SELECT"
+          PY
 
       - name: Alembic downgrade to 0003_l2c_split_v2_epochs (L2-D removed, v2 retained)
         run: |
@@ -231,10 +263,27 @@ jobs:
           assert n == 0, f"stage schemas not removed: {n}"
           PY
 
-      - name: Alembic re-upgrade head — confirm L2-D head 0004_l2d_profile_ingestion
+      - name: Alembic re-upgrade head — confirm L2-E head 0005_l2e_feature_view
         run: |
           alembic upgrade head
-          alembic current | grep 0004_l2d_profile_ingestion
+          alembic current | grep 0005_l2e_feature_view
+          python - <<'PY'
+          from sqlalchemy import create_engine, text
+          from minos_engine.storage.database import database_url
+          l2e = ("feature_sets", "feature_matrices", "feature_matrix_members")
+          eng = create_engine(database_url())
+          with eng.connect() as c:
+              present_l2e = c.execute(
+                  text("SELECT count(*) FROM information_schema.tables WHERE table_name = ANY(:n)"),
+                  {"n": list(l2e)},
+              ).scalar()
+              trainer_artifacts = c.execute(
+                  text("SELECT has_table_privilege('minos_trainer','catalog.artifacts','SELECT')")
+              ).scalar()
+          eng.dispose()
+          assert present_l2e == 3, f"L2-E objects missing at head: {present_l2e}"
+          assert not trainer_artifacts, "trainer catalog.artifacts SELECT must be revoked at 0005"
+          PY
 
       - name: Migration immutability + frozen inventory tests
         run: pytest tests/integration/layer2_db/test_migration_immutability.py -q

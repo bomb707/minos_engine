@@ -23,6 +23,8 @@ __all__ = [
     "SnapshotHashMismatchError",
     "RegistrySnapshotMismatchError",
     "ProfilerIdentityMismatchError",
+    "UnqualifiedWriterError",
+    "MatrixArtifactIntegrityError",
 ]
 
 
@@ -85,3 +87,13 @@ class RegistrySnapshotMismatchError(FeatureExtractionError):
 class ProfilerIdentityMismatchError(FeatureExtractionError):
     """A member's profiler_version/profiler_config_hash is not the accepted profiler
     identity pinned in layer2.prerequisites."""
+
+
+class UnqualifiedWriterError(FeatureExtractionError):
+    """The installed Parquet writer is not the exact qualified version pinned for the
+    frozen canonical serialization — byte determinism cannot be claimed (fail closed)."""
+
+
+class MatrixArtifactIntegrityError(FeatureExtractionError):
+    """A matrix Parquet artifact failed exact-byte, schema, metadata, order, null,
+    value, or hash verification (or an atomic write could not be completed safely)."""
