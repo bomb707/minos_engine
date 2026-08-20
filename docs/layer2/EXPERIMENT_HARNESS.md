@@ -7,15 +7,29 @@ is not implemented and is **not** claimed anywhere below.
 
 ## Scope of this document (F3-A)
 
-F3-A freezes the **database foundation** — migration `0006_l2f_experiment_plan` and its
-frozen migration contract. The pure `ExperimentPlan` builder (F3-B), persistence +
-bounded enqueue (F3-C), the verifier and full attack matrix (F3-D), and F4–F7 are
-unimplemented and unauthorized here.
+F3-A freezes the **database foundation** — migration `0006_l2f_experiment_plan`, its
+frozen migration contract, and the private SQLAlchemy Core table mappings. The pure
+`ExperimentPlan` builder (F3-B), persistence + bounded enqueue (F3-C), the verifier and
+full attack matrix (F3-D), and F4–F7 are unimplemented and unauthorized here.
 
-> **F3-A still open:** SQLAlchemy ORM models mirroring `0006` (with a metadata-parity
-> test), the seeded direct-SQL attack matrix that behaviorally exercises each constraint,
-> and the exhaustive column/type/constraint introspection contract are the remaining
-> corrective F3-A items and are **not** yet committed.
+### Private Core table mappings (not `Base.metadata`)
+
+`storage/l2f_tables.py` defines the five owned tables as SQLAlchemy Core `Table` objects
+on a **dedicated private `l2f_metadata`** — deliberately **not** the L2-B declarative
+`Base.metadata` (adding them there would silently change the accepted DB-READY storage
+fingerprint). Migration `0006` remains the authoritative DDL; the mappings never call
+`create_all`/`drop_all`. External L2-D/L2-E tables referenced by composite FKs are minimal
+`l2f_external_target_stub` declarations (FK-resolution only, never owned/created).
+`L2F_OWNED_TABLES` (5) and `L2F_EXTERNAL_TARGET_STUBS` (6) are exported. Tests prove
+importing `l2f_tables` leaves `Base.metadata`, `storage_schema_hash()`
+(`4508728723…`), and `role_policy_hash()` (`1dfe6e56…`) unchanged, and a scratch-PG parity
+test proves the mappings match `0006` exactly (columns/types/nullability/PK/FKs/UNIQUEs/
+CHECKs/indexes) — so neither the migration nor the mapping can drift silently.
+
+> **F3-A still open:** the **seeded direct-SQL attack matrix** (behaviorally exercising
+> each constraint against a full valid graph), the **populated** `0005↔0006` lifecycle,
+> and the **exhaustive** static-inventory / live-schema introspection contract (+ frozen
+> `0006` byte SHA) are the remaining corrective F3-A items and are **not** yet committed.
 
 ## Why legacy tables are forbidden
 
