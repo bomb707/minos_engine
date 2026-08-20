@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import grp
 import os
+import pwd
+import stat
 import subprocess
 from pathlib import Path
 
@@ -10,10 +13,11 @@ import pytest
 from sqlalchemy import Engine, text
 
 from minos_engine.common.errors import MatrixAccessError
+from minos_engine.storage.feature_matrix import build_feature_matrix_with_trust
 from minos_engine.storage.matrix_access import (
     MatrixArtifactBroker,
     PartitionArtifactReader,
-    configure_partition_root,
+    provision_partition_root,
     verify_operational_credentials,
     verify_partition_capability,
 )
@@ -139,6 +143,15 @@ def test_reader_path_confinement_and_tamper(l2e_engine, built, matrix_broker, tm
 
     train_path = Path(train.artifact_path)
     original = train_path.read_bytes()
+
+    def _restore() -> None:
+        # recreate the shared artifact with its canonical bytes AND mode 0o640, so this
+        # test never leaves a wrongly-permissioned inode for a later test.
+        if train_path.is_symlink() or train_path.exists():
+            train_path.unlink()
+        train_path.write_bytes(original)
+        os.chmod(train_path, 0o640)
+
     # symlink escape.
     outside = tmp_path / "outside.parquet"
     outside.write_bytes(original)
@@ -150,8 +163,7 @@ def test_reader_path_confinement_and_tamper(l2e_engine, built, matrix_broker, tm
             with pytest.raises(MatrixAccessError, match="escapes"):
                 reader.fetch_matrix_payload(conn, train.matrix_hash)
     finally:
-        train_path.unlink()
-        train_path.write_bytes(original)
+        _restore()
     # byte tamper is rejected by the sha check.
     train_path.write_bytes(original[:-1] + bytes([original[-1] ^ 0xFF]))
     try:
@@ -160,7 +172,7 @@ def test_reader_path_confinement_and_tamper(l2e_engine, built, matrix_broker, tm
             with pytest.raises(MatrixAccessError, match="hash"):
                 reader.fetch_matrix_payload(conn, train.matrix_hash)
     finally:
-        train_path.write_bytes(original)
+        _restore()
 
 
 # --------------------------------------------------------------------------- #
@@ -174,42 +186,88 @@ def test_partition_capability_runs_anywhere(artifact_root) -> None:
     assert checks and all(checks.values()), checks
 
 
-def test_operational_credentials_hold_on_same_uid_owner_only(artifact_root) -> None:
-    # same UID, owner-only 0700 directories are NOT partition isolation → HOLD.
+def test_operational_credentials_hold_without_real_identities(artifact_root) -> None:
+    # Explicit identities are required, but real impersonation is unavailable in CI
+    # (not privileged / identities absent) → HOLD, never PASS. Two groups of the same
+    # user would NOT be separation either; this verifier only PASSes on proven denial.
     status = verify_operational_credentials(
         train_root=artifact_root / "l2e" / "train",
         validation_root=artifact_root / "l2e" / "validation",
+        trainer_identity="minos_trainer_os",
+        evaluator_identity="minos_evaluator_os",
     )
     assert status.status == "HOLD"
     assert not status.ok
-    assert status.checks["partition_groups_distinct"] is False
-    assert any("same-UID" in r or "same OS group" in r for r in status.reasons)
+    assert status.checks["cross_identity_access_proven"] is False
+    assert any("impersonation unavailable" in r for r in status.reasons)
 
 
-def test_operational_credentials_pass_with_distinct_groups(tmp_path) -> None:
-    groups = usable_secondary_groups()
-    if len(groups) < 2:
-        pytest.skip("no two distinct non-primary OS groups available to provision")
-    train_group, validation_group = groups[0], groups[1]
-    train_root = tmp_path / "cred" / "train"
-    validation_root = tmp_path / "cred" / "validation"
-    # publish a real matrix file into each root before applying credentials.
-    for root in (train_root, validation_root):
-        root.mkdir(parents=True)
-        (root / "sample.parquet").write_bytes(b"canonical-bytes")
-    configure_partition_root(train_root, group=train_group)
-    configure_partition_root(validation_root, group=validation_group)
+def test_operational_credentials_hold_on_same_group(artifact_root) -> None:
+    # same-UID owner-only (same group) roots are explicitly NOT isolation → HOLD.
     status = verify_operational_credentials(
-        train_root=train_root,
-        validation_root=validation_root,
-        train_group=train_group,
-        validation_group=validation_group,
+        train_root=artifact_root / "l2e" / "train",
+        validation_root=artifact_root / "l2e" / "validation",
+        trainer_identity=pwd.getpwuid(os.getuid()).pw_name,
+        evaluator_identity=pwd.getpwuid(os.getuid()).pw_name,
     )
-    assert status.status == "PASS", status.reasons
-    assert status.checks["partition_groups_distinct"] is True
-    assert status.checks["group_names_distinct"] is True
-    assert status.checks["train_files_group_owned_not_writable"] is True
-    assert status.checks["validation_files_group_owned_not_writable"] is True
+    assert status.status == "HOLD"
+    assert status.checks["partition_groups_distinct"] is False
+    assert any("same OS group" in r for r in status.reasons)
+
+
+# --------------------------------------------------------------------------- #
+# item 1 — every artifact inode carries the partition gid + mode 0640
+# --------------------------------------------------------------------------- #
+def test_built_artifact_inode_has_gid_and_mode_0640(l2e_engine, extra_snaps, tmp_path) -> None:
+    # build into an ISOLATED root (other tests mutate the shared artifact_root files).
+    snap = extra_snaps[13]
+    root = tmp_path / "inode"
+    result = build_feature_matrix_with_trust(
+        l2e_engine, snap.manifest_bytes, snap.trust, "train", artifact_root=root
+    )
+    partition_root = root / "l2e" / "train"
+    st = Path(result.artifact_path).stat()
+    assert st.st_uid == os.getuid()
+    assert st.st_gid == partition_root.stat().st_gid  # partition gid provisioned on root
+    assert stat.S_IMODE(st.st_mode) == 0o640  # owner-rw, group-r, no other/world
+    # the persistence boundary verifies this at publish, so the final name never keeps a
+    # wrongly-permissioned inode.
+
+
+def test_publish_applies_distinct_partition_group_gid(l2e_engine, extra_snaps, tmp_path) -> None:
+    """Build a fresh matrix into a root provisioned with a distinct OS group, and prove
+    the published inode carries that group's gid + 0640 (exercises fchown/fchmod/verify)."""
+    groups = usable_secondary_groups()
+    if not groups:
+        pytest.skip("no non-primary OS group available to provision a partition root")
+    group = groups[0]
+    gid = grp.getgrnam(group).gr_gid
+    snap = extra_snaps[9]  # a fresh identity, never built into artifact_root
+    provisioned = tmp_path / "prov"
+    provision_partition_root(provisioned / "l2e" / "train", group=group)
+    result = build_feature_matrix_with_trust(
+        l2e_engine, snap.manifest_bytes, snap.trust, "train", artifact_root=provisioned
+    )
+    st = Path(result.artifact_path).stat()
+    assert st.st_gid == gid
+    assert stat.S_IMODE(st.st_mode) == 0o640
+    assert st.st_uid == os.getuid()
+
+
+def test_publish_verifies_inode_credential_after_publication(
+    l2e_engine, extra_snaps, tmp_path, monkeypatch
+) -> None:
+    """If the published inode ends up with the wrong mode, publication fails closed."""
+    from minos_engine.layer2.features.errors import MatrixArtifactIntegrityError
+
+    snap = extra_snaps[10]
+    real_fchmod = os.fchmod
+    # corrupt the applied mode so the post-publication verification must reject it.
+    monkeypatch.setattr(os, "fchmod", lambda fd, _mode: real_fchmod(fd, 0o644))
+    with pytest.raises(MatrixArtifactIntegrityError, match="mode"):
+        build_feature_matrix_with_trust(
+            l2e_engine, snap.manifest_bytes, snap.trust, "train", artifact_root=tmp_path / "bad"
+        )
 
 
 # --------------------------------------------------------------------------- #

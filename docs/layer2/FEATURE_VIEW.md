@@ -160,6 +160,19 @@ E0 (this document + pins + inventory test) → E1 contracts → E2 extraction/ve
 E3 migration + storage + grant boundary → E4 epoch-1 build + evidence →
 E5 gates/closures. Each step starts only on explicit owner authorization.
 
+## E0 addendum — canonical Parquet bumped to `feature-matrix-parquet-v2`
+
+During E3 the canonical matrix artifact metadata gained the four logical-identity keys
+`matrix_hash`, `snapshot_hash`, `partition`, `epoch` (in addition to `schema_version` and
+`feature_set_hash`) so that the artifact self-identifies its logical matrix and two
+distinct matrices — in particular two zero-row matrices in different partitions — never
+share `artifact_sha256`. Because that is a change to the frozen serialization contract,
+the artifact schema version is bumped from `feature-matrix-parquet-v1` to
+`feature-matrix-parquet-v2`. All six keys are frozen logical identities (no timestamp or
+runtime value); `matrix_hash` (logical) and `artifact_sha256` (exact bytes) remain
+strictly separate values. Every published artifact inode additionally carries its
+partition gid + mode `0o640`, applied before it is linked into place and verified after.
+
 ## Count policy (frozen — owner clarification)
 
 L2-E **never applies split percentages**. L2-C owns percentage-based allocation (as the

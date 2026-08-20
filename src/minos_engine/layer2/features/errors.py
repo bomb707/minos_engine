@@ -25,6 +25,7 @@ __all__ = [
     "ProfilerIdentityMismatchError",
     "UnqualifiedWriterError",
     "MatrixArtifactIntegrityError",
+    "AmbiguousMatrixCommitError",
 ]
 
 
@@ -96,4 +97,12 @@ class UnqualifiedWriterError(FeatureExtractionError):
 
 class MatrixArtifactIntegrityError(FeatureExtractionError):
     """A matrix Parquet artifact failed exact-byte, schema, metadata, order, null,
-    value, or hash verification (or an atomic write could not be completed safely)."""
+    value, credential, or hash verification (or an atomic write could not be completed
+    safely)."""
+
+
+class AmbiguousMatrixCommitError(FeatureExtractionError):
+    """``commit()`` raised after the artifact was published: the server may or may not
+    have committed (acknowledgement lost). The immutable content-addressed artifact is
+    RETAINED for later reconciliation — it is never unlinked on commit ambiguity, so a
+    committed DB row can never reference a missing file."""

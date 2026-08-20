@@ -1,21 +1,26 @@
-"""Canonical feature-matrix Parquet serialization — frozen in FEATURE_VIEW.md.
+"""Canonical feature-matrix Parquet serialization (``feature-matrix-parquet-v2``).
 
-Format (frozen): ``dataset_id`` UTF-8 string first, then the 129 non-nullable float64
-feature columns named by field path in canonical column-manifest index order; rows
-ordered by ``dataset_id`` ascending; nulls forbidden; ``compression=NONE``;
-dictionaries disabled; statistics disabled; Parquet format version and data-page
-version pinned; the ONLY application schema metadata keys are ``schema_version`` and
-``feature_set_hash`` — no timestamps or runtime-generated application metadata. The
-pinned writer additionally stores its deterministic ``ARROW:schema`` echo of exactly
-that schema; verification requires the metadata to be exactly these and nothing else.
+Format: ``dataset_id`` UTF-8 string first, then the 129 non-nullable float64 feature
+columns named by field path in canonical column-manifest index order; rows ordered by
+``dataset_id`` ascending; nulls forbidden; ``compression=NONE``; dictionaries disabled;
+statistics disabled; Parquet format version and data-page version pinned. The
+application schema metadata keys are exactly ``schema_version``, ``feature_set_hash``,
+``matrix_hash``, ``snapshot_hash``, ``partition`` and ``epoch`` (v2, E0 addendum): the
+artifact self-identifies its LOGICAL matrix so two distinct matrices never share
+``artifact_sha256`` (in particular two zero-row matrices in different partitions). Every
+key is a frozen logical identity — no timestamp or runtime value. The pinned writer
+additionally stores its deterministic ``ARROW:schema`` echo; verification requires the
+metadata to be exactly these keys and nothing else.
 
 Byte determinism is claimed ONLY on the exact qualified writer version: pyproject pins
 ``pyarrow==QUALIFIED_PYARROW_VERSION`` and every serialize/verify call re-checks the
 installed writer identity and fails closed on any other version.
 
-Writes are atomic: bytes go to a temporary file in the destination directory, are
-fsynced, re-read and hash-verified, then atomically renamed into the content-addressed
-final location. A failure never leaves a partial final artifact.
+Publication is IMMUTABLE + no-clobber and carries the partition credential: bytes go to
+a temp file whose inode receives the partition ``gid`` + mode ``0o640`` (fchown/fchmod)
+BEFORE it is hard-linked into its content-addressed final name; the final inode's
+uid/gid/mode are verified. ``os.link`` never clobbers an existing target, and a partial
+final artifact can never appear.
 
 ``matrix_hash`` (logical identity) and ``artifact_sha256`` (exact Parquet bytes) are
 never conflated: this module produces/verifies ``artifact_sha256``; the logical hash
@@ -27,6 +32,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import os
+import stat
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -59,6 +65,7 @@ __all__ = [
     "PARQUET_FORMAT_VERSION",
     "PARQUET_DATA_PAGE_VERSION",
     "PublishedArtifact",
+    "ARTIFACT_FILE_MODE",
     "canonical_matrix_schema",
     "serialize_matrix",
     "publish_matrix_artifact",
@@ -66,9 +73,16 @@ __all__ = [
     "verify_matrix_artifact",
 ]
 
-PARQUET_SCHEMA_VERSION = "feature-matrix-parquet-v1"
+#: v2 (E0 corrective/addendum): the artifact metadata now binds the LOGICAL matrix
+#: identity (six keys); the schema version is bumped from v1 to record that contract
+#: change. See docs/layer2/FEATURE_VIEW.md.
+PARQUET_SCHEMA_VERSION = "feature-matrix-parquet-v2"
 MATRIX_ARTIFACT_KIND = "l2e:feature-matrix-parquet"
 MATRIX_ARTIFACT_MEDIA_TYPE = "application/vnd.apache.parquet"
+
+#: Every published matrix artifact inode carries exactly this mode (owner-rw, group-r,
+#: no other/world) plus its partition gid — applied on the temp fd BEFORE linking.
+ARTIFACT_FILE_MODE = 0o640
 
 #: The exact qualified writer identity for the frozen byte format. pyproject pins this
 #: same version; any other installed pyarrow fails closed here — cross-installation
@@ -200,20 +214,21 @@ def fsync_directory(directory: Path) -> None:
         os.close(fd)
 
 
-def publish_matrix_artifact(payload: bytes, *, partition_root: Path) -> PublishedArtifact:
+def publish_matrix_artifact(payload: bytes, *, partition_root: Path, gid: int) -> PublishedArtifact:
     """Publish the payload to its content-addressed location with IMMUTABLE, no-clobber
-    semantics (never ``os.replace`` over an existing target).
+    semantics (never ``os.replace`` over an existing target) and the partition credential.
 
-    * If ``<partition_root>/<sha256>.parquet`` already exists it is verified byte-for-byte
-      and reused (``created=False``); a mismatch raises :class:`MatrixArtifactIntegrityError`
-      and leaves the existing file UNCHANGED.
-    * Otherwise the bytes are written to a unique temp file, fsynced, then hard-linked
-      into place atomically (``os.link`` fails closed if the target already exists — a
-      concurrent equal-content publisher does not replace the winner's inode). The temp
-      link is removed and the directory fsynced. ``created=True``.
+    Every newly created inode receives its partition ``gid`` and mode ``0o640`` via
+    ``fchown``/``fchmod`` on the temp fd BEFORE it is linked into its final name, so the
+    final name never references an inode with the wrong owner/mode. After publication the
+    final inode's uid/gid/mode are verified. If ``<partition_root>/<sha256>.parquet``
+    already exists it is verified byte-for-byte AND its owner/gid/mode are verified, then
+    reused (``created=False``); a mismatch raises :class:`MatrixArtifactIntegrityError`
+    and leaves the existing file UNCHANGED.
 
-    A partial final artifact can never appear: the final name only ever names a fully
-    written, fsynced inode.
+    A concurrent equal-content publisher does not replace the winner's inode
+    (``os.link`` fails closed if the target exists). A partial final artifact can never
+    appear: the final name only ever names a fully written, fsynced inode.
     """
     artifact_sha256 = hashlib.sha256(payload).hexdigest()
     partition_root.mkdir(parents=True, exist_ok=True)
@@ -221,15 +236,20 @@ def publish_matrix_artifact(payload: bytes, *, partition_root: Path) -> Publishe
 
     if final_path.exists():
         _verify_existing_bytes(final_path, artifact_sha256)
+        _verify_inode_credential(final_path, gid)
         return PublishedArtifact(artifact_sha256, final_path, len(payload), created=False)
 
     tmp_fd, tmp_name = tempfile.mkstemp(prefix=f".tmp-{artifact_sha256}-", dir=partition_root)
     tmp_path = Path(tmp_name)
     try:
-        with os.fdopen(tmp_fd, "wb") as handle:
+        with os.fdopen(tmp_fd, "wb", closefd=False) as handle:
             handle.write(payload)
             handle.flush()
-            os.fsync(handle.fileno())
+            os.fsync(tmp_fd)
+        # apply the partition credential to the INODE before it is linked into place.
+        os.fchmod(tmp_fd, ARTIFACT_FILE_MODE)
+        os.fchown(tmp_fd, -1, gid)
+        os.fsync(tmp_fd)
         if hashlib.sha256(tmp_path.read_bytes()).hexdigest() != artifact_sha256:
             raise MatrixArtifactIntegrityError(  # pragma: no cover - local write is stable
                 "written artifact bytes do not hash to the expected artifact_sha256"
@@ -238,13 +258,24 @@ def publish_matrix_artifact(payload: bytes, *, partition_root: Path) -> Publishe
             os.link(tmp_path, final_path)  # atomic, no-clobber
             created = True
         except FileExistsError:
-            # a concurrent publisher won; verify + reuse its inode, never replace it.
+            # a concurrent publisher won; verify bytes + credential, reuse its inode.
             _verify_existing_bytes(final_path, artifact_sha256)
+            _verify_inode_credential(final_path, gid)
             created = False
     finally:
+        os.close(tmp_fd)
         with contextlib.suppress(FileNotFoundError):
             tmp_path.unlink()
     fsync_directory(partition_root)
+    if created:
+        try:
+            _verify_inode_credential(final_path, gid)  # verify final uid/gid/mode
+        except MatrixArtifactIntegrityError:
+            # we created this inode this call and it is invalid — remove it (nothing
+            # references it yet) so the final name never keeps a bad inode.
+            with contextlib.suppress(FileNotFoundError):
+                final_path.unlink()
+            raise
     return PublishedArtifact(artifact_sha256, final_path, len(payload), created=created)
 
 
@@ -255,6 +286,22 @@ def _verify_existing_bytes(path: Path, expected_sha256: str) -> None:
         raise MatrixArtifactIntegrityError(
             f"pre-existing artifact at {path} does not match the expected content hash "
             "(left unchanged)"
+        )
+
+
+def _verify_inode_credential(path: Path, gid: int) -> None:
+    """The final artifact inode must be owner-writer, partition-gid, mode 0o640 only."""
+    st = path.stat()
+    mode = stat.S_IMODE(st.st_mode)
+    if st.st_uid != os.getuid():
+        raise MatrixArtifactIntegrityError(f"artifact {path} not owned by the writer uid")
+    if st.st_gid != gid:
+        raise MatrixArtifactIntegrityError(
+            f"artifact {path} has gid {st.st_gid}, expected partition gid {gid}"
+        )
+    if mode != ARTIFACT_FILE_MODE:
+        raise MatrixArtifactIntegrityError(
+            f"artifact {path} has mode {oct(mode)}, expected {oct(ARTIFACT_FILE_MODE)}"
         )
 
 

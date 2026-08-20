@@ -262,6 +262,88 @@ def test_atomic_rollback_leaves_no_partial_rows_or_orphan(
     assert art == 0
 
 
+# --------------------------------------------------------------------------- #
+# item 3 — commit ambiguity: never orphan a committed row from its artifact
+# --------------------------------------------------------------------------- #
+def test_committed_then_wrapper_raises_keeps_row_and_artifact(
+    l2e_engine, extra_snaps, artifact_root, monkeypatch
+) -> None:
+    """The REAL commit succeeds; a post-commit wrapper step then raises. The committed
+    row must still reference an existing, valid artifact (never unlinked)."""
+    from minos_engine.layer2.features.matrix_parquet import serialize_matrix as _ser
+
+    snap = extra_snaps[11]
+    snapshot = load_member_manifest_with_trust(snap.manifest_bytes, snap.trust)
+    build = build_partition_matrix(
+        snapshot, "train", lambda m: snap.payload_paths[m.dataset_id].read_bytes()
+    )
+    sha = hashlib.sha256(_ser(build.matrix, build.vectors)).hexdigest()
+    final_path = artifact_root / "l2e" / "train" / f"{sha}.parquet"
+
+    monkeypatch.setattr(
+        fm, "_after_commit_hook", lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+    with pytest.raises(RuntimeError, match="boom"):
+        _persist_feature_matrix(
+            l2e_engine,
+            snapshot=snapshot,
+            matrix=build.matrix,
+            vectors=build.vectors,
+            partition_root=artifact_root,
+        )
+    monkeypatch.undo()
+    # the commit really happened: the row exists AND references the existing artifact.
+    assert _count(l2e_engine, 11, "train") == 1
+    assert final_path.exists()
+    with l2e_engine.connect() as conn:
+        uri = conn.execute(
+            text(
+                "SELECT art.uri FROM profiling.feature_matrices m "
+                "JOIN catalog.artifacts art ON art.id = m.matrix_artifact_id "
+                "JOIN profiling.profile_snapshots ps ON ps.id = m.profile_snapshot_id "
+                "WHERE ps.epoch = 11 AND m.partition = 'train'"
+            )
+        ).scalar_one()
+    assert Path(uri).exists()
+    assert hashlib.sha256(Path(uri).read_bytes()).hexdigest() == sha
+
+
+def test_ambiguous_commit_retains_immutable_orphan(
+    l2e_engine, extra_snaps, artifact_root, monkeypatch
+) -> None:
+    """commit() raises (ambiguous status): the immutable content-addressed artifact is
+    RETAINED (never unlinked) so a possibly-committed row can never reference a missing
+    file; the caller sees a typed AmbiguousMatrixCommitError."""
+    from minos_engine.layer2.features.errors import AmbiguousMatrixCommitError
+    from minos_engine.layer2.features.matrix_parquet import serialize_matrix as _ser
+
+    snap = extra_snaps[12]
+    snapshot = load_member_manifest_with_trust(snap.manifest_bytes, snap.trust)
+    build = build_partition_matrix(
+        snapshot, "train", lambda m: snap.payload_paths[m.dataset_id].read_bytes()
+    )
+    sha = hashlib.sha256(_ser(build.matrix, build.vectors)).hexdigest()
+    final_path = artifact_root / "l2e" / "train" / f"{sha}.parquet"
+
+    # simulate the ambiguity boundary raising (commit reached the wire; ack lost).
+    def _ambiguous(trans, *, published, artifact_sha256):
+        raise AmbiguousMatrixCommitError("simulated ambiguous commit (ack lost)")
+
+    monkeypatch.setattr(fm, "_commit_or_ambiguous", _ambiguous)
+    with pytest.raises(AmbiguousMatrixCommitError):
+        _persist_feature_matrix(
+            l2e_engine,
+            snapshot=snapshot,
+            matrix=build.matrix,
+            vectors=build.vectors,
+            partition_root=artifact_root,
+        )
+    monkeypatch.undo()
+    # the immutable artifact is RETAINED (not unlinked) for later reconciliation.
+    assert final_path.exists()
+    assert hashlib.sha256(final_path.read_bytes()).hexdigest() == sha
+
+
 def test_update_and_delete_rejected_on_all_three_tables(l2e_engine, built) -> None:
     statements = (
         "UPDATE profiling.feature_sets SET column_count = column_count",

@@ -29,9 +29,16 @@ Persistence semantics (one transaction, verified before any insert):
   * equal logical identity persisted under a different artifact root/URI →
     :class:`MatrixConflictError` (relocation is not an implicit operation);
   * equal artifact sha with different size/media/kind/uri → ArtifactMetadataConflictError;
-  * content-addressed publication is immutable + no-clobber; a DB failure after
-    publication removes only an inode THIS attempt created and never one another
-    committed transaction references;
+  * content-addressed publication is immutable + no-clobber and carries the partition
+    credential (gid + mode 0o640 on the inode before it is linked into place, verified
+    after);
+  * three distinct failure states are handled: (a) PRE-COMMIT failure (verification /
+    insert / publish itself) → confirmed-uncommitted: rollback and unlink only an inode
+    THIS attempt created; (b) AMBIGUOUS commit (``commit()`` raised — the server may have
+    committed but the ack was lost) → the immutable content-addressed artifact is
+    RETAINED and :class:`AmbiguousMatrixCommitError` is raised, so a committed row can
+    never reference a missing file; (c) POST-COMMIT wrapper failure → the committed row +
+    artifact are left intact;
   * concurrent unique violations are classified by constraint name.
 """
 
@@ -61,6 +68,7 @@ from minos_engine.layer2.features.contracts import (
     build_feature_set_manifest,
 )
 from minos_engine.layer2.features.errors import (
+    AmbiguousMatrixCommitError,
     ForbiddenPartitionError,
     MatrixArtifactIntegrityError,
     ProfileArtifactHashMismatchError,
@@ -80,6 +88,7 @@ from minos_engine.layer2.features.extraction import (
 from minos_engine.layer2.features.matrix_parquet import (
     MATRIX_ARTIFACT_KIND,
     MATRIX_ARTIFACT_MEDIA_TYPE,
+    PublishedArtifact,
     publish_matrix_artifact,
     serialize_matrix,
     verify_matrix_artifact,
@@ -132,6 +141,27 @@ def _classify_unique_violation(exc: DBAPIError) -> Exception:
 def _advisory_key(sha256: str) -> int:
     """Deterministic signed int64 advisory-lock key from a content hash."""
     return int(struct.unpack("<q", bytes.fromhex(sha256)[:8])[0])
+
+
+def _after_commit_hook() -> None:
+    """Post-commit seam (no-op in production). Tests patch this to simulate a wrapper
+    raising AFTER a successful commit, proving the committed row + artifact are retained
+    (never unlinked)."""
+
+
+def _commit_or_ambiguous(trans: Any, *, published: Any, artifact_sha256: str) -> None:
+    """Commit; if commit RAISES the status is ambiguous (committed-but-ack-lost). The
+    published immutable artifact is RETAINED and :class:`AmbiguousMatrixCommitError` is
+    raised so no code path can unlink it — a committed DB row can never point at a
+    missing file."""
+    try:
+        trans.commit()
+    except BaseException as exc:  # noqa: BLE001 - re-raised as a typed ambiguity signal
+        retained = "" if published is None else f" (retaining artifact {artifact_sha256[:12]}…)"
+        raise AmbiguousMatrixCommitError(
+            "commit raised; commit status is ambiguous (server may have committed but "
+            f"the acknowledgement was lost){retained}"
+        ) from exc
 
 
 # --------------------------------------------------------------------------- #
@@ -520,11 +550,14 @@ def _persist_feature_matrix(
         )
 
     root = partition_root / "l2e" / matrix.partition
+    root.mkdir(parents=True, exist_ok=True)
+    gid = root.stat().st_gid  # the partition credential provisioned on the root
     final_path = root / f"{artifact_sha256}.parquet"
 
     conn = engine.connect()
     trans = conn.begin()
-    published_created = False
+    published: PublishedArtifact | None = None
+    committed = False
     try:
         # serialize concurrent publishers of the same content across processes.
         conn.execute(
@@ -582,7 +615,8 @@ def _persist_feature_matrix(
                 member_registry_ids=member_registry_ids,
                 member_feature_hashes=member_feature_hashes,
             )
-            trans.commit()
+            _commit_or_ambiguous(trans, published=None, artifact_sha256=artifact_sha256)
+            committed = True
             return PersistedFeatureMatrix(
                 feature_matrix_id=str(existing["id"]),
                 feature_set_id=feature_set_id,
@@ -644,17 +678,23 @@ def _persist_feature_matrix(
             member_feature_hashes=member_feature_hashes,
         )
 
-        # (4) publish LAST, immediately before commit — so a DB failure never leaves a
-        # newly published, unregistered orphan.
-        published = publish_matrix_artifact(payload, partition_root=root)
-        published_created = published.created
+        # (4) publish LAST, immediately before the commit boundary — with the partition
+        # credential (gid + 0640) applied to the inode before it is linked into place.
+        published = publish_matrix_artifact(payload, partition_root=root, gid=gid)
         # confirm the published file is a confined regular file of exactly our bytes.
         confined = _confine_within(published.path, root)
         if confined.read_bytes() != payload:
             raise MatrixArtifactIntegrityError(
                 "published artifact bytes do not match the verified canonical payload"
             )
-        trans.commit()
+
+        # ---- COMMIT-AMBIGUITY BOUNDARY --------------------------------------------- #
+        # A commit that RAISES is ambiguous (the server may have committed but the ack
+        # was lost). On ambiguity the immutable content-addressed artifact is RETAINED,
+        # never unlinked — a committed DB row can never reference a missing file.
+        _commit_or_ambiguous(trans, published=published, artifact_sha256=artifact_sha256)
+        committed = True
+        _after_commit_hook()  # post-commit seam; a failure here must NOT unlink
         return PersistedFeatureMatrix(
             feature_matrix_id=matrix_id,
             feature_set_id=feature_set_id,
@@ -665,21 +705,28 @@ def _persist_feature_matrix(
             row_count=matrix.row_count,
             idempotent=False,
         )
+    except AmbiguousMatrixCommitError:
+        # ambiguous commit status: retain the immutable orphan; do not touch the DB.
+        raise
     except DBAPIError as exc:
-        trans.rollback()
-        if published_created:
-            # our DB rows are rolled back; remove only the inode we created this attempt.
-            with contextlib.suppress(FileNotFoundError):
-                final_path.unlink()
+        # confirmed-uncommitted: the failure is strictly before the commit boundary.
+        if not committed:
+            trans.rollback()
+            if published is not None and published.created:
+                with contextlib.suppress(FileNotFoundError):
+                    final_path.unlink()
         classified = _classify_unique_violation(exc)
         if classified is exc:
             raise
         raise classified from exc
     except BaseException:
-        trans.rollback()
-        if published_created:
-            with contextlib.suppress(FileNotFoundError):
-                final_path.unlink()
+        # pre-commit failure → confirmed-uncommitted cleanup; post-commit wrapper
+        # failure (committed=True) → leave the committed row + artifact intact.
+        if not committed:
+            trans.rollback()
+            if published is not None and published.created:
+                with contextlib.suppress(FileNotFoundError):
+                    final_path.unlink()
         raise
     finally:
         conn.close()

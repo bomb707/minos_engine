@@ -232,16 +232,22 @@ def test_verify_detects_wrong_metadata(vectors) -> None:
 
 
 def test_publish_is_immutable_no_clobber_and_round_trips(tmp_path, vectors) -> None:
+    import os
+
     payload = serialize_matrix(_matrix(vectors), vectors)
     root = tmp_path / "l2e" / "train"
-    first = publish_matrix_artifact(payload, partition_root=root)
+    gid = os.getgid()
+    first = publish_matrix_artifact(payload, partition_root=root, gid=gid)
     assert first.path.name == f"{first.artifact_sha256}.parquet"
     assert first.path.read_bytes() == payload
     assert first.size_bytes == len(payload)
     assert first.created is True
-    inode = first.path.stat().st_ino
+    # the inode carries the partition gid + mode 0640.
+    st = first.path.stat()
+    assert st.st_gid == gid and (st.st_mode & 0o777) == 0o640
+    inode = st.st_ino
     # equal-content republish reuses the SAME inode and does not create a new one.
-    second = publish_matrix_artifact(payload, partition_root=root)
+    second = publish_matrix_artifact(payload, partition_root=root, gid=gid)
     assert second.path == first.path and second.created is False
     assert second.path.stat().st_ino == inode
     # no temporary or partial files remain.
@@ -250,14 +256,16 @@ def test_publish_is_immutable_no_clobber_and_round_trips(tmp_path, vectors) -> N
 
 
 def test_publish_rejects_corrupt_preexisting_target_unchanged(tmp_path, vectors) -> None:
+    import os
+
     payload = serialize_matrix(_matrix(vectors), vectors)
     root = tmp_path / "l2e" / "train"
-    published = publish_matrix_artifact(payload, partition_root=root)
+    published = publish_matrix_artifact(payload, partition_root=root, gid=os.getgid())
     # corrupt the final content-addressed file in place.
     corrupt = payload[:-1] + bytes([payload[-1] ^ 0xFF])
     published.path.write_bytes(corrupt)
     with pytest.raises(MatrixArtifactIntegrityError, match="does not match"):
-        publish_matrix_artifact(payload, partition_root=root)
+        publish_matrix_artifact(payload, partition_root=root, gid=os.getgid())
     # the corrupt file is left UNCHANGED (never silently repaired).
     assert published.path.read_bytes() == corrupt
 
