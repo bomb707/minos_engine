@@ -23,9 +23,9 @@ from minos_engine.layer2.features.matrix_parquet import (
     PARQUET_SCHEMA_VERSION,
     QUALIFIED_PYARROW_VERSION,
     canonical_matrix_schema,
+    publish_matrix_artifact,
     serialize_matrix,
     verify_matrix_artifact,
-    write_matrix_artifact,
 )
 
 _MANIFEST = build_feature_set_manifest()
@@ -67,20 +67,25 @@ def vectors() -> list[FeatureVector]:
     return [_vector(i) for i in range(4)]
 
 
+@pytest.fixture(scope="module")
+def mtx(vectors) -> FeatureMatrix:
+    return _matrix(vectors)
+
+
 def test_writer_is_the_qualified_version() -> None:
     # pyproject pins the same version; determinism is never claimed on any other.
     assert pa.__version__ == QUALIFIED_PYARROW_VERSION
 
 
-def test_serialization_is_byte_deterministic(vectors) -> None:
-    first = serialize_matrix(vectors)
-    second = serialize_matrix(vectors)
+def test_serialization_is_byte_deterministic(mtx, vectors) -> None:
+    first = serialize_matrix(mtx, vectors)
+    second = serialize_matrix(mtx, vectors)
     assert first == second
     assert hashlib.sha256(first).hexdigest() == hashlib.sha256(second).hexdigest()
 
 
-def test_exact_schema_metadata_order_and_values(vectors) -> None:
-    payload = serialize_matrix(vectors)
+def test_exact_schema_metadata_order_and_values(mtx, vectors) -> None:
+    payload = serialize_matrix(mtx, vectors)
     table = pq.read_table(pa.BufferReader(payload))
     columns = canonical_feature_set().columns
     assert table.schema.names == ["dataset_id"] + [c.path for c in columns]
@@ -89,9 +94,14 @@ def test_exact_schema_metadata_order_and_values(vectors) -> None:
     metadata = {
         k.decode(): v.decode() for k, v in table.schema.metadata.items() if k != b"ARROW:schema"
     }
+    # identity-bound application metadata: the frozen keys + this matrix's logical id.
     assert metadata == {
         "schema_version": PARQUET_SCHEMA_VERSION,
         "feature_set_hash": _MANIFEST.feature_set_hash,
+        "matrix_hash": mtx.matrix_hash,
+        "snapshot_hash": mtx.snapshot_hash,
+        "partition": mtx.partition,
+        "epoch": str(mtx.epoch),
     }
     assert table.column("dataset_id").to_pylist() == [v.dataset_id for v in vectors]
     assert all(table.column(i).null_count == 0 for i in range(table.num_columns))
@@ -108,21 +118,21 @@ def test_exact_schema_metadata_order_and_values(vectors) -> None:
             assert "RLE_DICTIONARY" not in str(column_meta.encodings)
 
 
-def test_arrow_schema_echo_matches_canonical(vectors) -> None:
-    payload = serialize_matrix(vectors)
+def test_arrow_schema_echo_matches_canonical(mtx, vectors) -> None:
+    payload = serialize_matrix(mtx, vectors)
     table = pq.read_table(pa.BufferReader(payload))
-    assert table.schema.remove_metadata() == canonical_matrix_schema().remove_metadata()
+    assert table.schema.remove_metadata() == canonical_matrix_schema(mtx).remove_metadata()
     assert all(not table.schema.field(i).nullable for i in range(table.num_columns))
 
 
-def test_unordered_and_duplicate_rows_rejected(vectors) -> None:
-    with pytest.raises(MatrixArtifactIntegrityError, match="ordered"):
-        serialize_matrix(list(reversed(vectors)))
-    with pytest.raises(MatrixArtifactIntegrityError, match="duplicate"):
-        serialize_matrix([vectors[0], vectors[0]])
+def test_unordered_and_duplicate_rows_rejected(mtx, vectors) -> None:
+    with pytest.raises(MatrixArtifactIntegrityError, match="members/order"):
+        serialize_matrix(mtx, list(reversed(vectors)))
+    with pytest.raises(MatrixArtifactIntegrityError, match="members/order"):
+        serialize_matrix(mtx, [vectors[0], vectors[0]])
 
 
-def test_invalid_values_rejected_before_write(vectors) -> None:
+def test_invalid_values_rejected_before_write(mtx, vectors) -> None:
     # model_copy bypasses contract validation; the serializer must re-check.
     fraction_index = next(
         i for i, c in enumerate(canonical_feature_set().columns) if c.value_kind == "FRACTION"
@@ -131,14 +141,14 @@ def test_invalid_values_rejected_before_write(vectors) -> None:
     bad_values[fraction_index] = 1.5
     forged = vectors[0].model_copy(update={"values": tuple(bad_values)})
     with pytest.raises(MissingFeatureError, match="FRACTION"):
-        serialize_matrix([forged] + vectors[1:])
+        serialize_matrix(mtx, [forged] + vectors[1:])
     short = vectors[0].model_copy(update={"values": vectors[0].values[:128]})
     with pytest.raises(MissingFeatureError, match="129"):
-        serialize_matrix([short] + vectors[1:])
+        serialize_matrix(mtx, [short] + vectors[1:])
 
 
 def test_verify_passes_on_good_payload(vectors) -> None:
-    payload = serialize_matrix(vectors)
+    payload = serialize_matrix(_matrix(vectors), vectors)
     checks = verify_matrix_artifact(
         payload, _matrix(vectors), vectors, hashlib.sha256(payload).hexdigest()
     )
@@ -150,7 +160,7 @@ def test_verify_passes_on_good_payload(vectors) -> None:
     ["byte_change", "wrong_hash", "value_change", "row_reorder", "column_reorder", "null_value"],
 )
 def test_verify_detects_tampering(vectors, case) -> None:
-    payload = serialize_matrix(vectors)
+    payload = serialize_matrix(_matrix(vectors), vectors)
     sha = hashlib.sha256(payload).hexdigest()
     matrix = _matrix(vectors)
     if case == "byte_change":
@@ -207,7 +217,7 @@ def test_verify_detects_tampering(vectors, case) -> None:
 
 
 def test_verify_detects_wrong_metadata(vectors) -> None:
-    payload = serialize_matrix(vectors)
+    payload = serialize_matrix(_matrix(vectors), vectors)
     table = pq.read_table(pa.BufferReader(payload))
     tampered_schema = table.schema.with_metadata(
         {b"schema_version": b"feature-matrix-parquet-v999", b"feature_set_hash": b"0" * 64}
@@ -221,22 +231,39 @@ def test_verify_detects_wrong_metadata(vectors) -> None:
     assert not checks["schema_metadata_exact"]
 
 
-def test_atomic_write_and_round_trip(tmp_path, vectors) -> None:
-    payload = serialize_matrix(vectors)
-    sha, path = write_matrix_artifact(payload, partition_root=tmp_path / "l2e" / "train")
-    assert path.name == f"{sha}.parquet"
-    assert path.read_bytes() == payload
-    assert hashlib.sha256(path.read_bytes()).hexdigest() == sha
-    # idempotent re-write of identical content lands on the same path.
-    sha2, path2 = write_matrix_artifact(payload, partition_root=tmp_path / "l2e" / "train")
-    assert (sha2, path2) == (sha, path)
+def test_publish_is_immutable_no_clobber_and_round_trips(tmp_path, vectors) -> None:
+    payload = serialize_matrix(_matrix(vectors), vectors)
+    root = tmp_path / "l2e" / "train"
+    first = publish_matrix_artifact(payload, partition_root=root)
+    assert first.path.name == f"{first.artifact_sha256}.parquet"
+    assert first.path.read_bytes() == payload
+    assert first.size_bytes == len(payload)
+    assert first.created is True
+    inode = first.path.stat().st_ino
+    # equal-content republish reuses the SAME inode and does not create a new one.
+    second = publish_matrix_artifact(payload, partition_root=root)
+    assert second.path == first.path and second.created is False
+    assert second.path.stat().st_ino == inode
     # no temporary or partial files remain.
-    leftovers = [p for p in path.parent.iterdir() if p.name.startswith(".tmp-")]
+    leftovers = [p for p in first.path.parent.iterdir() if p.name.startswith(".tmp-")]
     assert leftovers == []
 
 
+def test_publish_rejects_corrupt_preexisting_target_unchanged(tmp_path, vectors) -> None:
+    payload = serialize_matrix(_matrix(vectors), vectors)
+    root = tmp_path / "l2e" / "train"
+    published = publish_matrix_artifact(payload, partition_root=root)
+    # corrupt the final content-addressed file in place.
+    corrupt = payload[:-1] + bytes([payload[-1] ^ 0xFF])
+    published.path.write_bytes(corrupt)
+    with pytest.raises(MatrixArtifactIntegrityError, match="does not match"):
+        publish_matrix_artifact(payload, partition_root=root)
+    # the corrupt file is left UNCHANGED (never silently repaired).
+    assert published.path.read_bytes() == corrupt
+
+
 def test_matrix_hash_and_artifact_sha_stay_separate(vectors) -> None:
-    payload = serialize_matrix(vectors)
+    payload = serialize_matrix(_matrix(vectors), vectors)
     matrix = _matrix(vectors)
     artifact_sha = hashlib.sha256(payload).hexdigest()
     assert matrix.matrix_hash != artifact_sha

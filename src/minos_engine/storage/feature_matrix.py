@@ -4,37 +4,43 @@ Storage-side counterpart of the pure ``layer2.features`` machinery: this module 
 every database write for L2-E matrices. No application role holds INSERT on any 0005
 table; writes run as the schema owner (``minos_admin``).
 
-Trust boundary (owner ruling):
-  * The PRODUCTION builder is :func:`build_accepted_epoch1_feature_matrix` — it begins
-    from ``load_accepted_epoch1_member_manifest(manifest_bytes)`` and accepts NO
-    caller-created FrozenSnapshot, no ManifestTrustBundle, no expected hashes, and no
-    caller-selected epoch/snapshot identities. The E3+ operational path consumes ONLY
-    this boundary.
-  * :func:`build_feature_matrix_with_trust` is the explicitly TEST-ONLY generic helper
-    (synthetic complete trust bundles for integration tests); production code never
-    imports or calls it.
-  * Before any payload read, artifact write, or DB mutation the builder rejects
-    ``partition="test"``, verifies the member manifest, selects exact snapshot
-    membership verbatim (row counts derive from that membership — no percentages,
-    reassignment, or re-rounding), and confirms the operational profile snapshot and
-    its membership reproduce the accepted snapshot identity.
-  * Profile payloads are the EXACT accepted artifact bytes referenced by the
-    operational store (``catalog.artifacts`` URIs) — never reconstructed from JSONB.
+Production API surface (the ONLY exported write entry points):
+  * :func:`build_accepted_epoch1_feature_matrix` — THE production builder. Begins from
+    ``load_accepted_epoch1_member_manifest(manifest_bytes)`` (pinned trust anchors; no
+    caller FrozenSnapshot / ManifestTrustBundle / expected hashes / caller-selected
+    identities), then builds + persists one partition matrix.
+  * :func:`build_feature_matrix_with_trust` — explicitly TEST-ONLY generic builder for
+    synthetic snapshots under a complete trust bundle. Production imports only the
+    accepted boundary above.
+  * :class:`PersistedFeatureMatrix` — the verified result.
 
-Persistence semantics (one transaction after full verification):
-  * equal logical identity + equal matrix/artifact hashes → idempotent return;
-  * equal logical identity + different matrix_hash → :class:`MatrixConflictError`;
-  * equal artifact sha with different size/media/kind → ArtifactMetadataConflictError;
-  * race-safe artifact registration via ON CONFLICT DO NOTHING + re-read;
-  * concurrent unique violations classified by constraint name;
-  * failures leave no partial feature set/matrix/member rows (single transaction);
-  * every persisted row is re-read and checked field-for-field before returning.
+The low-level persistence step (:func:`_persist_feature_matrix`) is PRIVATE and is not
+an admissible external write path: it re-derives and re-verifies EVERYTHING from the
+snapshot + matrix + vectors it is handed and from the artifact bytes it reads itself,
+so no caller-claimed hash/size/path is ever trusted.
+
+Persistence semantics (one transaction, verified before any insert):
+  * a forged vector/matrix (``model_copy`` with recomputed vector_hash + matrix_hash but
+    a stale ``feature_values_hash``) is rejected by the full re-verification BEFORE any
+    row reaches ``feature_matrices`` / ``feature_matrix_members`` / ``catalog.artifacts``;
+  * equal logical identity + verified-equal artifact → idempotent return of the STORED
+    URI after fully re-verifying the stored artifact bytes + rows;
+  * equal logical identity + different matrix_hash/artifact → :class:`MatrixConflictError`;
+  * equal logical identity persisted under a different artifact root/URI →
+    :class:`MatrixConflictError` (relocation is not an implicit operation);
+  * equal artifact sha with different size/media/kind/uri → ArtifactMetadataConflictError;
+  * content-addressed publication is immutable + no-clobber; a DB failure after
+    publication removes only an inode THIS attempt created and never one another
+    committed transaction references;
+  * concurrent unique violations are classified by constraint name.
 """
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
+import struct
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -51,10 +57,12 @@ from minos_engine.common.errors import (
 from minos_engine.layer2.features.contracts import (
     FeatureMatrix,
     FeatureSetManifest,
+    FeatureVector,
     build_feature_set_manifest,
 )
 from minos_engine.layer2.features.errors import (
     ForbiddenPartitionError,
+    MatrixArtifactIntegrityError,
     ProfileArtifactHashMismatchError,
     SnapshotIdentityMismatchError,
 )
@@ -67,18 +75,18 @@ from minos_engine.layer2.features.extraction import (
     build_partition_matrix,
     load_accepted_epoch1_member_manifest,
     load_member_manifest_with_trust,
+    verify_matrix,
 )
 from minos_engine.layer2.features.matrix_parquet import (
     MATRIX_ARTIFACT_KIND,
     MATRIX_ARTIFACT_MEDIA_TYPE,
+    publish_matrix_artifact,
     serialize_matrix,
-    write_matrix_artifact,
+    verify_matrix_artifact,
 )
 
 __all__ = [
     "PersistedFeatureMatrix",
-    "persist_feature_set",
-    "persist_feature_matrix",
     "build_accepted_epoch1_feature_matrix",
     "build_feature_matrix_with_trust",
 ]
@@ -93,6 +101,7 @@ class PersistedFeatureMatrix:
     matrix_hash: str
     artifact_sha256: str
     matrix_artifact_id: str
+    #: The STORED, verified canonical artifact URI (never a caller-supplied path).
     artifact_path: str
     row_count: int
     idempotent: bool
@@ -100,6 +109,7 @@ class PersistedFeatureMatrix:
 
 # --------------------------------------------------------------------------- #
 # constraint-name classification for concurrent unique violations
+# (a test may exercise this, but it is NOT an admissible external write path)
 # --------------------------------------------------------------------------- #
 _CONSTRAINT_ERRORS: dict[str, type[Exception]] = {
     "uq_feature_matrices_logical_identity": MatrixConflictError,
@@ -119,8 +129,13 @@ def _classify_unique_violation(exc: DBAPIError) -> Exception:
     return exc
 
 
+def _advisory_key(sha256: str) -> int:
+    """Deterministic signed int64 advisory-lock key from a content hash."""
+    return int(struct.unpack("<q", bytes.fromhex(sha256)[:8])[0])
+
+
 # --------------------------------------------------------------------------- #
-# feature-set persistence (idempotent by content hash)
+# feature-set persistence (idempotent by content hash) — PRIVATE
 # --------------------------------------------------------------------------- #
 def _feature_set_row(conn: Connection, feature_set_hash: str) -> dict[str, Any] | None:
     row = (
@@ -137,7 +152,7 @@ def _feature_set_row(conn: Connection, feature_set_hash: str) -> dict[str, Any] 
     return dict(row) if row is not None else None
 
 
-def persist_feature_set(conn: Connection, manifest: FeatureSetManifest) -> str:
+def _persist_feature_set(conn: Connection, manifest: FeatureSetManifest) -> str:
     """Persist (or idempotently resolve) one frozen feature-set manifest row."""
     column_manifest = [
         {
@@ -260,8 +275,138 @@ def _payload_source(conn: Connection, member: SnapshotMember) -> Path:
 
 
 # --------------------------------------------------------------------------- #
-# matrix persistence (one transaction, verified field-for-field)
+# full re-verification (logical + payload) — trusts NOTHING from the caller
 # --------------------------------------------------------------------------- #
+def _reverify_or_raise(
+    matrix: FeatureMatrix, snapshot: FrozenSnapshot, vectors: tuple[FeatureVector, ...]
+) -> None:
+    """Rerun the complete logical verification (membership, ordering, counts, bindings,
+    per-vector value-kind checks, canonical feature_values_hash recomputed from the
+    vector values, member/vector-hash binding, matrix_hash) and fail closed."""
+    result = verify_matrix(matrix, snapshot, vectors)
+    if not result.ok:
+        raise MatrixArtifactIntegrityError(
+            "matrix failed logical re-verification before persistence: "
+            + ", ".join(result.failed())
+        )
+
+
+def _confine_within(path: Path, root: Path) -> Path:
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as exc:
+        raise MatrixArtifactIntegrityError(
+            f"artifact path {path} cannot be resolved (missing or inaccessible): {exc}"
+        ) from exc
+    if not resolved.is_relative_to(root.resolve()):
+        raise MatrixArtifactIntegrityError(
+            f"artifact path {path} is not confined to the partition root {root}"
+        )
+    if not resolved.is_file():
+        raise MatrixArtifactIntegrityError(f"artifact path {path} is not a regular file")
+    return resolved
+
+
+def _verify_stored_artifact(
+    conn: Connection,
+    *,
+    artifact_id: str,
+    expected_sha256: str,
+    expected_size: int,
+    expected_uri: str,
+    partition_root: Path,
+    matrix: FeatureMatrix,
+    vectors: tuple[FeatureVector, ...],
+) -> str:
+    """Idempotent-replay artifact verification: the stored ``catalog.artifacts`` row and
+    the physical bytes at its URI must fully verify. Returns the STORED URI."""
+    row = (
+        conn.execute(
+            text(
+                "SELECT id, uri, sha256, size_bytes, media_type, provenance "
+                "FROM catalog.artifacts WHERE id = :i"
+            ),
+            {"i": artifact_id},
+        )
+        .mappings()
+        .first()
+    )
+    if row is None:
+        raise MatrixConflictError("matrix references a missing catalog.artifacts row")
+    if (
+        row["sha256"] != expected_sha256
+        or int(row["size_bytes"]) != expected_size
+        or row["media_type"] != MATRIX_ARTIFACT_MEDIA_TYPE
+        or row["provenance"] != MATRIX_ARTIFACT_KIND
+    ):
+        raise ArtifactMetadataConflictError(
+            "stored matrix artifact row has conflicting sha/size/media/provenance"
+        )
+    # relocation is not an implicit operation: a replay under a different root/URI
+    # fails closed rather than silently rebinding the stored artifact.
+    if row["uri"] != expected_uri:
+        raise MatrixConflictError(
+            "matrix already persisted under a different artifact URI/root "
+            "(relocation requires an explicit, separately designed operation)"
+        )
+    stored_path = _confine_within(Path(str(row["uri"])), partition_root)
+    stored_bytes = stored_path.read_bytes()
+    if hashlib.sha256(stored_bytes).hexdigest() != expected_sha256:
+        raise MatrixArtifactIntegrityError(
+            "stored artifact bytes do not match the registered artifact_sha256"
+        )
+    checks = verify_matrix_artifact(stored_bytes, matrix, vectors, expected_sha256)
+    if not all(checks.values()):
+        raise MatrixArtifactIntegrityError(
+            "stored artifact failed canonical Parquet verification: "
+            + ", ".join(sorted(k for k, v in checks.items() if not v))
+        )
+    return str(row["uri"])
+
+
+def _register_matrix_artifact(
+    conn: Connection, *, uri: str, sha256: str, size_bytes: int
+) -> tuple[str, bool]:
+    """Race-safe content-addressed artifact registration (exact metadata match only).
+
+    Returns ``(artifact_id, created)`` where ``created`` is True iff this call inserted
+    the row (used to decide whether cleanup is permitted on rollback)."""
+    params = {"h": sha256}
+    select = text(
+        "SELECT id, uri, size_bytes, media_type, provenance "
+        "FROM catalog.artifacts WHERE sha256 = :h"
+    )
+    existing = conn.execute(select, params).mappings().first()
+    created = False
+    if existing is None:
+        conn.execute(
+            text(
+                "INSERT INTO catalog.artifacts (uri, sha256, size_bytes, media_type, "
+                " provenance) VALUES (:u, :h, :s, :m, :k) ON CONFLICT (sha256) DO NOTHING"
+            ),
+            {
+                "u": uri,
+                "h": sha256,
+                "s": size_bytes,
+                "m": MATRIX_ARTIFACT_MEDIA_TYPE,
+                "k": MATRIX_ARTIFACT_KIND,
+            },
+        )
+        row = conn.execute(select, params).mappings().one()
+        created = row["uri"] == uri
+        existing = row
+    if (
+        existing["size_bytes"] != size_bytes
+        or existing["media_type"] != MATRIX_ARTIFACT_MEDIA_TYPE
+        or existing["provenance"] != MATRIX_ARTIFACT_KIND
+        or existing["uri"] != uri
+    ):
+        raise ArtifactMetadataConflictError(
+            f"artifact {sha256[:12]}… exists with conflicting metadata/provenance"
+        )
+    return str(existing["id"]), created
+
+
 def _matrix_row_by_identity(
     conn: Connection, profile_snapshot_id: str, partition: str, feature_set_id: str
 ) -> dict[str, Any] | None:
@@ -278,41 +423,6 @@ def _matrix_row_by_identity(
         .first()
     )
     return dict(row) if row is not None else None
-
-
-def _register_matrix_artifact(conn: Connection, *, uri: str, sha256: str, size_bytes: int) -> str:
-    """Race-safe content-addressed artifact registration (exact metadata match only)."""
-    params = {"h": sha256}
-    select = text(
-        "SELECT id, uri, size_bytes, media_type, provenance "
-        "FROM catalog.artifacts WHERE sha256 = :h"
-    )
-    existing = conn.execute(select, params).mappings().first()
-    if existing is None:
-        conn.execute(
-            text(
-                "INSERT INTO catalog.artifacts (uri, sha256, size_bytes, media_type, "
-                " provenance) VALUES (:u, :h, :s, :m, :k) ON CONFLICT (sha256) DO NOTHING"
-            ),
-            {
-                "u": uri,
-                "h": sha256,
-                "s": size_bytes,
-                "m": MATRIX_ARTIFACT_MEDIA_TYPE,
-                "k": MATRIX_ARTIFACT_KIND,
-            },
-        )
-        existing = conn.execute(select, params).mappings().one()
-    if (
-        existing["size_bytes"] != size_bytes
-        or existing["media_type"] != MATRIX_ARTIFACT_MEDIA_TYPE
-        or existing["provenance"] != MATRIX_ARTIFACT_KIND
-        or existing["uri"] != uri
-    ):
-        raise ArtifactMetadataConflictError(
-            f"artifact {sha256[:12]}… exists with conflicting metadata/provenance"
-        )
-    return str(existing["id"])
 
 
 def _read_back_and_verify(
@@ -375,85 +485,125 @@ def _read_back_and_verify(
             )
 
 
-def persist_feature_matrix(
+# --------------------------------------------------------------------------- #
+# the single private persistence boundary — requires ALL verification material
+# --------------------------------------------------------------------------- #
+def _persist_feature_matrix(
     engine: Engine,
     *,
     snapshot: FrozenSnapshot,
     matrix: FeatureMatrix,
-    artifact_sha256: str,
-    artifact_path: Path,
-    artifact_size: int,
+    vectors: tuple[FeatureVector, ...],
+    partition_root: Path,
 ) -> PersistedFeatureMatrix:
-    """Persist feature set + matrix + members + artifact registration in ONE
-    transaction after full verification (see module docstring for semantics)."""
+    """Serialize, verify, publish (immutable no-clobber), and persist in ONE
+    transaction. Trusts NO caller-supplied hash/size/path: bytes come from
+    :func:`serialize_matrix` here, and the artifact is read back and re-verified."""
     manifest = build_feature_set_manifest()
     if matrix.feature_set_hash != manifest.feature_set_hash:
         raise ContractValidationError("matrix does not bind the canonical feature set")
+
+    # (1) full logical re-verification BEFORE any bytes or rows — kills forged matrices.
+    _reverify_or_raise(matrix, snapshot, vectors)
+
+    # (2) identity-bound canonical bytes are produced HERE, not accepted from the caller.
+    payload = serialize_matrix(matrix, vectors)
+    artifact_sha256 = hashlib.sha256(payload).hexdigest()
+    artifact_size = len(payload)
+
+    # (3) payload-level re-verification over the bytes this function will publish.
+    payload_checks = verify_matrix_artifact(payload, matrix, vectors, artifact_sha256)
+    if not all(payload_checks.values()):
+        raise MatrixArtifactIntegrityError(
+            "candidate artifact failed canonical Parquet verification: "
+            + ", ".join(sorted(k for k, v in payload_checks.items() if not v))
+        )
+
+    root = partition_root / "l2e" / matrix.partition
+    final_path = root / f"{artifact_sha256}.parquet"
+
+    conn = engine.connect()
+    trans = conn.begin()
+    published_created = False
     try:
-        with engine.begin() as conn:
-            feature_set_id = persist_feature_set(conn, manifest)
-            profile_snapshot_id = _verify_operational_snapshot(conn, snapshot)
-            member_rows = conn.execute(
-                text(
-                    "SELECT dr.dataset_id, dr.id AS registry_id, m.feature_values_hash "
-                    "FROM profiling.profile_snapshot_members m "
-                    "JOIN catalog.dataset_registry dr ON dr.id = m.dataset_registry_id "
-                    "WHERE m.profile_snapshot_id = :s AND m.partition = :p"
-                ),
-                {"s": profile_snapshot_id, "p": matrix.partition},
-            ).all()
-            member_registry_ids = {r.dataset_id: str(r.registry_id) for r in member_rows}
-            member_feature_hashes = {r.dataset_id: r.feature_values_hash for r in member_rows}
-            if set(member_registry_ids) != {m.dataset_id for m in matrix.members}:
-                raise SnapshotIdentityMismatchError(
-                    "matrix membership does not equal the snapshot partition membership"
-                )
+        # serialize concurrent publishers of the same content across processes.
+        conn.execute(
+            text("SELECT pg_advisory_xact_lock(:k)"), {"k": _advisory_key(artifact_sha256)}
+        )
 
-            existing = _matrix_row_by_identity(
-                conn, profile_snapshot_id, matrix.partition, feature_set_id
+        feature_set_id = _persist_feature_set(conn, manifest)
+        profile_snapshot_id = _verify_operational_snapshot(conn, snapshot)
+        member_rows = conn.execute(
+            text(
+                "SELECT dr.dataset_id, dr.id AS registry_id, m.feature_values_hash "
+                "FROM profiling.profile_snapshot_members m "
+                "JOIN catalog.dataset_registry dr ON dr.id = m.dataset_registry_id "
+                "WHERE m.profile_snapshot_id = :s AND m.partition = :p"
+            ),
+            {"s": profile_snapshot_id, "p": matrix.partition},
+        ).all()
+        member_registry_ids = {r.dataset_id: str(r.registry_id) for r in member_rows}
+        member_feature_hashes = {r.dataset_id: r.feature_values_hash for r in member_rows}
+        if set(member_registry_ids) != {m.dataset_id for m in matrix.members}:
+            raise SnapshotIdentityMismatchError(
+                "matrix membership does not equal the snapshot partition membership"
             )
-            if existing is not None:
-                if (
-                    existing["matrix_hash"] != matrix.matrix_hash
-                    or existing["artifact_sha256"] != artifact_sha256
-                ):
-                    raise MatrixConflictError(
-                        "a matrix with the same logical identity exists with a different "
-                        "matrix_hash/artifact binding"
-                    )
-                _read_back_and_verify(
-                    conn,
-                    str(existing["id"]),
-                    matrix=matrix,
-                    feature_set_id=feature_set_id,
-                    profile_snapshot_id=profile_snapshot_id,
-                    artifact_sha256=artifact_sha256,
-                    artifact_id=str(existing["matrix_artifact_id"]),
-                    member_registry_ids=member_registry_ids,
-                    member_feature_hashes=member_feature_hashes,
-                )
-                return PersistedFeatureMatrix(
-                    feature_matrix_id=str(existing["id"]),
-                    feature_set_id=feature_set_id,
-                    matrix_hash=matrix.matrix_hash,
-                    artifact_sha256=artifact_sha256,
-                    matrix_artifact_id=str(existing["matrix_artifact_id"]),
-                    artifact_path=str(artifact_path),
-                    row_count=matrix.row_count,
-                    idempotent=True,
-                )
 
-            artifact_id = _register_matrix_artifact(
-                conn, uri=str(artifact_path), sha256=artifact_sha256, size_bytes=artifact_size
+        existing = _matrix_row_by_identity(
+            conn, profile_snapshot_id, matrix.partition, feature_set_id
+        )
+        if existing is not None:
+            if (
+                existing["matrix_hash"] != matrix.matrix_hash
+                or existing["artifact_sha256"] != artifact_sha256
+            ):
+                raise MatrixConflictError(
+                    "a matrix with the same logical identity exists with a different "
+                    "matrix_hash/artifact binding"
+                )
+            stored_uri = _verify_stored_artifact(
+                conn,
+                artifact_id=str(existing["matrix_artifact_id"]),
+                expected_sha256=artifact_sha256,
+                expected_size=artifact_size,
+                expected_uri=str(final_path),
+                partition_root=root,
+                matrix=matrix,
+                vectors=vectors,
             )
-            inserted = conn.execute(
+            _read_back_and_verify(
+                conn,
+                str(existing["id"]),
+                matrix=matrix,
+                feature_set_id=feature_set_id,
+                profile_snapshot_id=profile_snapshot_id,
+                artifact_sha256=artifact_sha256,
+                artifact_id=str(existing["matrix_artifact_id"]),
+                member_registry_ids=member_registry_ids,
+                member_feature_hashes=member_feature_hashes,
+            )
+            trans.commit()
+            return PersistedFeatureMatrix(
+                feature_matrix_id=str(existing["id"]),
+                feature_set_id=feature_set_id,
+                matrix_hash=matrix.matrix_hash,
+                artifact_sha256=artifact_sha256,
+                matrix_artifact_id=str(existing["matrix_artifact_id"]),
+                artifact_path=stored_uri,
+                row_count=matrix.row_count,
+                idempotent=True,
+            )
+
+        artifact_id, _ = _register_matrix_artifact(
+            conn, uri=str(final_path), sha256=artifact_sha256, size_bytes=artifact_size
+        )
+        matrix_id = str(
+            conn.execute(
                 text(
                     "INSERT INTO profiling.feature_matrices "
                     "(profile_snapshot_id, partition, feature_set_id, matrix_hash, "
                     " artifact_sha256, matrix_artifact_id, row_count, column_count) "
-                    "VALUES (:s, :p, :f, :mh, :ah, :aid, :rc, :cc) "
-                    "ON CONFLICT ON CONSTRAINT uq_feature_matrices_logical_identity "
-                    "DO NOTHING RETURNING id"
+                    "VALUES (:s, :p, :f, :mh, :ah, :aid, :rc, :cc) RETURNING id"
                 ),
                 {
                     "s": profile_snapshot_id,
@@ -465,73 +615,78 @@ def persist_feature_matrix(
                     "rc": matrix.row_count,
                     "cc": matrix.column_count,
                 },
-            ).first()
-            if inserted is None:
-                # a concurrent equal-or-conflicting build won the race; re-read + classify.
-                replay = _matrix_row_by_identity(
-                    conn, profile_snapshot_id, matrix.partition, feature_set_id
-                )
-                if replay is None:  # pragma: no cover - conflict row must exist
-                    raise MatrixConflictError("concurrent matrix insert could not be resolved")
-                if (
-                    replay["matrix_hash"] != matrix.matrix_hash
-                    or replay["artifact_sha256"] != artifact_sha256
-                ):
-                    raise MatrixConflictError(
-                        "a concurrent build persisted the same logical identity with a "
-                        "different matrix_hash/artifact binding"
-                    )
-                matrix_id = str(replay["id"])
-                idempotent = True
-            else:
-                matrix_id = str(inserted.id)
-                idempotent = False
-                for index, member in enumerate(matrix.members):
-                    conn.execute(
-                        text(
-                            "INSERT INTO profiling.feature_matrix_members "
-                            "(feature_matrix_id, dataset_registry_id, member_index, "
-                            " vector_hash, feature_values_hash) "
-                            "VALUES (:m, :d, :i, :vh, :fh)"
-                        ),
-                        {
-                            "m": matrix_id,
-                            "d": member_registry_ids[member.dataset_id],
-                            "i": index,
-                            "vh": member.vector_hash,
-                            "fh": member_feature_hashes[member.dataset_id],
-                        },
-                    )
-            _read_back_and_verify(
-                conn,
-                matrix_id,
-                matrix=matrix,
-                feature_set_id=feature_set_id,
-                profile_snapshot_id=profile_snapshot_id,
-                artifact_sha256=artifact_sha256,
-                artifact_id=artifact_id,
-                member_registry_ids=member_registry_ids,
-                member_feature_hashes=member_feature_hashes,
+            ).scalar_one()
+        )
+        for index, member in enumerate(matrix.members):
+            conn.execute(
+                text(
+                    "INSERT INTO profiling.feature_matrix_members "
+                    "(feature_matrix_id, dataset_registry_id, member_index, "
+                    " vector_hash, feature_values_hash) VALUES (:m, :d, :i, :vh, :fh)"
+                ),
+                {
+                    "m": matrix_id,
+                    "d": member_registry_ids[member.dataset_id],
+                    "i": index,
+                    "vh": member.vector_hash,
+                    "fh": member_feature_hashes[member.dataset_id],
+                },
             )
-            return PersistedFeatureMatrix(
-                feature_matrix_id=matrix_id,
-                feature_set_id=feature_set_id,
-                matrix_hash=matrix.matrix_hash,
-                artifact_sha256=artifact_sha256,
-                matrix_artifact_id=artifact_id,
-                artifact_path=str(artifact_path),
-                row_count=matrix.row_count,
-                idempotent=idempotent,
+        _read_back_and_verify(
+            conn,
+            matrix_id,
+            matrix=matrix,
+            feature_set_id=feature_set_id,
+            profile_snapshot_id=profile_snapshot_id,
+            artifact_sha256=artifact_sha256,
+            artifact_id=artifact_id,
+            member_registry_ids=member_registry_ids,
+            member_feature_hashes=member_feature_hashes,
+        )
+
+        # (4) publish LAST, immediately before commit — so a DB failure never leaves a
+        # newly published, unregistered orphan.
+        published = publish_matrix_artifact(payload, partition_root=root)
+        published_created = published.created
+        # confirm the published file is a confined regular file of exactly our bytes.
+        confined = _confine_within(published.path, root)
+        if confined.read_bytes() != payload:
+            raise MatrixArtifactIntegrityError(
+                "published artifact bytes do not match the verified canonical payload"
             )
+        trans.commit()
+        return PersistedFeatureMatrix(
+            feature_matrix_id=matrix_id,
+            feature_set_id=feature_set_id,
+            matrix_hash=matrix.matrix_hash,
+            artifact_sha256=artifact_sha256,
+            matrix_artifact_id=artifact_id,
+            artifact_path=str(final_path),
+            row_count=matrix.row_count,
+            idempotent=False,
+        )
     except DBAPIError as exc:
+        trans.rollback()
+        if published_created:
+            # our DB rows are rolled back; remove only the inode we created this attempt.
+            with contextlib.suppress(FileNotFoundError):
+                final_path.unlink()
         classified = _classify_unique_violation(exc)
         if classified is exc:
             raise
         raise classified from exc
+    except BaseException:
+        trans.rollback()
+        if published_created:
+            with contextlib.suppress(FileNotFoundError):
+                final_path.unlink()
+        raise
+    finally:
+        conn.close()
 
 
 # --------------------------------------------------------------------------- #
-# builders
+# public builders
 # --------------------------------------------------------------------------- #
 def build_accepted_epoch1_feature_matrix(
     engine: Engine,
@@ -542,9 +697,9 @@ def build_accepted_epoch1_feature_matrix(
 ) -> PersistedFeatureMatrix:
     """THE production E3 builder: accepted epoch-1 boundary only.
 
-    Loads the accepted epoch-1 member manifest (pinned trust anchors; no
-    caller-supplied identities of any kind) BEFORE touching the database, the payload
-    provider, or the filesystem, then builds + persists one partition matrix.
+    Loads the accepted epoch-1 member manifest (pinned trust anchors; no caller-supplied
+    identities) BEFORE touching the database, the payload provider, or the filesystem,
+    then builds + persists one partition matrix.
     """
     snapshot = load_accepted_epoch1_member_manifest(member_manifest_bytes)
     return _build_feature_matrix(engine, snapshot, partition, artifact_root=artifact_root)
@@ -559,7 +714,7 @@ def build_feature_matrix_with_trust(
     artifact_root: Path,
 ) -> PersistedFeatureMatrix:
     """TEST-ONLY generic builder for synthetic snapshots under an explicit complete
-    trust bundle. Production code imports and calls ONLY
+    trust bundle. Production imports and calls ONLY
     :func:`build_accepted_epoch1_feature_matrix`."""
     snapshot = load_member_manifest_with_trust(member_manifest_bytes, trust)
     return _build_feature_matrix(engine, snapshot, partition, artifact_root=artifact_root)
@@ -586,19 +741,10 @@ def _build_feature_matrix(
         return payload_paths[member.dataset_id].read_bytes()
 
     build: MatrixBuild = build_partition_matrix(snapshot, partition, provider)
-    payload = serialize_matrix(build.vectors)
-    artifact_sha256, artifact_path = write_matrix_artifact(
-        payload, partition_root=artifact_root / "l2e" / partition
-    )
-    if hashlib.sha256(artifact_path.read_bytes()).hexdigest() != artifact_sha256:
-        raise ProfileArtifactHashMismatchError(  # pragma: no cover - atomic write verified
-            "final matrix artifact bytes do not match artifact_sha256"
-        )
-    return persist_feature_matrix(
+    return _persist_feature_matrix(
         engine,
         snapshot=snapshot,
         matrix=build.matrix,
-        artifact_sha256=artifact_sha256,
-        artifact_path=artifact_path,
-        artifact_size=len(payload),
+        vectors=build.vectors,
+        partition_root=artifact_root,
     )

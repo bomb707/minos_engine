@@ -203,6 +203,84 @@ def test_builder_reads_exact_artifact_bytes_not_jsonb(l2e_engine, snap_a, built)
         assert hashlib.sha256(payload).hexdigest() == row.profile_sha256
 
 
+# --------------------------------------------------------------------------- #
+# item 5 — zero-row matrices persist, are exposed, and remain retrievable
+# --------------------------------------------------------------------------- #
+def test_zero_row_matrices_persist_and_derive_zero_counts(
+    l2e_engine, built_zero_row, extra_snaps
+) -> None:
+    # epoch 7: validation empty; epoch 8: train empty.
+    assert built_zero_row["e7_train"].row_count == 2
+    assert built_zero_row["e7_validation"].row_count == 0
+    assert built_zero_row["e8_train"].row_count == 0
+    assert built_zero_row["e8_validation"].row_count == 2
+    with l2e_engine.connect() as conn:
+        for epoch, partition in ((7, "validation"), (8, "train")):
+            matrices = conn.execute(
+                text(
+                    "SELECT count(*) FROM profiling.feature_matrices fm "
+                    "JOIN profiling.profile_snapshots ps ON ps.id = fm.profile_snapshot_id "
+                    "WHERE ps.epoch = :e AND fm.partition = :p"
+                ),
+                {"e": epoch, "p": partition},
+            ).scalar_one()
+            members = conn.execute(
+                text(
+                    "SELECT count(*) FROM profiling.feature_matrix_members mm "
+                    "JOIN profiling.feature_matrices fm ON fm.id = mm.feature_matrix_id "
+                    "JOIN profiling.profile_snapshots ps ON ps.id = fm.profile_snapshot_id "
+                    "WHERE ps.epoch = :e AND fm.partition = :p"
+                ),
+                {"e": epoch, "p": partition},
+            ).scalar_one()
+            assert matrices == 1  # the zero-row matrix persists
+            assert members == 0  # with no member rows
+
+
+def test_zero_row_matrix_exposed_by_authorized_view_only(
+    l2e_engine, built_zero_row, matrix_broker
+) -> None:
+    val_empty = built_zero_row["e7_validation"]  # zero-row validation matrix
+    train_empty = built_zero_row["e8_train"]  # zero-row train matrix
+    # the authorized partition view exposes ONE matrix-level row (NULL member columns).
+    with l2e_engine.connect() as conn:
+        conn.execute(text("SET ROLE minos_evaluator"))
+        rows = conn.execute(
+            text(
+                "SELECT matrix_hash, artifact_sha256, dataset_id, member_index "
+                "FROM evaluation.validation_matrix WHERE matrix_hash = :h"
+            ),
+            {"h": val_empty.matrix_hash},
+        ).all()
+        assert len(rows) == 1
+        assert rows[0].dataset_id is None and rows[0].member_index is None
+        assert rows[0].artifact_sha256 == val_empty.artifact_sha256
+        # a zero-row artifact is retrievable + verifiable through the reader.
+        reader = matrix_broker.reader_for(conn)
+        payload = reader.fetch_matrix_payload(conn, val_empty.matrix_hash)
+        assert hashlib.sha256(payload).hexdigest() == val_empty.artifact_sha256
+        # the opposite role cannot resolve it.
+        with pytest.raises(Exception, match="permission denied|does not exist"):
+            conn.execute(
+                text("SELECT 1 FROM profiling.training_matrix WHERE matrix_hash = :h"),
+                {"h": train_empty.matrix_hash},
+            )
+    with l2e_engine.connect() as conn:
+        conn.execute(text("SET ROLE minos_trainer"))
+        reader = matrix_broker.reader_for(conn)
+        payload = reader.fetch_matrix_payload(conn, train_empty.matrix_hash)
+        assert hashlib.sha256(payload).hexdigest() == train_empty.artifact_sha256
+        # a trainer cannot resolve the zero-row VALIDATION matrix.
+        with pytest.raises(Exception, match="not visible"):
+            reader.fetch_matrix_payload(conn, val_empty.matrix_hash)
+    # no test matrix anywhere.
+    with l2e_engine.connect() as conn:
+        n = conn.execute(
+            text("SELECT count(*) FROM profiling.feature_matrices WHERE partition = 'test'")
+        ).scalar_one()
+    assert n == 0
+
+
 def test_select_config_remains_blocked() -> None:
     from minos_engine.common.errors import StageNotReadyError
     from minos_engine.layer2.service import Layer2Service

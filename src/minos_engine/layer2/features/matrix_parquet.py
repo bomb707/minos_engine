@@ -24,10 +24,12 @@ lives in :mod:`minos_engine.layer2.features.contracts`.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import tempfile
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import pyarrow as pa
@@ -56,9 +58,11 @@ __all__ = [
     "QUALIFIED_PYARROW_VERSION",
     "PARQUET_FORMAT_VERSION",
     "PARQUET_DATA_PAGE_VERSION",
+    "PublishedArtifact",
     "canonical_matrix_schema",
     "serialize_matrix",
-    "write_matrix_artifact",
+    "publish_matrix_artifact",
+    "fsync_directory",
     "verify_matrix_artifact",
 ]
 
@@ -75,10 +79,33 @@ QUALIFIED_PYARROW_VERSION = "17.0.0"
 PARQUET_FORMAT_VERSION = "2.6"
 PARQUET_DATA_PAGE_VERSION = "1.0"
 
-_METADATA = {
-    b"schema_version": PARQUET_SCHEMA_VERSION.encode(),
-    b"feature_set_hash": FROZEN_FEATURE_SET_HASH.encode(),
-}
+#: The application metadata keys, in canonical order. Beyond schema_version +
+#: feature_set_hash, the artifact self-identifies its LOGICAL matrix (matrix_hash,
+#: snapshot_hash, partition, epoch). This binds artifact bytes to exactly one logical
+#: matrix, so two DISTINCT matrices never share ``artifact_sha256`` — in particular two
+#: zero-row matrices in different partitions get distinct content-addressed artifacts
+#: under their own partition roots. No timestamp or runtime-generated value is included;
+#: every key is a frozen logical identity. ``matrix_hash`` (logical) and
+#: ``artifact_sha256`` (exact bytes) remain strictly separate VALUES.
+_APP_METADATA_KEYS = (
+    "schema_version",
+    "feature_set_hash",
+    "matrix_hash",
+    "snapshot_hash",
+    "partition",
+    "epoch",
+)
+
+
+def _metadata_for(matrix: FeatureMatrix) -> dict[bytes, bytes]:
+    return {
+        b"schema_version": PARQUET_SCHEMA_VERSION.encode(),
+        b"feature_set_hash": FROZEN_FEATURE_SET_HASH.encode(),
+        b"matrix_hash": matrix.matrix_hash.encode(),
+        b"snapshot_hash": matrix.snapshot_hash.encode(),
+        b"partition": matrix.partition.encode(),
+        b"epoch": str(matrix.epoch).encode(),
+    }
 
 
 def _require_qualified_writer() -> None:
@@ -90,25 +117,30 @@ def _require_qualified_writer() -> None:
         )
 
 
-def canonical_matrix_schema() -> pa.Schema:
-    """The frozen Arrow schema: dataset_id + 129 non-nullable float64 columns."""
+def canonical_matrix_schema(matrix: FeatureMatrix) -> pa.Schema:
+    """The frozen Arrow schema: dataset_id + 129 non-nullable float64 columns, carrying
+    the identity-bound application metadata for ``matrix``."""
     fields = [pa.field("dataset_id", pa.string(), nullable=False)]
     fields += [
         pa.field(column.path, pa.float64(), nullable=False)
         for column in canonical_feature_set().columns
     ]
-    return pa.schema(fields, metadata=_METADATA)
+    return pa.schema(fields, metadata=_metadata_for(matrix))
 
 
-def serialize_matrix(vectors: Sequence[FeatureVector]) -> bytes:
-    """Serialize ordered vectors to the frozen canonical Parquet bytes.
+def serialize_matrix(matrix: FeatureMatrix, vectors: Sequence[FeatureVector]) -> bytes:
+    """Serialize ``matrix``'s ordered vectors to the identity-bound canonical Parquet
+    bytes.
 
-    Fail-closed: requires the qualified writer, vectors already strictly ordered by
-    ``dataset_id`` (rejection over normalization), no duplicates, exactly 129 values
-    per vector, and per-kind validity (FRACTION in [0,1]) re-checked before write.
+    Fail-closed: requires the qualified writer; the vectors must exactly cover the
+    matrix members (same dataset_ids, strictly ordered by ``dataset_id``, no
+    duplicates), exactly 129 values each, per-kind valid (FRACTION in [0,1]); the
+    artifact metadata binds the matrix logical identity.
     """
     _require_qualified_writer()
     ids = [v.dataset_id for v in vectors]
+    if ids != [m.dataset_id for m in matrix.members]:
+        raise MatrixArtifactIntegrityError("vectors do not match the matrix members/order")
     if len(set(ids)) != len(ids):
         raise MatrixArtifactIntegrityError("duplicate dataset_id rows are rejected")
     if ids != sorted(ids):
@@ -124,7 +156,7 @@ def serialize_matrix(vectors: Sequence[FeatureVector]) -> bytes:
                 validate_value_for_kind(column.value_kind, value, column.path)
             except ValueError as exc:
                 raise MissingFeatureError(f"{vector.dataset_id}: {exc}") from exc
-    schema = canonical_matrix_schema()
+    schema = canonical_matrix_schema(matrix)
     arrays: list[pa.Array] = [pa.array(ids, type=pa.string())]
     for index in range(EXPECTED_COLUMN_COUNT):
         arrays.append(pa.array([v.values[index] for v in vectors], type=pa.float64()))
@@ -147,18 +179,50 @@ def serialize_matrix(vectors: Sequence[FeatureVector]) -> bytes:
     return bytes(sink.getvalue().to_pybytes())
 
 
-def write_matrix_artifact(payload: bytes, *, partition_root: Path) -> tuple[str, Path]:
-    """Atomically place the payload at its content-addressed final location.
+@dataclass(frozen=True)
+class PublishedArtifact:
+    """Result of a content-addressed publication."""
 
-    Writes through a temporary file in the same directory, fsyncs, re-reads and
-    verifies the completed bytes, then atomically renames to
-    ``<partition_root>/<sha256>.parquet``. Failures never leave a partial final
-    artifact (the temporary file is removed). Returns ``(artifact_sha256, path)``.
+    artifact_sha256: str
+    path: Path
+    size_bytes: int
+    #: True iff THIS call created the final inode (False = an identical file already
+    #: existed and was verified + reused). Rollback cleanup may unlink only when True.
+    created: bool
+
+
+def fsync_directory(directory: Path) -> None:
+    """fsync a directory so a rename/link into it is durable."""
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def publish_matrix_artifact(payload: bytes, *, partition_root: Path) -> PublishedArtifact:
+    """Publish the payload to its content-addressed location with IMMUTABLE, no-clobber
+    semantics (never ``os.replace`` over an existing target).
+
+    * If ``<partition_root>/<sha256>.parquet`` already exists it is verified byte-for-byte
+      and reused (``created=False``); a mismatch raises :class:`MatrixArtifactIntegrityError`
+      and leaves the existing file UNCHANGED.
+    * Otherwise the bytes are written to a unique temp file, fsynced, then hard-linked
+      into place atomically (``os.link`` fails closed if the target already exists — a
+      concurrent equal-content publisher does not replace the winner's inode). The temp
+      link is removed and the directory fsynced. ``created=True``.
+
+    A partial final artifact can never appear: the final name only ever names a fully
+    written, fsynced inode.
     """
     artifact_sha256 = hashlib.sha256(payload).hexdigest()
     partition_root.mkdir(parents=True, exist_ok=True)
     final_path = partition_root / f"{artifact_sha256}.parquet"
-    # unique temp name per writer (concurrent equal-content builds never collide).
+
+    if final_path.exists():
+        _verify_existing_bytes(final_path, artifact_sha256)
+        return PublishedArtifact(artifact_sha256, final_path, len(payload), created=False)
+
     tmp_fd, tmp_name = tempfile.mkstemp(prefix=f".tmp-{artifact_sha256}-", dir=partition_root)
     tmp_path = Path(tmp_name)
     try:
@@ -166,21 +230,32 @@ def write_matrix_artifact(payload: bytes, *, partition_root: Path) -> tuple[str,
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-        written = tmp_path.read_bytes()
-        if hashlib.sha256(written).hexdigest() != artifact_sha256:
-            raise MatrixArtifactIntegrityError(
+        if hashlib.sha256(tmp_path.read_bytes()).hexdigest() != artifact_sha256:
+            raise MatrixArtifactIntegrityError(  # pragma: no cover - local write is stable
                 "written artifact bytes do not hash to the expected artifact_sha256"
             )
-        os.replace(tmp_path, final_path)
+        try:
+            os.link(tmp_path, final_path)  # atomic, no-clobber
+            created = True
+        except FileExistsError:
+            # a concurrent publisher won; verify + reuse its inode, never replace it.
+            _verify_existing_bytes(final_path, artifact_sha256)
+            created = False
     finally:
-        if tmp_path.exists():
+        with contextlib.suppress(FileNotFoundError):
             tmp_path.unlink()
-    directory_fd = os.open(partition_root, os.O_RDONLY)
-    try:
-        os.fsync(directory_fd)
-    finally:
-        os.close(directory_fd)
-    return artifact_sha256, final_path
+    fsync_directory(partition_root)
+    return PublishedArtifact(artifact_sha256, final_path, len(payload), created=created)
+
+
+def _verify_existing_bytes(path: Path, expected_sha256: str) -> None:
+    if not path.is_file():
+        raise MatrixArtifactIntegrityError(f"artifact path is not a regular file: {path}")
+    if hashlib.sha256(path.read_bytes()).hexdigest() != expected_sha256:
+        raise MatrixArtifactIntegrityError(
+            f"pre-existing artifact at {path} does not match the expected content hash "
+            "(left unchanged)"
+        )
 
 
 def verify_matrix_artifact(
@@ -203,7 +278,7 @@ def verify_matrix_artifact(
     )
     ordered = sorted(vectors, key=lambda v: v.dataset_id)
     try:
-        reserialized = serialize_matrix(ordered)
+        reserialized = serialize_matrix(matrix, ordered)
         checks["reserialization_byte_identical"] = reserialized == payload
     except Exception:  # noqa: BLE001 - verification never raises, it reports
         checks["reserialization_byte_identical"] = False
@@ -231,11 +306,11 @@ def verify_matrix_artifact(
         k.decode() for k in (pq.ParquetFile(pa.BufferReader(payload)).metadata.metadata or {})
     }
     metadata = {k.decode(): v.decode() for k, v in raw_metadata.items() if k != b"ARROW:schema"}
-    # exactly the two application keys, plus ONLY the pinned writer's ARROW:schema echo.
-    checks["schema_metadata_exact"] = metadata == {
-        "schema_version": PARQUET_SCHEMA_VERSION,
-        "feature_set_hash": FROZEN_FEATURE_SET_HASH,
-    } and file_keys == {"schema_version", "feature_set_hash", "ARROW:schema"}
+    # exactly the identity-bound application keys, plus ONLY the writer's ARROW:schema echo.
+    expected_metadata = {k.decode(): v.decode() for k, v in _metadata_for(matrix).items()}
+    checks["schema_metadata_exact"] = metadata == expected_metadata and file_keys == (
+        set(_APP_METADATA_KEYS) | {"ARROW:schema"}
+    )
     checks["column_names_and_order_exact"] = table.schema.names == expected_names
     checks["column_types_exact"] = table.schema.names == expected_names and (
         table.schema.field(0).type == pa.string()

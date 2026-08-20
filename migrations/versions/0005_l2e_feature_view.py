@@ -223,13 +223,16 @@ def _create_feature_matrix_members() -> None:
 
 def _create_views() -> None:
     cols = ", ".join(_MATRIX_VIEW_COLUMNS)
+    # Start FROM feature_matrices so a zero-row matrix still exposes ONE matrix-level
+    # row (its artifact reference) with NULL member columns. Members and their registry
+    # rows are LEFT JOINed; the artifact/set/snapshot are always present (INNER).
     join = (
-        "FROM profiling.feature_matrix_members mm "
-        "JOIN profiling.feature_matrices fm ON fm.id = mm.feature_matrix_id "
+        "FROM profiling.feature_matrices fm "
         "JOIN profiling.feature_sets fs ON fs.id = fm.feature_set_id "
         "JOIN profiling.profile_snapshots ps ON ps.id = fm.profile_snapshot_id "
-        "JOIN catalog.dataset_registry dr ON dr.id = mm.dataset_registry_id "
         "JOIN catalog.artifacts art ON art.id = fm.matrix_artifact_id "
+        "LEFT JOIN profiling.feature_matrix_members mm ON mm.feature_matrix_id = fm.id "
+        "LEFT JOIN catalog.dataset_registry dr ON dr.id = mm.dataset_registry_id "
     )
     op.execute(
         f"CREATE VIEW profiling.training_matrix WITH (security_barrier = true) AS "

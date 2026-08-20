@@ -83,10 +83,17 @@ or changing any value, epoch, count, or bound identity changes the respective ha
 * **Null policy: nulls are forbidden** — any missing/null value fails closed before
   serialization (columns are non-nullable in the Arrow schema).
 * Codec: `compression=NONE`; Parquet format version pinned; statistics disabled;
-  no timestamps or environment-dependent metadata; the only schema metadata keys are
-  `{"schema_version": "feature-matrix-parquet-v1", "feature_set_hash": …}`.
-* Determinism rule: byte-identical output for identical logical content on the pinned
-  writer version; the payload verifier re-serializes and compares hashes.
+  no timestamps or environment-dependent metadata. The application schema metadata keys
+  are exactly `{schema_version, feature_set_hash, matrix_hash, snapshot_hash, partition,
+  epoch}` (E3 corrective): the artifact self-identifies its LOGICAL matrix, so two
+  distinct matrices never share `artifact_sha256` — in particular two zero-row matrices
+  in different partitions get distinct content-addressed artifacts under their own
+  partition roots. Every key is a frozen logical identity (no runtime/timestamp value);
+  `matrix_hash` (logical) and `artifact_sha256` (exact bytes) remain strictly separate
+  VALUES.
+* Determinism rule: byte-identical output for identical logical matrix on the pinned
+  qualified writer version (`pyarrow==17.0.0`); the payload verifier re-serializes and
+  compares hashes and metadata.
 
 ## Verification levels (correction 2 — three, named honestly)
 

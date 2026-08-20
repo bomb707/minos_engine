@@ -1,4 +1,4 @@
-"""E3 concurrency on real PostgreSQL: equal-content races and conflicting identities."""
+"""E3 concurrency on real PostgreSQL: equal-content races; a forgery can never win."""
 
 from __future__ import annotations
 
@@ -6,21 +6,20 @@ import threading
 
 from sqlalchemy import create_engine, text
 
-from minos_engine.common.errors import MatrixConflictError
 from minos_engine.layer2.features.contracts import FeatureMatrix, MatrixMember, vector_hash
+from minos_engine.layer2.features.errors import MatrixArtifactIntegrityError
 from minos_engine.layer2.features.extraction import (
     build_partition_matrix,
     load_member_manifest_with_trust,
 )
-from minos_engine.layer2.features.matrix_parquet import serialize_matrix, write_matrix_artifact
 from minos_engine.storage.database import normalize_database_url
 from minos_engine.storage.feature_matrix import (
+    _persist_feature_matrix,
     build_feature_matrix_with_trust,
-    persist_feature_matrix,
 )
 
 
-def _count_matrices(engine, epoch: int) -> int:
+def _count(engine, epoch: int) -> int:
     with engine.connect() as conn:
         return int(
             conn.execute(
@@ -34,16 +33,27 @@ def _count_matrices(engine, epoch: int) -> int:
         )
 
 
-def test_two_engines_concurrent_equal_content_build(
+def _stored_hash(engine, epoch: int) -> str:
+    with engine.connect() as conn:
+        return str(
+            conn.execute(
+                text(
+                    "SELECT fm.matrix_hash FROM profiling.feature_matrices fm "
+                    "JOIN profiling.profile_snapshots ps ON ps.id = fm.profile_snapshot_id "
+                    "WHERE ps.epoch = :e AND fm.partition = 'train'"
+                ),
+                {"e": epoch},
+            ).scalar_one()
+        )
+
+
+def test_two_engines_equal_content_build_one_row_both_succeed(
     l2e_db_url, l2e_engine, extra_snaps, artifact_root
 ) -> None:
-    """Two independent engines build the SAME logical matrix concurrently: both
-    succeed, exactly one row exists, identical identities on both sides."""
+    """Two independent engines build the SAME logical matrix concurrently: both succeed,
+    exactly one accepted row, exactly one published inode (one created + one replay)."""
     snap = extra_snaps[5]
-    engines = [
-        create_engine(normalize_database_url(l2e_db_url)),
-        create_engine(normalize_database_url(l2e_db_url)),
-    ]
+    engines = [create_engine(normalize_database_url(l2e_db_url)) for _ in range(2)]
     barrier = threading.Barrier(2)
     results: list = [None, None]
     errors: list = [None, None]
@@ -52,11 +62,7 @@ def test_two_engines_concurrent_equal_content_build(
         try:
             barrier.wait(timeout=30)
             results[slot] = build_feature_matrix_with_trust(
-                engines[slot],
-                snap.manifest_bytes,
-                snap.trust,
-                "train",
-                artifact_root=artifact_root,
+                engines[slot], snap.manifest_bytes, snap.trust, "train", artifact_root=artifact_root
             )
         except Exception as exc:  # noqa: BLE001 - collected for assertion
             errors[slot] = exc
@@ -68,33 +74,41 @@ def test_two_engines_concurrent_equal_content_build(
         t.join(timeout=120)
     for engine in engines:
         engine.dispose()
+
     assert errors == [None, None], errors
     assert results[0] is not None and results[1] is not None
     assert results[0].matrix_hash == results[1].matrix_hash
     assert results[0].feature_matrix_id == results[1].feature_matrix_id
     assert results[0].artifact_sha256 == results[1].artifact_sha256
-    # both succeeded, but exactly ONE accepted row exists.
-    assert _count_matrices(l2e_engine, 5) == 1
-    assert results[0].idempotent != results[1].idempotent or any(r.idempotent for r in results)
+    assert _count(l2e_engine, 5) == 1
+    assert {results[0].idempotent, results[1].idempotent} == {True, False}
+    # one single published inode for the shared content.
+    from pathlib import Path
+
+    p = Path(results[0].artifact_path)
+    assert p == Path(results[1].artifact_path)
+    assert len(list(p.parent.glob(f"{results[0].artifact_sha256}.parquet"))) == 1
 
 
-def test_concurrent_conflicting_identity_one_row_one_typed_error(
+def test_forged_candidate_cannot_win_concurrency(
     l2e_db_url, l2e_engine, extra_snaps, artifact_root
 ) -> None:
-    """Two concurrent persists with the SAME logical identity but DIFFERENT content:
-    exactly one accepted row remains and the loser gets a typed MatrixConflictError."""
+    """Honest and forged builds race on a fresh identity: the forgery is rejected by
+    re-verification before any DB work, so the honest matrix is the sole accepted row."""
     snap = extra_snaps[6]
     snapshot = load_member_manifest_with_trust(snap.manifest_bytes, snap.trust)
     honest = build_partition_matrix(
         snapshot, "train", lambda m: snap.payload_paths[m.dataset_id].read_bytes()
     )
-    forged_values = list(honest.vectors[0].values)
-    forged_values[1] = 0.222222
-    forged_vector = honest.vectors[0].model_copy(update={"values": tuple(forged_values)})
-    forged_vector = forged_vector.model_copy(update={"vector_hash": vector_hash(forged_vector)})
-    forged_vectors = sorted(
-        [forged_vector] + [v for v in honest.vectors if v.dataset_id != forged_vector.dataset_id],
-        key=lambda v: v.dataset_id,
+    values = list(honest.vectors[0].values)
+    values[1] = 0.999888  # REAL column; only feature_values_hash goes stale
+    forged_vec = honest.vectors[0].model_copy(update={"values": tuple(values)})
+    forged_vec = forged_vec.model_copy(update={"vector_hash": vector_hash(forged_vec)})
+    forged_vectors = tuple(
+        sorted(
+            [forged_vec] + [v for v in honest.vectors if v.dataset_id != forged_vec.dataset_id],
+            key=lambda v: v.dataset_id,
+        )
     )
     forged_matrix = FeatureMatrix(
         epoch=snapshot.epoch,
@@ -110,38 +124,29 @@ def test_concurrent_conflicting_identity_one_row_one_typed_error(
     )
     assert forged_matrix.matrix_hash != honest.matrix.matrix_hash
 
-    honest_payload = serialize_matrix(honest.vectors)
-    honest_sha, honest_path = write_matrix_artifact(
-        honest_payload, partition_root=artifact_root / "l2e" / "train"
-    )
-    forged_payload = serialize_matrix(forged_vectors)
-    forged_sha, forged_path = write_matrix_artifact(
-        forged_payload, partition_root=artifact_root / "l2e" / "train"
-    )
-
-    engines = [
-        create_engine(normalize_database_url(l2e_db_url)),
-        create_engine(normalize_database_url(l2e_db_url)),
-    ]
-    jobs = (
-        (honest.matrix, honest_sha, honest_path, len(honest_payload)),
-        (forged_matrix, forged_sha, forged_path, len(forged_payload)),
-    )
+    engines = [create_engine(normalize_database_url(l2e_db_url)) for _ in range(2)]
     barrier = threading.Barrier(2)
     outcomes: list = [None, None]
 
     def worker(slot: int) -> None:
-        matrix, sha, path, size = jobs[slot]
         try:
             barrier.wait(timeout=30)
-            outcomes[slot] = persist_feature_matrix(
-                engines[slot],
-                snapshot=snapshot,
-                matrix=matrix,
-                artifact_sha256=sha,
-                artifact_path=path,
-                artifact_size=size,
-            )
+            if slot == 0:
+                outcomes[0] = _persist_feature_matrix(
+                    engines[0],
+                    snapshot=snapshot,
+                    matrix=honest.matrix,
+                    vectors=honest.vectors,
+                    partition_root=artifact_root,
+                )
+            else:
+                outcomes[1] = _persist_feature_matrix(
+                    engines[1],
+                    snapshot=snapshot,
+                    matrix=forged_matrix,
+                    vectors=forged_vectors,
+                    partition_root=artifact_root,
+                )
         except Exception as exc:  # noqa: BLE001 - collected for assertion
             outcomes[slot] = exc
 
@@ -153,16 +158,7 @@ def test_concurrent_conflicting_identity_one_row_one_typed_error(
     for engine in engines:
         engine.dispose()
 
-    conflicts = [o for o in outcomes if isinstance(o, MatrixConflictError)]
-    successes = [o for o in outcomes if not isinstance(o, Exception) and o is not None]
-    assert len(conflicts) == 1 and len(successes) == 1, outcomes
-    assert _count_matrices(l2e_engine, 6) == 1
-    with l2e_engine.connect() as conn:
-        stored_hash = conn.execute(
-            text(
-                "SELECT fm.matrix_hash FROM profiling.feature_matrices fm "
-                "JOIN profiling.profile_snapshots ps ON ps.id = fm.profile_snapshot_id "
-                "WHERE ps.epoch = 6 AND fm.partition = 'train'"
-            )
-        ).scalar_one()
-    assert stored_hash == successes[0].matrix_hash
+    assert not isinstance(outcomes[0], Exception), outcomes[0]
+    assert isinstance(outcomes[1], MatrixArtifactIntegrityError)
+    assert _count(l2e_engine, 6) == 1
+    assert _stored_hash(l2e_engine, 6) == honest.matrix.matrix_hash  # forgery never wins

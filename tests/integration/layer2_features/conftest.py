@@ -15,8 +15,10 @@ load them; the production accepted-epoch-1 boundary rejects them by construction
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
+import os
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -501,6 +503,10 @@ _EXTRA_SPECS: dict[int, tuple[tuple[str, str, str], ...]] = {
     4: (("ds-e4-01", "chr20", "train"), ("ds-e4-02", "chr21", "train")),
     5: (("ds-e5-01", "chr21", "train"), ("ds-e5-02", "chr22", "train")),
     6: (("ds-e6-01", "chr18", "train"), ("ds-e6-02", "chr19", "train")),
+    # zero-row partitions: epoch 7 = train nonempty / validation empty;
+    # epoch 8 = train empty / validation nonempty.
+    7: (("ds-e7-01", "chr18", "train"), ("ds-e7-02", "chr19", "train")),
+    8: (("ds-e8-01", "chr20", "validation"), ("ds-e8-02", "chr21", "validation")),
 }
 
 
@@ -512,7 +518,7 @@ def extra_snaps(
 ) -> dict[int, SyntheticSnapshot]:
     snaps: dict[int, SyntheticSnapshot] = {}
     parent = snap_b
-    for epoch in (3, 4, 5, 6):
+    for epoch in (3, 4, 5, 6, 7, 8):
         snap = build_synthetic_snapshot(
             _EXTRA_SPECS[epoch],
             epoch=epoch,
@@ -522,6 +528,21 @@ def extra_snaps(
         snaps[epoch] = snap
         parent = snap
     return snaps
+
+
+def usable_secondary_groups() -> list[str]:
+    """OS groups the current user belongs to other than its primary gid — usable for a
+    real (non-privileged) partition-credential test. Empty when none are available."""
+    import grp
+
+    primary = os.getgid()
+    names: list[str] = []
+    for gid in os.getgroups():
+        if gid == primary:
+            continue
+        with contextlib.suppress(KeyError):
+            names.append(grp.getgrgid(gid).gr_name)
+    return names
 
 
 @pytest.fixture(scope="session")
@@ -546,3 +567,35 @@ def built(
                 artifact_root=artifact_root,
             )
     return results
+
+
+@pytest.fixture(scope="session")
+def built_zero_row(
+    l2e_engine: Engine, extra_snaps: dict[int, SyntheticSnapshot], artifact_root: Path
+) -> dict[str, Any]:
+    """Both partitions of the two zero-row snapshots, built through the test boundary.
+
+    epoch 7: train has 2 members, validation has 0 (zero-row validation matrix).
+    epoch 8: validation has 2 members, train has 0 (zero-row train matrix).
+    """
+    from minos_engine.storage.feature_matrix import build_feature_matrix_with_trust
+
+    out: dict[str, Any] = {}
+    for epoch, tag in ((7, "e7"), (8, "e8")):
+        snap = extra_snaps[epoch]
+        for partition in ("train", "validation"):
+            out[f"{tag}_{partition}"] = build_feature_matrix_with_trust(
+                l2e_engine, snap.manifest_bytes, snap.trust, partition, artifact_root=artifact_root
+            )
+    return out
+
+
+@pytest.fixture(scope="session")
+def matrix_broker(artifact_root: Path):
+    """An owner-side broker over the (single-UID) artifact roots for retrieval tests."""
+    from minos_engine.storage.matrix_access import MatrixArtifactBroker
+
+    return MatrixArtifactBroker(
+        train_root=artifact_root / "l2e" / "train",
+        validation_root=artifact_root / "l2e" / "validation",
+    )

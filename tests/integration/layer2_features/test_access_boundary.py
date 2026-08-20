@@ -1,17 +1,24 @@
-"""E3 access boundary: role-scoped views, artifact denial, retrieval confinement."""
+"""E3 access boundary: role-scoped views, broker/reader retrieval, real credentials."""
 
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
 from sqlalchemy import Engine, text
 
 from minos_engine.common.errors import MatrixAccessError
-from minos_engine.storage.matrix_access import PartitionArtifactStore
-
-_APP_ROLES = ("minos_trainer", "minos_evaluator", "minos_live", "minos_runner")
+from minos_engine.storage.matrix_access import (
+    MatrixArtifactBroker,
+    PartitionArtifactReader,
+    configure_partition_root,
+    verify_operational_credentials,
+    verify_partition_capability,
+)
+from tests.conftest import REPO_ROOT
+from tests.integration.layer2_features.conftest import usable_secondary_groups
 
 _TRAIN_VIEW = "SELECT count(*) FROM profiling.training_matrix"
 _VALIDATION_VIEW = "SELECT count(*) FROM evaluation.validation_matrix"
@@ -33,13 +40,9 @@ def _role_query(engine: Engine, role: str, sql: str) -> bool:
             return False
 
 
-def _store(artifact_root: Path) -> PartitionArtifactStore:
-    return PartitionArtifactStore(
-        train_root=artifact_root / "l2e" / "train",
-        validation_root=artifact_root / "l2e" / "validation",
-    )
-
-
+# --------------------------------------------------------------------------- #
+# grant matrix (DB layer)
+# --------------------------------------------------------------------------- #
 def test_train_view_visible_only_to_trainer(l2e_engine, built) -> None:
     assert _role_query(l2e_engine, "minos_trainer", _TRAIN_VIEW) is True
     assert _role_query(l2e_engine, "minos_evaluator", _TRAIN_VIEW) is False
@@ -66,197 +69,211 @@ def test_live_and_runner_legacy_artifact_access_unchanged(l2e_engine, built) -> 
     assert _role_query(l2e_engine, "minos_runner", _RAW_ARTIFACTS) is True
 
 
-def test_view_rows_carry_only_own_partition(l2e_engine, built) -> None:
-    with l2e_engine.connect() as conn:
-        conn.execute(text("SET ROLE minos_trainer"))
-        train_rows = (
-            conn.execute(text("SELECT DISTINCT partition FROM profiling.training_matrix"))
-            .scalars()
-            .all()
-        )
-    with l2e_engine.connect() as conn:
-        conn.execute(text("SET ROLE minos_evaluator"))
-        validation_rows = (
-            conn.execute(text("SELECT DISTINCT partition FROM evaluation.validation_matrix"))
-            .scalars()
-            .all()
-        )
-    assert train_rows == ["train"]
-    assert validation_rows == ["validation"]
-
-
 # --------------------------------------------------------------------------- #
-# partition-aware retrieval boundary
+# broker / role-specific reader: no caller-side object holds both roots
 # --------------------------------------------------------------------------- #
-def test_retrieval_identity_is_derived_from_current_user(l2e_engine, built, artifact_root) -> None:
-    store = _store(artifact_root)
+def test_broker_mints_single_partition_reader(l2e_engine, built, matrix_broker) -> None:
     train = built[("a", "train")]
     validation = built[("a", "validation")]
     with l2e_engine.connect() as conn:
         conn.execute(text("SET ROLE minos_trainer"))
-        payload = store.fetch_matrix_payload(conn, train.matrix_hash)
+        reader = matrix_broker.reader_for(conn)
+        assert isinstance(reader, PartitionArtifactReader)
+        assert reader.partition == "train"
+        # the reader holds ONLY the train root — not a dict of both.
+        assert not hasattr(reader, "_roots")
+        payload = reader.fetch_matrix_payload(conn, train.matrix_hash)
         assert len(payload) > 0
-        # the trainer CANNOT resolve the validation matrix — not even its existence.
+        # a train reader cannot resolve the validation matrix even by hash.
         with pytest.raises(MatrixAccessError, match="not visible"):
-            store.fetch_matrix_payload(conn, validation.matrix_hash)
+            reader.fetch_matrix_payload(conn, validation.matrix_hash)
     with l2e_engine.connect() as conn:
         conn.execute(text("SET ROLE minos_evaluator"))
-        payload = store.fetch_matrix_payload(conn, validation.matrix_hash)
-        assert len(payload) > 0
+        reader = matrix_broker.reader_for(conn)
+        assert reader.partition == "validation"
+        assert len(reader.fetch_matrix_payload(conn, validation.matrix_hash)) > 0
         with pytest.raises(MatrixAccessError, match="not visible"):
-            store.fetch_matrix_payload(conn, train.matrix_hash)
-    # an identity outside the partition map has no retrieval path at all.
+            reader.fetch_matrix_payload(conn, train.matrix_hash)
+
+
+def test_reader_rejects_mismatched_connection_identity(l2e_engine, built, matrix_broker) -> None:
+    train = built[("a", "train")]
+    train_reader = PartitionArtifactReader("train", matrix_broker.root_for("train"))
+    with l2e_engine.connect() as conn:
+        conn.execute(text("SET ROLE minos_evaluator"))
+        # an evaluator connection may not drive a train reader.
+        with pytest.raises(MatrixAccessError, match="does not match"):
+            train_reader.fetch_matrix_payload(conn, train.matrix_hash)
+
+
+def test_unmapped_identity_has_no_retrieval_path(l2e_engine, built, matrix_broker) -> None:
+    # default login role is not a partition role.
     with (
         l2e_engine.connect() as conn,
         pytest.raises(MatrixAccessError, match="no matrix partition"),
     ):
-        store.fetch_matrix_payload(conn, train.matrix_hash)
+        matrix_broker.reader_for(conn)
 
 
-def test_roots_must_be_distinct_and_non_overlapping(artifact_root) -> None:
+def test_broker_rejects_same_or_overlapping_roots(artifact_root) -> None:
     same = artifact_root / "l2e" / "train"
     with pytest.raises(MatrixAccessError, match="same"):
-        PartitionArtifactStore(train_root=same, validation_root=same)
+        MatrixArtifactBroker(train_root=same, validation_root=same)
     with pytest.raises(MatrixAccessError, match="overlap"):
-        PartitionArtifactStore(
+        MatrixArtifactBroker(
             train_root=artifact_root / "l2e", validation_root=artifact_root / "l2e" / "validation"
         )
 
 
-def test_path_confinement_rejects_traversal_and_symlink_escape(
-    l2e_engine, built, artifact_root, tmp_path
-) -> None:
-    store = _store(artifact_root)
+def test_reader_path_confinement_and_tamper(l2e_engine, built, matrix_broker, tmp_path) -> None:
     train = built[("a", "train")]
-    train_path = Path(train.artifact_path)
-    # traversal / relative / outside paths are rejected by confinement.
+    reader = PartitionArtifactReader("train", matrix_broker.root_for("train"))
+    root = matrix_broker.root_for("train")
+    # traversal / relative / absolute-outside are rejected by confinement.
     with pytest.raises(MatrixAccessError):
-        store._confine("train", str(artifact_root / "l2e" / "train" / ".." / "validation" / "x"))
+        reader._confine(str(root / ".." / "validation" / "x.parquet"))
     with pytest.raises(MatrixAccessError, match="absolute"):
-        store._confine("train", "relative/path.parquet")
+        reader._confine("relative/path.parquet")
     with pytest.raises(MatrixAccessError):
-        store._confine("train", "/etc/passwd")
-    # symlink escape: replace the train artifact with a symlink out of the root.
-    outside = tmp_path / "outside.parquet"
-    outside.write_bytes(train_path.read_bytes())
+        reader._confine("/etc/passwd")
+
+    train_path = Path(train.artifact_path)
     original = train_path.read_bytes()
+    # symlink escape.
+    outside = tmp_path / "outside.parquet"
+    outside.write_bytes(original)
     train_path.unlink()
     train_path.symlink_to(outside)
     try:
         with l2e_engine.connect() as conn:
             conn.execute(text("SET ROLE minos_trainer"))
             with pytest.raises(MatrixAccessError, match="escapes"):
-                store.fetch_matrix_payload(conn, train.matrix_hash)
+                reader.fetch_matrix_payload(conn, train.matrix_hash)
     finally:
         train_path.unlink()
         train_path.write_bytes(original)
-
-
-def test_cross_partition_substitution_and_byte_tamper_rejected(
-    l2e_engine, built, artifact_root
-) -> None:
-    store = _store(artifact_root)
-    train = built[("a", "train")]
-    validation = built[("a", "validation")]
-    train_path = Path(train.artifact_path)
-    original = train_path.read_bytes()
-    # substitute the validation artifact's bytes at the train location: hash mismatch.
-    train_path.write_bytes(Path(validation.artifact_path).read_bytes())
+    # byte tamper is rejected by the sha check.
+    train_path.write_bytes(original[:-1] + bytes([original[-1] ^ 0xFF]))
     try:
         with l2e_engine.connect() as conn:
             conn.execute(text("SET ROLE minos_trainer"))
             with pytest.raises(MatrixAccessError, match="hash"):
-                store.fetch_matrix_payload(conn, train.matrix_hash)
-        # a single flipped byte is equally rejected.
-        train_path.write_bytes(original[:-1] + bytes([original[-1] ^ 0xFF]))
-        with l2e_engine.connect() as conn:
-            conn.execute(text("SET ROLE minos_trainer"))
-            with pytest.raises(MatrixAccessError, match="hash"):
-                store.fetch_matrix_payload(conn, train.matrix_hash)
+                reader.fetch_matrix_payload(conn, train.matrix_hash)
     finally:
         train_path.write_bytes(original)
 
 
-def test_partition_root_isolation_is_operationally_verified(artifact_root) -> None:
-    store = _store(artifact_root)
-    checks = store.verify_partition_isolation()
-    assert checks and all(checks.values()), checks
-    train_root = artifact_root / "l2e" / "train"
-    train_root.chmod(0o755)
-    try:
-        loosened = store.verify_partition_isolation()
-        assert loosened["train_root_owner_only"] is False
-    finally:
-        train_root.chmod(0o700)
-    assert all(store.verify_partition_isolation().values())
-
-
-def test_simulated_trainer_runtime_contains_no_validation_material(
-    l2e_engine, built, artifact_root, tmp_path
-) -> None:
-    """Assemble everything the trainer identity can actually reach — view rows plus
-    boundary-fetched artifacts — into a simulated checkout, then prove no validation
-    payload, no retrievable validation URI, and no validation credential is present
-    (evidence hashes are allowed)."""
-    store = _store(artifact_root)
-    checkout = tmp_path / "trainer_checkout"
-    checkout.mkdir()
-    with l2e_engine.connect() as conn:
-        conn.execute(text("SET ROLE minos_trainer"))
-        rows = (
-            conn.execute(
-                text(
-                    "SELECT DISTINCT partition, matrix_hash, artifact_sha256, artifact_uri "
-                    "FROM profiling.training_matrix"
-                )
-            )
-            .mappings()
-            .all()
-        )
-        fetched: dict[str, bytes] = {}
-        for row in rows:
-            fetched[str(row["matrix_hash"])] = store.fetch_matrix_payload(
-                conn, str(row["matrix_hash"])
-            )
-    for matrix_hash, payload in fetched.items():
-        (checkout / f"{matrix_hash}.parquet").write_bytes(payload)
-    validation_root = (artifact_root / "l2e" / "validation").resolve()
-    validation_payloads = {p.read_bytes() for p in validation_root.iterdir() if p.is_file()}
-    # 1) every reachable row/URI is train-partition and train-rooted.
-    assert rows and all(row["partition"] == "train" for row in rows)
-    assert all(
-        Path(str(row["artifact_uri"]))
-        .resolve()
-        .is_relative_to((artifact_root / "l2e" / "train").resolve())
-        for row in rows
+# --------------------------------------------------------------------------- #
+# capability (runs anywhere) vs operational credential (HOLD until real OS creds)
+# --------------------------------------------------------------------------- #
+def test_partition_capability_runs_anywhere(artifact_root) -> None:
+    checks = verify_partition_capability(
+        train_root=artifact_root / "l2e" / "train",
+        validation_root=artifact_root / "l2e" / "validation",
     )
-    # 2) no validation payload bytes exist anywhere in the simulated checkout.
-    for file in checkout.iterdir():
-        assert file.read_bytes() not in validation_payloads
-    # 3) no retrievable validation URI: the trainer cannot see validation rows at all,
-    #    and the boundary refuses the validation matrix even if its hash leaks
-    #    (hash-only evidence is explicitly allowed).
-    leaked_validation_hash = built[("a", "validation")].matrix_hash
-    with l2e_engine.connect() as conn:
-        conn.execute(text("SET ROLE minos_trainer"))
-        with pytest.raises(MatrixAccessError):
-            store.fetch_matrix_payload(conn, leaked_validation_hash)
-        with pytest.raises(Exception, match="permission denied"):
-            conn.execute(text("SELECT artifact_uri FROM evaluation.validation_matrix"))
+    assert checks and all(checks.values()), checks
 
 
-def test_no_test_retrieval_path_exists(artifact_root) -> None:
-    from minos_engine.storage.matrix_access import PARTITION_ROLES, PARTITION_VIEWS
+def test_operational_credentials_hold_on_same_uid_owner_only(artifact_root) -> None:
+    # same UID, owner-only 0700 directories are NOT partition isolation → HOLD.
+    status = verify_operational_credentials(
+        train_root=artifact_root / "l2e" / "train",
+        validation_root=artifact_root / "l2e" / "validation",
+    )
+    assert status.status == "HOLD"
+    assert not status.ok
+    assert status.checks["partition_groups_distinct"] is False
+    assert any("same-UID" in r or "same OS group" in r for r in status.reasons)
 
-    assert set(PARTITION_ROLES.values()) == {"train", "validation"}
-    assert set(PARTITION_VIEWS) == {"train", "validation"}
-    store = _store(artifact_root)
-    assert set(store._roots) == {"train", "validation"}
-    assert not (artifact_root / "l2e" / "test").exists()
+
+def test_operational_credentials_pass_with_distinct_groups(tmp_path) -> None:
+    groups = usable_secondary_groups()
+    if len(groups) < 2:
+        pytest.skip("no two distinct non-primary OS groups available to provision")
+    train_group, validation_group = groups[0], groups[1]
+    train_root = tmp_path / "cred" / "train"
+    validation_root = tmp_path / "cred" / "validation"
+    # publish a real matrix file into each root before applying credentials.
+    for root in (train_root, validation_root):
+        root.mkdir(parents=True)
+        (root / "sample.parquet").write_bytes(b"canonical-bytes")
+    configure_partition_root(train_root, group=train_group)
+    configure_partition_root(validation_root, group=validation_group)
+    status = verify_operational_credentials(
+        train_root=train_root,
+        validation_root=validation_root,
+        train_group=train_group,
+        validation_group=validation_group,
+    )
+    assert status.status == "PASS", status.reasons
+    assert status.checks["partition_groups_distinct"] is True
+    assert status.checks["group_names_distinct"] is True
+    assert status.checks["train_files_group_owned_not_writable"] is True
+    assert status.checks["validation_files_group_owned_not_writable"] is True
 
 
-def test_partition_root_ownership_matches_runtime_uid(artifact_root) -> None:
+# --------------------------------------------------------------------------- #
+# real trainer runtime/package assembly (git archive) — no validation material
+# --------------------------------------------------------------------------- #
+def test_trainer_runtime_bundle_contains_no_validation_material(
+    l2e_engine, built, matrix_broker, tmp_path
+) -> None:
+    validation = built[("a", "validation")]
+    validation_root = str(matrix_broker.root_for("validation"))
+    validation_group = "minos_validation_grp"  # a deployment-side credential name
+
+    bundle = tmp_path / "trainer_runtime"
+    bundle.mkdir()
+    # (1) actual source assembly via `git archive` of the storage package (source only,
+    #     no artifacts) — a real runtime/checkout, not a call to the Python method.
+    archive = tmp_path / "src.tar"
+    with archive.open("wb") as fh:
+        subprocess.run(
+            ["git", "archive", "HEAD", "src/minos_engine/storage"],
+            cwd=REPO_ROOT,
+            check=True,
+            stdout=fh,
+        )
+    subprocess.run(["tar", "-xf", str(archive), "-C", str(bundle)], check=True)
+    # (2) a trainer deployment config carrying ONLY the train partition credential.
+    train_root = str(matrix_broker.root_for("train"))
+    (bundle / "trainer_deploy.yaml").write_text(
+        "role: minos_trainer\n"
+        "partition: train\n"
+        f"artifact_root: {train_root}\n"
+        "artifact_group: minos_train_grp\n"
+        "db_role: minos_trainer\n",
+        encoding="utf-8",
+    )
+    # (3) evidence hashes are allowed to be present.
+    (bundle / "evidence_hashes.txt").write_text(
+        f"validation_matrix_hash={validation.matrix_hash}\n", encoding="utf-8"
+    )
+
+    all_bytes = b"".join(p.read_bytes() for p in bundle.rglob("*") if p.is_file())
+    # no validation payload bytes.
+    assert Path(validation.artifact_path).read_bytes() not in all_bytes
+    assert not any(p.suffix == ".parquet" for p in bundle.rglob("*"))
+    # no retrievable validation URI/root, no validation group/credential.
+    text_blob = all_bytes.decode("utf-8", errors="ignore")
+    assert validation_root not in text_blob
+    assert validation.artifact_path not in text_blob
+    assert validation_group not in text_blob
+    assert "minos_evaluator" not in (bundle / "trainer_deploy.yaml").read_text()
+    # the evidence hash (hash-only) IS allowed.
+    assert validation.matrix_hash in text_blob
+
+
+def test_partition_root_ownership_and_mode(artifact_root) -> None:
     for partition in ("train", "validation"):
         root = artifact_root / "l2e" / partition
         assert root.stat().st_uid == os.getuid()
         assert (root.stat().st_mode & 0o077) == 0
+
+
+def test_no_test_partition_anywhere(artifact_root, matrix_broker) -> None:
+    from minos_engine.storage.matrix_access import PARTITION_ROLES, PARTITION_VIEWS
+
+    assert set(PARTITION_ROLES.values()) == {"train", "validation"}
+    assert set(PARTITION_VIEWS) == {"train", "validation"}
+    assert not (artifact_root / "l2e" / "test").exists()
