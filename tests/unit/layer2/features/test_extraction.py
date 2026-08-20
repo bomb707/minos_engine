@@ -39,14 +39,17 @@ from minos_engine.layer2.features.errors import (
 )
 from minos_engine.layer2.features.extraction import (
     FrozenSnapshot,
+    ManifestTrustBundle,
     SnapshotMember,
     assemble_matrix,
     build_feature_vector,
     build_partition_matrix,
     extract_profile_features,
-    load_member_manifest,
+    load_accepted_epoch1_member_manifest,
+    load_member_manifest_with_trust,
+    verify_accepted_epoch1_matrix_payload,
     verify_matrix,
-    verify_matrix_payload,
+    verify_matrix_payload_with_trust,
 )
 from minos_engine.layer2.ingest.contracts import (
     canonical_feature_values_hash,
@@ -64,8 +67,18 @@ from tests.conftest import REPO_ROOT
 _SPLIT_H = hashlib.sha256(b"synthetic-split-manifest").hexdigest()
 _REG_H = hashlib.sha256(b"synthetic-registry-snapshot").hexdigest()
 
-#: The accepted committed epoch-1 member-manifest hash (external trust anchor).
-_ACCEPTED_MEMBER_MANIFEST_HASH = "2461751f2de4114fbf29114a4cff76b81e394c790e58e2788dd2b7c28b8e6c9b"
+
+def _bundle_for(manifest_bytes: bytes) -> ManifestTrustBundle:
+    """Explicit TEST-ONLY trust bundle for synthetic manifests, derived from the
+    manifest's own declared identities (the sanctioned non-production boundary)."""
+    raw = json.loads(manifest_bytes)
+    return ManifestTrustBundle(
+        epoch=raw["epoch"],
+        member_manifest_hash=raw["member_manifest_hash"],
+        snapshot_hash=raw["snapshot_hash"],
+        split_manifest_hash=raw["split_manifest_hash"],
+        registry_snapshot_hash=raw["registry_snapshot_hash"],
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -272,7 +285,8 @@ def make_snapshot(
 ) -> tuple[FrozenSnapshot, dict[str, bytes], bytes]:
     """Derive every synthetic snapshot through the VERIFIED manifest boundary."""
     manifest_bytes, payloads = make_manifest_bytes(spec, epoch=epoch)
-    return load_member_manifest(manifest_bytes), payloads, manifest_bytes
+    snapshot = load_member_manifest_with_trust(manifest_bytes, _bundle_for(manifest_bytes))
+    return snapshot, payloads, manifest_bytes
 
 
 #: Snapshot A: 9 members, uneven chromosomes (4×chr18, 3×chr20, 2×chr21),
@@ -555,11 +569,10 @@ def test_snapshot_tampering_with_retained_hash_rejected() -> None:
 # --------------------------------------------------------------------------- #
 # verified member-manifest boundary (provenance binding)
 # --------------------------------------------------------------------------- #
-def test_committed_epoch1_manifest_verifies_against_accepted_identities() -> None:
+def test_committed_epoch1_manifest_verifies_through_accepted_boundary() -> None:
     data = (REPO_ROOT / "manifests" / "profile_snapshot_epoch1_members.json").read_bytes()
-    snapshot = load_member_manifest(
-        data, expected_member_manifest_hash=_ACCEPTED_MEMBER_MANIFEST_HASH
-    )
+    # the ACCEPTED loader carries every trust anchor itself — nothing is passed here.
+    snapshot = load_accepted_epoch1_member_manifest(data)
     # the derived snapshot reproduces the ACCEPTED frozen snapshot identity.
     assert snapshot.snapshot_hash == PROFILE_SNAPSHOT_1_HASH
     assert snapshot.epoch == 1
@@ -574,31 +587,32 @@ def test_committed_epoch1_manifest_verifies_against_accepted_identities() -> Non
 
 def test_manifest_duplicate_key_and_structure_rejected(snap_a) -> None:
     _, _, manifest_bytes = snap_a
+    trust = _bundle_for(manifest_bytes)
     dup = b'{"schema_version": "profile-snapshot-members-v1", ' + manifest_bytes[1:]
     with pytest.raises(InvalidMemberManifestError, match="duplicate JSON key"):
-        load_member_manifest(dup)
+        load_member_manifest_with_trust(dup, trust)
     raw = json.loads(manifest_bytes)
     del raw["members"][0]["profile_sha256"]  # structural: a required field is gone
     with pytest.raises(InvalidMemberManifestError):
-        load_member_manifest(json.dumps(raw).encode())
+        load_member_manifest_with_trust(json.dumps(raw).encode(), trust)
 
 
 def test_manifest_hash_binds_profile_sha256_and_all_provenance(snap_a) -> None:
     _, _, manifest_bytes = snap_a
-    original_hash = json.loads(manifest_bytes)["member_manifest_hash"]
+    trust = _bundle_for(manifest_bytes)
     raw = json.loads(manifest_bytes)
     raw["members"][0]["profile_sha256"] = "0" * 64
     # 1) swapped profile_sha256 with the old manifest hash: rejected.
     with pytest.raises(MemberManifestHashMismatchError):
-        load_member_manifest(json.dumps(raw).encode())
-    # 2) even a self-consistent re-hash cannot preserve the ACCEPTED manifest hash —
-    #    the trusted anchor detects the swap (snapshot_hash alone would not, which is
-    #    exactly why provenance must come from the verified manifest).
+        load_member_manifest_with_trust(json.dumps(raw).encode(), trust)
+    # 2) even a self-consistent re-hash cannot reproduce the anchored manifest hash —
+    #    the MANDATORY trust bundle detects the swap (snapshot_hash alone would not,
+    #    which is exactly why provenance must come from the verified manifest).
     content = {k: v for k, v in raw.items() if k != "member_manifest_hash"}
     raw["member_manifest_hash"] = canonical_hash(content)
-    assert raw["member_manifest_hash"] != original_hash
+    assert raw["member_manifest_hash"] != trust.member_manifest_hash
     with pytest.raises(MemberManifestHashMismatchError):
-        load_member_manifest(json.dumps(raw).encode(), expected_member_manifest_hash=original_hash)
+        load_member_manifest_with_trust(json.dumps(raw).encode(), trust)
 
 
 def test_manifest_snapshot_hash_recomputed_independently(snap_a) -> None:
@@ -607,8 +621,11 @@ def test_manifest_snapshot_hash_recomputed_independently(snap_a) -> None:
     raw["snapshot_hash"] = "0" * 64
     content = {k: v for k, v in raw.items() if k != "member_manifest_hash"}
     raw["member_manifest_hash"] = canonical_hash(content)  # internally consistent
+    tampered = json.dumps(raw).encode()
+    # even with a trust bundle DERIVED FROM the tampered manifest itself, the
+    # independent freeze-formula recompute rejects the declared snapshot_hash.
     with pytest.raises(SnapshotHashMismatchError):
-        load_member_manifest(json.dumps(raw).encode())
+        load_member_manifest_with_trust(tampered, _bundle_for(tampered))
 
 
 def test_manifest_registry_and_profiler_bindings(snap_a) -> None:
@@ -621,21 +638,27 @@ def test_manifest_registry_and_profiler_bindings(snap_a) -> None:
 
     raw = json.loads(manifest_bytes)
     raw["members"][0]["registry_snapshot_hash"] = "0" * 64
+    tampered = _rebind(raw)
     with pytest.raises(RegistrySnapshotMismatchError):
-        load_member_manifest(_rebind(raw))
+        load_member_manifest_with_trust(tampered, _bundle_for(tampered))
 
     raw = json.loads(manifest_bytes)
     raw["members"][0]["profiler_config_hash"] = "0" * 64
+    tampered = _rebind(raw)
     with pytest.raises(ProfilerIdentityMismatchError):
-        load_member_manifest(_rebind(raw))
+        load_member_manifest_with_trust(tampered, _bundle_for(tampered))
 
     raw = json.loads(manifest_bytes)
     raw["members"][0]["profiler_version"] = "other-profiler"
+    tampered = _rebind(raw)
     with pytest.raises(ProfilerIdentityMismatchError):
-        load_member_manifest(_rebind(raw))
+        load_member_manifest_with_trust(tampered, _bundle_for(tampered))
 
+    wrong_registry = _bundle_for(manifest_bytes).model_copy(
+        update={"registry_snapshot_hash": "0" * 64}
+    )
     with pytest.raises(RegistrySnapshotMismatchError):
-        load_member_manifest(manifest_bytes, expected_registry_snapshot_hash="0" * 64)
+        load_member_manifest_with_trust(manifest_bytes, wrong_registry)
 
 
 # --------------------------------------------------------------------------- #
@@ -653,8 +676,12 @@ def test_two_uneven_snapshots_build_exact_membership(snap_a, snap_b) -> None:
             assert build.matrix.column_count == 129
             assert build.matrix.epoch == snapshot.epoch
             assert build.matrix.snapshot_hash == snapshot.snapshot_hash
-            result = verify_matrix_payload(
-                build.matrix, manifest_bytes, build.vectors, _provider(payloads)
+            result = verify_matrix_payload_with_trust(
+                build.matrix,
+                manifest_bytes,
+                build.vectors,
+                _provider(payloads),
+                _bundle_for(manifest_bytes),
             )
             assert result.ok, result.failed()
 
@@ -800,8 +827,12 @@ def test_verifier_passes_logical_and_payload_levels(snap_a) -> None:
     assert "feature_values_hashes_recomputed_from_vectors" in logical.checks
     assert "vector_values_valid_for_column_kinds" in logical.checks
     assert "feature_values_hashes_recomputed_from_bytes" not in logical.checks
-    payload = verify_matrix_payload(
-        build.matrix, manifest_bytes, build.vectors, _provider(payloads)
+    payload = verify_matrix_payload_with_trust(
+        build.matrix,
+        manifest_bytes,
+        build.vectors,
+        _provider(payloads),
+        _bundle_for(manifest_bytes),
     )
     assert payload.ok, payload.failed()
     assert payload.checks["member_manifest_verified"]
@@ -917,8 +948,12 @@ def test_payload_verifier_detects_byte_divergence(snap_a) -> None:
     corrupted = dict(payloads)
     first_train = build.matrix.members[0].dataset_id
     corrupted[first_train] = corrupted[first_train] + b" "
-    result = verify_matrix_payload(
-        build.matrix, manifest_bytes, build.vectors, _provider(corrupted)
+    result = verify_matrix_payload_with_trust(
+        build.matrix,
+        manifest_bytes,
+        build.vectors,
+        _provider(corrupted),
+        _bundle_for(manifest_bytes),
     )
     assert not result.ok
     assert "feature_values_hashes_recomputed_from_bytes" in result.failed()
@@ -926,7 +961,13 @@ def test_payload_verifier_detects_byte_divergence(snap_a) -> None:
     swapped = dict(payloads)
     ids = [m.dataset_id for m in build.matrix.members[:2]]
     swapped[ids[0]], swapped[ids[1]] = swapped[ids[1]], swapped[ids[0]]
-    result2 = verify_matrix_payload(build.matrix, manifest_bytes, build.vectors, _provider(swapped))
+    result2 = verify_matrix_payload_with_trust(
+        build.matrix,
+        manifest_bytes,
+        build.vectors,
+        _provider(swapped),
+        _bundle_for(manifest_bytes),
+    )
     assert "feature_values_hashes_recomputed_from_bytes" in result2.failed()
 
 
@@ -936,3 +977,90 @@ def test_select_config_remains_blocked() -> None:
 
     with pytest.raises(StageNotReadyError):
         Layer2Service().select_config(None)  # type: ignore[arg-type]
+
+
+# --------------------------------------------------------------------------- #
+# accepted epoch-1 trust anchors (pinned; NO hashes supplied by these tests)
+# --------------------------------------------------------------------------- #
+def _committed_manifest_bytes() -> bytes:
+    return (REPO_ROOT / "manifests" / "profile_snapshot_epoch1_members.json").read_bytes()
+
+
+def _rehash_consistent(raw: dict[str, Any]) -> bytes:
+    """Recompute snapshot_hash (freeze formula) AND member_manifest_hash so the
+    forgery is fully self-consistent — only the pinned anchors can reject it."""
+    raw["snapshot_hash"] = canonical_hash(
+        {
+            "epoch": raw["epoch"],
+            "split_manifest_hash": raw["split_manifest_hash"],
+            "registry_snapshot_hash": raw["registry_snapshot_hash"],
+            "members": [
+                {
+                    "dataset_id": m["dataset_id"],
+                    "partition": m["partition"],
+                    "content_hash": m["content_hash"],
+                    "feature_values_hash": m["feature_values_hash"],
+                }
+                for m in sorted(raw["members"], key=lambda m: str(m["dataset_id"]))
+            ],
+        }
+    )
+    content = {k: v for k, v in raw.items() if k != "member_manifest_hash"}
+    raw["member_manifest_hash"] = canonical_hash(content)
+    return json.dumps(raw).encode("utf-8")
+
+
+def test_accepted_loader_rejects_profile_sha256_swap_with_rehash() -> None:
+    raw = json.loads(_committed_manifest_bytes())
+    raw["members"][0]["profile_sha256"] = "0" * 64
+    content = {k: v for k, v in raw.items() if k != "member_manifest_hash"}
+    raw["member_manifest_hash"] = canonical_hash(content)  # self-consistent forgery
+    with pytest.raises(MemberManifestHashMismatchError):
+        load_accepted_epoch1_member_manifest(json.dumps(raw).encode())
+
+
+def test_accepted_loader_rejects_core_member_forgery_with_full_rehash() -> None:
+    raw = json.loads(_committed_manifest_bytes())
+    member = raw["members"][0]
+    member["partition"] = "validation" if member["partition"] != "validation" else "train"
+    forged = _rehash_consistent(raw)  # snapshot_hash AND member_manifest_hash recomputed
+    with pytest.raises(MemberManifestHashMismatchError):
+        load_accepted_epoch1_member_manifest(forged)
+
+
+def test_accepted_loader_rejects_substituted_split_and_registry_hashes() -> None:
+    raw = json.loads(_committed_manifest_bytes())
+    raw["split_manifest_hash"] = "1" * 64
+    with pytest.raises(MemberManifestHashMismatchError):
+        load_accepted_epoch1_member_manifest(_rehash_consistent(raw))
+    raw = json.loads(_committed_manifest_bytes())
+    raw["registry_snapshot_hash"] = "2" * 64
+    for m in raw["members"]:
+        m["registry_snapshot_hash"] = "2" * 64
+    with pytest.raises(MemberManifestHashMismatchError):
+        load_accepted_epoch1_member_manifest(_rehash_consistent(raw))
+
+
+def test_accepted_payload_verifier_rejects_before_provider_access(snap_a) -> None:
+    snapshot, payloads, _ = snap_a
+    build = build_partition_matrix(snapshot, "train", _provider(payloads))
+    raw = json.loads(_committed_manifest_bytes())
+    raw["members"][0]["profile_sha256"] = "0" * 64
+    forged = _rehash_consistent(raw)
+    calls: list[str] = []
+
+    def sentinel(member: SnapshotMember) -> bytes:
+        calls.append(member.dataset_id)
+        raise AssertionError("provider must never run for a rejected manifest")
+
+    with pytest.raises(MemberManifestHashMismatchError):
+        verify_accepted_epoch1_matrix_payload(build.matrix, forged, build.vectors, sentinel)
+    assert calls == []  # rejected BEFORE any payload access
+
+
+def test_accepted_loader_rejects_synthetic_manifests(snap_a) -> None:
+    # generic uneven synthetic snapshots are supported ONLY through the explicit
+    # non-production trust-bundle boundary — the accepted boundary refuses them.
+    _, _, manifest_bytes = snap_a
+    with pytest.raises(MemberManifestHashMismatchError):
+        load_accepted_epoch1_member_manifest(manifest_bytes)

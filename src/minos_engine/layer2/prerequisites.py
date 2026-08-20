@@ -64,6 +64,9 @@ __all__ = [
     "INGEST_READY_EVIDENCE_COMMIT",
     "PROFILE_SNAPSHOT_FROZEN_1_GATE_HASH",
     "PROFILE_SNAPSHOT_1_HASH",
+    "PROFILE_SNAPSHOT_1_MEMBER_MANIFEST_HASH",
+    "PROFILE_SNAPSHOT_1_SPLIT_MANIFEST_HASH",
+    "PROFILE_SNAPSHOT_1_REGISTRY_SNAPSHOT_HASH",
     "PROFILE_SNAPSHOT_FROZEN_1_SOURCE_COMMIT",
     "PROFILE_SNAPSHOT_FROZEN_1_SOURCE_TREE",
     "PROFILE_SNAPSHOT_FROZEN_1_EVIDENCE_COMMIT",
@@ -146,6 +149,20 @@ PROFILE_SNAPSHOT_FROZEN_1_GATE_HASH = (
     "d48c530e97fc26e85396467afa862eba5da5359707f036a33060d6e5bff30f31"
 )
 PROFILE_SNAPSHOT_1_HASH = "cf717ebb44e76a3408e975e027b51139df28d643dd1616c5edbce3643182c4c7"
+
+# Accepted epoch-1 member-manifest trust anchors: the ONLY identities under which the
+# production feature view may load epoch-1 snapshot provenance. The member-manifest
+# hash binds profile_sha256 and every other provenance field of all epoch-1 members;
+# the split-manifest and registry-snapshot hashes are the freeze-formula inputs.
+PROFILE_SNAPSHOT_1_MEMBER_MANIFEST_HASH = (
+    "2461751f2de4114fbf29114a4cff76b81e394c790e58e2788dd2b7c28b8e6c9b"
+)
+PROFILE_SNAPSHOT_1_SPLIT_MANIFEST_HASH = (
+    "b23cd5716ab46033f7ea0bf123cc9b2a5f401fa37dbffddba8d4201f5ea76145"
+)
+PROFILE_SNAPSHOT_1_REGISTRY_SNAPSHOT_HASH = (
+    "3e60aa65aeed8969e29ebeef83024f6fa2285a13c155d7d6dc0c601d1e94f675"
+)
 
 # Accepted PROFILE-SNAPSHOT-FROZEN-1 closure commits (source S2 / evidence E2).
 # Later verification must enforce tree binding and ancestry against these.

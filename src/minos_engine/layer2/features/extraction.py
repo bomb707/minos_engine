@@ -24,9 +24,18 @@ from exact selected membership; ``column_count`` stays the frozen 129.
 
 Verification recomputes rather than trusts and never repairs: :func:`verify_matrix`
 (logical) re-derives membership, ordering, counts, bindings, vector/matrix hashes AND
-the canonical feature-values hash from each vector's own values;
-:func:`verify_matrix_payload` starts from verified member-manifest bytes and re-extracts
-every member's exact profile bytes.
+the canonical feature-values hash from each vector's own values; payload verification
+starts from verified member-manifest bytes and re-extracts every member's exact
+profile bytes.
+
+TRUST ANCHORS ARE NEVER OPTIONAL. The production epoch-1 boundary is
+:func:`load_accepted_epoch1_member_manifest` / :func:`verify_accepted_epoch1_matrix_payload`,
+which unconditionally enforce the accepted pins from ``layer2.prerequisites`` and take
+no caller-supplied identities. The generic ``*_with_trust`` functions exist for
+synthetic-snapshot tests and require a COMPLETE :class:`ManifestTrustBundle` (no field
+defaults to None). The future E3 operational builder will consume ONLY the accepted
+epoch-1 boundary — never a caller-constructed :class:`FrozenSnapshot` and never a
+caller-selected trust bundle.
 """
 
 from __future__ import annotations
@@ -46,7 +55,14 @@ from minos_engine.layer2.ingest.contracts import (
     extract_eligible_feature_values,
 )
 from minos_engine.layer2.ingest.validation import l1_feature_values_hash_from_document
-from minos_engine.layer2.prerequisites import PROFILER_CONFIG_HASH, PROFILER_VERSION
+from minos_engine.layer2.prerequisites import (
+    PROFILE_SNAPSHOT_1_HASH,
+    PROFILE_SNAPSHOT_1_MEMBER_MANIFEST_HASH,
+    PROFILE_SNAPSHOT_1_REGISTRY_SNAPSHOT_HASH,
+    PROFILE_SNAPSHOT_1_SPLIT_MANIFEST_HASH,
+    PROFILER_CONFIG_HASH,
+    PROFILER_VERSION,
+)
 from minos_engine.schema_registry import validate_against
 
 from .contracts import (
@@ -87,17 +103,21 @@ __all__ = [
     "FrozenSnapshot",
     "ManifestMember",
     "MemberManifestDocument",
+    "ManifestTrustBundle",
+    "ACCEPTED_EPOCH1_TRUST",
     "ExtractionResult",
     "MatrixBuild",
     "VerificationResult",
     "PayloadProvider",
-    "load_member_manifest",
+    "load_accepted_epoch1_member_manifest",
+    "load_member_manifest_with_trust",
     "extract_profile_features",
     "build_feature_vector",
     "assemble_matrix",
     "build_partition_matrix",
     "verify_matrix",
-    "verify_matrix_payload",
+    "verify_accepted_epoch1_matrix_payload",
+    "verify_matrix_payload_with_trust",
 ]
 
 PROFILE_SCHEMA_NAME = "bam-profile-v1"
@@ -341,20 +361,66 @@ def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # verified member-manifest boundary (snapshot provenance)
 # --------------------------------------------------------------------------- #
-def load_member_manifest(
-    manifest_bytes: bytes,
-    *,
-    expected_member_manifest_hash: str | None = None,
-    expected_registry_snapshot_hash: str | None = None,
-) -> FrozenSnapshot:
-    """Derive a FrozenSnapshot ONLY from exact, verified member-manifest bytes.
+class ManifestTrustBundle(BaseModel):
+    """The complete, MANDATORY set of trust anchors for loading a member manifest.
 
-    Recomputes ``member_manifest_hash`` from the exact parsed canonical content (binding
-    ``profile_sha256`` and every other provenance field — a caller cannot replace any of
-    them while keeping a trusted hash), independently re-verifies ``snapshot_hash`` with
-    the accepted freeze formula, requires every member to carry the manifest's registry
-    snapshot, and binds the accepted profiler identity pinned in prerequisites.
+    Every field is required — there are no optional anchors and no defaults, so a
+    self-consistently rehashed replacement manifest can never pass by omission.
+    Production epoch-1 code must NOT construct this: use
+    :func:`load_accepted_epoch1_member_manifest`, which carries the accepted pins.
     """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    epoch: int = Field(ge=1)
+    member_manifest_hash: str = Field(pattern=_HEX64)
+    snapshot_hash: str = Field(pattern=_HEX64)
+    split_manifest_hash: str = Field(pattern=_HEX64)
+    registry_snapshot_hash: str = Field(pattern=_HEX64)
+
+
+#: The accepted epoch-1 trust anchors (pinned in layer2.prerequisites). The future E3
+#: operational builder consumes ONLY the accepted epoch-1 boundary below — never a
+#: caller-constructed FrozenSnapshot and never a caller-selected trust bundle.
+ACCEPTED_EPOCH1_TRUST = ManifestTrustBundle(
+    epoch=1,
+    member_manifest_hash=PROFILE_SNAPSHOT_1_MEMBER_MANIFEST_HASH,
+    snapshot_hash=PROFILE_SNAPSHOT_1_HASH,
+    split_manifest_hash=PROFILE_SNAPSHOT_1_SPLIT_MANIFEST_HASH,
+    registry_snapshot_hash=PROFILE_SNAPSHOT_1_REGISTRY_SNAPSHOT_HASH,
+)
+
+
+def load_accepted_epoch1_member_manifest(manifest_bytes: bytes) -> FrozenSnapshot:
+    """THE production acceptance boundary for epoch-1 snapshot provenance.
+
+    Takes no caller-supplied identity overrides: the manifest must reproduce the
+    accepted ``member_manifest_hash``, ``snapshot_hash``, ``split_manifest_hash`` and
+    ``registry_snapshot_hash`` pinned in ``layer2.prerequisites``, carry ``epoch == 1``
+    and the accepted profiler identity, and pass the full internal recomputation.
+    Epoch-1 membership remains whatever the accepted manifest hash binds — no count is
+    assumed here. The future E3 operational builder consumes ONLY this boundary.
+    """
+    return load_member_manifest_with_trust(manifest_bytes, ACCEPTED_EPOCH1_TRUST)
+
+
+def load_member_manifest_with_trust(
+    manifest_bytes: bytes, trust: ManifestTrustBundle
+) -> FrozenSnapshot:
+    """Generic (NON-production) manifest loader: every trust anchor must be supplied
+    explicitly via a complete :class:`ManifestTrustBundle` — nothing defaults to None.
+
+    This exists so synthetic uneven-snapshot tests can exercise the same verification
+    machinery; the production epoch-1 boundary is
+    :func:`load_accepted_epoch1_member_manifest`. Recomputes ``member_manifest_hash``
+    from the exact parsed canonical content (binding ``profile_sha256`` and every other
+    provenance field — a caller cannot replace any of them while keeping a trusted
+    hash), independently re-verifies ``snapshot_hash`` with the accepted freeze
+    formula, requires every member to carry the manifest's registry snapshot, and
+    binds the accepted profiler identity pinned in prerequisites.
+    """
+    if not isinstance(trust, ManifestTrustBundle):
+        raise InvalidMemberManifestError("a complete ManifestTrustBundle is required")
     try:
         text = manifest_bytes.decode("utf-8")
         raw = json.loads(text, object_pairs_hook=_no_duplicate_keys)
@@ -369,19 +435,33 @@ def load_member_manifest(
     except ValidationError as exc:
         raise InvalidMemberManifestError(f"member manifest is structurally invalid: {exc}") from exc
 
-    # the canonical hash is recomputed from the EXACT parsed content, never trusted.
+    # the canonical hash is recomputed from the EXACT parsed content, never trusted —
+    # and it must equal the trust anchor UNCONDITIONALLY.
     content = {k: v for k, v in raw.items() if k != "member_manifest_hash"}
     recomputed_manifest_hash = canonical_hash(content)
     if recomputed_manifest_hash != document.member_manifest_hash:
         raise MemberManifestHashMismatchError(
             "recomputed member_manifest_hash does not match the declared value"
         )
-    if (
-        expected_member_manifest_hash is not None
-        and recomputed_manifest_hash != expected_member_manifest_hash
-    ):
+    if recomputed_manifest_hash != trust.member_manifest_hash:
         raise MemberManifestHashMismatchError(
-            "recomputed member_manifest_hash does not match the expected accepted value"
+            "recomputed member_manifest_hash does not match the trust-anchor value"
+        )
+    if document.epoch != trust.epoch:
+        raise InvalidMemberManifestError(
+            f"manifest epoch {document.epoch} does not match the trust anchor {trust.epoch}"
+        )
+    if document.snapshot_hash != trust.snapshot_hash:
+        raise SnapshotHashMismatchError(
+            "manifest snapshot_hash does not match the trust-anchor value"
+        )
+    if document.split_manifest_hash != trust.split_manifest_hash:
+        raise SnapshotHashMismatchError(
+            "manifest split_manifest_hash does not match the trust-anchor value"
+        )
+    if document.registry_snapshot_hash != trust.registry_snapshot_hash:
+        raise RegistrySnapshotMismatchError(
+            "manifest registry_snapshot_hash does not match the trust-anchor value"
         )
 
     members = tuple(
@@ -428,13 +508,6 @@ def load_member_manifest(
                 f"{m.dataset_id}: profiler identity is not the accepted "
                 f"{PROFILER_VERSION}/{PROFILER_CONFIG_HASH[:12]}…"
             )
-    if (
-        expected_registry_snapshot_hash is not None
-        and document.registry_snapshot_hash != expected_registry_snapshot_hash
-    ):
-        raise RegistrySnapshotMismatchError(
-            "manifest registry_snapshot_hash does not match the expected pinned value"
-        )
 
     return FrozenSnapshot(
         epoch=document.epoch,
@@ -755,29 +828,40 @@ def verify_matrix(
     return VerificationResult(checks=checks)
 
 
-def verify_matrix_payload(
+def verify_accepted_epoch1_matrix_payload(
     matrix: FeatureMatrix,
     member_manifest_bytes: bytes,
     vectors: Sequence[FeatureVector],
     payload_provider: PayloadProvider,
-    *,
-    expected_member_manifest_hash: str | None = None,
-    expected_registry_snapshot_hash: str | None = None,
+) -> VerificationResult:
+    """THE production epoch-1 payload verifier: always begins with the accepted
+    epoch-1 loader (pinned trust anchors, no caller-selected expected identities).
+    The manifest is verified BEFORE the payload provider is ever invoked."""
+    return verify_matrix_payload_with_trust(
+        matrix, member_manifest_bytes, vectors, payload_provider, ACCEPTED_EPOCH1_TRUST
+    )
+
+
+def verify_matrix_payload_with_trust(
+    matrix: FeatureMatrix,
+    member_manifest_bytes: bytes,
+    vectors: Sequence[FeatureVector],
+    payload_provider: PayloadProvider,
+    trust: ManifestTrustBundle,
 ) -> VerificationResult:
     """PAYLOAD verification, starting from VERIFIED member-manifest bytes (never from
-    arbitrary SnapshotMember instances): re-derives the snapshot through
-    :func:`load_member_manifest`, runs the full logical verification, then re-extracts
-    every member's exact profile bytes — proving the bytes match the manifest-bound
-    ``profile_sha256``, the extracted values match the vector, the recomputed
-    feature-values hash matches both vector and manifest, and the profile identity and
-    L1 hash match the full member binding."""
-    snapshot = load_member_manifest(
-        member_manifest_bytes,
-        expected_member_manifest_hash=expected_member_manifest_hash,
-        expected_registry_snapshot_hash=expected_registry_snapshot_hash,
-    )
+    arbitrary SnapshotMember instances) under a complete, mandatory trust bundle:
+    re-derives the snapshot through :func:`load_member_manifest_with_trust`, runs the
+    full logical verification, then re-extracts every member's exact profile bytes —
+    proving the bytes match the manifest-bound ``profile_sha256``, the extracted values
+    match the vector, the recomputed feature-values hash matches both vector and
+    manifest, and the profile identity and L1 hash match the full member binding.
+
+    Generic (NON-production): epoch-1 operational verification must use
+    :func:`verify_accepted_epoch1_matrix_payload`."""
+    snapshot = load_member_manifest_with_trust(member_manifest_bytes, trust)
     checks = dict(verify_matrix(matrix, snapshot, vectors).checks)
-    checks["member_manifest_verified"] = True  # load_member_manifest is fail-closed
+    checks["member_manifest_verified"] = True  # the trust-anchored loader is fail-closed
 
     by_id = {v.dataset_id: v for v in vectors}
     if matrix.partition in MATRIX_PARTITIONS:

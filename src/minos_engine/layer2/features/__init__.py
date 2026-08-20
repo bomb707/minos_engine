@@ -42,9 +42,11 @@ from .errors import (
     SnapshotIdentityMismatchError,
 )
 from .extraction import (
+    ACCEPTED_EPOCH1_TRUST,
     ExtractionResult,
     FrozenSnapshot,
     ManifestMember,
+    ManifestTrustBundle,
     MatrixBuild,
     MemberManifestDocument,
     SnapshotMember,
@@ -53,9 +55,11 @@ from .extraction import (
     build_feature_vector,
     build_partition_matrix,
     extract_profile_features,
-    load_member_manifest,
+    load_accepted_epoch1_member_manifest,
+    load_member_manifest_with_trust,
+    verify_accepted_epoch1_matrix_payload,
     verify_matrix,
-    verify_matrix_payload,
+    verify_matrix_payload_with_trust,
 )
 
 __all__ = [
@@ -91,14 +95,18 @@ __all__ = [
     "FrozenSnapshot",
     "ManifestMember",
     "MemberManifestDocument",
+    "ManifestTrustBundle",
+    "ACCEPTED_EPOCH1_TRUST",
     "ExtractionResult",
     "MatrixBuild",
     "VerificationResult",
-    "load_member_manifest",
+    "load_accepted_epoch1_member_manifest",
+    "load_member_manifest_with_trust",
     "extract_profile_features",
     "build_feature_vector",
     "assemble_matrix",
     "build_partition_matrix",
     "verify_matrix",
-    "verify_matrix_payload",
+    "verify_accepted_epoch1_matrix_payload",
+    "verify_matrix_payload_with_trust",
 ]
