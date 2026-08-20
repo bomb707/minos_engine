@@ -528,16 +528,16 @@ def _persist_feature_matrix(
     matrix: FeatureMatrix,
     vectors: tuple[FeatureVector, ...],
     publisher: PartitionArtifactPublisher,
-    require_operational_identity: bool = False,
+    require_operational_identity: bool,
 ) -> PersistedFeatureMatrix:
     """Serialize, verify, publish (immutable no-clobber), and persist in ONE
     transaction. Trusts NO caller-supplied hash/size/path: bytes come from
     :func:`serialize_matrix` here, and the artifact is read back and re-verified.
 
-    ``require_operational_identity`` defaults to ``False`` (the name-independent
-    behaviour used by low-level persistence-mechanics tests on scratch databases). The
-    production path never relies on that default: :func:`_build_feature_matrix` always
-    threads an explicit value, and the accepted builder passes ``True``. When set (the
+    ``require_operational_identity`` is a REQUIRED keyword-only argument with NO default:
+    every caller must state its stance explicitly — the accepted production path passes
+    ``True``, and synthetic / low-level persistence-mechanics tests pass ``False``. There
+    is deliberately no implicit "skip the identity guard" default. When ``True`` (the
     accepted production path), the
     EXACT transactional connection is identity-verified immediately after the
     transaction begins — before any advisory lock, read-back, insert, artifact

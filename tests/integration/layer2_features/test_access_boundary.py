@@ -444,6 +444,7 @@ def test_credential_revalidation_precedes_publication(l2e_engine, extra_snaps, t
             matrix=build.matrix,
             vectors=build.vectors,
             publisher=publisher,
+            require_operational_identity=False,
         )
     # nothing was written for this identity.
     with l2e_engine.connect() as conn:
@@ -532,6 +533,7 @@ def test_root_change_mid_transaction_rolls_back(
             matrix=build.matrix,
             vectors=build.vectors,
             publisher=publisher,
+            require_operational_identity=False,
         )
     monkeypatch.undo()
     (base / "l2e" / changed_partition).chmod(0o2750)  # restore

@@ -203,3 +203,53 @@ proving (1) matrix counts derive from actual frozen membership; (2) no fixed 50/
 assumption remains; (3) train and validation matrices exactly cover their snapshot
 partitions; (4) grandfathered allocations are consumed unchanged; (5) no test matrix is
 created.
+
+## E4 operational materialization boundary
+
+E4 materializes the real epoch-1 `train` and `validation` feature matrices into the
+canonical operational database. The single production entry point is
+`build_operational_feature_matrices` (`minos_engine.storage.feature_matrix_production`),
+wrapped by the owner-run, source-bound, resume-safe command
+`scripts/l2e_build_feature_matrices.py`.
+
+Fail-closed properties (each has a SOURCE test):
+
+* **Mandatory identity flag.** `_persist_feature_matrix` takes
+  `require_operational_identity` as a REQUIRED keyword-only argument (no default); the
+  accepted path passes `True`, synthetic/test callers pass `False`. Omission raises
+  `TypeError` before any DB or filesystem action.
+* **Canonical DB on every production connection.** The accepted builder verifies
+  `current_database() == minos_engine_db` on the EXACT read connection (before snapshot
+  read / payload access) and the EXACT transaction connection (before advisory lock,
+  insert, artifact registration, or publication). A prior check on a different connection
+  is never treated as sufficient.
+* **Accepted boundary only.** Consumes `load_accepted_epoch1_member_manifest` (pinned
+  trust anchors) and `build_accepted_epoch1_feature_matrix`; identities are never
+  caller-selected.
+* **Explicit production roots.** `--train-root` / `--validation-root` are required and
+  validated by the owner-side `PartitionArtifactPublisher` (existence, non-symlink, exact
+  `0o2750`, writer ownership, disjoint, DISTINCT partition gids). Missing / symlinked /
+  mis-owned / mis-permissioned roots are refused; the command never invents paths or
+  groups and never creates roots (provisioning is a deliberate deployment step).
+* **Proof directory refused.** `/var/lib/minos/l2e_cred_proof` (and anything inside it) is
+  refused as a matrix root — it is only the credential-proof fixture, never production
+  storage.
+* **Train/validation only.** `PRODUCTION_PARTITIONS = ("train", "validation")`; `test` is
+  never materialized (not in `MATRIX_PARTITIONS`, and rejected before payload access).
+* **Frozen shape.** 129 ordered BAM-only feature columns; Parquet v2 contract; row counts
+  derived from frozen snapshot membership (no 50/10/15 invariant).
+* **Verified + idempotent.** Logical, payload-byte, DB-row and credential verification per
+  matrix; equal input replays and re-verifies the stored artifact; a divergent logical
+  identity fails typed; any failure rolls back to zero matrix/member/artifact rows and no
+  published artifact.
+
+**Hashes-only evidence.** Per-partition metadata (`matrix_metadata`, schema
+`l2e-e4-matrix-metadata-v1`) records only identities, hashes, counts, member ordering
+(`vector_hash` / `feature_values_hash`), and permission/gid facts — never a plaintext
+feature vector, a credential secret, or a retrievable artifact URI. Only these metadata
+manifests (and, if the frozen design requires it, an operational report) are committed as
+E4 evidence; Parquet payloads, feature values, retrievable URIs, credentials, and any
+test metadata are never committed.
+
+`FEATURE-VIEW-READY` and `FEATURE-MATRIX-FROZEN-1` are **E5**, not E4, and are not
+generated here.

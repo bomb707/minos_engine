@@ -95,6 +95,7 @@ def test_forged_matrix_rejected_before_any_insert(l2e_engine, extra_snaps, artif
             matrix=forged_matrix,
             vectors=forged_vectors,
             publisher=make_publisher(artifact_root),
+            require_operational_identity=False,
         )
     # nothing reached feature_matrices / members / catalog.artifacts for this identity.
     assert _count(l2e_engine, 3, "train") == 0
@@ -252,6 +253,7 @@ def test_atomic_rollback_leaves_no_partial_rows_or_orphan(
             matrix=build.matrix,
             vectors=build.vectors,
             publisher=make_publisher(artifact_root),
+            require_operational_identity=False,
         )
     monkeypatch.undo()
     assert _count(l2e_engine, 4, "train") == 0
@@ -291,6 +293,7 @@ def test_committed_then_wrapper_raises_keeps_row_and_artifact(
             matrix=build.matrix,
             vectors=build.vectors,
             publisher=make_publisher(artifact_root),
+            require_operational_identity=False,
         )
     monkeypatch.undo()
     # the commit really happened: the row exists AND references the existing artifact.
@@ -338,6 +341,7 @@ def test_ambiguous_commit_retains_immutable_orphan(
             matrix=build.matrix,
             vectors=build.vectors,
             publisher=make_publisher(artifact_root),
+            require_operational_identity=False,
         )
     monkeypatch.undo()
     # the immutable artifact is RETAINED (not unlinked) for later reconciliation.

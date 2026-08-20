@@ -139,6 +139,7 @@ def test_forged_candidate_cannot_win_concurrency(
                     matrix=honest.matrix,
                     vectors=honest.vectors,
                     publisher=make_publisher(artifact_root),
+                    require_operational_identity=False,
                 )
             else:
                 outcomes[1] = _persist_feature_matrix(
@@ -147,6 +148,7 @@ def test_forged_candidate_cannot_win_concurrency(
                     matrix=forged_matrix,
                     vectors=forged_vectors,
                     publisher=make_publisher(artifact_root),
+                    require_operational_identity=False,
                 )
         except Exception as exc:  # noqa: BLE001 - collected for assertion
             outcomes[slot] = exc
