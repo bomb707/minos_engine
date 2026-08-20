@@ -458,6 +458,87 @@ def test_credential_revalidation_precedes_publication(l2e_engine, extra_snaps, t
     assert list((base / "l2e" / "train").glob("*.parquet")) == []
 
 
+def _build_train(snap):
+    from minos_engine.layer2.features.extraction import (
+        build_partition_matrix,
+        load_member_manifest_with_trust,
+    )
+
+    snapshot = load_member_manifest_with_trust(snap.manifest_bytes, snap.trust)
+    build = build_partition_matrix(
+        snapshot, "train", lambda m: snap.payload_paths[m.dataset_id].read_bytes()
+    )
+    return snapshot, build
+
+
+def _assert_no_rows_or_artifact(l2e_engine, epoch, base) -> None:
+    with l2e_engine.connect() as conn:
+        matrices = conn.execute(
+            text(
+                "SELECT count(*) FROM profiling.feature_matrices fm "
+                "JOIN profiling.profile_snapshots ps ON ps.id = fm.profile_snapshot_id "
+                "WHERE ps.epoch = :e"
+            ),
+            {"e": epoch},
+        ).scalar_one()
+        members = conn.execute(
+            text(
+                "SELECT count(*) FROM profiling.feature_matrix_members mm "
+                "JOIN profiling.feature_matrices fm ON fm.id = mm.feature_matrix_id "
+                "JOIN profiling.profile_snapshots ps ON ps.id = fm.profile_snapshot_id "
+                "WHERE ps.epoch = :e"
+            ),
+            {"e": epoch},
+        ).scalar_one()
+    assert matrices == 0 and members == 0
+    for part in ("train", "validation"):
+        assert list((base / "l2e" / part).glob("*.parquet")) == []
+
+
+@pytest.mark.parametrize("changed_partition", ["train", "validation"])
+def test_root_change_mid_transaction_rolls_back(
+    l2e_engine, extra_snaps, tmp_path, monkeypatch, changed_partition
+) -> None:
+    """A root that changes AFTER the pre-DB read-back but BEFORE publication (detected by
+    the SECOND credential revalidation) fails closed: all DB writes roll back and no
+    artifact is published — whether the TRAIN root or the (unused-here) VALIDATION root
+    changes while the train matrix is being built."""
+    from minos_engine.storage import feature_matrix as fm
+
+    epoch = 14 if changed_partition == "train" else 15
+    snap = extra_snaps[epoch]
+    base = provision_test_roots(tmp_path)
+    publisher = PartitionArtifactPublisher(
+        train_root=base / "l2e" / "train",
+        validation_root=base / "l2e" / "validation",
+    )
+    snapshot, build = _build_train(snap)
+
+    # mutate the target root ON the SECOND credential snapshot (after the pre-DB one).
+    real_snapshot = publisher.credential_snapshot
+    calls = {"n": 0}
+
+    def _mutating_snapshot():
+        calls["n"] += 1
+        if calls["n"] == 2:  # the pre-publication revalidation
+            (base / "l2e" / changed_partition).chmod(0o2755)  # break the frozen mode
+        return real_snapshot()
+
+    monkeypatch.setattr(publisher, "credential_snapshot", _mutating_snapshot)
+    with pytest.raises(MatrixAccessError):
+        fm._persist_feature_matrix(
+            l2e_engine,
+            snapshot=snapshot,
+            matrix=build.matrix,
+            vectors=build.vectors,
+            publisher=publisher,
+        )
+    monkeypatch.undo()
+    (base / "l2e" / changed_partition).chmod(0o2750)  # restore
+    assert calls["n"] == 2  # both revalidations ran (pre-DB + pre-publication)
+    _assert_no_rows_or_artifact(l2e_engine, epoch, base)
+
+
 def test_production_builder_requires_publisher_not_bare_root(matrix_publisher) -> None:
     import inspect
 

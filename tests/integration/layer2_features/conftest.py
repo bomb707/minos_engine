@@ -550,6 +550,8 @@ _EXTRA_SPECS: dict[int, tuple[tuple[str, str, str], ...]] = {
     11: (("ds-e11-01", "chr22", "train"), ("ds-e11-02", "chr18", "train")),
     12: (("ds-e12-01", "chr19", "train"), ("ds-e12-02", "chr20", "train")),
     13: (("ds-e13-01", "chr21", "train"), ("ds-e13-02", "chr22", "train")),
+    14: (("ds-e14-01", "chr18", "train"), ("ds-e14-02", "chr19", "train")),
+    15: (("ds-e15-01", "chr20", "train"), ("ds-e15-02", "chr21", "train")),
 }
 
 
@@ -561,7 +563,7 @@ def extra_snaps(
 ) -> dict[int, SyntheticSnapshot]:
     snaps: dict[int, SyntheticSnapshot] = {}
     parent = snap_b
-    for epoch in (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13):
+    for epoch in (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15):
         snap = build_synthetic_snapshot(
             _EXTRA_SPECS[epoch],
             epoch=epoch,

@@ -59,6 +59,7 @@ from sqlalchemy.exc import DBAPIError
 from minos_engine.common.errors import (
     ArtifactMetadataConflictError,
     ContractValidationError,
+    MatrixAccessError,
     MatrixConflictError,
 )
 from minos_engine.layer2.features.contracts import (
@@ -550,12 +551,15 @@ def _persist_feature_matrix(
             + ", ".join(sorted(k for k, v in payload_checks.items() if not v))
         )
 
-    # (4) RE-VALIDATE the frozen partition credential at USE time — BEFORE any DB
-    # mutation or publication. The publisher re-checks that the root is still the same
-    # (dev, inode), a non-symlink directory owned by the writer uid with exact mode
-    # 0o2750 and the unchanged partition gid; a root swapped/chmod'd/chgrp'd since
-    # construction is rejected here, before anything is written.
-    root, gid = publisher.credential_for(matrix.partition)
+    # (4) RE-VALIDATE the COMPLETE two-partition credential set at USE time — BEFORE any
+    # DB mutation. Both roots must still exist as non-symlink directories with their
+    # original (dev, inode), writer uid, exact mode 0o2750 and unchanged gids, remain
+    # disjoint and carry distinct gids. This ``pre`` snapshot is re-checked for exact
+    # equality immediately before publication; if either root changes during the
+    # transaction the whole thing fails closed (rollback, no artifact).
+    pre_credentials = publisher.credential_snapshot()
+    root = Path(getattr(pre_credentials, matrix.partition).root)
+    gid = getattr(pre_credentials, matrix.partition).gid
     final_path = root / f"{artifact_sha256}.parquet"
 
     conn = engine.connect()
@@ -682,7 +686,18 @@ def _persist_feature_matrix(
             member_feature_hashes=member_feature_hashes,
         )
 
-        # (4) publish LAST, immediately before the commit boundary — with the partition
+        # (5) RE-VALIDATE the full two-partition credential set AGAIN, immediately before
+        # publication, and require it to EXACTLY equal the pre-DB snapshot. If either
+        # root was replaced/chmod'd/chgrp'd during the transaction this raises → the
+        # transaction rolls back and NO artifact is published.
+        post_credentials = publisher.credential_snapshot()
+        if post_credentials != pre_credentials:
+            raise MatrixAccessError(
+                "partition credential set changed during the transaction — rolling back, "
+                "no artifact published"
+            )
+
+        # (6) publish LAST, immediately before the commit boundary — with the partition
         # credential (gid + 0640) applied to the inode before it is linked into place.
         published = publish_matrix_artifact(payload, partition_root=root, gid=gid)
         # confirm the published file is a confined regular file of exactly our bytes.

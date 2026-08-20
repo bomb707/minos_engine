@@ -269,32 +269,43 @@ def publish_matrix_artifact(payload: bytes, *, partition_root: Path, gid: int) -
             tmp_path.unlink()
         raise
 
-    # --- Phase 2: atomic no-clobber link. ------------------------------------------
-    try:
-        os.link(tmp_path, final_path)  # fails closed if the target already exists
-    except FileExistsError:
-        # a concurrent publisher won; verify bytes + credential, reuse its inode.
-        with contextlib.suppress(FileNotFoundError):
-            tmp_path.unlink()
-        _verify_existing_bytes(final_path, artifact_sha256)
-        _verify_inode_credential(final_path, gid)
-        return PublishedArtifact(artifact_sha256, final_path, len(payload), created=False)
-    except BaseException:
-        with contextlib.suppress(FileNotFoundError):
-            tmp_path.unlink()
-        raise
+    # Record the created inode identity FROM THE TEMP FILE, before os.link. A successful
+    # hard link necessarily makes final_path point to this exact inode, so the identity
+    # is never derived from final_path after linking (where a concurrent replacement
+    # could already have swapped it).
+    tst = os.lstat(tmp_path)
+    created_dev, created_ino = tst.st_dev, tst.st_ino
 
-    # --- Phase 3: WE created the final inode. Record its identity, then wrap EVERY
-    # remaining operation (temp-link removal, dir fsync, final verify) so any failure
-    # removes ONLY this exact inode — never a concurrent replacement/winner. --------
-    st = os.lstat(final_path)
-    created_dev, created_ino = st.st_dev, st.st_ino
+    # --- Phase 2+3: ONE protected state machine — os.link and EVERY subsequent operation
+    # (first final-path lstat, temp-link removal, directory fsync, final verification).
+    # On any post-link failure, final_path is removed ONLY when lstat proves it still
+    # points to the pre-recorded temp inode — never a concurrent replacement/winner. ---
+    linked = False
     try:
+        try:
+            os.link(tmp_path, final_path)  # fails closed if the target already exists
+        except FileExistsError:
+            # a concurrent/pre-existing winner; verify + reuse, never our-inode cleanup.
+            _remove_temp(tmp_path)
+            _verify_existing_bytes(final_path, artifact_sha256)
+            _verify_inode_credential(final_path, gid)
+            return PublishedArtifact(artifact_sha256, final_path, len(payload), created=False)
+        linked = True
+        # first final-path inspection (inside the protected block): it must name exactly
+        # the inode we just linked, else a replacement was inserted between link and now.
+        fst = os.lstat(final_path)
+        if (fst.st_dev, fst.st_ino) != (created_dev, created_ino):
+            raise MatrixArtifactIntegrityError(
+                "final path does not name the freshly linked inode (replaced concurrently)"
+            )
         _remove_temp(tmp_path)
         fsync_directory(partition_root)
         _verify_inode_credential(final_path, gid)
     except BaseException:
-        _unlink_if_same_inode(final_path, created_dev, created_ino)
+        # never clean up a reused winner (linked is False on the FileExistsError path,
+        # which already returned); only our freshly created inode may be removed.
+        if linked:
+            _unlink_if_same_inode(final_path, created_dev, created_ino)
         with contextlib.suppress(OSError):
             os.unlink(tmp_path)  # direct removal — never via the patchable seam
         with contextlib.suppress(OSError):
@@ -311,13 +322,14 @@ def _remove_temp(path: Path) -> None:
 
 def _unlink_if_same_inode(path: Path, dev: int, ino: int) -> None:
     """Unlink ``path`` ONLY if ``lstat`` proves it still names exactly ``(dev, ino)`` and
-    is not a symlink — so a concurrent replacement/winner is never removed."""
+    is not a symlink — so a concurrent replacement/winner is never removed. If identity
+    cannot be proven (any ``lstat`` error), fail safe and do not remove anything."""
     try:
         st = os.lstat(path)
-    except FileNotFoundError:
+    except OSError:
         return
     if not stat.S_ISLNK(st.st_mode) and st.st_dev == dev and st.st_ino == ino:
-        with contextlib.suppress(FileNotFoundError):
+        with contextlib.suppress(OSError):
             os.unlink(path)
 
 

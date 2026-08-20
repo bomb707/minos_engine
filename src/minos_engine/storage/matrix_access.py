@@ -72,6 +72,8 @@ __all__ = [
     "PartitionArtifactReader",
     "MatrixArtifactBroker",
     "PartitionArtifactPublisher",
+    "PartitionCredential",
+    "CredentialSnapshot",
     "provision_partition_root",
     "verify_partition_capability",
     "verify_operational_credentials",
@@ -93,6 +95,28 @@ PARTITION_VIEWS: dict[str, str] = {
 _DIR_MODE = 0o2750
 #: The owner-rw + group-r file mode a matrix artifact must carry.
 _FILE_MODE = 0o0640
+
+
+@dataclass(frozen=True)
+class PartitionCredential:
+    """Immutable observed credential of one validated partition root."""
+
+    partition: str
+    root: str
+    dev: int
+    ino: int
+    uid: int
+    gid: int
+    mode: int
+
+
+@dataclass(frozen=True)
+class CredentialSnapshot:
+    """Immutable snapshot of BOTH partition credentials; compared for exact equality
+    across the double revalidation (before DB mutation and before publication)."""
+
+    train: PartitionCredential
+    validation: PartitionCredential
 
 
 def _partition_for_connection(conn: Connection) -> str:
@@ -269,12 +293,9 @@ class PartitionArtifactPublisher:
             raise MatrixAccessError(f"unknown partition {partition!r}")
         return self._gids[partition]
 
-    def credential_for(self, partition: str) -> tuple[Path, int]:
-        """RE-VALIDATE the frozen partition credential at USE time and return
-        ``(root, gid)``. The root must still be the SAME (dev, inode), a non-symlink
-        directory owned by the writer uid with EXACT mode ``0o2750`` and the unchanged
-        partition gid. Called before any DB mutation / publication so a root that was
-        replaced, chmod'd or chgrp'd after construction is rejected up front."""
+    def _validate_partition(self, partition: str) -> PartitionCredential:
+        """Re-validate ONE partition root against its construction identity and return an
+        immutable snapshot of the current observed credential (which must match)."""
         if partition not in self._roots:
             raise MatrixAccessError(f"unknown partition {partition!r}")
         root = self._roots[partition]
@@ -305,7 +326,41 @@ class PartitionArtifactPublisher:
             raise MatrixAccessError(
                 f"{partition} root {root} gid changed to {st.st_gid} (expected {expected_gid})"
             )
-        return root, expected_gid
+        return PartitionCredential(
+            partition=partition,
+            root=str(root),
+            dev=st.st_dev,
+            ino=st.st_ino,
+            uid=st.st_uid,
+            gid=st.st_gid,
+            mode=stat.S_IMODE(st.st_mode),
+        )
+
+    def credential_snapshot(self) -> CredentialSnapshot:
+        """RE-VALIDATE the COMPLETE two-partition credential set and return an immutable,
+        comparable snapshot. Both roots must still exist, be non-symlink directories with
+        their original ``(dev, inode)``, writer uid, EXACT mode ``0o2750`` and unchanged
+        gid; the roots must remain disjoint with DISTINCT gids. Call before any DB
+        mutation AND again immediately before publication; the two snapshots must be
+        equal — if either root changed during the transaction, this fails closed."""
+        train = self._validate_partition("train")
+        validation = self._validate_partition("validation")
+        if train.gid == validation.gid:
+            raise MatrixAccessError("train and validation roots no longer carry distinct gids")
+        train_path = Path(train.root)
+        validation_path = Path(validation.root)
+        if (
+            train_path == validation_path
+            or train_path.is_relative_to(validation_path)
+            or validation_path.is_relative_to(train_path)
+        ):
+            raise MatrixAccessError("train and validation roots are no longer disjoint")
+        return CredentialSnapshot(train=train, validation=validation)
+
+    def credential_for(self, partition: str) -> tuple[Path, int]:
+        """Convenience: revalidate one partition and return ``(root, gid)``."""
+        cred = self._validate_partition(partition)
+        return Path(cred.root), cred.gid
 
 
 # --------------------------------------------------------------------------- #

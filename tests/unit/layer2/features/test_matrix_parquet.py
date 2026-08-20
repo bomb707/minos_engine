@@ -264,6 +264,66 @@ def _fresh_root(tmp_path):
     return root, os.getgid()
 
 
+def test_publish_first_final_lstat_failure_leaves_no_residue(tmp_path, vectors, monkeypatch):
+    """The FIRST final-path lstat after linking fails (once): the freshly linked inode is
+    still removed (its identity was recorded from the temp file before link) and no temp
+    remains. Subsequent cleanup lstat calls succeed."""
+    import os
+
+    payload = serialize_matrix(_matrix(vectors), vectors)
+    root, gid = _fresh_root(tmp_path)
+    sha = hashlib.sha256(payload).hexdigest()
+    final = root / f"{sha}.parquet"
+    real_lstat = os.lstat
+    state = {"failed": False}
+
+    def _lstat_fail_once(path, *a, **k):
+        # fail only the FIRST final-path inspection; temp-inode lstat + cleanup succeed.
+        if not state["failed"] and str(path) == str(final):
+            state["failed"] = True
+            raise OSError("injected first final-path lstat failure")
+        return real_lstat(path, *a, **k)
+
+    monkeypatch.setattr(os, "lstat", _lstat_fail_once)
+    with pytest.raises(OSError, match="first final-path lstat"):
+        publish_matrix_artifact(payload, partition_root=root, gid=gid)
+    monkeypatch.undo()
+    assert not final.exists()  # our freshly linked inode was cleaned up
+    assert list(root.glob(".tmp-*")) == []
+
+
+def test_publish_replacement_between_link_and_inspection_survives(tmp_path, vectors, monkeypatch):
+    """A replacement inode inserted BETWEEN os.link and the first final-path inspection
+    survives cleanup (the inspection detects the mismatch; cleanup only removes OUR
+    recorded inode, which no longer names final_path)."""
+    import os
+
+    payload = serialize_matrix(_matrix(vectors), vectors)
+    root, gid = _fresh_root(tmp_path)
+    sha = hashlib.sha256(payload).hexdigest()
+    final = root / f"{sha}.parquet"
+    winner_bytes = b"a-replacement-winner-inode"
+    real_lstat = os.lstat
+    state = {"swapped": False}
+
+    def _lstat_swap_once(path, *a, **k):
+        # right before the first final-path inspection, swap final for a DIFFERENT inode.
+        if not state["swapped"] and str(path) == str(final):
+            state["swapped"] = True
+            replacement = root / "winner.tmp"
+            replacement.write_bytes(winner_bytes)
+            os.rename(replacement, final)  # distinct inode (allocated while ours existed)
+        return real_lstat(path, *a, **k)
+
+    monkeypatch.setattr(os, "lstat", _lstat_swap_once)
+    with pytest.raises(MatrixArtifactIntegrityError, match="replaced concurrently"):
+        publish_matrix_artifact(payload, partition_root=root, gid=gid)
+    monkeypatch.undo()
+    # the replacement winner survives (cleanup only removes our recorded inode).
+    assert final.exists() and final.read_bytes() == winner_bytes
+    assert list(root.glob(".tmp-*")) == []
+
+
 def test_publish_fd_close_failure_before_link_leaves_no_final(tmp_path, vectors, monkeypatch):
     """(a) A temp-fd close failure happens BEFORE os.link, so no final name is created."""
     import os
