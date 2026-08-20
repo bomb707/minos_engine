@@ -358,6 +358,24 @@ jobs:
             echo "gates/ingest-ready.json not present (evidence lives in the L2-D evidence commit)"
           fi
 
+      - name: Gate — FEATURE-VIEW-READY (manifest-level committed-gate verification)
+        run: |
+          if [ -f gates/feature-view-ready.json ]; then
+            minos-engine layer2 feature-view qualify --check --gate gates/feature-view-ready.json --base-dir .
+            minos-engine layer2 feature-view gate require-pass --gate gates/feature-view-ready.json --base-dir .
+          else
+            echo "gates/feature-view-ready.json not present (E5 evidence commit pending)"
+          fi
+
+      - name: Gate — FEATURE-MATRIX-FROZEN-1 (manifest-level committed-gate verification)
+        run: |
+          if [ -f gates/feature-matrix-frozen-1.json ]; then
+            minos-engine layer2 feature-matrix qualify --check --gate gates/feature-matrix-frozen-1.json --base-dir .
+            minos-engine layer2 feature-matrix gate require-pass --gate gates/feature-matrix-frozen-1.json --base-dir .
+          else
+            echo "gates/feature-matrix-frozen-1.json not present (E5 evidence commit pending)"
+          fi
+
       - name: Gate — PROFILE-SNAPSHOT-FROZEN-1 offline verification
         run: |
           if [ -f gates/profile-snapshot-frozen-1.json ]; then
