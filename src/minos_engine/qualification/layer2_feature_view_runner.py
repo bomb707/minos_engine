@@ -78,14 +78,85 @@ E5_SOURCE_FILES = (
 # --------------------------------------------------------------------------- #
 # shared immutable primitives
 # --------------------------------------------------------------------------- #
-def _no_nondeterministic_identity() -> bool:
-    """The canonical feature-view content contains no timestamp/uuid/path/credential/url
-    key (a source-level guard, checked against the contract's canonical shape)."""
-    from minos_engine.layer2.features import feature_view as FVMOD
+#: The EXACT set of keys the canonical feature-view identity may contain. Any extra key
+#: (a timestamp, UUID, filesystem path, credential, DB URL, …) would change this set and
+#: fail the check. Note ``path`` inside a column is a FEATURE identity (e.g.
+#: ``reference_context.gc_content``), not a filesystem path.
+_CANONICAL_TOP_LEVEL_KEYS = frozenset(
+    {
+        "feature_view_version",
+        "epoch",
+        "partition",
+        "feature_set_hash",
+        "feature_registry_hash",
+        "column_count",
+        "columns",
+        "snapshot_hash",
+        "split_manifest_hash",
+        "registry_snapshot_hash",
+        "matrix_hash",
+        "artifact_sha256",
+        "row_count",
+        "members",
+    }
+)
+_CANONICAL_COLUMN_KEYS = frozenset({"index", "path", "source_schema", "state", "value_kind"})
+_CANONICAL_MEMBER_KEYS = frozenset(
+    {"dataset_id", "member_index", "vector_hash", "feature_values_hash"}
+)
+_NONDETERMINISTIC_KEY_TOKENS = (
+    "timestamp",
+    "created",
+    "uuid",
+    "random",
+    "temp",
+    "tmp",
+    "secret",
+    "credential",
+    "password",
+    "token",
+    "database_url",
+    "abspath",
+    "hostname",
+    "machine",
+)
 
-    src = inspect.getsource(FVMOD._canonical_content)
-    forbidden = ("time", "uuid", "path", "credential", "url", "random", "now(")
-    return not any(tok in src.lower() for tok in forbidden)
+
+def _no_nondeterministic_identity() -> bool:
+    """The canonical feature-view identity contains EXACTLY the frozen deterministic key
+    set and no nondeterministic key (timestamp/uuid/created/random/temp/credential/url/
+    machine). Checked against the real canonical content, not a naive source scan."""
+    from minos_engine.layer2.features.feature_view import (
+        FeatureViewMember,
+        build_feature_view_manifest,
+    )
+
+    fv = build_feature_view_manifest(
+        epoch=1,
+        partition="train",
+        snapshot_hash="c" * 64,
+        split_manifest_hash="c" * 64,
+        registry_snapshot_hash="c" * 64,
+        matrix_hash="c" * 64,
+        artifact_sha256="c" * 64,
+        row_count=1,
+        members=(
+            FeatureViewMember(
+                dataset_id="d", member_index=0, vector_hash="a" * 64, feature_values_hash="b" * 64
+            ),
+        ),
+    )
+    from minos_engine.layer2.features.feature_view import _canonical_content
+
+    content = _canonical_content(fv)
+    if set(content) != _CANONICAL_TOP_LEVEL_KEYS:
+        return False
+    if any(set(c) != _CANONICAL_COLUMN_KEYS for c in content["columns"]):
+        return False
+    if any(set(m) != _CANONICAL_MEMBER_KEYS for m in content["members"]):
+        return False
+    all_keys = _CANONICAL_TOP_LEVEL_KEYS | _CANONICAL_COLUMN_KEYS | _CANONICAL_MEMBER_KEYS
+    return not any(tok in k for k in all_keys for tok in _NONDETERMINISTIC_KEY_TOKENS)
 
 
 def _provenance_checks(root: Path, src: str, tree: str) -> dict[str, bool]:
