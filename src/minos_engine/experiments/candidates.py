@@ -19,8 +19,9 @@ from minos_engine.callers.gatk.parameter_registry import (
     GatkParameter,
     GatkParameterRegistry,
 )
+from minos_engine.common.canonical_json import canonical_json_bytes
 from minos_engine.common.errors import ConfigValidationError
-from minos_engine.common.hashing import canonical_hash
+from minos_engine.common.hashing import canonical_hash, sha256_hex
 
 from .policy import (
     GENERATION_POLICY_VERSION,
@@ -34,12 +35,14 @@ __all__ = [
     "CANDIDATE_SET_SCHEMA",
     "SkippedProbe",
     "CandidateSet",
-    "generate_candidate_set",
     "generate_accepted_candidate_set",
     "candidate_set_hash",
     "verify_accepted_candidate_set",
     "CandidateSetVerificationError",
 ]
+
+#: Registry parameter names whose state is FIXED (never varied; equal to defaults).
+_FIXED_NAMES = frozenset(p.name for p in REGISTRY.all() if p.state is ParameterState.FIXED)
 
 
 class CandidateSetVerificationError(ConfigValidationError):
@@ -112,7 +115,7 @@ def candidate_set_hash(
     return canonical_hash(content)
 
 
-def generate_candidate_set(
+def _generate_candidate_set_against_registry(
     registry: GatkParameterRegistry = REGISTRY,
     *,
     space: ParameterSpaceSnapshot | None = None,
@@ -170,8 +173,9 @@ def generate_accepted_candidate_set() -> CandidateSet:
 
     Derives the registry, documented parameter space, experiment policy, and seed
     internally from repository-owned contracts. Production/HARNESS-READY paths use this;
-    :func:`generate_candidate_set` (with overrides) is a generic/test builder only."""
-    return generate_candidate_set(REGISTRY)
+    the override-capable ``_generate_candidate_set_against_registry`` is a private
+    test/generic builder only."""
+    return _generate_candidate_set_against_registry(REGISTRY)
 
 
 def verify_accepted_candidate_set(candidate_set: CandidateSet) -> dict[str, bool]:
@@ -189,7 +193,38 @@ def _verify_candidate_set_against_registry(
     """TEST-ONLY generic verifier (explicit registry). Never the accepted authority — a
     caller-selected registry must not be able to certify a forged set. Accepted paths call
     :func:`verify_accepted_candidate_set` (no override)."""
-    truth = generate_candidate_set(registry)
+    truth = _generate_candidate_set_against_registry(registry)
+    space = documented_parameter_space(registry)
+    seed = experiment_seed_v1(registry)
+    configs = candidate_set.configs
+
+    # (A5) independently bind the actual CONFIG PAYLOADS — never trust stored config_hash
+    # or the ordered-hash list alone.
+    payload_config_hash_ok = all(
+        sha256_hex(canonical_json_bytes(c.effective_config)) == c.config_hash for c in configs
+    )
+    revalidates = True
+    for c in configs:
+        try:
+            recanon = canonicalize_config(
+                c.effective_config, registry=registry, parameter_space=space
+            )
+        except ConfigValidationError:
+            revalidates = False
+            break
+        if recanon.config_hash != c.config_hash or recanon.effective_config != c.effective_config:
+            revalidates = False
+            break
+    one_factor = all(
+        sum(1 for k, v in c.effective_config.items() if v != seed.effective_config[k]) == 1
+        for c in configs[1:]
+    )
+    fixed_ok = all(
+        c.effective_config[name] == seed.effective_config[name]
+        for c in configs
+        for name in _FIXED_NAMES
+    )
+
     checks = {
         "registry_hash_bound": candidate_set.policy.registry_hash == truth.policy.registry_hash,
         "parameter_space_hash_bound": candidate_set.policy.parameter_space_hash
@@ -210,6 +245,21 @@ def _verify_candidate_set_against_registry(
         and candidate_set.ordered_config_hashes[0] == truth.policy.seed_config_hash,
         "configs_unique": len(set(candidate_set.ordered_config_hashes))
         == candidate_set.candidate_count,
+        # (A5) payload binding
+        "configs_length_bound": len(configs) == candidate_set.candidate_count,
+        "config_hashes_match_payloads": tuple(c.config_hash for c in configs)
+        == candidate_set.ordered_config_hashes,
+        "config_hash_independently_recomputed": payload_config_hash_ok,
+        "config_payloads_match_regenerated": tuple(c.effective_config for c in configs)
+        == tuple(c.effective_config for c in truth.configs),
+        "config_revalidates_under_registry": revalidates,
+        "parameter_space_hash_per_candidate": all(
+            c.parameter_space_hash == space.parameter_space_hash for c in configs
+        ),
+        "seed_equals_experiment_seed_v1": bool(configs)
+        and configs[0].effective_config == seed.effective_config,
+        "fixed_equal_defaults": fixed_ok,
+        "one_factor_at_a_time": one_factor,
     }
     if not all(checks.values()):
         failed = ", ".join(k for k, v in checks.items() if not v)

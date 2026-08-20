@@ -9,10 +9,10 @@ from minos_engine.callers.gatk.parameter_registry import REGISTRY, GatkParameter
 from minos_engine.common.errors import ConfigValidationError
 from minos_engine.experiments.candidates import (
     CandidateSetVerificationError,
+    _generate_candidate_set_against_registry,
     _verify_candidate_set_against_registry,
     candidate_set_hash,
     generate_accepted_candidate_set,
-    generate_candidate_set,
     verify_accepted_candidate_set,
 )
 from minos_engine.experiments.policy import (
@@ -34,14 +34,14 @@ def test_registry_states_unchanged_no_active_promotion() -> None:
 
 
 def test_generation_is_deterministic() -> None:
-    a, b = generate_candidate_set(), generate_candidate_set()
+    a, b = generate_accepted_candidate_set(), generate_accepted_candidate_set()
     assert a.candidate_set_hash == b.candidate_set_hash
     assert a.ordered_config_hashes == b.ordered_config_hashes
     assert a.policy.generation_policy_version == GENERATION_POLICY_VERSION
 
 
 def test_seed_first_unique_and_derived_count() -> None:
-    cs = generate_candidate_set()
+    cs = generate_accepted_candidate_set()
     seed = experiment_seed_v1()
     assert cs.ordered_config_hashes[0] == seed.config_hash  # seed first
     assert len(set(cs.ordered_config_hashes)) == cs.candidate_count  # unique / dedup
@@ -49,16 +49,18 @@ def test_seed_first_unique_and_derived_count() -> None:
 
 
 def test_one_factor_at_a_time() -> None:
-    cs = generate_candidate_set()
+    cs = generate_accepted_candidate_set()
     seed = experiment_seed_v1()
     for cand in cs.configs[1:]:
-        diff = [k for k in cand.effective_config if cand.effective_config[k] != seed.effective_config[k]]
+        diff = [
+            k for k in cand.effective_config if cand.effective_config[k] != seed.effective_config[k]
+        ]
         assert len(diff) == 1  # exactly one EXPERIMENTAL parameter changed
         assert diff[0] not in _FIXED  # never a FIXED parameter
 
 
 def test_fixed_parameters_never_varied() -> None:
-    cs = generate_candidate_set()
+    cs = generate_accepted_candidate_set()
     seed = experiment_seed_v1()
     for cand in cs.configs:
         for f in _FIXED:
@@ -66,13 +68,16 @@ def test_fixed_parameters_never_varied() -> None:
 
 
 def test_invalid_coupling_probe_deterministically_omitted() -> None:
-    cs = generate_candidate_set()
+    cs = generate_accepted_candidate_set()
     # min_assembly_region_size=300 violates 300 < max(default 300); it is skipped, not replaced.
     skipped = {(s.parameter, s.value) for s in cs.skipped}
     assert ("min_assembly_region_size", 300) in skipped
     # no candidate carries an invalid coupling
     for cand in cs.configs:
-        assert cand.effective_config["min_assembly_region_size"] < cand.effective_config["max_assembly_region_size"]
+        assert (
+            cand.effective_config["min_assembly_region_size"]
+            < cand.effective_config["max_assembly_region_size"]
+        )
 
 
 def test_honest_accepted_candidate_set_verifies() -> None:
@@ -87,7 +92,9 @@ def _forged_registry_and_set() -> tuple[GatkParameterRegistry, object]:
         for p in REGISTRY.all()
     )
     forged_registry = GatkParameterRegistry(forged_params)
-    forged_set = generate_candidate_set(forged_registry)  # internally self-consistent
+    forged_set = _generate_candidate_set_against_registry(
+        forged_registry
+    )  # internally self-consistent
     return forged_registry, forged_set
 
 
@@ -104,27 +111,84 @@ def test_genuine_consistent_rehash_forgery_rejected_by_accepted_verifier() -> No
 
 
 def test_caller_cannot_make_forged_registry_authoritative() -> None:
-    """A1 regression: there is no override on the accepted verifier/builder — a caller
-    cannot substitute a forged registry into the accepted trust boundary."""
+    """A1/A6 regression: the accepted public API exposes NO registry/space/policy override
+    — a caller cannot substitute a forged registry into the accepted trust boundary."""
     import inspect
 
     from minos_engine.experiments import candidates as C
 
     assert set(inspect.signature(C.verify_accepted_candidate_set).parameters) == {"candidate_set"}
     assert inspect.signature(C.generate_accepted_candidate_set).parameters == {}
+    # the override-capable generator is NOT part of the public API surface
+    assert "generate_candidate_set" not in C.__all__
+    assert "_generate_candidate_set_against_registry" not in C.__all__
     # the forged set differs from the accepted set (proves the registry actually mattered)
     _, forged_set = _forged_registry_and_set()
     assert forged_set.candidate_set_hash != generate_accepted_candidate_set().candidate_set_hash
 
 
 def test_policy_nested_content_immutable() -> None:
-    """A2: the frozen policy exposes no mutable mapping after its hash is computed."""
+    """A2/A7: the frozen policy exposes no mutable mapping; precise exceptions only."""
+    from dataclasses import FrozenInstanceError
+
     pol = generate_accepted_candidate_set().policy
     assert isinstance(pol.generation_mechanics, tuple)
-    with pytest.raises((TypeError, AttributeError)):
+    with pytest.raises(TypeError):  # tuple item assignment
         pol.generation_mechanics[0] = ("x", "y")  # type: ignore[index]
-    with pytest.raises((AttributeError, Exception)):
-        pol.registry_hash = "0" * 64  # type: ignore[misc]  # frozen dataclass
+    with pytest.raises(FrozenInstanceError):  # frozen dataclass attribute set
+        pol.registry_hash = "0" * 64  # type: ignore[misc]
+
+
+# --------------------------------------------------------------------------- #
+# A5 — candidate PAYLOAD binding attacks (accepted verifier must independently bind
+# the actual CONFIG payloads, not merely the ordered hash list / candidate_set_hash)
+# --------------------------------------------------------------------------- #
+def test_a5_attack_config_payload_replacement() -> None:
+    from dataclasses import replace
+
+    cs = generate_accepted_candidate_set()
+    # swap in a DIFFERENT real candidate at index 1 while keeping the identity fields
+    replaced_configs = (cs.configs[0], cs.configs[2], *cs.configs[2:])
+    forged = replace(cs, configs=replaced_configs)  # ordered_config_hashes/hash unchanged
+    with pytest.raises(CandidateSetVerificationError):
+        verify_accepted_candidate_set(forged)
+
+
+def test_a5_attack_forged_config_hash() -> None:
+    from dataclasses import replace
+
+    cs = generate_accepted_candidate_set()
+    victim = cs.configs[1]
+    # altered effective_config but config_hash copied from the accepted candidate
+    tampered_effective = dict(victim.effective_config)
+    tampered_effective["min_mapping_quality_score"] = 59  # a different in-bounds value
+    forged_config = victim.model_copy(
+        update={"effective_config": tampered_effective, "config_hash": victim.config_hash}
+    )
+    forged = replace(cs, configs=(cs.configs[0], forged_config, *cs.configs[2:]))
+    with pytest.raises(CandidateSetVerificationError):
+        verify_accepted_candidate_set(forged)
+
+
+def test_a5_attack_parameter_space_mismatch() -> None:
+    from dataclasses import replace
+
+    cs = generate_accepted_candidate_set()
+    victim = cs.configs[1]
+    forged_config = victim.model_copy(update={"parameter_space_hash": "0" * 64})
+    forged = replace(cs, configs=(cs.configs[0], forged_config, *cs.configs[2:]))
+    with pytest.raises(CandidateSetVerificationError):
+        verify_accepted_candidate_set(forged)
+
+
+def test_a5_attack_nested_effective_config_mutation() -> None:
+    cs = generate_accepted_candidate_set()
+    # CanonicalConfig is a pydantic model but effective_config is a plain dict; mutating it
+    # after construction must be detected by the payload-binding verifier.
+    victim = cs.configs[1]
+    victim.effective_config["max_alternate_alleles"] = 1  # in-bounds mutation
+    with pytest.raises(CandidateSetVerificationError):
+        verify_accepted_candidate_set(cs)
 
 
 def test_config_tamper_rejected_by_canonicalizer() -> None:
@@ -135,7 +199,9 @@ def test_config_tamper_rejected_by_canonicalizer() -> None:
     with pytest.raises(ConfigValidationError):
         canonicalize_config({"not_a_real_param": 1}, parameter_space=space)  # unknown param
     with pytest.raises(ConfigValidationError):
-        canonicalize_config({"min_base_quality_score": 9999}, parameter_space=space)  # out of bounds
+        canonicalize_config(
+            {"min_base_quality_score": 9999}, parameter_space=space
+        )  # out of bounds
     with pytest.raises(ConfigValidationError):
         canonicalize_config({"sample_ploidy": 4}, parameter_space=space)  # FIXED changed
 
@@ -143,7 +209,7 @@ def test_config_tamper_rejected_by_canonicalizer() -> None:
 def test_policy_hash_deterministic_and_binds_ordered_hashes() -> None:
     pol = build_experiment_parameter_policy()
     assert len(pol.experiment_parameter_policy_hash) == 64
-    truth = generate_candidate_set()
+    truth = generate_accepted_candidate_set()
     # candidate_set_hash is a pure function of policy identities + ordered config hashes:
     # recomputing over the same inputs reproduces it; changing the order changes it.
     same = candidate_set_hash(

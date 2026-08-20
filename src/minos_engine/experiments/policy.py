@@ -61,9 +61,15 @@ _GENERATION_MECHANICS: tuple[tuple[str, str | bool], ...] = (
     ("enum", "try every enum value except the official_default, in registry enum order"),
     ("fixed_parameters", "never varied"),
     ("explorable_state", EXPLORABLE_REGISTRY_STATE),
-    ("cross_parameter", "propose -> canonicalize -> include iff valid; deterministically omit invalid"),
+    (
+        "cross_parameter",
+        "propose -> canonicalize -> include iff valid; deterministically omit invalid",
+    ),
     ("dedup", "by config_hash, first occurrence wins; final semantic order preserved"),
-    ("candidate_order", "seed first, then parameter name ascending, then min-max / enum-order / bool"),
+    (
+        "candidate_order",
+        "seed first, then parameter name ascending, then min-max / enum-order / bool",
+    ),
 )
 
 
