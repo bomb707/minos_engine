@@ -484,13 +484,49 @@ def snap_b(
     return snap
 
 
+def _distinct_partition_gids() -> tuple[int, int] | None:
+    """Two distinct gids the current user can chgrp to (primary + a secondary), or None."""
+    primary = os.getgid()
+    for gid in os.getgroups():
+        if gid != primary:
+            return primary, gid
+    return None
+
+
+def provision_test_roots(base: Path) -> Path:
+    """Provision base/l2e/{train,validation} with DISTINCT partition gids + exact mode
+    0o2750 (a synthetic test helper — production roots are provisioned by deployment)."""
+    gids = _distinct_partition_gids()
+    if gids is None:  # pragma: no cover - depends on the CI runner's group membership
+        pytest.skip("no two distinct OS gids available to provision partition roots")
+    train_gid, validation_gid = gids
+    for partition, gid in (("train", train_gid), ("validation", validation_gid)):
+        root = base / "l2e" / partition
+        root.mkdir(parents=True, exist_ok=True)
+        os.chown(root, os.getuid(), gid)
+        os.chmod(root, 0o2750)
+    return base
+
+
 @pytest.fixture(scope="session")
 def artifact_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    root = tmp_path_factory.mktemp("l2e_artifacts")
-    for partition in ("train", "validation"):
-        (root / "l2e" / partition).mkdir(parents=True, exist_ok=True)
-        (root / "l2e" / partition).chmod(0o700)
-    return root
+    return provision_test_roots(tmp_path_factory.mktemp("l2e_artifacts"))
+
+
+def make_publisher(base: Path):
+    """An owner-side PartitionArtifactPublisher over base/l2e/{train,validation}. The
+    base must already be provisioned (see :func:`provision_test_roots`)."""
+    from minos_engine.storage.matrix_access import PartitionArtifactPublisher
+
+    return PartitionArtifactPublisher(
+        train_root=base / "l2e" / "train",
+        validation_root=base / "l2e" / "validation",
+    )
+
+
+@pytest.fixture(scope="session")
+def matrix_publisher(artifact_root: Path):
+    return make_publisher(artifact_root)
 
 
 #: Small chained snapshots for rollback/concurrency behavior (parent chain mandatory).

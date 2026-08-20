@@ -236,6 +236,7 @@ def test_publish_is_immutable_no_clobber_and_round_trips(tmp_path, vectors) -> N
 
     payload = serialize_matrix(_matrix(vectors), vectors)
     root = tmp_path / "l2e" / "train"
+    root.mkdir(parents=True)
     gid = os.getgid()
     first = publish_matrix_artifact(payload, partition_root=root, gid=gid)
     assert first.path.name == f"{first.artifact_sha256}.parquet"
@@ -255,11 +256,39 @@ def test_publish_is_immutable_no_clobber_and_round_trips(tmp_path, vectors) -> N
     assert leftovers == []
 
 
+def test_publish_unlinks_created_inode_if_fsync_fails_after_link(tmp_path, vectors, monkeypatch):
+    """A failure AFTER os.link (here: fsync_directory) must unlink the just-created inode
+    and leave no final or temporary artifact."""
+    import os
+
+    import minos_engine.layer2.features.matrix_parquet as mp
+
+    payload = serialize_matrix(_matrix(vectors), vectors)
+    root = tmp_path / "l2e" / "train"
+    root.mkdir(parents=True)
+    sha = hashlib.sha256(payload).hexdigest()
+
+    calls = {"n": 0}
+
+    def _flaky_fsync_dir(directory) -> None:
+        calls["n"] += 1
+        raise OSError("injected directory fsync failure after link")
+
+    monkeypatch.setattr(mp, "fsync_directory", _flaky_fsync_dir)
+    with pytest.raises(OSError, match="injected"):
+        publish_matrix_artifact(payload, partition_root=root, gid=os.getgid())
+    monkeypatch.undo()
+    # neither the final content-addressed file nor any temp file remains.
+    assert not (root / f"{sha}.parquet").exists()
+    assert list(root.glob(".tmp-*")) == []
+
+
 def test_publish_rejects_corrupt_preexisting_target_unchanged(tmp_path, vectors) -> None:
     import os
 
     payload = serialize_matrix(_matrix(vectors), vectors)
     root = tmp_path / "l2e" / "train"
+    root.mkdir(parents=True)
     published = publish_matrix_artifact(payload, partition_root=root, gid=os.getgid())
     # corrupt the final content-addressed file in place.
     corrupt = payload[:-1] + bytes([payload[-1] ^ 0xFF])

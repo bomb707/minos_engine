@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import grp
 import os
 import pwd
 import stat
@@ -16,13 +15,13 @@ from minos_engine.common.errors import MatrixAccessError
 from minos_engine.storage.feature_matrix import build_feature_matrix_with_trust
 from minos_engine.storage.matrix_access import (
     MatrixArtifactBroker,
+    PartitionArtifactPublisher,
     PartitionArtifactReader,
-    provision_partition_root,
     verify_operational_credentials,
     verify_partition_capability,
 )
 from tests.conftest import REPO_ROOT
-from tests.integration.layer2_features.conftest import usable_secondary_groups
+from tests.integration.layer2_features.conftest import provision_test_roots
 
 _TRAIN_VIEW = "SELECT count(*) FROM profiling.training_matrix"
 _VALIDATION_VIEW = "SELECT count(*) FROM evaluation.validation_matrix"
@@ -202,13 +201,20 @@ def test_operational_credentials_hold_without_real_identities(artifact_root) -> 
     assert any("impersonation unavailable" in r for r in status.reasons)
 
 
-def test_operational_credentials_hold_on_same_group(artifact_root) -> None:
-    # same-UID owner-only (same group) roots are explicitly NOT isolation → HOLD.
+def test_operational_credentials_hold_on_same_group(tmp_path) -> None:
+    # two roots owned by the SAME uid + SAME group are explicitly NOT isolation → HOLD.
+    train = tmp_path / "l2e" / "train"
+    validation = tmp_path / "l2e" / "validation"
+    for root in (train, validation):
+        root.mkdir(parents=True)
+        os.chown(root, os.getuid(), os.getgid())
+        root.chmod(0o2750)
+    me = pwd.getpwuid(os.getuid()).pw_name
     status = verify_operational_credentials(
-        train_root=artifact_root / "l2e" / "train",
-        validation_root=artifact_root / "l2e" / "validation",
-        trainer_identity=pwd.getpwuid(os.getuid()).pw_name,
-        evaluator_identity=pwd.getpwuid(os.getuid()).pw_name,
+        train_root=train,
+        validation_root=validation,
+        trainer_identity=me,
+        evaluator_identity=me,
     )
     assert status.status == "HOLD"
     assert status.checks["partition_groups_distinct"] is False
@@ -219,55 +225,44 @@ def test_operational_credentials_hold_on_same_group(artifact_root) -> None:
 # item 1 — every artifact inode carries the partition gid + mode 0640
 # --------------------------------------------------------------------------- #
 def test_built_artifact_inode_has_gid_and_mode_0640(l2e_engine, extra_snaps, tmp_path) -> None:
-    # build into an ISOLATED root (other tests mutate the shared artifact_root files).
+    # build into an ISOLATED, provisioned root (distinct partition gids per partition).
     snap = extra_snaps[13]
-    root = tmp_path / "inode"
+    root = provision_test_roots(tmp_path / "inode")
     result = build_feature_matrix_with_trust(
         l2e_engine, snap.manifest_bytes, snap.trust, "train", artifact_root=root
     )
-    partition_root = root / "l2e" / "train"
+    train_root = root / "l2e" / "train"
+    validation_root = root / "l2e" / "validation"
+    assert train_root.stat().st_gid != validation_root.stat().st_gid  # distinct gids
     st = Path(result.artifact_path).stat()
+    assert not Path(result.artifact_path).is_symlink()
     assert st.st_uid == os.getuid()
-    assert st.st_gid == partition_root.stat().st_gid  # partition gid provisioned on root
+    assert st.st_gid == train_root.stat().st_gid  # the train partition gid, applied per-inode
     assert stat.S_IMODE(st.st_mode) == 0o640  # owner-rw, group-r, no other/world
     # the persistence boundary verifies this at publish, so the final name never keeps a
     # wrongly-permissioned inode.
 
 
-def test_publish_applies_distinct_partition_group_gid(l2e_engine, extra_snaps, tmp_path) -> None:
-    """Build a fresh matrix into a root provisioned with a distinct OS group, and prove
-    the published inode carries that group's gid + 0640 (exercises fchown/fchmod/verify)."""
-    groups = usable_secondary_groups()
-    if not groups:
-        pytest.skip("no non-primary OS group available to provision a partition root")
-    group = groups[0]
-    gid = grp.getgrnam(group).gr_gid
-    snap = extra_snaps[9]  # a fresh identity, never built into artifact_root
-    provisioned = tmp_path / "prov"
-    provision_partition_root(provisioned / "l2e" / "train", group=group)
-    result = build_feature_matrix_with_trust(
-        l2e_engine, snap.manifest_bytes, snap.trust, "train", artifact_root=provisioned
-    )
-    st = Path(result.artifact_path).stat()
-    assert st.st_gid == gid
-    assert stat.S_IMODE(st.st_mode) == 0o640
-    assert st.st_uid == os.getuid()
-
-
 def test_publish_verifies_inode_credential_after_publication(
     l2e_engine, extra_snaps, tmp_path, monkeypatch
 ) -> None:
-    """If the published inode ends up with the wrong mode, publication fails closed."""
+    """If the published inode ends up with the wrong mode, publication fails closed and
+    the just-created inode is unlinked (no bad final artifact remains)."""
     from minos_engine.layer2.features.errors import MatrixArtifactIntegrityError
 
     snap = extra_snaps[10]
+    root = provision_test_roots(tmp_path / "bad")
     real_fchmod = os.fchmod
     # corrupt the applied mode so the post-publication verification must reject it.
     monkeypatch.setattr(os, "fchmod", lambda fd, _mode: real_fchmod(fd, 0o644))
     with pytest.raises(MatrixArtifactIntegrityError, match="mode"):
         build_feature_matrix_with_trust(
-            l2e_engine, snap.manifest_bytes, snap.trust, "train", artifact_root=tmp_path / "bad"
+            l2e_engine, snap.manifest_bytes, snap.trust, "train", artifact_root=root
         )
+    monkeypatch.undo()
+    # no final or temporary artifact remains after the failed publish.
+    assert list((root / "l2e" / "train").glob("*.parquet")) == []
+    assert list((root / "l2e" / "train").glob(".tmp-*")) == []
 
 
 # --------------------------------------------------------------------------- #
@@ -322,11 +317,89 @@ def test_trainer_runtime_bundle_contains_no_validation_material(
     assert validation.matrix_hash in text_blob
 
 
-def test_partition_root_ownership_and_mode(artifact_root) -> None:
-    for partition in ("train", "validation"):
-        root = artifact_root / "l2e" / partition
+def test_partition_root_ownership_and_exact_mode_02750(artifact_root) -> None:
+    train = artifact_root / "l2e" / "train"
+    validation = artifact_root / "l2e" / "validation"
+    for root in (train, validation):
         assert root.stat().st_uid == os.getuid()
-        assert (root.stat().st_mode & 0o077) == 0
+        assert stat.S_IMODE(root.stat().st_mode) == 0o2750  # setgid + owner-rwx + group-r-x
+    assert train.stat().st_gid != validation.stat().st_gid  # distinct partition gids
+
+
+# --------------------------------------------------------------------------- #
+# item 2 — mandatory provisioning at the production write boundary
+# --------------------------------------------------------------------------- #
+def test_publisher_requires_existing_provisioned_roots(tmp_path) -> None:
+    train = tmp_path / "l2e" / "train"
+    validation = tmp_path / "l2e" / "validation"
+    # missing roots are NOT created automatically.
+    with pytest.raises(MatrixAccessError, match="does not exist"):
+        PartitionArtifactPublisher(train_root=train, validation_root=validation)
+    # wrong mode is rejected.
+    train.mkdir(parents=True)
+    validation.mkdir(parents=True)
+    train.chmod(0o2750)
+    validation.chmod(0o700)
+    with pytest.raises(MatrixAccessError, match="mode"):
+        PartitionArtifactPublisher(train_root=train, validation_root=validation)
+    # symlinked root is rejected.
+    linkbase = tmp_path / "linked"
+    (linkbase / "real").mkdir(parents=True)
+    (linkbase / "real").chmod(0o2750)
+    (linkbase / "train").symlink_to(linkbase / "real")
+    (linkbase / "validation").mkdir()
+    (linkbase / "validation").chmod(0o2750)
+    with pytest.raises(MatrixAccessError, match="symlink|does not exist"):
+        PartitionArtifactPublisher(
+            train_root=linkbase / "train", validation_root=linkbase / "validation"
+        )
+
+
+def test_publisher_requires_distinct_partition_gids(tmp_path) -> None:
+    # both roots provisioned with the SAME gid (current gid) — rejected as non-isolation.
+    for part in ("train", "validation"):
+        root = tmp_path / "l2e" / part
+        root.mkdir(parents=True)
+        os.chown(root, os.getuid(), os.getgid())
+        root.chmod(0o2750)
+    with pytest.raises(MatrixAccessError, match="DISTINCT partition gids"):
+        PartitionArtifactPublisher(
+            train_root=tmp_path / "l2e" / "train",
+            validation_root=tmp_path / "l2e" / "validation",
+        )
+
+
+def test_production_builder_requires_publisher_not_bare_root(matrix_publisher) -> None:
+    import inspect
+
+    from minos_engine.storage.feature_matrix import build_accepted_epoch1_feature_matrix
+
+    sig = inspect.signature(build_accepted_epoch1_feature_matrix)
+    assert "publisher" in sig.parameters
+    assert "artifact_root" not in sig.parameters
+    assert isinstance(matrix_publisher, PartitionArtifactPublisher)
+
+
+# --------------------------------------------------------------------------- #
+# item 1 — privileged cross-identity PASS path (deployment/qualification only)
+# --------------------------------------------------------------------------- #
+def test_privileged_cross_identity_pass(built, artifact_root) -> None:
+    """The real PASS path requires root + two provisioned service identities. In an
+    ordinary (unprivileged) environment this SKIPS; a privileged deployment/qualification
+    run exercises the cross-identity denial proof and expects PASS."""
+    if os.geteuid() != 0:
+        pytest.skip("cross-identity PASS requires privilege to impersonate service users")
+    trainer = os.environ.get("MINOS_TRAINER_OS_IDENTITY")
+    evaluator = os.environ.get("MINOS_EVALUATOR_OS_IDENTITY")
+    if not trainer or not evaluator:  # pragma: no cover - privileged deployment only
+        pytest.skip("MINOS_TRAINER_OS_IDENTITY / MINOS_EVALUATOR_OS_IDENTITY not set")
+    status = verify_operational_credentials(  # pragma: no cover - privileged deployment only
+        train_root=artifact_root / "l2e" / "train",
+        validation_root=artifact_root / "l2e" / "validation",
+        trainer_identity=trainer,
+        evaluator_identity=evaluator,
+    )
+    assert status.status == "PASS", status.reasons
 
 
 def test_no_test_partition_anywhere(artifact_root, matrix_broker) -> None:

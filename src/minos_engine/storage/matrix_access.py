@@ -25,19 +25,28 @@ owned by the admin/storage writer, mode setgid + group-read + no other/world
 (``0o0640``). A trainer OS identity is a member of only the train group and a validation
 OS identity only the validation group, so neither can open the other partition's files.
 
+:class:`PartitionArtifactPublisher` is the MANDATORY owner-side write boundary: it holds
+BOTH frozen partition credentials (root + gid) and validates them at construction — each
+root exists and is not a symlink, has EXACT mode ``0o2750`` and writer ownership, the two
+partition gids are DISTINCT, and the roots are disjoint. Missing production roots are
+never auto-created. The production builder consumes a publisher, never a bare
+``artifact_root``.
+
 :func:`verify_operational_credentials` takes EXPLICIT ``trainer_identity`` and
 ``evaluator_identity`` OS usernames and returns ``PASS`` only when it can PROVE
-separation: distinct partition groups; trainer is a member of the train group and not the
-validation group (and vice-versa for evaluator); every artifact carries the partition gid
-with ``S_IRGRP`` set, no group-write and no other bits; and a real cross-identity access
-test (each identity opens its own artifact and receives ``PermissionError`` for the other
-partition). When real identity impersonation is unavailable — not privileged, or the
-identities do not exist (as in CI) — it returns ``HOLD``, never a false ``PASS``. Two
-groups of the same current user is NOT separation. :func:`verify_partition_capability` is
-the structural/policy check that runs anywhere (distinct non-overlapping roots, path
-confinement, no test path). :func:`provision_partition_root` applies a partition's frozen
-group + setgid before building. Deployment secrets, real URIs, and payloads never live in
-Git.
+separation: distinct partition groups; trainer ∈ train group ∉ validation group (and the
+mirror for evaluator); every artifact is a regular non-symlink file with EXACT mode
+``0o640``, the partition gid and the writer uid; both roots contain at least one verified
+artifact; and a real cross-identity access test — the PRIVILEGED PARENT resolves the
+exact own/foreign artifact paths, then a forked child drops supplementary groups, gid and
+uid and directly ``os.open``/reads that exact path (a ``PermissionError`` from directory
+traversal or opening is ``DENIED``); own must be ``OK`` and foreign ``DENIED`` for both.
+When impersonation is unavailable — not privileged, identities absent, or a root has no
+artifact (as in CI) — it returns ``HOLD``, never a false ``PASS``. Two groups of the same
+current user is NOT separation. :func:`verify_partition_capability` is the
+structural/policy check that runs anywhere. :func:`provision_partition_root` applies a
+partition's frozen group + setgid before building. Deployment secrets, real URIs, and
+payloads never live in Git.
 """
 
 from __future__ import annotations
@@ -62,6 +71,7 @@ __all__ = [
     "CredentialStatus",
     "PartitionArtifactReader",
     "MatrixArtifactBroker",
+    "PartitionArtifactPublisher",
     "provision_partition_root",
     "verify_partition_capability",
     "verify_operational_credentials",
@@ -193,6 +203,65 @@ class MatrixArtifactBroker:
         return self._roots[partition]
 
 
+def _validate_partition_root(partition: str, root: Path) -> int:
+    """Validate a provisioned partition root and return its gid. The root must be an
+    existing, non-symlink directory owned by the writer uid with EXACT mode 0o2750."""
+    if root.is_symlink():
+        raise MatrixAccessError(f"{partition} root {root} is a symlink")
+    if not root.is_dir():
+        raise MatrixAccessError(f"{partition} root {root} does not exist or is not a directory")
+    st = root.stat()
+    mode = stat.S_IMODE(st.st_mode)
+    if st.st_uid != os.getuid():
+        raise MatrixAccessError(f"{partition} root {root} is not owned by the writer uid")
+    if mode != _DIR_MODE:
+        raise MatrixAccessError(
+            f"{partition} root {root} has mode {oct(mode)}, expected {oct(_DIR_MODE)}"
+        )
+    return st.st_gid
+
+
+class PartitionArtifactPublisher:
+    """Owner-side publisher: the MANDATORY production write boundary. Holds both frozen
+    partition credentials (root + gid) and validates them at construction, so a bare
+    caller-supplied ``artifact_root`` can never reach the write path.
+
+    Construction requires: each root exists and is not a symlink; exact mode ``0o2750``;
+    writer ownership; the two partition gids are DISTINCT; and the roots are disjoint.
+    Missing production roots are NOT created automatically — provisioning
+    (:func:`provision_partition_root`) is a deliberate deployment step.
+    """
+
+    def __init__(self, *, train_root: Path, validation_root: Path) -> None:
+        # symlink + existence + mode + ownership are validated on the GIVEN paths first
+        # (a symlinked root must be rejected before any resolution hides it).
+        train_gid = _validate_partition_root("train", train_root)
+        validation_gid = _validate_partition_root("validation", validation_root)
+        train = train_root.resolve()
+        validation = validation_root.resolve()
+        if train == validation:
+            raise MatrixAccessError("train and validation roots must not be the same")
+        if train.is_relative_to(validation) or validation.is_relative_to(train):
+            raise MatrixAccessError("train and validation roots must not overlap")
+        if train_gid == validation_gid:
+            raise MatrixAccessError(
+                "train and validation roots must carry DISTINCT partition gids "
+                "(same-UID same-group roots are not partition isolation)"
+            )
+        self._roots: dict[str, Path] = {"train": train, "validation": validation}
+        self._gids: dict[str, int] = {"train": train_gid, "validation": validation_gid}
+
+    def partition_root(self, partition: str) -> Path:
+        if partition not in self._roots:
+            raise MatrixAccessError(f"unknown partition {partition!r}")
+        return self._roots[partition]
+
+    def partition_gid(self, partition: str) -> int:
+        if partition not in self._gids:
+            raise MatrixAccessError(f"unknown partition {partition!r}")
+        return self._gids[partition]
+
+
 # --------------------------------------------------------------------------- #
 # credential provisioning + verification
 # --------------------------------------------------------------------------- #
@@ -250,28 +319,37 @@ def verify_partition_capability(*, train_root: Path, validation_root: Path) -> d
 
 
 def _artifact_mode_checks(partition: str, root: Path, gid: int) -> dict[str, bool]:
-    """Every matrix artifact inode: gid correct, S_IRGRP set, no group-write, no other."""
+    """Root has EXACT mode 0o2750; every matrix artifact inode is a regular non-symlink
+    file with EXACT mode 0o640, the partition gid, and the writer uid."""
     checks: dict[str, bool] = {}
     st = root.stat()
-    mode = stat.S_IMODE(st.st_mode)
     checks[f"{partition}_root_owned_by_writer"] = st.st_uid == os.getuid()
-    checks[f"{partition}_root_setgid"] = bool(mode & stat.S_ISGID)
-    checks[f"{partition}_root_no_other"] = (mode & 0o007) == 0
+    checks[f"{partition}_root_mode_exactly_02750"] = stat.S_IMODE(st.st_mode) == _DIR_MODE
     checks[f"{partition}_root_group_matches_gid"] = st.st_gid == gid
-    files = [c for c in root.iterdir() if c.is_file()]
+    files = [c for c in root.iterdir() if c.name.endswith(".parquet")]
     all_ok = True
     for child in files:
-        cmode = stat.S_IMODE(child.stat().st_mode)
+        if child.is_symlink():
+            all_ok = False
+            break
+        cst = child.stat()
         if (
-            child.stat().st_gid != gid
-            or not (cmode & stat.S_IRGRP)
-            or (cmode & stat.S_IWGRP)
-            or (cmode & 0o007)
+            not stat.S_ISREG(cst.st_mode)
+            or stat.S_IMODE(cst.st_mode) != _FILE_MODE
+            or cst.st_gid != gid
+            or cst.st_uid != os.getuid()
         ):
             all_ok = False
             break
-    checks[f"{partition}_artifacts_group_read_only"] = all_ok
+    checks[f"{partition}_artifacts_exact_mode_0640"] = all_ok
     return checks
+
+
+def _first_artifact(root: Path) -> Path | None:
+    for child in sorted(root.glob("*.parquet")):
+        if child.is_file() and not child.is_symlink():
+            return child
+    return None
 
 
 def _identity_group_memberships(username: str) -> set[int] | None:
@@ -318,6 +396,12 @@ def verify_operational_credentials(
     checks.update(_artifact_mode_checks("train", train, train_gid))
     checks.update(_artifact_mode_checks("validation", validation, validation_gid))
 
+    # both roots must contain at least one verified artifact to run the access test on.
+    train_artifact = _first_artifact(train)
+    validation_artifact = _first_artifact(validation)
+    checks["train_root_has_artifact"] = train_artifact is not None
+    checks["validation_root_has_artifact"] = validation_artifact is not None
+
     checks["identities_distinct"] = trainer_identity != evaluator_identity
     trainer_groups = _identity_group_memberships(trainer_identity)
     evaluator_groups = _identity_group_memberships(evaluator_identity)
@@ -331,15 +415,23 @@ def verify_operational_credentials(
         checks["evaluator_not_in_train_group"] = train_gid not in evaluator_groups
 
     # PROVEN cross-identity access requires privilege to impersonate; without it, HOLD.
-    if os.geteuid() != 0 or trainer_groups is None or evaluator_groups is None:
+    can_impersonate = (
+        os.geteuid() == 0
+        and trainer_groups is not None
+        and evaluator_groups is not None
+        and train_artifact is not None
+        and validation_artifact is not None
+    )
+    if not can_impersonate:
         checks["cross_identity_access_proven"] = False
         reasons.append(
-            "real identity impersonation unavailable (not privileged, or identities "
-            "absent) — HOLD, never PASS"
+            "real identity impersonation unavailable (not privileged, identities absent, "
+            "or a partition root has no artifact) — HOLD, never PASS"
         )
     else:  # pragma: no cover - requires root + provisioned trainer/evaluator users
+        assert train_artifact is not None and validation_artifact is not None
         proven = _prove_cross_identity_denial(
-            trainer_identity, evaluator_identity, train, validation
+            trainer_identity, evaluator_identity, train_artifact, validation_artifact
         )
         checks["cross_identity_access_proven"] = proven
         if not proven:
@@ -354,36 +446,39 @@ def verify_operational_credentials(
     return CredentialStatus(status=status, checks=checks, reasons=tuple(reasons))
 
 
-def _open_first_artifact_as(username: str, root: Path) -> str:
-    """In a forked child dropped to ``username``, try to read the first artifact under
-    ``root``; print ``OK`` / ``DENIED`` / ``NONE``."""  # pragma: no cover - root-only
+def _open_exact_path_as(username: str, path: Path) -> str:  # pragma: no cover - root-only
+    """In a forked child that has DROPPED to ``username`` (supplementary groups, gid, uid),
+    directly ``os.open``/read the EXACT ``path`` resolved by the privileged parent. A
+    ``PermissionError`` from directory traversal or file opening is ``DENIED``."""
     entry = pwd.getpwnam(username)
     os.setgroups(os.getgrouplist(username, entry.pw_gid))
     os.setgid(entry.pw_gid)
     os.setuid(entry.pw_uid)
-    files = [c for c in root.iterdir() if c.is_file()]
-    if not files:
-        return "NONE"
     try:
-        files[0].read_bytes()
+        fd = os.open(str(path), os.O_RDONLY)  # traversal OR open may raise PermissionError
+        try:
+            os.read(fd, 1)
+        finally:
+            os.close(fd)
         return "OK"
     except PermissionError:
         return "DENIED"
 
 
 def _prove_cross_identity_denial(
-    trainer: str, evaluator: str, train_root: Path, validation_root: Path
+    trainer: str, evaluator: str, train_artifact: Path, validation_artifact: Path
 ) -> bool:  # pragma: no cover - requires root + provisioned users
-    """Fork per (identity, root) and require own=OK, other=DENIED for both identities."""
+    """The privileged parent resolved the EXACT own/foreign artifact paths; fork per
+    (identity, exact path) and require own=OK, foreign=DENIED for both identities."""
 
-    def run(username: str, root: Path) -> str:
+    def run(username: str, path: Path) -> str:
         r, w = os.pipe()
         pid = os.fork()
         if pid == 0:
             os.close(r)
             result = "ERR"
             try:
-                result = _open_first_artifact_as(username, root)
+                result = _open_exact_path_as(username, path)
             finally:
                 os.write(w, result.encode())
                 os._exit(0)
@@ -394,8 +489,8 @@ def _prove_cross_identity_denial(
         return out
 
     return (
-        run(trainer, train_root) == "OK"
-        and run(trainer, validation_root) == "DENIED"
-        and run(evaluator, validation_root) == "OK"
-        and run(evaluator, train_root) == "DENIED"
+        run(trainer, train_artifact) == "OK"
+        and run(trainer, validation_artifact) == "DENIED"
+        and run(evaluator, validation_artifact) == "OK"
+        and run(evaluator, train_artifact) == "DENIED"
     )

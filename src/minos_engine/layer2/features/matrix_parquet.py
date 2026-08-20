@@ -231,7 +231,10 @@ def publish_matrix_artifact(payload: bytes, *, partition_root: Path, gid: int) -
     appear: the final name only ever names a fully written, fsynced inode.
     """
     artifact_sha256 = hashlib.sha256(payload).hexdigest()
-    partition_root.mkdir(parents=True, exist_ok=True)
+    if not partition_root.is_dir() or partition_root.is_symlink():
+        raise MatrixArtifactIntegrityError(
+            f"partition root {partition_root} is not an existing (non-symlink) directory"
+        )
     final_path = partition_root / f"{artifact_sha256}.parquet"
 
     if final_path.exists():
@@ -241,6 +244,7 @@ def publish_matrix_artifact(payload: bytes, *, partition_root: Path, gid: int) -
 
     tmp_fd, tmp_name = tempfile.mkstemp(prefix=f".tmp-{artifact_sha256}-", dir=partition_root)
     tmp_path = Path(tmp_name)
+    created = False
     try:
         with os.fdopen(tmp_fd, "wb", closefd=False) as handle:
             handle.write(payload)
@@ -266,22 +270,30 @@ def publish_matrix_artifact(payload: bytes, *, partition_root: Path, gid: int) -
         os.close(tmp_fd)
         with contextlib.suppress(FileNotFoundError):
             tmp_path.unlink()
-    fsync_directory(partition_root)
+
+    # Once WE created the final inode, ANY failure before returning (fsync, verify) must
+    # unlink ONLY that inode and fsync the directory after removing it — never touch a
+    # pre-existing/concurrent winner's inode.
     if created:
         try:
-            _verify_inode_credential(final_path, gid)  # verify final uid/gid/mode
-        except MatrixArtifactIntegrityError:
-            # we created this inode this call and it is invalid — remove it (nothing
-            # references it yet) so the final name never keeps a bad inode.
+            fsync_directory(partition_root)
+            _verify_inode_credential(final_path, gid)
+        except BaseException:
             with contextlib.suppress(FileNotFoundError):
                 final_path.unlink()
+            with contextlib.suppress(OSError):
+                fsync_directory(partition_root)
             raise
+    else:
+        fsync_directory(partition_root)
     return PublishedArtifact(artifact_sha256, final_path, len(payload), created=created)
 
 
 def _verify_existing_bytes(path: Path, expected_sha256: str) -> None:
-    if not path.is_file():
-        raise MatrixArtifactIntegrityError(f"artifact path is not a regular file: {path}")
+    if path.is_symlink() or not path.is_file():
+        raise MatrixArtifactIntegrityError(
+            f"artifact path is not a regular (non-symlink) file: {path}"
+        )
     if hashlib.sha256(path.read_bytes()).hexdigest() != expected_sha256:
         raise MatrixArtifactIntegrityError(
             f"pre-existing artifact at {path} does not match the expected content hash "
@@ -290,8 +302,13 @@ def _verify_existing_bytes(path: Path, expected_sha256: str) -> None:
 
 
 def _verify_inode_credential(path: Path, gid: int) -> None:
-    """The final artifact inode must be owner-writer, partition-gid, mode 0o640 only."""
+    """The final artifact inode must be a regular (non-symlink) file owned by the writer
+    uid, carrying the partition gid and EXACTLY mode 0o640."""
+    if path.is_symlink():
+        raise MatrixArtifactIntegrityError(f"artifact {path} is a symlink")
     st = path.stat()
+    if not stat.S_ISREG(st.st_mode):
+        raise MatrixArtifactIntegrityError(f"artifact {path} is not a regular file")
     mode = stat.S_IMODE(st.st_mode)
     if st.st_uid != os.getuid():
         raise MatrixArtifactIntegrityError(f"artifact {path} not owned by the writer uid")

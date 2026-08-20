@@ -31,6 +31,7 @@ from minos_engine.storage.feature_matrix import (
     _persist_feature_matrix,
     build_feature_matrix_with_trust,
 )
+from tests.integration.layer2_features.conftest import make_publisher
 
 
 def _forge(snap, *, index: int = 0, value: float = 0.123456):
@@ -93,7 +94,7 @@ def test_forged_matrix_rejected_before_any_insert(l2e_engine, extra_snaps, artif
             snapshot=snapshot,
             matrix=forged_matrix,
             vectors=forged_vectors,
-            partition_root=artifact_root,
+            publisher=make_publisher(artifact_root),
         )
     # nothing reached feature_matrices / members / catalog.artifacts for this identity.
     assert _count(l2e_engine, 3, "train") == 0
@@ -150,9 +151,9 @@ def test_replay_same_bytes_returns_stored_uri(l2e_engine, snap_a, built, artifac
 def test_replay_under_different_root_is_typed_conflict(
     l2e_engine, snap_a, built, tmp_path_factory
 ) -> None:
-    other_root = tmp_path_factory.mktemp("l2e_other_root")
-    for part in ("train", "validation"):
-        (other_root / "l2e" / part).mkdir(parents=True, exist_ok=True)
+    from tests.integration.layer2_features.conftest import provision_test_roots
+
+    other_root = provision_test_roots(tmp_path_factory.mktemp("l2e_other_root"))
     with pytest.raises(MatrixConflictError, match="different artifact URI/root"):
         _rebuild(l2e_engine, snap_a, artifact_root=other_root)
 
@@ -250,7 +251,7 @@ def test_atomic_rollback_leaves_no_partial_rows_or_orphan(
             snapshot=snapshot,
             matrix=build.matrix,
             vectors=build.vectors,
-            partition_root=artifact_root,
+            publisher=make_publisher(artifact_root),
         )
     monkeypatch.undo()
     assert _count(l2e_engine, 4, "train") == 0
@@ -289,7 +290,7 @@ def test_committed_then_wrapper_raises_keeps_row_and_artifact(
             snapshot=snapshot,
             matrix=build.matrix,
             vectors=build.vectors,
-            partition_root=artifact_root,
+            publisher=make_publisher(artifact_root),
         )
     monkeypatch.undo()
     # the commit really happened: the row exists AND references the existing artifact.
@@ -336,7 +337,7 @@ def test_ambiguous_commit_retains_immutable_orphan(
             snapshot=snapshot,
             matrix=build.matrix,
             vectors=build.vectors,
-            partition_root=artifact_root,
+            publisher=make_publisher(artifact_root),
         )
     monkeypatch.undo()
     # the immutable artifact is RETAINED (not unlinked) for later reconciliation.

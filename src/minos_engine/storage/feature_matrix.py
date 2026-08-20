@@ -93,6 +93,7 @@ from minos_engine.layer2.features.matrix_parquet import (
     serialize_matrix,
     verify_matrix_artifact,
 )
+from minos_engine.storage.matrix_access import PartitionArtifactPublisher
 
 __all__ = [
     "PersistedFeatureMatrix",
@@ -524,7 +525,7 @@ def _persist_feature_matrix(
     snapshot: FrozenSnapshot,
     matrix: FeatureMatrix,
     vectors: tuple[FeatureVector, ...],
-    partition_root: Path,
+    publisher: PartitionArtifactPublisher,
 ) -> PersistedFeatureMatrix:
     """Serialize, verify, publish (immutable no-clobber), and persist in ONE
     transaction. Trusts NO caller-supplied hash/size/path: bytes come from
@@ -549,9 +550,10 @@ def _persist_feature_matrix(
             + ", ".join(sorted(k for k, v in payload_checks.items() if not v))
         )
 
-    root = partition_root / "l2e" / matrix.partition
-    root.mkdir(parents=True, exist_ok=True)
-    gid = root.stat().st_gid  # the partition credential provisioned on the root
+    # the owner-side publisher validated both partition roots (exist, non-symlink, exact
+    # 0o2750, writer-owned, distinct gids, disjoint) at construction — no auto-create.
+    root = publisher.partition_root(matrix.partition)
+    gid = publisher.partition_gid(matrix.partition)
     final_path = root / f"{artifact_sha256}.parquet"
 
     conn = engine.connect()
@@ -740,16 +742,18 @@ def build_accepted_epoch1_feature_matrix(
     member_manifest_bytes: bytes,
     partition: str,
     *,
-    artifact_root: Path,
+    publisher: PartitionArtifactPublisher,
 ) -> PersistedFeatureMatrix:
     """THE production E3 builder: accepted epoch-1 boundary only.
 
     Loads the accepted epoch-1 member manifest (pinned trust anchors; no caller-supplied
     identities) BEFORE touching the database, the payload provider, or the filesystem,
-    then builds + persists one partition matrix.
+    and writes through the owner-side :class:`PartitionArtifactPublisher` (both frozen
+    partition credentials validated at construction) — never a bare caller-supplied
+    ``artifact_root``.
     """
     snapshot = load_accepted_epoch1_member_manifest(member_manifest_bytes)
-    return _build_feature_matrix(engine, snapshot, partition, artifact_root=artifact_root)
+    return _build_feature_matrix(engine, snapshot, partition, publisher=publisher)
 
 
 def build_feature_matrix_with_trust(
@@ -760,11 +764,16 @@ def build_feature_matrix_with_trust(
     *,
     artifact_root: Path,
 ) -> PersistedFeatureMatrix:
-    """TEST-ONLY generic builder for synthetic snapshots under an explicit complete
-    trust bundle. Production imports and calls ONLY
-    :func:`build_accepted_epoch1_feature_matrix`."""
+    """TEST-ONLY generic builder for synthetic snapshots under an explicit complete trust
+    bundle. It constructs a :class:`PartitionArtifactPublisher` from the (test-provisioned)
+    ``artifact_root`` — which itself validates the roots. Production imports and calls ONLY
+    :func:`build_accepted_epoch1_feature_matrix` with an explicit publisher."""
     snapshot = load_member_manifest_with_trust(member_manifest_bytes, trust)
-    return _build_feature_matrix(engine, snapshot, partition, artifact_root=artifact_root)
+    publisher = PartitionArtifactPublisher(
+        train_root=artifact_root / "l2e" / "train",
+        validation_root=artifact_root / "l2e" / "validation",
+    )
+    return _build_feature_matrix(engine, snapshot, partition, publisher=publisher)
 
 
 def _build_feature_matrix(
@@ -772,7 +781,7 @@ def _build_feature_matrix(
     snapshot: FrozenSnapshot,
     partition: str,
     *,
-    artifact_root: Path,
+    publisher: PartitionArtifactPublisher,
 ) -> PersistedFeatureMatrix:
     # test is rejected BEFORE any payload read, artifact write, or DB access.
     if partition not in MATRIX_PARTITIONS:
@@ -793,5 +802,5 @@ def _build_feature_matrix(
         snapshot=snapshot,
         matrix=build.matrix,
         vectors=build.vectors,
-        partition_root=artifact_root,
+        publisher=publisher,
     )

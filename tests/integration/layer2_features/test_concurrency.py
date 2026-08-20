@@ -17,6 +17,7 @@ from minos_engine.storage.feature_matrix import (
     _persist_feature_matrix,
     build_feature_matrix_with_trust,
 )
+from tests.integration.layer2_features.conftest import make_publisher
 
 
 def _count(engine, epoch: int) -> int:
@@ -137,7 +138,7 @@ def test_forged_candidate_cannot_win_concurrency(
                     snapshot=snapshot,
                     matrix=honest.matrix,
                     vectors=honest.vectors,
-                    partition_root=artifact_root,
+                    publisher=make_publisher(artifact_root),
                 )
             else:
                 outcomes[1] = _persist_feature_matrix(
@@ -145,7 +146,7 @@ def test_forged_candidate_cannot_win_concurrency(
                     snapshot=snapshot,
                     matrix=forged_matrix,
                     vectors=forged_vectors,
-                    partition_root=artifact_root,
+                    publisher=make_publisher(artifact_root),
                 )
         except Exception as exc:  # noqa: BLE001 - collected for assertion
             outcomes[slot] = exc

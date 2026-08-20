@@ -100,18 +100,18 @@ def test_test_partition_rejected_before_provider_filesystem_or_db(snap_a, artifa
     assert not (artifact_root / "l2e" / "test").exists()
 
 
-def test_accepted_builder_rejects_test_partition_before_db(artifact_root) -> None:
+def test_accepted_builder_rejects_test_partition_before_db(matrix_publisher) -> None:
     committed = (REPO_ROOT / "manifests" / "profile_snapshot_epoch1_members.json").read_bytes()
     with pytest.raises(ForbiddenPartitionError):
         build_accepted_epoch1_feature_matrix(
             _ExplodingEngine(),  # type: ignore[arg-type]
             committed,
             "test",
-            artifact_root=artifact_root,
+            publisher=matrix_publisher,
         )
 
 
-def test_accepted_builder_rejects_alternate_manifest_before_any_access(artifact_root) -> None:
+def test_accepted_builder_rejects_alternate_manifest_before_any_access(matrix_publisher) -> None:
     """A fully self-consistent alternate manifest (rehashed member_manifest_hash AND
     snapshot_hash) is rejected by the PINNED accepted boundary before the builder
     touches the database, a payload provider, or the filesystem."""
@@ -125,17 +125,17 @@ def test_accepted_builder_rejects_alternate_manifest_before_any_access(artifact_
             _ExplodingEngine(),  # type: ignore[arg-type]
             json.dumps(raw).encode(),
             "train",
-            artifact_root=artifact_root,
+            publisher=matrix_publisher,
         )
 
 
-def test_accepted_builder_refuses_synthetic_snapshots(snap_a, artifact_root) -> None:
+def test_accepted_builder_refuses_synthetic_snapshots(snap_a, matrix_publisher) -> None:
     with pytest.raises(MemberManifestHashMismatchError):
         build_accepted_epoch1_feature_matrix(
             _ExplodingEngine(),  # type: ignore[arg-type]
             snap_a.manifest_bytes,
             "train",
-            artifact_root=artifact_root,
+            publisher=matrix_publisher,
         )
 
 
