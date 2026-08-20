@@ -22,6 +22,9 @@ __all__ = [
     "L2F_TABLES",
     "L2F_COMPOSITE_TARGETS",
     "L2F_COMPOSITE_FKS",
+    "L2F_PLAN_LOGICAL_IDENTITY",
+    "L2F_CONFIG_PAYLOAD_SCHEMA",
+    "L2F_CONFIG_PAYLOAD_MEDIA_TYPE",
     "L2F_TRIGGERS",
     "ACCEPTED_PRIOR_MIGRATION_SHAS",
     "L2F_INVENTORY",
@@ -46,22 +49,46 @@ L2F_TABLES = (
 #: downgrade) — the composite-FK targets that make the train lineage declarative.
 L2F_COMPOSITE_TARGETS = (
     ("profiling", "feature_matrices", "uq_l2f_feature_matrices_composite"),
+    ("profiling", "profile_snapshots", "uq_l2f_profile_snapshots_composite"),
+    ("profiling", "feature_sets", "uq_l2f_feature_sets_composite"),
     ("profiling", "profile_snapshot_members", "uq_l2f_psm_composite"),
     ("profiling", "feature_matrix_members", "uq_l2f_fmm_composite"),
-    ("catalog", "artifacts", "uq_l2f_artifacts_id_sha256"),
+    ("catalog", "artifacts", "uq_l2f_artifacts_id_sha_media"),
 )
 
 #: Declarative composite foreign keys enforcing every cross-table invariant.
 L2F_COMPOSITE_FKS = (
+    "fk_l2f_plans_snapshot_identity",
+    "fk_l2f_plans_feature_set_identity",
     "fk_l2f_plans_train_matrix_lineage",
     "fk_l2f_pm_plan_lineage",
     "fk_l2f_pm_snapshot_member",
     "fk_l2f_pm_matrix_member",
-    "fk_l2f_cp_artifact_sha",
-    "fk_l2f_pc_payload_hash",
+    "fk_l2f_cp_artifact_sha_media",
+    "fk_l2f_pc_plan_param_space",
+    "fk_l2f_pc_payload_identity",
     "fk_l2f_job_member_plan",
     "fk_l2f_job_config_plan",
 )
+
+#: The complete logical-plan identity columns (counts derived + verified downstream).
+L2F_PLAN_LOGICAL_IDENTITY = (
+    "snapshot_hash",
+    "split_manifest_hash",
+    "registry_snapshot_hash",
+    "train_matrix_hash",
+    "train_feature_view_hash",
+    "feature_set_hash",
+    "feature_registry_hash",
+    "gatk_registry_hash",
+    "parameter_space_hash",
+    "experiment_parameter_policy_hash",
+    "candidate_set_hash",
+)
+
+#: Frozen CONFIG-payload artifact identity.
+L2F_CONFIG_PAYLOAD_SCHEMA = "l2f-config-payload-v1"
+L2F_CONFIG_PAYLOAD_MEDIA_TYPE = "application/vnd.minos.l2f-config+json"
 
 #: Immutability triggers (reused append-only fn + new job identity-change fn).
 L2F_TRIGGERS = (
@@ -88,6 +115,9 @@ L2F_INVENTORY: dict[str, object] = {
     "tables": list(L2F_TABLES),
     "composite_targets": [list(t) for t in L2F_COMPOSITE_TARGETS],
     "composite_fks": list(L2F_COMPOSITE_FKS),
+    "plan_logical_identity": list(L2F_PLAN_LOGICAL_IDENTITY),
+    "config_payload_schema": L2F_CONFIG_PAYLOAD_SCHEMA,
+    "config_payload_media_type": L2F_CONFIG_PAYLOAD_MEDIA_TYPE,
     "triggers": list(L2F_TRIGGERS),
     "prior_migration_shas": ACCEPTED_PRIOR_MIGRATION_SHAS,
 }

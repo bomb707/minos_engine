@@ -16,6 +16,7 @@ import pytest
 from sqlalchemy import create_engine, text
 
 from minos_engine.storage.database import normalize_database_url
+from minos_engine.storage.l2f_migration_contract import L2F_COMPOSITE_FKS as _COMPOSITE_FKS
 from tests.integration.layer2_db.conftest import (
     alembic_downgrade,
     alembic_upgrade,
@@ -31,21 +32,14 @@ _L2F_TABLES = (
     "l2f_experiment_plan_configs",
     "l2f_experiment_jobs",
 )
+
 _COMPOSITE_TARGETS = (
     "uq_l2f_feature_matrices_composite",
+    "uq_l2f_profile_snapshots_composite",
+    "uq_l2f_feature_sets_composite",
     "uq_l2f_psm_composite",
     "uq_l2f_fmm_composite",
-    "uq_l2f_artifacts_id_sha256",
-)
-_COMPOSITE_FKS = (
-    "fk_l2f_plans_train_matrix_lineage",
-    "fk_l2f_pm_plan_lineage",
-    "fk_l2f_pm_snapshot_member",
-    "fk_l2f_pm_matrix_member",
-    "fk_l2f_cp_artifact_sha",
-    "fk_l2f_pc_payload_hash",
-    "fk_l2f_job_member_plan",
-    "fk_l2f_job_config_plan",
+    "uq_l2f_artifacts_id_sha_media",
 )
 
 
@@ -100,14 +94,11 @@ def test_full_lifecycle_and_downgrade_clean(lifecycle_url: str) -> None:
     assert _count(url, "SELECT version_num = :h FROM alembic_version", h=_HEAD) == 1
     assert _l2f_tables(url) == 5
     # additive composite targets present
-    assert (
-        _count(
-            url,
-            "SELECT count(*) FROM pg_constraint WHERE conname = ANY(:n)",
-            n=list(_COMPOSITE_TARGETS),
-        )
-        == 4
-    )
+    assert _count(
+        url,
+        "SELECT count(*) FROM pg_constraint WHERE conname = ANY(:n)",
+        n=list(_COMPOSITE_TARGETS),
+    ) == len(_COMPOSITE_TARGETS)
     # declarative composite FKs present
     assert _count(
         url,

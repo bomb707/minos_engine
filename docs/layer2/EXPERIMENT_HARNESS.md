@@ -7,10 +7,15 @@ is not implemented and is **not** claimed anywhere below.
 
 ## Scope of this document (F3-A)
 
-F3-A freezes only the **database foundation** — migration `0006_l2f_experiment_plan`, its
-SQLAlchemy models, and its frozen migration contract. The pure `ExperimentPlan` builder
-(F3-B), persistence + bounded enqueue (F3-C), the verifier and full attack matrix (F3-D),
-and F4–F7 are unimplemented and unauthorized here.
+F3-A freezes the **database foundation** — migration `0006_l2f_experiment_plan` and its
+frozen migration contract. The pure `ExperimentPlan` builder (F3-B), persistence +
+bounded enqueue (F3-C), the verifier and full attack matrix (F3-D), and F4–F7 are
+unimplemented and unauthorized here.
+
+> **F3-A still open:** SQLAlchemy ORM models mirroring `0006` (with a metadata-parity
+> test), the seeded direct-SQL attack matrix that behaviorally exercises each constraint,
+> and the exhaustive column/type/constraint introspection contract are the remaining
+> corrective F3-A items and are **not** yet committed.
 
 ## Why legacy tables are forbidden
 
@@ -49,10 +54,27 @@ UNIQUE constraints to the immutable target tables (`feature_matrices`,
 composite-FK targets. Every cross-table invariant is then enforced by a **composite
 foreign key**, not a trigger and not a caller-supplied `partition` value:
 
+- **plan → snapshot identity**: FK `(profile_snapshot_id, snapshot_hash,
+  split_manifest_hash, registry_snapshot_hash)` → `profile_snapshots(id, snapshot_hash,
+  split_manifest_hash, registry_snapshot_hash)` — a valid snapshot id with any **forged**
+  snapshot/split/registry hash is rejected declaratively.
+- **plan → feature-set identity**: FK `(feature_set_id, feature_set_hash,
+  feature_registry_hash)` → `feature_sets(id, feature_set_hash, registry_hash)` — binds the
+  set hash **and** the L2-A feature `registry_hash` (distinct from the GATK
+  parameter-registry hash `gatk_registry_hash`).
 - **plan → train matrix**: FK `(train_feature_matrix_id, profile_snapshot_id, partition,
   train_matrix_hash, feature_set_id)` → `feature_matrices(id, profile_snapshot_id,
   partition, matrix_hash, feature_set_id)` with `CHECK(partition='train')` — the matrix
   must belong to the plan's snapshot, be partition `train`, and carry the recorded hashes.
+- **plan_config → parameter space**: FK `(plan_id, parameter_space_hash)` →
+  `l2f_experiment_plans(id, parameter_space_hash)` **and** `(config_payload_id, config_hash,
+  parameter_space_hash)` → `l2f_config_payloads(id, config_hash, parameter_space_hash)` — a
+  config payload from a **different** parameter space cannot be linked into the plan.
+- **config payload → artifact schema**: FK `(artifact_id, config_hash, media_type)` →
+  `catalog.artifacts(id, sha256, media_type)` plus `CHECK` fixing `schema_version =
+  l2f-config-payload-v1` and `media_type = application/vnd.minos.l2f-config+json` — proves
+  the artifact is the canonical L2-F CONFIG payload (bytes = canonical JSON of
+  `effective_config`, `sha256 == config_hash`).
 - **plan member → plan**: FK `(plan_id, profile_snapshot_id, feature_matrix_id)` →
   `l2f_experiment_plans(id, profile_snapshot_id, train_feature_matrix_id)`.
 - **plan member → snapshot member**: FK on `(profile_snapshot_member_id, profile_snapshot_id,
@@ -82,6 +104,30 @@ The canonical CONFIG payload is the **canonical JSON bytes of `effective_config`
 as a content-addressed `catalog.artifacts` row whose `sha256 == config_hash`. F5 rebuilds
 the exact CONFIG byte-for-byte from that artifact; a hash without a reconstructable
 payload is forbidden. (Publication code is F3-C, not F3-A.)
+
+## Identity binding levels (honest)
+
+Not every scientific identity has a persisted upstream row to foreign-key against. Each
+is one of:
+
+- **Database-bound** (a composite FK independently proves it against an immutable upstream
+  row): `snapshot_hash`, `split_manifest_hash`, `registry_snapshot_hash` (→
+  `profile_snapshots`); `feature_set_hash`, `feature_registry_hash` (→ `feature_sets`);
+  `train_matrix_hash` + `partition='train'` + `feature_set_id` (→ `feature_matrices`); the
+  full member lineage (→ `profile_snapshot_members` + `feature_matrix_members`);
+  `config_hash` + `parameter_space_hash` + media type (→ `l2f_config_payloads` →
+  `catalog.artifacts`); and every job's member/config belong to its plan.
+- **Structurally constrained, verified downstream**: `train_feature_view_hash`,
+  `gatk_registry_hash`, `experiment_parameter_policy_hash`, `candidate_set_hash` — these
+  have **no** upstream persisted row to FK against, so PostgreSQL only enforces hex64 shape
+  + membership in the complete logical-identity UNIQUE. Their correctness is established by
+  the future **F3-B accepted constructor** (which derives them from repository-owned
+  contracts) and re-checked by the future **F3-D verifier**. F3-A does **not** claim
+  PostgreSQL independently proves these.
+- **Derived + re-verified**: `train_member_count`, `candidate_count`, `logical_job_count`
+  (CHECK `logical_job_count = train_member_count * candidate_count`; the member/candidate
+  values themselves are re-derived by F3-B/F3-D). Counts are intentionally excluded from
+  the logical-identity UNIQUE.
 
 ## Immutability, grants, lifecycle
 

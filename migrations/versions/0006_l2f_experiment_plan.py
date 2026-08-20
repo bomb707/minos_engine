@@ -53,6 +53,18 @@ _COMPOSITE_TARGETS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
     ),
     (
         "profiling",
+        "profile_snapshots",
+        "uq_l2f_profile_snapshots_composite",
+        ("id", "snapshot_hash", "split_manifest_hash", "registry_snapshot_hash"),
+    ),
+    (
+        "profiling",
+        "feature_sets",
+        "uq_l2f_feature_sets_composite",
+        ("id", "feature_set_hash", "registry_hash"),
+    ),
+    (
+        "profiling",
         "profile_snapshot_members",
         "uq_l2f_psm_composite",
         (
@@ -70,8 +82,12 @@ _COMPOSITE_TARGETS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
         "uq_l2f_fmm_composite",
         ("id", "feature_matrix_id", "dataset_registry_id", "member_index", "feature_values_hash"),
     ),
-    ("catalog", "artifacts", "uq_l2f_artifacts_id_sha256", ("id", "sha256")),
+    ("catalog", "artifacts", "uq_l2f_artifacts_id_sha_media", ("id", "sha256", "media_type")),
 )
+
+#: Frozen CONFIG-payload artifact identity (F5 reconstructs the exact CONFIG from these).
+_CONFIG_PAYLOAD_SCHEMA = "l2f-config-payload-v1"
+_CONFIG_PAYLOAD_MEDIA_TYPE = "application/vnd.minos.l2f-config+json"
 
 _L2F_TABLES = (
     "l2f_experiment_jobs",
@@ -133,6 +149,7 @@ def _create_plans() -> None:
         _sha("train_matrix_hash"),
         _sha("train_feature_view_hash"),
         _sha("feature_set_hash"),
+        _sha("feature_registry_hash"),
         _sha("gatk_registry_hash"),
         _sha("parameter_space_hash"),
         _sha("experiment_parameter_policy_hash"),
@@ -144,11 +161,20 @@ def _create_plans() -> None:
         _ts(),
         sa.PrimaryKeyConstraint("id", name="pk_l2f_experiment_plans"),
         sa.UniqueConstraint("plan_hash", name="uq_l2f_plans_plan_hash"),
+        # the COMPLETE logical plan identity (all scientific identities; counts are derived
+        # and re-verified by the future F3-B constructor / F3-D verifier).
         sa.UniqueConstraint(
             "snapshot_hash",
+            "split_manifest_hash",
+            "registry_snapshot_hash",
             "train_matrix_hash",
-            "candidate_set_hash",
+            "train_feature_view_hash",
+            "feature_set_hash",
+            "feature_registry_hash",
+            "gatk_registry_hash",
+            "parameter_space_hash",
             "experiment_parameter_policy_hash",
+            "candidate_set_hash",
             name="uq_l2f_plans_logical_identity",
         ),
         # composite-UNIQUE target for plan-member lineage FK.
@@ -158,10 +184,35 @@ def _create_plans() -> None:
             "train_feature_matrix_id",
             name="uq_l2f_plans_id_snapshot_matrix",
         ),
+        # composite-UNIQUE target for the plan-config parameter-space FK.
+        sa.UniqueConstraint("id", "parameter_space_hash", name="uq_l2f_plans_id_param_space"),
+        # the snapshot MUST be the exact accepted snapshot: id + all three snapshot hashes
+        # (a valid id with any forged snapshot hash is rejected declaratively).
         sa.ForeignKeyConstraint(
-            ["profile_snapshot_id"],
-            ["profiling.profile_snapshots.id"],
-            name="fk_l2f_plans_profile_snapshot_id",
+            [
+                "profile_snapshot_id",
+                "snapshot_hash",
+                "split_manifest_hash",
+                "registry_snapshot_hash",
+            ],
+            [
+                "profiling.profile_snapshots.id",
+                "profiling.profile_snapshots.snapshot_hash",
+                "profiling.profile_snapshots.split_manifest_hash",
+                "profiling.profile_snapshots.registry_snapshot_hash",
+            ],
+            name="fk_l2f_plans_snapshot_identity",
+        ),
+        # the feature set MUST be the exact accepted set: id + feature_set_hash + the L2-A
+        # feature registry_hash (distinct from the GATK parameter-registry hash).
+        sa.ForeignKeyConstraint(
+            ["feature_set_id", "feature_set_hash", "feature_registry_hash"],
+            [
+                "profiling.feature_sets.id",
+                "profiling.feature_sets.feature_set_hash",
+                "profiling.feature_sets.registry_hash",
+            ],
+            name="fk_l2f_plans_feature_set_identity",
         ),
         # the train matrix MUST belong to this snapshot, have partition='train', and carry
         # the recorded matrix_hash + feature_set_id (declarative — no caller partition trust).
@@ -196,6 +247,7 @@ def _create_plans() -> None:
         _hex_ck("train_matrix_hash", "ck_l2f_plans_train_matrix_hex"),
         _hex_ck("train_feature_view_hash", "ck_l2f_plans_train_view_hex"),
         _hex_ck("feature_set_hash", "ck_l2f_plans_feature_set_hex"),
+        _hex_ck("feature_registry_hash", "ck_l2f_plans_feature_registry_hex"),
         _hex_ck("gatk_registry_hash", "ck_l2f_plans_gatk_registry_hex"),
         _hex_ck("parameter_space_hash", "ck_l2f_plans_param_space_hex"),
         _hex_ck("experiment_parameter_policy_hash", "ck_l2f_plans_policy_hex"),
@@ -295,17 +347,32 @@ def _create_config_payloads() -> None:
         _uuid_pk(),
         _sha("config_hash"),
         _sha("parameter_space_hash"),
+        sa.Column(
+            "schema_version", sa.Text(), nullable=False, server_default=_CONFIG_PAYLOAD_SCHEMA
+        ),
+        sa.Column(
+            "media_type", sa.Text(), nullable=False, server_default=_CONFIG_PAYLOAD_MEDIA_TYPE
+        ),
         _uuid("artifact_id"),
         _ts(),
         sa.PrimaryKeyConstraint("id", name="pk_l2f_config_payloads"),
         sa.UniqueConstraint("config_hash", name="uq_l2f_config_payloads_config_hash"),
-        # composite-UNIQUE target for the plan-config FK.
-        sa.UniqueConstraint("id", "config_hash", name="uq_l2f_config_payloads_id_hash"),
-        # the referenced artifact's sha256 MUST equal config_hash (declarative payload bind).
+        # composite-UNIQUE target for the plan-config (config_hash + parameter_space) FK.
+        sa.UniqueConstraint(
+            "id", "config_hash", "parameter_space_hash", name="uq_l2f_config_payloads_id_hash_ps"
+        ),
+        # the referenced artifact's sha256 MUST equal config_hash AND its media_type MUST be
+        # the canonical L2-F CONFIG media type (declarative payload + schema bind).
         sa.ForeignKeyConstraint(
-            ["artifact_id", "config_hash"],
-            ["catalog.artifacts.id", "catalog.artifacts.sha256"],
-            name="fk_l2f_cp_artifact_sha",
+            ["artifact_id", "config_hash", "media_type"],
+            ["catalog.artifacts.id", "catalog.artifacts.sha256", "catalog.artifacts.media_type"],
+            name="fk_l2f_cp_artifact_sha_media",
+        ),
+        sa.CheckConstraint(
+            f"schema_version = '{_CONFIG_PAYLOAD_SCHEMA}'", name="ck_l2f_cp_schema_version"
+        ),
+        sa.CheckConstraint(
+            f"media_type = '{_CONFIG_PAYLOAD_MEDIA_TYPE}'", name="ck_l2f_cp_media_type"
         ),
         _hex_ck("config_hash", "ck_l2f_cp_config_hash_hex"),
         _hex_ck("parameter_space_hash", "ck_l2f_cp_param_space_hex"),
@@ -320,17 +387,29 @@ def _create_plan_configs() -> None:
         _uuid("plan_id"),
         _uuid("config_payload_id"),
         _sha("config_hash"),
+        _sha("parameter_space_hash"),
         sa.Column("config_index", sa.BigInteger(), nullable=False),
         _ts(),
         sa.PrimaryKeyConstraint("id", name="pk_l2f_experiment_plan_configs"),
+        # the config's parameter_space_hash MUST equal the PLAN's parameter_space_hash.
         sa.ForeignKeyConstraint(
-            ["plan_id"], ["experiments.l2f_experiment_plans.id"], name="fk_l2f_pc_plan_id"
+            ["plan_id", "parameter_space_hash"],
+            [
+                "experiments.l2f_experiment_plans.id",
+                "experiments.l2f_experiment_plans.parameter_space_hash",
+            ],
+            name="fk_l2f_pc_plan_param_space",
         ),
-        # config_hash MUST match the referenced payload (declarative).
+        # config_hash AND parameter_space_hash MUST match the referenced payload (so a
+        # payload from a different parameter space cannot be linked into the plan).
         sa.ForeignKeyConstraint(
-            ["config_payload_id", "config_hash"],
-            ["experiments.l2f_config_payloads.id", "experiments.l2f_config_payloads.config_hash"],
-            name="fk_l2f_pc_payload_hash",
+            ["config_payload_id", "config_hash", "parameter_space_hash"],
+            [
+                "experiments.l2f_config_payloads.id",
+                "experiments.l2f_config_payloads.config_hash",
+                "experiments.l2f_config_payloads.parameter_space_hash",
+            ],
+            name="fk_l2f_pc_payload_identity",
         ),
         sa.UniqueConstraint("plan_id", "config_payload_id", name="uq_l2f_pc_plan_payload"),
         sa.UniqueConstraint("plan_id", "config_index", name="uq_l2f_pc_plan_index"),
@@ -338,6 +417,7 @@ def _create_plan_configs() -> None:
         sa.UniqueConstraint("id", "plan_id", name="uq_l2f_pc_id_plan"),
         sa.CheckConstraint("config_index >= 0", name="ck_l2f_pc_config_index_nonneg"),
         _hex_ck("config_hash", "ck_l2f_pc_config_hash_hex"),
+        _hex_ck("parameter_space_hash", "ck_l2f_pc_param_space_hex"),
         schema="experiments",
     )
     op.create_index(
