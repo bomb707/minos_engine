@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://minos.engine/schemas/feature-vector-v1.schema.json",
+  "title": "L2-E Feature Vector v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "epoch",
+    "dataset_id",
+    "profile_id",
+    "content_hash",
+    "feature_values_hash",
+    "partition",
+    "snapshot_hash",
+    "registry_hash",
+    "feature_set_hash",
+    "value_count",
+    "values",
+    "vector_hash"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "feature-vector-v1"
+    },
+    "epoch": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "dataset_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "profile_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "content_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "feature_values_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "partition": {
+      "enum": [
+        "train",
+        "validation"
+      ]
+    },
+    "snapshot_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "registry_hash": {
+      "const": "0d8612707c6673060546511d8f5e8d1ba47048ef440e6c2dcf238fdc297f6e0c"
+    },
+    "feature_set_hash": {
+      "const": "7e867dfa5633044b69869be8a87fac564431a73a183aa0ab0b1b13158a7c176f"
+    },
+    "value_count": {
+      "const": 129
+    },
+    "values": {
+      "type": "array",
+      "minItems": 129,
+      "items": {
+        "type": "number"
+      },
+      "maxItems": 129
+    },
+    "vector_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

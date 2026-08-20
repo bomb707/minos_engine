@@ -14,20 +14,23 @@ import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Connection, Engine, create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from minos_engine.common.errors import MinosEngineError
 
-from .constants import ENV_DATABASE_URL
+from .constants import CANONICAL_OPERATIONAL_DATABASE_NAME, ENV_DATABASE_URL
 
 __all__ = [
     "DatabaseNotConfiguredError",
+    "OperationalDatabaseIdentityError",
     "database_url",
     "normalize_database_url",
     "create_db_engine",
     "make_session_factory",
     "session_scope",
+    "connected_database_name",
+    "verify_operational_database_identity",
 ]
 
 _PSYCOPG_PREFIX = "postgresql+psycopg://"
@@ -35,6 +38,17 @@ _PSYCOPG_PREFIX = "postgresql+psycopg://"
 
 class DatabaseNotConfiguredError(MinosEngineError):
     """``MINOS_DATABASE_URL`` is unset/empty, or names an unsupported backend."""
+
+
+class OperationalDatabaseIdentityError(MinosEngineError):
+    """The CONNECTED database is not the canonical operational store.
+
+    Raised by the fail-closed operational identity check when the live
+    ``current_database()`` of a session does not equal
+    :data:`CANONICAL_OPERATIONAL_DATABASE_NAME`. This is decided from the connected
+    session — never by parsing the DSN string — so a URL that merely *names* the
+    canonical database but resolves elsewhere cannot pass.
+    """
 
 
 def normalize_database_url(url: str) -> str:
@@ -91,3 +105,43 @@ def session_scope(factory: sessionmaker[Session]) -> Iterator[Session]:
         raise
     finally:
         session.close()
+
+
+# --------------------------------------------------------------------------- #
+# canonical operational-database identity (fail-closed; live current_database())
+# --------------------------------------------------------------------------- #
+def connected_database_name(conn: Connection) -> str:
+    """Return the LIVE ``current_database()`` of the connected session.
+
+    This is the database PostgreSQL is actually serving on this connection — read from
+    the server, not parsed from the DSN string. Generic; imposes no canonical name, so
+    synthetic / scratch integration databases keep working.
+    """
+    return str(conn.execute(text("SELECT current_database()")).scalar_one())
+
+
+def verify_operational_database_identity(conn: Connection) -> str:
+    """Fail closed unless THIS connection's database is the canonical operational store.
+
+    Queries the live session (``current_database()``) on the exact connection handed in
+    and requires it to equal :data:`CANONICAL_OPERATIONAL_DATABASE_NAME`. Because the
+    decision comes from the connected server and not the DSN text, a URL that merely
+    mentions the canonical name (e.g. in a host, role, or ``application_name``) while
+    resolving to a different database is rejected. Returns the confirmed name on success.
+
+    Verification is bound to the connection it is called on. A PostgreSQL connection
+    cannot switch databases mid-session, so one check per connection is sufficient — but
+    it is also NECESSARY: verifying one connection says nothing about a *different*
+    connection (even from the same engine), which could resolve to another database.
+    Callers must therefore verify the exact connection they read/write through, and must
+    NOT rely on a prior check made on a separate throwaway connection. Intended only for
+    production/accepted operational mutation boundaries; never wired into generic helpers
+    or synthetic/scratch tests.
+    """
+    name = connected_database_name(conn)
+    if name != CANONICAL_OPERATIONAL_DATABASE_NAME:
+        raise OperationalDatabaseIdentityError(
+            f"connected database is {name!r}, not the canonical operational store "
+            f"{CANONICAL_OPERATIONAL_DATABASE_NAME!r}; refusing operational mutation"
+        )
+    return name

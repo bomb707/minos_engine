@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://minos.engine/schemas/feature-set-v1.schema.json",
+  "title": "L2-E Feature Set Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "registry_hash",
+    "column_count",
+    "columns",
+    "feature_set_hash"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "feature-set-v1"
+    },
+    "registry_hash": {
+      "const": "0d8612707c6673060546511d8f5e8d1ba47048ef440e6c2dcf238fdc297f6e0c"
+    },
+    "column_count": {
+      "const": 129
+    },
+    "columns": {
+      "type": "array",
+      "minItems": 129,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "index",
+          "path",
+          "source_schema",
+          "state",
+          "value_kind"
+        ],
+        "properties": {
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source_schema": {
+            "const": "bam-profile-v1"
+          },
+          "state": {
+            "const": "ELIGIBLE"
+          },
+          "value_kind": {
+            "enum": [
+              "REAL",
+              "FRACTION",
+              "COUNT"
+            ]
+          }
+        }
+      },
+      "maxItems": 129
+    },
+    "feature_set_hash": {
+      "const": "7e867dfa5633044b69869be8a87fac564431a73a183aa0ab0b1b13158a7c176f"
+    }
+  }
+}

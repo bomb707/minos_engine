@@ -17,6 +17,7 @@ __all__ = [
     "IMMUTABLE_IDENTITY_TABLES",
     "HEX64_SQL_REGEX",
     "ENV_DATABASE_URL",
+    "CANONICAL_OPERATIONAL_DATABASE_NAME",
 ]
 
 #: The seven application schemas (exact count; PostgreSQL system schemas excluded).
@@ -61,3 +62,13 @@ HEX64_SQL_REGEX = "^[0-9a-f]{64}$"
 
 #: Environment variable that supplies the database URL (no default; fail closed).
 ENV_DATABASE_URL = "MINOS_DATABASE_URL"
+
+#: Canonical PostgreSQL database name for the persistent MINOS Engine operational
+#: store (owner decision). This is the DATABASE name inside a PostgreSQL cluster — it
+#: is NOT a cluster/data-directory path, host, or role. The connection itself still
+#: comes only from ``MINOS_DATABASE_URL`` (no default DSN, no hard-coded host); this
+#: name is used solely by the fail-closed operational identity check to confirm that a
+#: production mutation is running against the real operational store and not a scratch,
+#: staging, or mistargeted database. Alembic manages the SCHEMAS/tables *inside* this
+#: database; it never creates or renames the database itself.
+CANONICAL_OPERATIONAL_DATABASE_NAME = "minos_engine_db"

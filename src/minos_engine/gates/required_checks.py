@@ -416,6 +416,96 @@ REQUIRED_CHECKS: dict[str, frozenset[str]] = {
             "ci_verifies_snapshot_gate",
         }
     ),
+    # FEATURE-VIEW-READY — L2-E capability gate (manifest-level; corpus-independent).
+    "FEATURE-VIEW-READY": frozenset(
+        {
+            # Exact qualified-source provenance (never current-HEAD substitution).
+            "qualified_source_present",
+            "qualified_source_tree_matches",
+            "source_descends_e4_evidence",
+            "head_descends_qualified_source",
+            "gate_engine_sha_matches_source",
+            # Accepted prerequisite binding.
+            "accepted_profile_snapshot_frozen_1_bound",
+            "accepted_snapshot_hash_bound",
+            "accepted_split_manifest_hash_bound",
+            "accepted_registry_snapshot_hash_bound",
+            "accepted_feature_registry_hash_bound",
+            "canonical_feature_set_hash_bound",
+            # 129 ordered feature schema.
+            "feature_columns_exactly_129",
+            "feature_indexes_0_to_128",
+            "no_duplicate_or_reordered_feature",
+            # Deterministic contract identity.
+            "feature_view_contract_version_bound",
+            "feature_view_hash_deterministic",
+            "canonical_identity_excludes_nondeterministic",
+            # Production machinery (fail-closed).
+            "feature_set_internally_derived",
+            "verifier_fail_closed",
+            "train_access_entry_fail_closed",
+            "validation_access_entry_fail_closed",
+            "test_structurally_inaccessible",
+            "caller_cannot_override_artifact_path",
+            "caller_cannot_override_feature_schema",
+            "caller_cannot_override_registry_identity",
+            "caller_cannot_override_snapshot_split_identity",
+            # Isolation / leakage / credential boundary.
+            "train_validation_isolation_bound",
+            "leakage_boundary_bound",
+            "credential_grant_separation_bound",
+            # Migration 0005 lifecycle (existing, unmodified).
+            "migration_0005_head",
+            "migration_0005_immutable",
+            "migration_0005_lifecycle_0004",
+            # Negative behavior + stage gating.
+            "tamper_suite_bound",
+            "consistent_rehash_attack_bound",
+            "provenance_negatives_bound",
+            "select_config_still_blocked",
+            # Test + static analysis + source integrity.
+            "all_tests_pass",
+            "tests_collected_nonzero",
+            "ruff_check_pass",
+            "ruff_format_pass",
+            "mypy_pass",
+            "coverage_threshold_met",
+            "required_source_tracked",
+            "worktree_matches_head",
+            "evidence_hashes_complete",
+        }
+    ),
+    # FEATURE-MATRIX-FROZEN-1 — L2-E epoch-1 operational evidence gate.
+    "FEATURE-MATRIX-FROZEN-1": frozenset(
+        {
+            # Exact qualified-source provenance.
+            "qualified_source_present",
+            "qualified_source_tree_matches",
+            "source_descends_e4_evidence",
+            "head_descends_qualified_source",
+            "gate_engine_sha_matches_source",
+            # Snapshot-derived counts (generic; NOT 50/10/15 constants).
+            "train_matrix_count_matches_snapshot",
+            "validation_matrix_count_matches_snapshot",
+            "matrix_membership_matches_snapshot",
+            "sealed_test_matrix_absent",
+            # Independent reconstruction + cross-binding (operational).
+            "profile_byte_reconstruction_ok",
+            "logical_matrix_verified",
+            "canonical_parquet_serialization_ok",
+            "train_matrix_hash_bound",
+            "train_artifact_sha256_bound",
+            "validation_matrix_hash_bound",
+            "validation_artifact_sha256_bound",
+            "physical_artifact_bytes_verified",
+            "operational_db_records_verified",
+            "member_order_bound",
+            "snapshot_identity_bound",
+            "split_identity_bound",
+            "idempotency_bound",
+            "feature_columns_exactly_129",
+        }
+    ),
 }
 
 

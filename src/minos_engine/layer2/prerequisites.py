@@ -62,6 +62,23 @@ __all__ = [
     "INGEST_READY_SOURCE_COMMIT",
     "INGEST_READY_SOURCE_TREE",
     "INGEST_READY_EVIDENCE_COMMIT",
+    "PROFILE_SNAPSHOT_FROZEN_1_GATE_HASH",
+    "PROFILE_SNAPSHOT_1_HASH",
+    "PROFILE_SNAPSHOT_1_MEMBER_MANIFEST_HASH",
+    "PROFILE_SNAPSHOT_1_SPLIT_MANIFEST_HASH",
+    "PROFILE_SNAPSHOT_1_REGISTRY_SNAPSHOT_HASH",
+    "PROFILE_SNAPSHOT_FROZEN_1_SOURCE_COMMIT",
+    "PROFILE_SNAPSHOT_FROZEN_1_SOURCE_TREE",
+    "PROFILE_SNAPSHOT_FROZEN_1_EVIDENCE_COMMIT",
+    "PROFILE_SNAPSHOT_FROZEN_1_EVIDENCE_TREE",
+    "E4_FEATURE_MATRIX_SOURCE_COMMIT",
+    "E4_FEATURE_MATRIX_SOURCE_TREE",
+    "E4_FEATURE_MATRIX_EVIDENCE_COMMIT",
+    "E4_FEATURE_MATRIX_EVIDENCE_TREE",
+    "E4_TRAIN_MATRIX_HASH",
+    "E4_TRAIN_ARTIFACT_SHA256",
+    "E4_VALIDATION_MATRIX_HASH",
+    "E4_VALIDATION_ARTIFACT_SHA256",
     "ACCEPTED",
 ]
 
@@ -132,6 +149,51 @@ INGEST_READY_GATE_HASH = "91f55da0bfe4df8620508ddb9566a0fd9ed838ca1beb2d2522bcb6
 INGEST_READY_SOURCE_COMMIT = "87835a99918812172343eabb7a1e8037e317eaec"
 INGEST_READY_SOURCE_TREE = "06e8f6ab9832f382624c06b986f207cc75810247"
 INGEST_READY_EVIDENCE_COMMIT = "5ed620a6371f771be2cfead8caeb712bf4701121"
+
+# Accepted L2-D epoch-1 corpus evidence (externally accepted; S2 55f4a472 / E2 0281a87e,
+# CI-green, merged to dev 24184347). Immutable L2-E prerequisites: the FEATURE-VIEW may
+# consume ONLY this frozen snapshot. A change is an explicit owner acceptance decision.
+PROFILE_SNAPSHOT_FROZEN_1_GATE_HASH = (
+    "d48c530e97fc26e85396467afa862eba5da5359707f036a33060d6e5bff30f31"
+)
+PROFILE_SNAPSHOT_1_HASH = "cf717ebb44e76a3408e975e027b51139df28d643dd1616c5edbce3643182c4c7"
+
+# Accepted epoch-1 member-manifest trust anchors: the ONLY identities under which the
+# production feature view may load epoch-1 snapshot provenance. The member-manifest
+# hash binds profile_sha256 and every other provenance field of all epoch-1 members;
+# the split-manifest and registry-snapshot hashes are the freeze-formula inputs.
+PROFILE_SNAPSHOT_1_MEMBER_MANIFEST_HASH = (
+    "2461751f2de4114fbf29114a4cff76b81e394c790e58e2788dd2b7c28b8e6c9b"
+)
+PROFILE_SNAPSHOT_1_SPLIT_MANIFEST_HASH = (
+    "b23cd5716ab46033f7ea0bf123cc9b2a5f401fa37dbffddba8d4201f5ea76145"
+)
+PROFILE_SNAPSHOT_1_REGISTRY_SNAPSHOT_HASH = (
+    "3e60aa65aeed8969e29ebeef83024f6fa2285a13c155d7d6dc0c601d1e94f675"
+)
+
+# Accepted PROFILE-SNAPSHOT-FROZEN-1 closure commits (source S2 / evidence E2).
+# Later verification must enforce tree binding and ancestry against these.
+PROFILE_SNAPSHOT_FROZEN_1_SOURCE_COMMIT = "55f4a4724dba444f12c8b88ce67175ee3165e443"
+PROFILE_SNAPSHOT_FROZEN_1_SOURCE_TREE = "e023339fb1bee827471c73169fcea4813a9a1705"
+PROFILE_SNAPSHOT_FROZEN_1_EVIDENCE_COMMIT = "0281a87e9accc2dcae5136dbd7e3b86c834ae3e6"
+PROFILE_SNAPSHOT_FROZEN_1_EVIDENCE_TREE = "fdf4cf952b15112396a862b50bbe7995f196223a"
+
+# Accepted L2-E E4 epoch-1 feature-matrix closure (source S / evidence E). The E5 gates
+# bind these: FEATURE-VIEW-READY / FEATURE-MATRIX-FROZEN-1 source must descend the E4
+# evidence commit, and FEATURE-MATRIX-FROZEN-1 cross-binds the epoch-1 matrix/artifact
+# hashes below against the INDEPENDENTLY reconstructed operational state (never trusting
+# the committed E4 JSON as the root of trust).
+E4_FEATURE_MATRIX_SOURCE_COMMIT = "08a9aef96bb2aae61a6f41f1d4391868247d5159"
+E4_FEATURE_MATRIX_SOURCE_TREE = "5acf01a1a6aae7efbaa6f387a27f5892585e1dd6"
+E4_FEATURE_MATRIX_EVIDENCE_COMMIT = "830fb0a9ff4a259995939d949fe64cb4c01a5ed1"
+E4_FEATURE_MATRIX_EVIDENCE_TREE = "16527ae936030c8e3d2b127be4564c651a19cf24"
+
+# Accepted epoch-1 matrix + artifact identities (evidence to cross-bind, NOT trust root).
+E4_TRAIN_MATRIX_HASH = "c6a8db848318e5c78839474fa62a4e8e408157a1e6f5cb1bdd18c9cd3d0118b2"
+E4_TRAIN_ARTIFACT_SHA256 = "0396cb07734a18df803ac813d9d1224ecdc3ec9901d7b8a202ac8c6538f3c243"
+E4_VALIDATION_MATRIX_HASH = "7adf58eb84de471523a6a0c3507dcdfb8c2030bdee0f4eaef178fa72477a894d"
+E4_VALIDATION_ARTIFACT_SHA256 = "437a5a4a803bb2d216032019021044d6edf33cea1d73816b39081f77c9c2ab42"
 
 #: The single frozen accepted-identity contract used by the entry-gate verifier.
 ACCEPTED = AcceptedPrerequisiteIdentity(

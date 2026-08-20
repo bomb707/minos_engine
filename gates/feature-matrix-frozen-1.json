@@ -1,0 +1,55 @@
+{
+  "created_at": "2026-08-20T14:30:00+00:00",
+  "engine_git_sha": "3246e68b992f57116a1ce44be8be47e0be61ca8c",
+  "evidence": [
+    {
+      "description": "migrations/versions/0005_l2e_feature_view.py",
+      "kind": "file",
+      "path": "migrations/versions/0005_l2e_feature_view.py",
+      "sha256": "21254bbeb6f131d043532127b1baaee51d2a50c8c2049967cd7007ba5aeefb23",
+      "size_bytes": null
+    }
+  ],
+  "gate_hash": "cd34bdf96f3e7853039b2719e74a12a95740904c1b15f2f5c747516e0260d3ef",
+  "gate_name": "FEATURE-MATRIX-FROZEN-1",
+  "input_hashes": {
+    "snapshot_hash": "cf717ebb44e76a3408e975e027b51139df28d643dd1616c5edbce3643182c4c7",
+    "split_manifest_hash": "b23cd5716ab46033f7ea0bf123cc9b2a5f401fa37dbffddba8d4201f5ea76145",
+    "train_artifact_sha256": "0396cb07734a18df803ac813d9d1224ecdc3ec9901d7b8a202ac8c6538f3c243",
+    "train_feature_view_hash": "bd7aaca6cea478d35f2ad4a9532e1ba08eeb930fcb01a4224432f54a0289c70d",
+    "train_matrix_hash": "c6a8db848318e5c78839474fa62a4e8e408157a1e6f5cb1bdd18c9cd3d0118b2",
+    "validation_artifact_sha256": "437a5a4a803bb2d216032019021044d6edf33cea1d73816b39081f77c9c2ab42",
+    "validation_feature_view_hash": "16aa97e814492d46c37b3c6f68dea9c741049f572858ba3b45d2fca54b995c97",
+    "validation_matrix_hash": "7adf58eb84de471523a6a0c3507dcdfb8c2030bdee0f4eaef178fa72477a894d"
+  },
+  "mandatory_checks": {
+    "canonical_parquet_serialization_ok": true,
+    "feature_columns_exactly_129": true,
+    "gate_engine_sha_matches_source": true,
+    "head_descends_qualified_source": true,
+    "idempotency_bound": true,
+    "logical_matrix_verified": true,
+    "matrix_membership_matches_snapshot": true,
+    "member_order_bound": true,
+    "operational_db_records_verified": true,
+    "physical_artifact_bytes_verified": true,
+    "profile_byte_reconstruction_ok": true,
+    "qualified_source_present": true,
+    "qualified_source_tree_matches": true,
+    "sealed_test_matrix_absent": true,
+    "snapshot_identity_bound": true,
+    "source_descends_e4_evidence": true,
+    "split_identity_bound": true,
+    "train_artifact_sha256_bound": true,
+    "train_matrix_count_matches_snapshot": true,
+    "train_matrix_hash_bound": true,
+    "validation_artifact_sha256_bound": true,
+    "validation_matrix_count_matches_snapshot": true,
+    "validation_matrix_hash_bound": true
+  },
+  "qualification_tool_version": "l2e-feature-view-qualifier-v1",
+  "qualified_source_git_sha": "3246e68b992f57116a1ce44be8be47e0be61ca8c",
+  "qualified_source_tree_sha": "0ebf2ae0c34678dfdc200df6670f73d661c97247",
+  "schema_version": "gate-artifact-v1",
+  "status": "PASS"
+}

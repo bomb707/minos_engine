@@ -1,0 +1,122 @@
+"""L2-E production feature view — contracts, extraction, verification, serialization.
+
+E1 (pure contracts): the canonical feature-set column manifest derived from the frozen
+L2-A registry, the immutable FeatureSetManifest / FeatureVector / FeatureMatrix
+contracts, and the domain-separated canonical hash functions frozen in
+``docs/layer2/FEATURE_VIEW.md``.
+
+E2 (pure extraction + verification): the exact-byte profile extraction boundary, the
+four-way feature-values-hash binding, the independently self-binding FrozenSnapshot,
+the verified member-manifest provenance boundary (accepted epoch-1 pins; mandatory
+trust bundles), verbatim snapshot-derived matrix assembly, and the non-mutating
+logical/payload verifiers.
+
+E3 adds the frozen canonical Parquet serialization (:mod:`.matrix_parquet`); the
+operational build/persist/access paths live in ``minos_engine.storage``. Matrices
+exist only for the ``train`` and ``validation`` partitions — there is NO
+test-partition contract, and ``Layer2Service.select_config`` stays blocked.
+"""
+
+from __future__ import annotations
+
+from .contracts import (
+    AUTHORITATIVE_COLUMNS,
+    EXPECTED_COLUMN_COUNT,
+    FEATURE_MATRIX_SCHEMA_VERSION,
+    FEATURE_SET_SCHEMA_VERSION,
+    FEATURE_VECTOR_SCHEMA_VERSION,
+    FROZEN_FEATURE_SET_HASH,
+    FeatureColumn,
+    FeatureMatrix,
+    FeatureSetManifest,
+    FeatureVector,
+    build_feature_set_manifest,
+    canonical_feature_set,
+    feature_set_hash,
+    matrix_hash,
+    vector_hash,
+)
+from .errors import (
+    FeatureExtractionError,
+    FeatureValuesHashMismatchError,
+    ForbiddenPartitionError,
+    InvalidMemberManifestError,
+    InvalidProfileDocumentError,
+    MatrixAssemblyError,
+    MemberManifestHashMismatchError,
+    MissingFeatureError,
+    ProfileArtifactHashMismatchError,
+    ProfilerIdentityMismatchError,
+    RegistrySnapshotMismatchError,
+    SnapshotHashMismatchError,
+    SnapshotIdentityMismatchError,
+)
+from .extraction import (
+    ACCEPTED_EPOCH1_TRUST,
+    ExtractionResult,
+    FrozenSnapshot,
+    ManifestMember,
+    ManifestTrustBundle,
+    MatrixBuild,
+    MemberManifestDocument,
+    SnapshotMember,
+    VerificationResult,
+    assemble_matrix,
+    build_feature_vector,
+    build_partition_matrix,
+    extract_profile_features,
+    load_accepted_epoch1_member_manifest,
+    load_member_manifest_with_trust,
+    verify_accepted_epoch1_matrix_payload,
+    verify_matrix,
+    verify_matrix_payload_with_trust,
+)
+
+__all__ = [
+    "AUTHORITATIVE_COLUMNS",
+    "EXPECTED_COLUMN_COUNT",
+    "FROZEN_FEATURE_SET_HASH",
+    "FEATURE_SET_SCHEMA_VERSION",
+    "FEATURE_VECTOR_SCHEMA_VERSION",
+    "FEATURE_MATRIX_SCHEMA_VERSION",
+    "FeatureColumn",
+    "FeatureSetManifest",
+    "FeatureVector",
+    "FeatureMatrix",
+    "build_feature_set_manifest",
+    "canonical_feature_set",
+    "feature_set_hash",
+    "vector_hash",
+    "matrix_hash",
+    "FeatureExtractionError",
+    "ProfileArtifactHashMismatchError",
+    "SnapshotIdentityMismatchError",
+    "FeatureValuesHashMismatchError",
+    "InvalidProfileDocumentError",
+    "MissingFeatureError",
+    "ForbiddenPartitionError",
+    "MatrixAssemblyError",
+    "InvalidMemberManifestError",
+    "MemberManifestHashMismatchError",
+    "SnapshotHashMismatchError",
+    "RegistrySnapshotMismatchError",
+    "ProfilerIdentityMismatchError",
+    "SnapshotMember",
+    "FrozenSnapshot",
+    "ManifestMember",
+    "MemberManifestDocument",
+    "ManifestTrustBundle",
+    "ACCEPTED_EPOCH1_TRUST",
+    "ExtractionResult",
+    "MatrixBuild",
+    "VerificationResult",
+    "load_accepted_epoch1_member_manifest",
+    "load_member_manifest_with_trust",
+    "extract_profile_features",
+    "build_feature_vector",
+    "assemble_matrix",
+    "build_partition_matrix",
+    "verify_matrix",
+    "verify_accepted_epoch1_matrix_payload",
+    "verify_matrix_payload_with_trust",
+]

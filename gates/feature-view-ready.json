@@ -1,0 +1,116 @@
+{
+  "created_at": "2026-08-20T14:30:00+00:00",
+  "engine_git_sha": "3246e68b992f57116a1ce44be8be47e0be61ca8c",
+  "evidence": [
+    {
+      "description": "src/minos_engine/layer2/features/feature_view.py",
+      "kind": "file",
+      "path": "src/minos_engine/layer2/features/feature_view.py",
+      "sha256": "dc2d682cdaa11c1d9896ab7c9f08c7b71ffa985725e95da6b5505c143564aec7",
+      "size_bytes": null
+    },
+    {
+      "description": "src/minos_engine/storage/feature_view_verify.py",
+      "kind": "file",
+      "path": "src/minos_engine/storage/feature_view_verify.py",
+      "sha256": "5eaa812cfc63f3711e8fe8bd2f3020e41e45b58a14158d086ae7be87aab7ffac",
+      "size_bytes": null
+    },
+    {
+      "description": "src/minos_engine/storage/feature_view_access.py",
+      "kind": "file",
+      "path": "src/minos_engine/storage/feature_view_access.py",
+      "sha256": "e169018bdd935a8c72aa7130fcec8324fedd3a0d1064c7defa1a5121a432654d",
+      "size_bytes": null
+    },
+    {
+      "description": "tests/unit/layer2/test_feature_view_contract.py",
+      "kind": "file",
+      "path": "tests/unit/layer2/test_feature_view_contract.py",
+      "sha256": "a37d83a90a9d57d21006f24c1187abdf5745b718f7c06223b6e2bfa8cddfb992",
+      "size_bytes": null
+    },
+    {
+      "description": "tests/integration/layer2_features/test_feature_view_verify.py",
+      "kind": "file",
+      "path": "tests/integration/layer2_features/test_feature_view_verify.py",
+      "sha256": "cea0ff5a2e180d2d5442eb599df4ab3f9331cd0bef7df4ba35d5b5be5a11b3a2",
+      "size_bytes": null
+    },
+    {
+      "description": "tests/integration/layer2_features/test_feature_view_membership.py",
+      "kind": "file",
+      "path": "tests/integration/layer2_features/test_feature_view_membership.py",
+      "sha256": "d2f969766c526c581a6d0eecebc92b977adb18ba7ed01f0c00578db220ec2456",
+      "size_bytes": null
+    },
+    {
+      "description": "migrations/versions/0005_l2e_feature_view.py",
+      "kind": "file",
+      "path": "migrations/versions/0005_l2e_feature_view.py",
+      "sha256": "21254bbeb6f131d043532127b1baaee51d2a50c8c2049967cd7007ba5aeefb23",
+      "size_bytes": null
+    }
+  ],
+  "gate_hash": "c0ff49856689c994499dd3a7c04d7a1fb8ba0992b2eb1e099672bf828d515234",
+  "gate_name": "FEATURE-VIEW-READY",
+  "input_hashes": {
+    "accepted_snapshot_hash": "cf717ebb44e76a3408e975e027b51139df28d643dd1616c5edbce3643182c4c7",
+    "e4_evidence_commit": "830fb0a9ff4a259995939d949fe64cb4c01a5ed1",
+    "feature_registry_hash": "0d8612707c6673060546511d8f5e8d1ba47048ef440e6c2dcf238fdc297f6e0c",
+    "feature_set_hash": "7e867dfa5633044b69869be8a87fac564431a73a183aa0ab0b1b13158a7c176f",
+    "feature_view_contract_version": "l2e-feature-view-v1"
+  },
+  "mandatory_checks": {
+    "accepted_feature_registry_hash_bound": true,
+    "accepted_profile_snapshot_frozen_1_bound": true,
+    "accepted_registry_snapshot_hash_bound": true,
+    "accepted_snapshot_hash_bound": true,
+    "accepted_split_manifest_hash_bound": true,
+    "all_tests_pass": true,
+    "caller_cannot_override_artifact_path": true,
+    "caller_cannot_override_feature_schema": true,
+    "caller_cannot_override_registry_identity": true,
+    "caller_cannot_override_snapshot_split_identity": true,
+    "canonical_feature_set_hash_bound": true,
+    "canonical_identity_excludes_nondeterministic": true,
+    "consistent_rehash_attack_bound": true,
+    "coverage_threshold_met": true,
+    "credential_grant_separation_bound": true,
+    "evidence_hashes_complete": true,
+    "feature_columns_exactly_129": true,
+    "feature_indexes_0_to_128": true,
+    "feature_set_internally_derived": true,
+    "feature_view_contract_version_bound": true,
+    "feature_view_hash_deterministic": true,
+    "gate_engine_sha_matches_source": true,
+    "head_descends_qualified_source": true,
+    "leakage_boundary_bound": true,
+    "migration_0005_head": true,
+    "migration_0005_immutable": true,
+    "migration_0005_lifecycle_0004": true,
+    "mypy_pass": true,
+    "no_duplicate_or_reordered_feature": true,
+    "provenance_negatives_bound": true,
+    "qualified_source_present": true,
+    "qualified_source_tree_matches": true,
+    "required_source_tracked": true,
+    "ruff_check_pass": true,
+    "ruff_format_pass": true,
+    "select_config_still_blocked": true,
+    "source_descends_e4_evidence": true,
+    "tamper_suite_bound": true,
+    "test_structurally_inaccessible": true,
+    "tests_collected_nonzero": true,
+    "train_access_entry_fail_closed": true,
+    "train_validation_isolation_bound": true,
+    "validation_access_entry_fail_closed": true,
+    "verifier_fail_closed": true,
+    "worktree_matches_head": true
+  },
+  "qualification_tool_version": "l2e-feature-view-qualifier-v1",
+  "qualified_source_git_sha": "3246e68b992f57116a1ce44be8be47e0be61ca8c",
+  "qualified_source_tree_sha": "0ebf2ae0c34678dfdc200df6670f73d661c97247",
+  "schema_version": "gate-artifact-v1",
+  "status": "PASS"
+}

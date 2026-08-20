@@ -236,7 +236,8 @@ def build_attestations(art: dict[str, Any]) -> dict[str, Any]:
 @pytest.fixture(scope="session")
 def l2d_env(pg_base_url: str, l2d_artifacts: dict[str, Any]) -> Iterator[dict[str, Any]]:  # noqa: F811
     with scratch_database(pg_base_url, "minos_l2d_main") as url:
-        alembic_upgrade(url, "head")
+        # pinned: the L2-D suite observes exactly the L2-D revision (see L2-B/L2-C).
+        alembic_upgrade(url, "0004_l2d_profile_ingestion")
         seed_registry_and_epoch(url, l2d_artifacts)
         yield {"url": url, **build_attestations(l2d_artifacts), **l2d_artifacts}
 

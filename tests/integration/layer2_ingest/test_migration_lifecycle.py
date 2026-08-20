@@ -53,8 +53,10 @@ def _head(url: str) -> str | None:
 
 
 def test_l2d_migration_lifecycle(pg_base_url: str) -> None:
+    # Pinned to the L2-D revision (L2-B/L2-C precedent): a later accepted stage's
+    # migration (0005_l2e_feature_view) never changes what this suite observes.
     with scratch_database(pg_base_url, "minos_l2d_life") as url:
-        alembic_upgrade(url, "head")
+        alembic_upgrade(url, _HEAD)
         assert _head(url) == _HEAD
         assert _tables(url, _L2D_TABLES) == _L2D_TABLES
 
@@ -110,6 +112,6 @@ def test_l2d_migration_lifecycle(pg_base_url: str) -> None:
         assert v2_kept == 2
         assert trainer_restored is True
 
-        alembic_upgrade(url, "head")
+        alembic_upgrade(url, _HEAD)
         assert _head(url) == _HEAD
         assert _tables(url, _L2D_TABLES) == _L2D_TABLES
