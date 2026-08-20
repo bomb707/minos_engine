@@ -1,0 +1,86 @@
+{
+  "artifact_kind": "l2e:feature-matrix-parquet",
+  "artifact_media_type": "application/vnd.apache.parquet",
+  "artifact_mode": "0o640",
+  "artifact_sha256": "437a5a4a803bb2d216032019021044d6edf33cea1d73816b39081f77c9c2ab42",
+  "column_count": 129,
+  "epoch": 1,
+  "feature_set_hash": "7e867dfa5633044b69869be8a87fac564431a73a183aa0ab0b1b13158a7c176f",
+  "git_head": "08a9aef96bb2aae61a6f41f1d4391868247d5159",
+  "git_tree": "5acf01a1a6aae7efbaa6f387a27f5892585e1dd6",
+  "idempotent_replay": false,
+  "matrix_hash": "7adf58eb84de471523a6a0c3507dcdfb8c2030bdee0f4eaef178fa72477a894d",
+  "members": [
+    {
+      "dataset_id": "minos-chr18-266e9e3efe9bb8f3",
+      "feature_values_hash": "2ac1e3453cd3e920a39c20e14f3813f147e21c18b70f0256621ad78e290ba3d6",
+      "member_index": 0,
+      "vector_hash": "e61ffcaf8c1cfc2bbc98bfd9b90ae63c32062fd228c0248213628883ba762046"
+    },
+    {
+      "dataset_id": "minos-chr18-7643aa4c08de0902",
+      "feature_values_hash": "4b9f6cd0da111fe8d17ddd64098ed20d3fedc8f90a06bdb373d739eed367ddc7",
+      "member_index": 1,
+      "vector_hash": "423d23bf98019444e67b5dc392200e2fd0c38089ccbe06832172e13891db1be8"
+    },
+    {
+      "dataset_id": "minos-chr19-236a5b6eb032f900",
+      "feature_values_hash": "9f10bdc70b4255e2a620ff1d56f8de0335031121baa283dfec97f9a879cc05af",
+      "member_index": 2,
+      "vector_hash": "e622e7cc135da569c98fe26a0c43dc276bf89e0b100ea7b2c350f3919e09f705"
+    },
+    {
+      "dataset_id": "minos-chr19-ff150fd013413702",
+      "feature_values_hash": "4ce32a80a45ec039906a85836d5329ac2283869e0c977073801c0ab4bd33a65e",
+      "member_index": 3,
+      "vector_hash": "0215c47a5a2a45a981bb66425d2e0446a2d1d8248de6ccc3f61046d057706b87"
+    },
+    {
+      "dataset_id": "minos-chr20-2aeeddc1d86288f3",
+      "feature_values_hash": "38840729c650f63c0b3650710b4b48ac8e4d30aeecc170408fc36329ab8f0ac9",
+      "member_index": 4,
+      "vector_hash": "724d8d921eda6f05c7cfc2f3f8b22237f694d80a0302441df3e9e7d0d7026015"
+    },
+    {
+      "dataset_id": "minos-chr20-ba0fc083c787b02e",
+      "feature_values_hash": "2a52077ccab45ea6b4c6d0c37c8e72333aa9b8bed1a5d8d7d721ef1e33f0797e",
+      "member_index": 5,
+      "vector_hash": "7565a6df279efab8983df9a19af9111ec691c4756183f544d00970d6a4991e06"
+    },
+    {
+      "dataset_id": "minos-chr21-5177fadfb13d5aa6",
+      "feature_values_hash": "c97a549244888ed5876386472cb22fffc1485ba7967d1ca768fbe02ea9ec406b",
+      "member_index": 6,
+      "vector_hash": "fff3df9f55b2d7f08b55d506982ded7566f69ece127e378d0577324addccf601"
+    },
+    {
+      "dataset_id": "minos-chr21-bf9f76788d96cbbc",
+      "feature_values_hash": "91414b4ac8915d223d40461f32f702e6393b2d49d439c6d67e20b7a5ae55d6bd",
+      "member_index": 7,
+      "vector_hash": "aaf394ed4487878bf2fbc287cc626d9c1f1d447877b53a7dc16555d411274609"
+    },
+    {
+      "dataset_id": "minos-chr22-0f87c91fe3033486",
+      "feature_values_hash": "9be0bca2feb6bcab80808f8979849ff045f37862c3a0df1f9f8676abc98c27cf",
+      "member_index": 8,
+      "vector_hash": "6747050317736f17f9dd10b14fbde9695c02318e05a6a979d723909fe4b22676"
+    },
+    {
+      "dataset_id": "minos-chr22-9f860ef634f13ea2",
+      "feature_values_hash": "f4b3d189093d6b387e5db8bbf19a42c091434233ca301522dcc0990dfbc9db5f",
+      "member_index": 9,
+      "vector_hash": "7c0a3d0483e6711d698b56e02c2a0ec10c0c4e4dec88285543a2b6c9275ae072"
+    }
+  ],
+  "parquet_schema_version": "feature-matrix-parquet-v2",
+  "partition": "validation",
+  "partition_gid": 1004,
+  "registry_hash": "0d8612707c6673060546511d8f5e8d1ba47048ef440e6c2dcf238fdc297f6e0c",
+  "registry_snapshot_hash": "3e60aa65aeed8969e29ebeef83024f6fa2285a13c155d7d6dc0c601d1e94f675",
+  "root_mode": "0o2750",
+  "row_count": 10,
+  "schema": "l2e-e4-matrix-metadata-v1",
+  "snapshot_hash": "cf717ebb44e76a3408e975e027b51139df28d643dd1616c5edbce3643182c4c7",
+  "snapshot_member_count": 75,
+  "split_manifest_hash": "b23cd5716ab46033f7ea0bf123cc9b2a5f401fa37dbffddba8d4201f5ea76145"
+}
