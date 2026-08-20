@@ -20,6 +20,7 @@ from minos_engine.callers.contracts import ACTIVE_CALLER, ParameterSpaceSnapshot
 from minos_engine.callers.gatk.config import CanonicalConfig, canonicalize_config
 from minos_engine.callers.gatk.parameter_registry import (
     REGISTRY,
+    SPEC_SOURCE_VERSION,
     GatkParameterRegistry,
 )
 from minos_engine.common.hashing import canonical_hash
@@ -35,33 +36,41 @@ __all__ = [
 ]
 
 EXPERIMENT_POLICY_SCHEMA = "l2f-experiment-parameter-policy-v1"
-#: Fixed metadata stamp for the documented snapshot. It is EXCLUDED from
+#: TRUTHFUL, deterministic snapshot metadata derived from the accepted documented-review
+#: identity ``SPEC_SOURCE_VERSION`` (``documented-2026-08-09``). It is EXCLUDED from
 #: ``parameter_space_hash`` (which hashes only caller + ranges), so it never enters any
-#: L2-F identity; a constant keeps snapshot construction deterministic.
-_DOCUMENTED_RETRIEVED_AT = "2026-01-01T00:00:00+00:00"
+#: L2-F scientific identity — but it must still be truthful, not fabricated.
+_DOCUMENTED_RETRIEVED_AT = SPEC_SOURCE_VERSION.replace("documented-", "") + "T00:00:00+00:00"
 #: Owner-approved deterministic one-at-a-time documented-endpoint generation policy.
 GENERATION_POLICY_VERSION = "L2F-OAT-ENDPOINT-v1"
 #: The ONLY registry state the offline harness may vary. FIXED never varies; there are no
 #: ACTIVE/CONDITIONAL/DISABLED parameters, and none are created here.
 EXPLORABLE_REGISTRY_STATE = ParameterState.EXPERIMENTAL.value
 
-#: Canonical description of the generation MECHANICS (not scientific preferences). Frozen
-#: into the policy identity so any change to the mechanics changes the policy hash.
-_GENERATION_MECHANICS: dict[str, Any] = {
-    "kind": "one-at-a-time-documented-endpoint",
-    "seed": "EXPERIMENT_SEED_V1 = all authoritative official_default values",
-    "one_factor_at_a_time": True,
-    "cartesian_product": False,
-    "randomness": False,
-    "int_float": "try documented_min then documented_max, excluding the official_default",
-    "bool": "try the single value not equal to the official_default",
-    "enum": "try every enum value except the official_default, in registry enum order",
-    "fixed_parameters": "never varied",
-    "explorable_state": EXPLORABLE_REGISTRY_STATE,
-    "cross_parameter": "propose -> canonicalize -> include iff valid; deterministically omit invalid",
-    "dedup": "by config_hash, first occurrence wins; final semantic order preserved",
-    "candidate_order": "seed first, then parameter name ascending, then min-max / enum-order / bool",
-}
+#: Canonical description of the generation MECHANICS (not scientific preferences), stored
+#: as an IMMUTABLE tuple of (key, value) pairs so the frozen policy exposes no mutable
+#: mapping after its hash is computed. Any change here changes the policy hash.
+_GENERATION_MECHANICS: tuple[tuple[str, str | bool], ...] = (
+    ("kind", "one-at-a-time-documented-endpoint"),
+    ("seed", "EXPERIMENT_SEED_V1 = all authoritative official_default values"),
+    ("one_factor_at_a_time", True),
+    ("cartesian_product", False),
+    ("randomness", False),
+    ("int_float", "try documented_min then documented_max, excluding the official_default"),
+    ("bool", "try the single value not equal to the official_default"),
+    ("enum", "try every enum value except the official_default, in registry enum order"),
+    ("fixed_parameters", "never varied"),
+    ("explorable_state", EXPLORABLE_REGISTRY_STATE),
+    ("cross_parameter", "propose -> canonicalize -> include iff valid; deterministically omit invalid"),
+    ("dedup", "by config_hash, first occurrence wins; final semantic order preserved"),
+    ("candidate_order", "seed first, then parameter name ascending, then min-max / enum-order / bool"),
+)
+
+
+def _mechanics_dict() -> dict[str, str | bool]:
+    """Materialize the mechanics mapping for canonical hashing / reporting (the frozen
+    policy never stores or exposes this mutable dict)."""
+    return dict(_GENERATION_MECHANICS)
 
 
 @dataclass(frozen=True)
@@ -75,7 +84,8 @@ class ExperimentParameterPolicy:
     seed_config_hash: str
     explorable_registry_state: str
     generation_policy_version: str
-    generation_mechanics: dict[str, Any]
+    #: immutable (key, value) pairs — no mutable mapping is exposed after hashing.
+    generation_mechanics: tuple[tuple[str, str | bool], ...]
     experiment_parameter_policy_hash: str
 
 
@@ -111,7 +121,8 @@ def _policy_content(
         "seed_config_hash": seed_config_hash,
         "explorable_registry_state": EXPLORABLE_REGISTRY_STATE,
         "generation_policy_version": GENERATION_POLICY_VERSION,
-        "generation_mechanics": _GENERATION_MECHANICS,
+        # materialize the dict ONLY for canonical hashing (identity unchanged vs v1).
+        "generation_mechanics": _mechanics_dict(),
     }
 
 
@@ -134,6 +145,6 @@ def build_experiment_parameter_policy(
         seed_config_hash=seed.config_hash,
         explorable_registry_state=EXPLORABLE_REGISTRY_STATE,
         generation_policy_version=GENERATION_POLICY_VERSION,
-        generation_mechanics=dict(_GENERATION_MECHANICS),
+        generation_mechanics=_GENERATION_MECHANICS,
         experiment_parameter_policy_hash=canonical_hash(content),
     )

@@ -35,8 +35,9 @@ __all__ = [
     "SkippedProbe",
     "CandidateSet",
     "generate_candidate_set",
+    "generate_accepted_candidate_set",
     "candidate_set_hash",
-    "verify_candidate_set",
+    "verify_accepted_candidate_set",
     "CandidateSetVerificationError",
 ]
 
@@ -164,18 +165,30 @@ def generate_candidate_set(
     )
 
 
-def verify_candidate_set(
-    candidate_set: CandidateSet, registry: GatkParameterRegistry = REGISTRY
-) -> dict[str, bool]:
-    """Independently verify a candidate set against the REPOSITORY-derived policy.
+def generate_accepted_candidate_set() -> CandidateSet:
+    """THE accepted offline candidate set — no caller-selected trust objects.
 
-    Re-derives the experiment parameter policy and regenerates the candidate set from the
-    accepted registry + config canonicalizer, then cross-binds every identity. A forged,
-    internally self-consistent candidate set (dependent hashes recomputed) is rejected
-    because it no longer matches the repository-derived registry_hash /
-    parameter_space_hash / experiment_parameter_policy_hash / seed_config_hash and the
-    regenerated ordered config_hashes / candidate_set_hash. Raises on any mismatch.
-    """
+    Derives the registry, documented parameter space, experiment policy, and seed
+    internally from repository-owned contracts. Production/HARNESS-READY paths use this;
+    :func:`generate_candidate_set` (with overrides) is a generic/test builder only."""
+    return generate_candidate_set(REGISTRY)
+
+
+def verify_accepted_candidate_set(candidate_set: CandidateSet) -> dict[str, bool]:
+    """THE accepted verifier — NO registry/space/policy/seed override.
+
+    The trust anchor is always the repository ``REGISTRY`` + documented parameter space +
+    approved experiment policy + repository-derived seed. A caller cannot make a forged
+    registry authoritative. HARNESS-READY and accepted L2-F paths use this."""
+    return _verify_candidate_set_against_registry(candidate_set, REGISTRY)
+
+
+def _verify_candidate_set_against_registry(
+    candidate_set: CandidateSet, registry: GatkParameterRegistry
+) -> dict[str, bool]:
+    """TEST-ONLY generic verifier (explicit registry). Never the accepted authority — a
+    caller-selected registry must not be able to certify a forged set. Accepted paths call
+    :func:`verify_accepted_candidate_set` (no override)."""
     truth = generate_candidate_set(registry)
     checks = {
         "registry_hash_bound": candidate_set.policy.registry_hash == truth.policy.registry_hash,

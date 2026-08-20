@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 import pytest
 
 from minos_engine.callers.contracts import ParameterState
-from minos_engine.callers.gatk.parameter_registry import REGISTRY
+from minos_engine.callers.gatk.parameter_registry import REGISTRY, GatkParameterRegistry
 from minos_engine.common.errors import ConfigValidationError
 from minos_engine.experiments.candidates import (
     CandidateSetVerificationError,
+    _verify_candidate_set_against_registry,
     candidate_set_hash,
+    generate_accepted_candidate_set,
     generate_candidate_set,
-    verify_candidate_set,
+    verify_accepted_candidate_set,
 )
 from minos_engine.experiments.policy import (
     EXPLORABLE_REGISTRY_STATE,
@@ -75,22 +75,56 @@ def test_invalid_coupling_probe_deterministically_omitted() -> None:
         assert cand.effective_config["min_assembly_region_size"] < cand.effective_config["max_assembly_region_size"]
 
 
-def test_honest_candidate_set_verifies() -> None:
-    assert all(verify_candidate_set(generate_candidate_set()).values())
+def test_honest_accepted_candidate_set_verifies() -> None:
+    assert all(verify_accepted_candidate_set(generate_accepted_candidate_set()).values())
 
 
-def test_consistently_rehashed_attack_rejected() -> None:
-    """Forge a fully internally-consistent candidate set under a TAMPERED policy (registry
-    hash changed) with candidate_set_hash recomputed to match — still rejected because the
-    repository-derived registry/space/policy/seed identities no longer match."""
-    truth = generate_candidate_set()
-    forged_policy = replace(truth.policy, registry_hash="0" * 64)
-    forged_hash = candidate_set_hash(
-        policy=forged_policy, ordered_config_hashes=truth.ordered_config_hashes
+def _forged_registry_and_set() -> tuple[GatkParameterRegistry, object]:
+    """Clone the registry, alter ONE EXPERIMENTAL documented bound, and generate a fully
+    self-consistent candidate set under that forged registry (all hashes recomputed)."""
+    forged_params = tuple(
+        p.model_copy(update={"documented_max": 49}) if p.name == "min_base_quality_score" else p
+        for p in REGISTRY.all()
     )
-    forged = replace(truth, policy=forged_policy, candidate_set_hash=forged_hash)
-    with pytest.raises(CandidateSetVerificationError, match="registry_hash_bound"):
-        verify_candidate_set(forged)
+    forged_registry = GatkParameterRegistry(forged_params)
+    forged_set = generate_candidate_set(forged_registry)  # internally self-consistent
+    return forged_registry, forged_set
+
+
+def test_genuine_consistent_rehash_forgery_rejected_by_accepted_verifier() -> None:
+    """A1/A4: a fully internally-consistent forged set (registry cloned + one bound
+    altered + ALL dependent hashes recomputed) is rejected by the ACCEPTED no-override
+    verifier, which independently derives the repository-owned registry."""
+    forged_registry, forged_set = _forged_registry_and_set()
+    # the forgery really is internally consistent under its own (forged) registry:
+    assert all(_verify_candidate_set_against_registry(forged_set, forged_registry).values())
+    # but the accepted verifier (repository registry, no override) rejects it:
+    with pytest.raises(CandidateSetVerificationError):
+        verify_accepted_candidate_set(forged_set)
+
+
+def test_caller_cannot_make_forged_registry_authoritative() -> None:
+    """A1 regression: there is no override on the accepted verifier/builder — a caller
+    cannot substitute a forged registry into the accepted trust boundary."""
+    import inspect
+
+    from minos_engine.experiments import candidates as C
+
+    assert set(inspect.signature(C.verify_accepted_candidate_set).parameters) == {"candidate_set"}
+    assert inspect.signature(C.generate_accepted_candidate_set).parameters == {}
+    # the forged set differs from the accepted set (proves the registry actually mattered)
+    _, forged_set = _forged_registry_and_set()
+    assert forged_set.candidate_set_hash != generate_accepted_candidate_set().candidate_set_hash
+
+
+def test_policy_nested_content_immutable() -> None:
+    """A2: the frozen policy exposes no mutable mapping after its hash is computed."""
+    pol = generate_accepted_candidate_set().policy
+    assert isinstance(pol.generation_mechanics, tuple)
+    with pytest.raises((TypeError, AttributeError)):
+        pol.generation_mechanics[0] = ("x", "y")  # type: ignore[index]
+    with pytest.raises((AttributeError, Exception)):
+        pol.registry_hash = "0" * 64  # type: ignore[misc]  # frozen dataclass
 
 
 def test_config_tamper_rejected_by_canonicalizer() -> None:
