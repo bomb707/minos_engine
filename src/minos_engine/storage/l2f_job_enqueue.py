@@ -166,8 +166,13 @@ def _enqueue_slice(
     start: int,
     count: int,
 ) -> JobEnqueueResult:
-    """Insert the selected bounded slice idempotently (given an open, verified transaction)."""
-    conn.execute(text(f"SET ROLE {SCHEMA_OWNER}"))
+    """Insert the selected bounded slice idempotently (given an open, verified transaction).
+
+    The role elevation is ``SET LOCAL`` — TRANSACTION-scoped, so PostgreSQL itself restores the
+    original session role on both COMMIT and ROLLBACK, and a pooled connection never returns to
+    the pool still holding ``minos_admin``.
+    """
+    conn.execute(text(f"SET LOCAL ROLE {SCHEMA_OWNER}"))
 
     # require the complete accepted F3-C1 graph to exist and verify it (jobs-tolerant) BEFORE
     # enqueueing; never persist or repair a missing/invalid graph.

@@ -732,18 +732,13 @@ def test_full_graph_lifecycle_directly_at_0007(isolated_pg_base_url: str, tmp_pa
             assert v2.status == HV.STATUS_PASS, v2.failures
             assert v2.persisted_job_count == 7
 
-            # the database never left 0007. (A fresh engine: the persistence path leaves
-            # SET ROLE minos_admin on its pooled session, and minos_admin cannot read
-            # public.alembic_version.)
-            probe = _engine(url)
-            try:
-                with probe.connect() as c:
-                    assert (
-                        str(c.execute(text("SELECT version_num FROM alembic_version")).scalar_one())
-                        == _F4
-                    )
-            finally:
-                probe.dispose()
+            # the database never left 0007 — read through the ORIGINAL pooled engine, which is
+            # only possible because the role elevation is transaction-scoped (SET LOCAL ROLE).
+            with engine.connect() as c:
+                assert (
+                    str(c.execute(text("SELECT version_num FROM alembic_version")).scalar_one())
+                    == _F4
+                )
         finally:
             engine.dispose()
 

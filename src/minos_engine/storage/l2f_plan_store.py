@@ -869,8 +869,13 @@ def _persist_plan_with_trust(
     Runs as the schema owner, serialized on a plan_hash advisory lock. Resolves ALL upstream
     identities before publishing anything, then publishes payloads + registers artifacts +
     inserts the plan/member/payload/config graph idempotently, and read-back verifies.
+
+    The role elevation is ``SET LOCAL`` — TRANSACTION-scoped, so PostgreSQL itself restores the
+    original session role on both COMMIT and ROLLBACK. A pooled connection therefore never
+    returns to the pool still holding ``minos_admin``; correctness does not depend on
+    ``engine.dispose()`` or on any reset statement that an exception could skip.
     """
-    conn.execute(text(f"SET ROLE {SCHEMA_OWNER}"))
+    conn.execute(text(f"SET LOCAL ROLE {SCHEMA_OWNER}"))
     conn.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _advisory_key(plan.plan_hash)})
 
     # cross-bind the plan's configs to the accepted candidate set at the same index.
