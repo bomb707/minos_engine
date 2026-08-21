@@ -406,3 +406,49 @@ def test_duplicate_json_key_in_e4_report_is_rejected(
     monkeypatch.setattr(AP, "_E4_TRAIN_REPORT", p)
     with pytest.raises(AcceptedExperimentPlanError):
         build_accepted_experiment_plan()
+
+
+# --------------------------------------------------------------------------- #
+# strict E4 report: ONLY the canonical external JSON key ``schema`` is accepted
+# (the internal field name ``report_schema`` must never be a valid input key)
+# --------------------------------------------------------------------------- #
+def test_canonical_schema_key_is_accepted() -> None:
+    # the committed report uses "schema"; the parser boundary accepts it and binds the value.
+    report = AP._parse_e4_train_report()
+    assert report.report_schema == "l2e-e4-matrix-metadata-v1"
+    # canonical serialization re-emits the external key "schema" (never "report_schema").
+    dumped = report.model_dump()
+    assert "schema" in dumped and "report_schema" not in dumped
+    assert dumped["schema"] == "l2e-e4-matrix-metadata-v1"
+
+
+def _schema_as_field_name(d: dict) -> dict:
+    d["report_schema"] = d.pop("schema")  # canonical key replaced by the internal field name
+    return d
+
+
+def _schema_both_keys(d: dict) -> dict:
+    d["report_schema"] = d["schema"]  # both the canonical key and the field name present
+    return d
+
+
+def _schema_missing(d: dict) -> dict:
+    del d["schema"]
+    return d
+
+
+def _schema_wrong_value(d: dict) -> dict:
+    d["schema"] = "l2e-matrix-metadata-v2"
+    return d
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [_schema_as_field_name, _schema_both_keys, _schema_missing, _schema_wrong_value],
+)
+def test_noncanonical_or_wrong_schema_key_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mutate
+) -> None:
+    _point_at_tampered(monkeypatch, tmp_path, mutate(_base_report()))
+    with pytest.raises(AcceptedExperimentPlanError):
+        build_accepted_experiment_plan()

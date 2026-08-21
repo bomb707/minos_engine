@@ -187,7 +187,9 @@ class _E4TrainMatrixReport(BaseModel):
     committed order (no silent re-sort), with unique dataset ids and vector hashes.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid", strict=True, populate_by_name=True)
+    # alias-only input: ONLY the canonical external JSON key ``schema`` is accepted (the internal
+    # field name ``report_schema`` is not); ``serialize_by_alias`` re-emits the canonical key.
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True, serialize_by_alias=True)
 
     report_schema: Literal["l2e-e4-matrix-metadata-v1"] = Field(alias="schema")
     epoch: Literal[1]
