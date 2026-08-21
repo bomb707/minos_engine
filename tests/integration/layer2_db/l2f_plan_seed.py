@@ -46,6 +46,17 @@ CORRUPTIONS = (
     "matrix_member_vector_hash",
 )
 
+#: set-level defects that break exact plan↔live train-set equality (the whole inventory, not one
+#: field), used by the upstream-exact-set negatives.
+SET_DEFECTS = (
+    "extra_snapshot_member",
+    "extra_matrix_member",
+    "different_dataset_sets",
+    "row_count_inconsistent",
+    "member_index_mismatch",
+    "missing_member",
+)
+
 
 def _plan_dataset_row(dataset_id: str, idx: int, dsr_id: str) -> dict[str, Any]:
     row = _dataset_row(dataset_id, idx)
@@ -141,15 +152,70 @@ def _decoy_matrix(conn: Connection, tag: str, snap: str, fs: str, agen: str) -> 
     return mid
 
 
+def _seed_extra_train_dataset(
+    conn: Connection,
+    tag: str,
+    label: str,
+    agen: str,
+    snap: str,
+    mat: str,
+    *,
+    member_index: int,
+    with_psm: bool,
+    with_fmm: bool,
+) -> None:
+    """Seed a fully valid extra train dataset (dsr + bam) and optionally enrol it as an extra
+    snapshot train member and/or an extra matrix member — used to inject set-level train
+    inventory violations."""
+    dsr = U(f"extra:dsr:{label}:{tag}")
+    row = _dataset_row(f"extra-{label}-{tag}", 4)
+    row["id"] = dsr
+    row["dataset_id"] = f"extra-ds-{label}-{tag}"
+    _insert(conn, "catalog", "dataset_registry", row)
+    bam = _bam_row(f"extra-{label}-{tag}", dsr, agen)
+    _insert(conn, "profiling", "bam_profiles", bam, jsonb_cols=("profile_document",))
+    if with_psm:
+        _insert(
+            conn,
+            "profiling",
+            "profile_snapshot_members",
+            {
+                "id": U(f"extra:psm:{label}:{tag}"),
+                "profile_snapshot_id": snap,
+                "bam_profile_id": bam["id"],
+                "dataset_registry_id": dsr,
+                "partition": "train",
+                "feature_values_hash": bam["feature_values_hash"],
+            },
+        )
+    if with_fmm:
+        _insert(
+            conn,
+            "profiling",
+            "feature_matrix_members",
+            {
+                "id": U(f"extra:fmm:{label}:{tag}"),
+                "feature_matrix_id": mat,
+                "dataset_registry_id": dsr,
+                "member_index": member_index,
+                "vector_hash": H(f"extra:vec:{label}:{tag}"),
+                "feature_values_hash": bam["feature_values_hash"],
+            },
+        )
+
+
 def seed_upstream_for_plan(
     conn: Connection,
     plan: Any,
     *,
     corrupt: str | None = None,
     corrupt_index: int = 0,
+    set_defect: str | None = None,
 ) -> None:
     if corrupt is not None and corrupt not in CORRUPTIONS:
         raise ValueError(f"unknown corruption {corrupt!r}")
+    if set_defect is not None and set_defect not in SET_DEFECTS:
+        raise ValueError(f"unknown set_defect {set_defect!r}")
     conn.execute(text("SET ROLE minos_admin"))
     tag = plan.plan_hash
     agen = U(f"art:gen:{tag}")
@@ -219,6 +285,9 @@ def seed_upstream_for_plan(
         },
     )
     mat = U(f"mat:{plan.train_matrix_hash}")
+    mat_row_count = len(plan.members)
+    if set_defect == "row_count_inconsistent":
+        mat_row_count = len(plan.members) + 1  # stored row_count disagrees with actual membership
     _insert(
         conn,
         "profiling",
@@ -231,12 +300,15 @@ def seed_upstream_for_plan(
             "matrix_hash": plan.train_matrix_hash,
             "artifact_sha256": H(f"matart:{tag}"),
             "matrix_artifact_id": agen,
-            "row_count": len(plan.members),
+            "row_count": mat_row_count,
             "column_count": 3,
         },
     )
+    last = len(plan.members) - 1
     for i, m in enumerate(plan.members):
         do = corrupt if (corrupt is not None and i == corrupt_index) else None
+        if set_defect == "missing_member" and i == last:
+            continue  # one expected plan member has no upstream rows at all
 
         dsr = U(f"dsr:{m.dataset_id}")
         dsr_row = _plan_dataset_row(m.dataset_id, m.member_index, dsr)
@@ -300,17 +372,42 @@ def seed_upstream_for_plan(
             fmm_fvh = H(f"wrong:fmm-fvh:{tag}")
         if do == "matrix_member_vector_hash":
             fmm_vec = H(f"wrong:vec:{tag}")
-        _insert(
-            conn,
-            "profiling",
-            "feature_matrix_members",
-            {
-                "id": U(f"fmm:{plan.train_matrix_hash}:{m.dataset_id}"),
-                "feature_matrix_id": fmm_matrix,
-                "dataset_registry_id": fmm_dsr,
-                "member_index": fmm_index,
-                "vector_hash": fmm_vec,
-                "feature_values_hash": fmm_fvh,
-            },
+        # different_dataset_sets: the last plan dataset gets NO matrix member (an extra dataset's
+        # matrix member is added post-loop instead), so snapshot and matrix dataset sets differ.
+        if not (set_defect == "different_dataset_sets" and i == last):
+            _insert(
+                conn,
+                "profiling",
+                "feature_matrix_members",
+                {
+                    "id": U(f"fmm:{plan.train_matrix_hash}:{m.dataset_id}"),
+                    "feature_matrix_id": fmm_matrix,
+                    "dataset_registry_id": fmm_dsr,
+                    "member_index": fmm_index,
+                    "vector_hash": fmm_vec,
+                    "feature_values_hash": fmm_fvh,
+                },
+            )
+
+    n = len(plan.members)
+    if set_defect == "extra_snapshot_member":
+        # one additional train snapshot member (not in the plan) -> snapshot count > plan.
+        _seed_extra_train_dataset(
+            conn, tag, "snap", agen, snap, mat, member_index=n, with_psm=True, with_fmm=False
+        )
+    elif set_defect == "extra_matrix_member":
+        # one additional matrix member (not in the plan) -> matrix count > plan.
+        _seed_extra_train_dataset(
+            conn, tag, "mat", agen, snap, mat, member_index=n, with_psm=False, with_fmm=True
+        )
+    elif set_defect == "member_index_mismatch":
+        # an extra matrix member at an out-of-range index -> matrix index set != plan index set.
+        _seed_extra_train_dataset(
+            conn, tag, "idx", agen, snap, mat, member_index=n + 5, with_psm=False, with_fmm=True
+        )
+    elif set_defect == "different_dataset_sets":
+        # replacement matrix member for the withheld last dataset, under a DIFFERENT dataset.
+        _seed_extra_train_dataset(
+            conn, tag, "ds", agen, snap, mat, member_index=last, with_psm=False, with_fmm=True
         )
     conn.execute(text("RESET ROLE"))

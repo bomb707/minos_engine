@@ -30,6 +30,7 @@ existing row is a typed conflict, never a silently swallowed uniqueness violatio
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import os
 import struct
 from collections.abc import Callable
@@ -73,6 +74,7 @@ __all__ = [
     "ArtifactMetadataConflictError",
     "PlanRevisionError",
     "AmbiguousPlanCommitError",
+    "PlanVerificationError",
     "PlanPersistResult",
     "persist_accepted_experiment_plan",
 ]
@@ -137,6 +139,10 @@ class PlanRevisionError(L2FPersistenceError):
 
 class AmbiguousPlanCommitError(L2FPersistenceError):
     """The COMMIT itself raised; the commit outcome is unknown — artifacts are retained."""
+
+
+class PlanVerificationError(L2FPersistenceError):
+    """The independent transaction-local read-back of the persisted graph found a mismatch."""
 
 
 @dataclass(frozen=True)
@@ -415,12 +421,145 @@ def _resolve_plan_upstream(conn: Connection, plan: ExperimentPlan) -> dict[str, 
                 "member_index": m.member_index,
             }
         )
+    # each expected member is now proven present; additionally prove there is NO extra live
+    # train member (snapshot or matrix) — the plan's member inventory must equal the complete
+    # live upstream train inventory exactly, before any publication.
+    _verify_upstream_train_set_equality(conn, plan, snapshot["id"], matrix["id"])
     return {
         "feature_set_id": feature_set["id"],
         "profile_snapshot_id": snapshot["id"],
         "train_feature_matrix_id": matrix["id"],
         "members": resolved_members,
     }
+
+
+def _plan_member_identity_tuple(m: Any) -> tuple[Any, ...]:
+    """The canonical live↔plan train-member comparison tuple (order-significant)."""
+    return (
+        m.dataset_id,
+        m.profile_id,
+        m.content_hash,
+        m.feature_values_hash,
+        m.vector_hash,
+        m.member_index,
+        _TRAIN,
+    )
+
+
+def _verify_upstream_train_set_equality(
+    conn: Connection, plan: ExperimentPlan, snapshot_id: str, matrix_id: str
+) -> None:
+    """Require exact equality between the plan's ordered member inventory and the COMPLETE live
+    upstream train inventory of the resolved snapshot and train feature matrix.
+
+    Reads the full snapshot train inventory (``profile_snapshot_members`` ⋈ ``dataset_registry``
+    ⋈ ``bam_profiles``) and the full matrix inventory (``feature_matrix_members`` ⋈
+    ``dataset_registry``), then proves: no missing plan members, no extra snapshot/matrix members,
+    no duplicated logical identities, snapshot train count == matrix row_count ==
+    ``plan.train_member_count``, and identical dataset and member-index sets — raising a typed
+    :class:`UpstreamIdentityError` on any difference (before any publication).
+    """
+    snap_rows = (
+        conn.execute(
+            text(
+                "SELECT dr.dataset_id AS dataset_id, bp.profile_id AS profile_id, "
+                "bp.content_hash AS content_hash, psm.feature_values_hash AS feature_values_hash, "
+                "psm.dataset_registry_id AS dataset_registry_id, psm.bam_profile_id AS bam_profile_id, "
+                "bp.dataset_registry_id AS bam_dataset_registry_id, bp.profile_status AS profile_status "
+                "FROM profiling.profile_snapshot_members psm "
+                "JOIN catalog.dataset_registry dr ON dr.id = psm.dataset_registry_id "
+                "JOIN profiling.bam_profiles bp ON bp.id = psm.bam_profile_id "
+                "WHERE psm.profile_snapshot_id = :sid AND psm.partition = :p"
+            ),
+            {"sid": snapshot_id, "p": _TRAIN},
+        )
+        .mappings()
+        .all()
+    )
+    mat_rows = (
+        conn.execute(
+            text(
+                "SELECT dr.dataset_id AS dataset_id, fmm.member_index AS member_index, "
+                "fmm.vector_hash AS vector_hash, fmm.feature_values_hash AS feature_values_hash, "
+                "fmm.dataset_registry_id AS dataset_registry_id "
+                "FROM profiling.feature_matrix_members fmm "
+                "JOIN catalog.dataset_registry dr ON dr.id = fmm.dataset_registry_id "
+                "WHERE fmm.feature_matrix_id = :mid"
+            ),
+            {"mid": matrix_id},
+        )
+        .mappings()
+        .all()
+    )
+    row_count = conn.execute(
+        text("SELECT row_count FROM profiling.feature_matrices WHERE id = :mid"),
+        {"mid": matrix_id},
+    ).scalar_one()
+
+    n = plan.train_member_count
+    if len(snap_rows) != n:
+        raise UpstreamIdentityError(
+            f"snapshot train membership has {len(snap_rows)} members, expected exactly {n}"
+        )
+    if len(mat_rows) != n:
+        raise UpstreamIdentityError(
+            f"train matrix membership has {len(mat_rows)} members, expected exactly {n}"
+        )
+    if int(row_count) != n:
+        raise UpstreamIdentityError(
+            f"train matrix row_count {int(row_count)} != plan train_member_count {n}"
+        )
+
+    snap_datasets = [r["dataset_id"] for r in snap_rows]
+    mat_datasets = [r["dataset_id"] for r in mat_rows]
+    if len(set(snap_datasets)) != len(snap_datasets):
+        raise UpstreamIdentityError("duplicated dataset_id in snapshot train membership")
+    if len(set(mat_datasets)) != len(mat_datasets):
+        raise UpstreamIdentityError("duplicated dataset_id in matrix membership")
+
+    plan_datasets = {m.dataset_id for m in plan.members}
+    if set(snap_datasets) != plan_datasets:
+        raise UpstreamIdentityError(
+            "snapshot train dataset set differs from the plan member dataset set"
+        )
+    if set(mat_datasets) != plan_datasets:
+        raise UpstreamIdentityError("matrix dataset set differs from the plan member dataset set")
+    if {int(r["member_index"]) for r in mat_rows} != {m.member_index for m in plan.members}:
+        raise UpstreamIdentityError(
+            "matrix member-index set differs from the plan member-index set"
+        )
+
+    # per-dataset field equality across the joined snapshot+matrix rows vs the plan member.
+    snap_by_ds = {r["dataset_id"]: r for r in snap_rows}
+    mat_by_ds = {r["dataset_id"]: r for r in mat_rows}
+    for m in plan.members:
+        s = snap_by_ds[m.dataset_id]
+        x = mat_by_ds[m.dataset_id]
+        live = (
+            s["dataset_id"],
+            s["profile_id"],
+            s["content_hash"],
+            s["feature_values_hash"],
+            x["vector_hash"],
+            int(x["member_index"]),
+            _TRAIN,
+        )
+        if live != _plan_member_identity_tuple(m):
+            raise UpstreamIdentityError(
+                f"live upstream member {m.dataset_id!r} differs from the plan member identity"
+            )
+        if s["profile_status"] != _COMPLETE:
+            raise UpstreamIdentityError(f"bam_profile for {m.dataset_id!r} is not COMPLETE")
+        if _norm(s["feature_values_hash"]) != _norm(x["feature_values_hash"]):
+            raise UpstreamIdentityError(
+                f"snapshot/matrix feature_values_hash disagree for {m.dataset_id!r}"
+            )
+        if _norm(s["dataset_registry_id"]) != _norm(x["dataset_registry_id"]) or _norm(
+            s["bam_dataset_registry_id"]
+        ) != _norm(s["dataset_registry_id"]):
+            raise UpstreamIdentityError(
+                f"snapshot/matrix/bam dataset_registry UUIDs disagree for {m.dataset_id!r}"
+            )
 
 
 def _publish_config_payloads(
@@ -464,6 +603,229 @@ def _publish_config_payloads(
         )
         payload_ids.append(payload_id)
     return payload_ids, artifacts_created
+
+
+def _file_path_from_uri(uri: str) -> Path:
+    if not uri.startswith("file://"):
+        raise PlanVerificationError(f"artifact uri {uri!r} is not a file:// content URI")
+    return Path(uri[len("file://") :])
+
+
+def _verify_persisted_graph(
+    conn: Connection,
+    plan: ExperimentPlan,
+    candidate_set: CandidateSet,
+    plan_id: str,
+    upstream: dict[str, Any],
+) -> dict[str, int]:
+    """Independently re-read and validate the ENTIRE persisted graph (non-mutating).
+
+    Reads only committed-in-transaction rows and the published artifact bytes; it never repairs
+    or normalizes. Any mismatch raises :class:`PlanVerificationError` (which triggers pre-commit
+    rollback + created-file cleanup). Returns the verified ``{member,config,payload,jobs}`` counts.
+    """
+
+    def _fail(msg: str) -> None:
+        raise PlanVerificationError(f"persisted-graph verification failed: {msg}")
+
+    # ---- exact plan row ----
+    prow = (
+        conn.execute(
+            text(
+                "SELECT profile_snapshot_id, train_feature_matrix_id, feature_set_id, partition, "
+                "snapshot_hash, split_manifest_hash, registry_snapshot_hash, train_matrix_hash, "
+                "train_feature_view_hash, feature_set_hash, feature_registry_hash, gatk_registry_hash, "
+                "parameter_space_hash, experiment_parameter_policy_hash, candidate_set_hash, "
+                "train_member_count, candidate_count, logical_job_count, plan_hash "
+                "FROM experiments.l2f_experiment_plans WHERE id = :p"
+            ),
+            {"p": plan_id},
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if prow is None:
+        _fail("plan row not found on read-back")
+    assert prow is not None  # noqa: S101 - narrowed by the _fail above
+    expected_plan = {
+        "profile_snapshot_id": upstream["profile_snapshot_id"],
+        "train_feature_matrix_id": upstream["train_feature_matrix_id"],
+        "feature_set_id": upstream["feature_set_id"],
+        "partition": _TRAIN,
+        "snapshot_hash": plan.snapshot_hash,
+        "split_manifest_hash": plan.split_manifest_hash,
+        "registry_snapshot_hash": plan.registry_snapshot_hash,
+        "train_matrix_hash": plan.train_matrix_hash,
+        "train_feature_view_hash": plan.train_feature_view_hash,
+        "feature_set_hash": plan.feature_set_hash,
+        "feature_registry_hash": plan.feature_registry_hash,
+        "gatk_registry_hash": plan.gatk_registry_hash,
+        "parameter_space_hash": plan.parameter_space_hash,
+        "experiment_parameter_policy_hash": plan.experiment_parameter_policy_hash,
+        "candidate_set_hash": plan.candidate_set_hash,
+        "train_member_count": plan.train_member_count,
+        "candidate_count": plan.candidate_count,
+        "logical_job_count": plan.logical_job_count,
+        "plan_hash": plan.plan_hash,
+    }
+    for col, want in expected_plan.items():
+        if _norm(prow[col]) != _norm(want):
+            _fail(f"plan column {col!r} mismatch")
+
+    # ---- complete ordered member inventory (rejoined to upstream identity) ----
+    members = (
+        conn.execute(
+            text(
+                "SELECT pm.member_index AS member_index, pm.profile_snapshot_id AS profile_snapshot_id, "
+                "pm.feature_matrix_id AS feature_matrix_id, "
+                "pm.profile_snapshot_member_id AS profile_snapshot_member_id, "
+                "pm.feature_matrix_member_id AS feature_matrix_member_id, "
+                "pm.bam_profile_id AS bam_profile_id, pm.dataset_registry_id AS dataset_registry_id, "
+                "pm.partition AS partition, pm.feature_values_hash AS feature_values_hash, "
+                "dr.dataset_id AS dataset_id, bp.profile_id AS profile_id, bp.content_hash AS content_hash, "
+                "fmm.vector_hash AS vector_hash "
+                "FROM experiments.l2f_experiment_plan_members pm "
+                "JOIN catalog.dataset_registry dr ON dr.id = pm.dataset_registry_id "
+                "JOIN profiling.bam_profiles bp ON bp.id = pm.bam_profile_id "
+                "JOIN profiling.feature_matrix_members fmm ON fmm.id = pm.feature_matrix_member_id "
+                "WHERE pm.plan_id = :p ORDER BY pm.member_index"
+            ),
+            {"p": plan_id},
+        )
+        .mappings()
+        .all()
+    )
+    if len(members) != plan.train_member_count:
+        _fail(f"member count {len(members)} != {plan.train_member_count}")
+    resolved = upstream["members"]
+    for i, (row, exp, rm) in enumerate(zip(members, plan.members, resolved, strict=True)):
+        if int(row["member_index"]) != i or exp.member_index != i:
+            _fail(f"member_index sequence broken at position {i}")
+        if row["partition"] != _TRAIN:
+            _fail(f"member {i} partition != train")
+        if _norm(row["profile_snapshot_id"]) != _norm(upstream["profile_snapshot_id"]) or _norm(
+            row["feature_matrix_id"]
+        ) != _norm(upstream["train_feature_matrix_id"]):
+            _fail(f"member {i} snapshot/matrix UUID mismatch")
+        for col in (
+            "profile_snapshot_member_id",
+            "feature_matrix_member_id",
+            "bam_profile_id",
+            "dataset_registry_id",
+        ):
+            if _norm(row[col]) != _norm(rm[col]):
+                _fail(f"member {i} {col} mismatch")
+        # rejoin: stored member must still resolve to the expected ExperimentPlanMember identity.
+        live = (
+            row["dataset_id"],
+            row["profile_id"],
+            row["content_hash"],
+            row["feature_values_hash"],
+            row["vector_hash"],
+            int(row["member_index"]),
+            _TRAIN,
+        )
+        if live != _plan_member_identity_tuple(exp):
+            _fail(f"member {i} rejoined upstream identity mismatch")
+
+    # ---- complete ordered plan-config inventory + payload/artifact for each ----
+    configs = (
+        conn.execute(
+            text(
+                "SELECT config_index, config_hash, parameter_space_hash, config_payload_id "
+                "FROM experiments.l2f_experiment_plan_configs WHERE plan_id = :p ORDER BY config_index"
+            ),
+            {"p": plan_id},
+        )
+        .mappings()
+        .all()
+    )
+    if len(configs) != plan.candidate_count:
+        _fail(f"config count {len(configs)} != {plan.candidate_count}")
+    payload_ids: set[str] = set()
+    for i, (crow, cfg, cand) in enumerate(
+        zip(configs, plan.configs, candidate_set.configs, strict=True)
+    ):
+        if int(crow["config_index"]) != i or cfg.config_index != i:
+            _fail(f"config_index sequence broken at position {i}")
+        if (
+            _norm(crow["config_hash"]) != _norm(cfg.config_hash)
+            or cfg.config_hash != cand.config_hash
+        ):
+            _fail(f"config {i} config_hash mismatch")
+        if _norm(crow["parameter_space_hash"]) != _norm(plan.parameter_space_hash):
+            _fail(f"config {i} parameter_space_hash mismatch")
+        payload_ids.add(str(crow["config_payload_id"]))
+        prow2 = (
+            conn.execute(
+                text(
+                    "SELECT cp.config_hash AS config_hash, cp.parameter_space_hash AS parameter_space_hash, "
+                    "cp.schema_version AS schema_version, cp.media_type AS media_type, "
+                    "cp.artifact_id AS artifact_id, a.sha256 AS sha256, a.uri AS uri, "
+                    "a.size_bytes AS size_bytes, a.provenance AS provenance "
+                    "FROM experiments.l2f_config_payloads cp "
+                    "JOIN catalog.artifacts a ON a.id = cp.artifact_id WHERE cp.id = :pid"
+                ),
+                {"pid": crow["config_payload_id"]},
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if prow2 is None:
+            _fail(f"config {i} references a missing config_payload/artifact")
+        assert prow2 is not None  # noqa: S101 - narrowed by the _fail above
+        payload = canonical_json_bytes(cand.effective_config)
+        expected_artifact = {
+            "config_hash": cand.config_hash,
+            "parameter_space_hash": plan.parameter_space_hash,
+            "schema_version": L2F_CONFIG_PAYLOAD_SCHEMA,
+            "media_type": CONFIG_ARTIFACT_MEDIA_TYPE,
+            "sha256": cand.config_hash,
+            "provenance": CONFIG_ARTIFACT_KIND,
+        }
+        for col, want in expected_artifact.items():
+            if _norm(prow2[col]) != _norm(want):
+                _fail(f"config {i} payload/artifact column {col!r} mismatch")
+        if prow2["size_bytes"] is None or int(prow2["size_bytes"]) != len(payload):
+            _fail(f"config {i} artifact size_bytes mismatch")
+        path = _file_path_from_uri(str(prow2["uri"]))
+        if path.name != f"{cand.config_hash}.json":
+            _fail(f"config {i} artifact uri is not content-addressed")
+        try:
+            file_bytes = path.read_bytes()
+        except OSError as exc:
+            raise PlanVerificationError(f"config {i} artifact file unreadable: {path}") from exc
+        if file_bytes != payload:
+            _fail(f"config {i} artifact file bytes are not the canonical payload")
+        if hashlib.sha256(file_bytes).hexdigest() != cand.config_hash:
+            _fail(f"config {i} artifact file hash != config_hash")
+
+    # ---- aggregate invariants ----
+    member_count = len(members)
+    config_count = len(configs)
+    payload_count = len(payload_ids)
+    jobs_count = int(
+        conn.execute(
+            text("SELECT count(*) FROM experiments.l2f_experiment_jobs WHERE plan_id = :p"),
+            {"p": plan_id},
+        ).scalar_one()
+    )
+    if payload_count != plan.candidate_count:
+        _fail(f"distinct payload count {payload_count} != {plan.candidate_count}")
+    if config_count != plan.candidate_count:
+        _fail(f"config count {config_count} != {plan.candidate_count}")
+    if member_count != plan.train_member_count:
+        _fail(f"member count {member_count} != {plan.train_member_count}")
+    if plan.logical_job_count != plan.train_member_count * plan.candidate_count:
+        _fail("logical_job_count != train_member_count * candidate_count")
+    if jobs_count != 0:
+        _fail(f"F3-C1 must create zero jobs, found {jobs_count}")
+    return {
+        "member_count": member_count,
+        "config_count": config_count,
+        "payload_count": payload_count,
+        "jobs_count": jobs_count,
+    }
 
 
 def _persist_plan_with_trust(
@@ -567,55 +929,18 @@ def _persist_plan_with_trust(
             unique_keys=_PLAN_CONFIG_UNIQUE_KEYS,
         )
 
-    # ---- transaction-local read-back verification ----
-    member_count = conn.execute(
-        text("SELECT count(*) FROM experiments.l2f_experiment_plan_members WHERE plan_id = :p"),
-        {"p": plan_id},
-    ).scalar_one()
-    config_count = conn.execute(
-        text("SELECT count(*) FROM experiments.l2f_experiment_plan_configs WHERE plan_id = :p"),
-        {"p": plan_id},
-    ).scalar_one()
-    payload_count = conn.execute(
-        text(
-            "SELECT count(DISTINCT config_payload_id) "
-            "FROM experiments.l2f_experiment_plan_configs WHERE plan_id = :p"
-        ),
-        {"p": plan_id},
-    ).scalar_one()
-    jobs_count = conn.execute(
-        text("SELECT count(*) FROM experiments.l2f_experiment_jobs WHERE plan_id = :p"),
-        {"p": plan_id},
-    ).scalar_one()
-    stored = (
-        conn.execute(
-            text(
-                "SELECT plan_hash, train_member_count, candidate_count, logical_job_count "
-                "FROM experiments.l2f_experiment_plans WHERE id = :p"
-            ),
-            {"p": plan_id},
-        )
-        .mappings()
-        .one()
-    )
-    if stored["plan_hash"] != plan.plan_hash:
-        raise L2FPersistenceError("read-back plan_hash mismatch")
-    if member_count != plan.train_member_count:
-        raise L2FPersistenceError("read-back member count mismatch")
-    if config_count != plan.candidate_count:
-        raise L2FPersistenceError("read-back config count mismatch")
-    if jobs_count != 0:
-        raise L2FPersistenceError("F3-C1 must create zero jobs")
+    # ---- independent transaction-local read-back verification (non-mutating) ----
+    counts = _verify_persisted_graph(conn, plan, candidate_set, plan_id, upstream)
 
     return PlanPersistResult(
         plan_id=plan_id,
         plan_hash=plan.plan_hash,
         plan_created=plan_created,
-        member_count=int(member_count),
-        config_count=int(config_count),
-        payload_count=int(payload_count),
+        member_count=counts["member_count"],
+        config_count=counts["config_count"],
+        payload_count=counts["payload_count"],
         artifacts_created=artifacts_created,
-        jobs_count=int(jobs_count),
+        jobs_count=counts["jobs_count"],
         replay=not plan_created,
     )
 

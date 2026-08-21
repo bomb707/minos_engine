@@ -79,6 +79,30 @@ candidate builder, publisher/root access, upstream resolver, or any publication 
 mismatch — including NULL or malformed stored metadata — fails through
 `ArtifactMetadataConflictError` (never a `TypeError`/`ValueError`/raw database error).
 
+**F3-C1 completeness closure (exact upstream train-set + independent graph read-back).** Before
+any publication, `_resolve_plan_upstream` now also proves **exact equality** between the plan's
+ordered member inventory and the COMPLETE live upstream train inventory: it reads the full
+snapshot train membership (`profile_snapshot_members` ⋈ `dataset_registry` ⋈ `bam_profiles`) and
+the full train-matrix membership (`feature_matrix_members` ⋈ `dataset_registry`) and requires no
+missing plan members, no extra snapshot/matrix members, no duplicated identities, snapshot train
+count == matrix `row_count` == `plan.train_member_count`, and identical dataset and member-index
+sets — any difference is a typed `UpstreamIdentityError` before publisher use, payload
+publication, `catalog.artifacts` insertion, or any L2-F insertion. After all inserts and before
+COMMIT, a dedicated **non-mutating** `_verify_persisted_graph` independently re-reads and
+validates the entire persisted graph — the exact plan row (every upstream UUID, partition, all 11
+scientific-identity hashes, the three derived counts, `plan_hash`); the complete ordered member
+inventory (row count, contiguous `member_index` sequence, every upstream UUID, partition,
+`feature_values_hash`, and a rejoin to `dataset_registry`/`bam_profiles`/`feature_matrix_members`
+proving each stored member still equals its expected `ExperimentPlanMember` identity); the
+complete ordered plan-config inventory (row count, `config_index` sequence, `config_hash`,
+`parameter_space_hash`, `config_payload_id`); and for every referenced payload+artifact the
+`config_hash`, `parameter_space_hash`, `schema_version`, `media_type`, `artifact_id`, artifact
+`sha256`, URI, byte size, provenance, and the **exact canonical payload bytes + file hash** — plus
+`payload_count == config_count == plan.candidate_count`, `member_count ==
+plan.train_member_count`, `logical_job_count == train_member_count * candidate_count`, and
+**zero** `l2f_experiment_jobs`. It never repairs or normalizes; any mismatch raises the typed
+`PlanVerificationError`, which triggers pre-commit rollback and created-file cleanup.
+
 **Content-addressed CONFIG-payload contract** (`storage/l2f_config_publisher.py`): for each
 accepted candidate the persisted bytes are exactly `canonical_json_bytes(effective_config)`
 (`sha256 == config_hash`) — no wrapper/envelope. Each payload binds `schema_version =

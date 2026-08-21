@@ -21,6 +21,7 @@ is never touched (``MINOS_DATABASE_URL`` is monkeypatched only to the isolated s
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import os
 import stat
 from collections.abc import Iterator
@@ -53,17 +54,24 @@ from minos_engine.storage.l2f_config_publisher import (
     CONFIG_ARTIFACT_MEDIA_TYPE,
     ConfigPayloadPublisher,
 )
+from minos_engine.storage.l2f_migration_contract import L2F_CONFIG_PAYLOAD_SCHEMA
 from minos_engine.storage.l2f_plan_store import (
     AmbiguousPlanCommitError,
     ArtifactMetadataConflictError,
     ImmutableMetadataConflictError,
     PlanRevisionError,
+    PlanVerificationError,
     UpstreamIdentityError,
     _persist_experiment_plan_with_trust,
     persist_accepted_experiment_plan,
 )
 from tests.integration.layer2_db.conftest import alembic_upgrade, scratch_database
-from tests.integration.layer2_db.l2f_plan_seed import CORRUPTIONS, seed_upstream_for_plan
+from tests.integration.layer2_db.l2f_plan_seed import (
+    CORRUPTIONS,
+    SET_DEFECTS,
+    seed_upstream_for_plan,
+)
+from tests.integration.layer2_db.l2f_seed import H, U, _bam_row, _dataset_row, _insert
 
 _HEAD = "0006_l2f_experiment_plan"
 _PREV = "0005_l2e_feature_view"
@@ -938,6 +946,485 @@ def test_non75_synthetic_plan_persists_derived_counts(
             assert counts["l2f_experiment_plan_members"] == expected_train
             assert counts["l2f_config_payloads"] == len(_CS.configs)
             assert counts["l2f_experiment_jobs"] == 0
+        finally:
+            engine.dispose()
+
+
+# --------------------------------------------------------------------------- #
+# B. exact upstream train-set equality (no extra/missing live train members)
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("set_defect", SET_DEFECTS)
+def test_upstream_exact_set_negative(
+    isolated_pg_base_url: str, tmp_path: Path, set_defect: str
+) -> None:
+    """A live upstream train inventory that differs from the plan's member inventory (extra /
+    missing / mismatched dataset or index sets, or an inconsistent matrix row_count) is rejected
+    with a typed UpstreamIdentityError before any publication — zero files / zero L2-F rows."""
+    plan = _synthetic_plan(_SNAPSHOT_A)
+    with scratch_database(isolated_pg_base_url, "minos_l2f_synth") as url:
+        alembic_upgrade(url, _HEAD)
+        engine = _engine(url)
+        try:
+            with engine.connect() as conn, conn.begin():
+                seed_upstream_for_plan(conn, plan, set_defect=set_defect)
+            root = _provisioned_root(tmp_path)
+            with pytest.raises(UpstreamIdentityError):
+                _persist_experiment_plan_with_trust(engine, plan, _CS, publisher=_publisher(root))
+            assert _artifact_files(root) == []
+            counts = _graph_counts(engine)
+            assert counts["l2f_experiment_plans"] == 0
+            assert counts["l2f_config_payloads"] == 0
+        finally:
+            engine.dispose()
+
+
+def test_upstream_exact_set_valid_persists(isolated_pg_base_url: str, tmp_path: Path) -> None:
+    """Exact live train inventory (no extras) passes the equality proof and persists."""
+    plan = _synthetic_plan(_SNAPSHOT_A)
+    with scratch_database(isolated_pg_base_url, "minos_l2f_synth") as url:
+        alembic_upgrade(url, _HEAD)
+        engine = _engine(url)
+        try:
+            with engine.connect() as conn, conn.begin():
+                seed_upstream_for_plan(conn, plan)
+            root = _provisioned_root(tmp_path)
+            result = _persist_experiment_plan_with_trust(
+                engine, plan, _CS, publisher=_publisher(root)
+            )
+            assert result.member_count == plan.train_member_count == 4
+            assert result.jobs_count == 0
+        finally:
+            engine.dispose()
+
+
+# --------------------------------------------------------------------------- #
+# C/D. independent transaction-local graph verifier
+# --------------------------------------------------------------------------- #
+def _member_row(
+    plan_id: str, upstream: dict[str, Any], m: Any, rm: dict[str, Any]
+) -> dict[str, Any]:
+    return {
+        "plan_id": plan_id,
+        "profile_snapshot_id": upstream["profile_snapshot_id"],
+        "feature_matrix_id": upstream["train_feature_matrix_id"],
+        "profile_snapshot_member_id": rm["profile_snapshot_member_id"],
+        "feature_matrix_member_id": rm["feature_matrix_member_id"],
+        "bam_profile_id": rm["bam_profile_id"],
+        "dataset_registry_id": rm["dataset_registry_id"],
+        "partition": "train",
+        "feature_values_hash": m.feature_values_hash,
+        "member_index": m.member_index,
+    }
+
+
+def _hand_build_graph(
+    conn: Connection, plan: Any, publisher: ConfigPayloadPublisher, *, defect: str | None
+) -> tuple[str, dict[str, Any]]:
+    """Build a complete L2-F graph for ``plan`` directly (reusing the store's insert helpers),
+    optionally injecting exactly one build-time defect. Returns (plan_id, upstream)."""
+    conn.execute(text("SET ROLE minos_admin"))
+    upstream = PS._resolve_plan_upstream(conn, plan)
+    tag = plan.plan_hash
+    agen = U(f"art:gen:{tag}")
+
+    payload_ids: list[str] = []
+    for j, cand in enumerate(_CS.configs):
+        payload = canonical_json_bytes(cand.effective_config)
+        art = publisher.publish(payload, config_hash=cand.config_hash)
+        if defect == "wrong_artifact_metadata" and j == 0:
+            aid = conn.execute(
+                text(
+                    "INSERT INTO catalog.artifacts (uri, sha256, media_type, size_bytes, provenance)"
+                    " VALUES (:u,:h,:m,:s,:p) RETURNING id"
+                ),
+                {
+                    "u": art.uri,
+                    "h": cand.config_hash,
+                    "m": CONFIG_ARTIFACT_MEDIA_TYPE,
+                    "s": len(payload) + 7,  # deliberately wrong stored byte size
+                    "p": CONFIG_ARTIFACT_KIND,
+                },
+            ).scalar_one()
+        else:
+            aid = PS._register_config_artifact(
+                conn,
+                uri=art.uri,
+                sha256=cand.config_hash,
+                size_bytes=art.size_bytes,
+                media_type=art.media_type,
+            )
+        pid, _ = PS._insert_or_verify(
+            conn,
+            table="l2f_config_payloads",
+            row={
+                "config_hash": cand.config_hash,
+                "parameter_space_hash": plan.parameter_space_hash,
+                "schema_version": L2F_CONFIG_PAYLOAD_SCHEMA,
+                "media_type": CONFIG_ARTIFACT_MEDIA_TYPE,
+                "artifact_id": aid,
+            },
+            unique_keys=PS._CONFIG_PAYLOAD_UNIQUE_KEYS,
+        )
+        payload_ids.append(pid)
+
+    tmc, cc = plan.train_member_count, plan.candidate_count
+    ljc = plan.logical_job_count
+    if defect == "wrong_plan_count":
+        tmc = tmc + 1
+        ljc = tmc * cc  # keep the DB CHECK satisfied while disagreeing with actual membership
+    plan_id, _ = PS._insert_or_verify(
+        conn,
+        table="l2f_experiment_plans",
+        row={
+            "profile_snapshot_id": upstream["profile_snapshot_id"],
+            "train_feature_matrix_id": upstream["train_feature_matrix_id"],
+            "feature_set_id": upstream["feature_set_id"],
+            "partition": "train",
+            "snapshot_hash": plan.snapshot_hash,
+            "split_manifest_hash": plan.split_manifest_hash,
+            "registry_snapshot_hash": plan.registry_snapshot_hash,
+            "train_matrix_hash": plan.train_matrix_hash,
+            "train_feature_view_hash": plan.train_feature_view_hash,
+            "feature_set_hash": plan.feature_set_hash,
+            "feature_registry_hash": plan.feature_registry_hash,
+            "gatk_registry_hash": plan.gatk_registry_hash,
+            "parameter_space_hash": plan.parameter_space_hash,
+            "experiment_parameter_policy_hash": plan.experiment_parameter_policy_hash,
+            "candidate_set_hash": plan.candidate_set_hash,
+            "train_member_count": tmc,
+            "candidate_count": cc,
+            "logical_job_count": ljc,
+            "plan_hash": plan.plan_hash,
+        },
+        unique_keys=PS._PLAN_UNIQUE_KEYS,
+    )
+
+    members = list(zip(plan.members, upstream["members"], strict=True))
+    if defect == "missing_member":
+        members = members[:-1]
+    for m, rm in members:
+        PS._insert_or_verify(
+            conn,
+            table="l2f_experiment_plan_members",
+            row=_member_row(plan_id, upstream, m, rm),
+            unique_keys=PS._MEMBER_UNIQUE_KEYS,
+        )
+    if defect == "extra_member":
+        _insert_extra_member(conn, plan, upstream, agen, plan_id)
+
+    configs = list(zip(plan.configs, payload_ids, strict=True))
+    if defect == "missing_config":
+        configs = configs[:-1]
+    for cfg, pid in configs:
+        PS._insert_or_verify(
+            conn,
+            table="l2f_experiment_plan_configs",
+            row={
+                "plan_id": plan_id,
+                "config_payload_id": pid,
+                "config_hash": cfg.config_hash,
+                "parameter_space_hash": cfg.parameter_space_hash,
+                "config_index": cfg.config_index,
+            },
+            unique_keys=PS._PLAN_CONFIG_UNIQUE_KEYS,
+        )
+    if defect == "extra_config":
+        _insert_extra_config(conn, plan, publisher, plan_id)
+    if defect == "nonzero_jobs":
+        _insert_job(conn, plan_id)
+    return plan_id, upstream
+
+
+def _insert_extra_member(
+    conn: Connection, plan: Any, upstream: dict[str, Any], agen: str, plan_id: str
+) -> None:
+    tag = plan.plan_hash
+    n = plan.train_member_count
+    dsr = U(f"hb:extra:dsr:{tag}")
+    drow = _dataset_row(f"hb-extra-{tag}", 4)
+    drow["id"] = dsr
+    drow["dataset_id"] = f"hb-extra-ds-{tag}"
+    _insert(conn, "catalog", "dataset_registry", drow)
+    bam = _bam_row(f"hb-extra-{tag}", dsr, agen)
+    _insert(conn, "profiling", "bam_profiles", bam, jsonb_cols=("profile_document",))
+    psm = U(f"hb:extra:psm:{tag}")
+    _insert(
+        conn,
+        "profiling",
+        "profile_snapshot_members",
+        {
+            "id": psm,
+            "profile_snapshot_id": upstream["profile_snapshot_id"],
+            "bam_profile_id": bam["id"],
+            "dataset_registry_id": dsr,
+            "partition": "train",
+            "feature_values_hash": bam["feature_values_hash"],
+        },
+    )
+    fmm = U(f"hb:extra:fmm:{tag}")
+    _insert(
+        conn,
+        "profiling",
+        "feature_matrix_members",
+        {
+            "id": fmm,
+            "feature_matrix_id": upstream["train_feature_matrix_id"],
+            "dataset_registry_id": dsr,
+            "member_index": n,
+            "vector_hash": H(f"hb:extra:vec:{tag}"),
+            "feature_values_hash": bam["feature_values_hash"],
+        },
+    )
+    PS._insert_or_verify(
+        conn,
+        table="l2f_experiment_plan_members",
+        row={
+            "plan_id": plan_id,
+            "profile_snapshot_id": upstream["profile_snapshot_id"],
+            "feature_matrix_id": upstream["train_feature_matrix_id"],
+            "profile_snapshot_member_id": psm,
+            "feature_matrix_member_id": fmm,
+            "bam_profile_id": bam["id"],
+            "dataset_registry_id": dsr,
+            "partition": "train",
+            "feature_values_hash": bam["feature_values_hash"],
+            "member_index": n,
+        },
+        unique_keys=PS._MEMBER_UNIQUE_KEYS,
+    )
+
+
+def _insert_extra_config(
+    conn: Connection, plan: Any, publisher: ConfigPayloadPublisher, plan_id: str
+) -> None:
+    payload = b'{"extra_config":true}'
+    config_hash = hashlib.sha256(payload).hexdigest()
+    art = publisher.publish(payload, config_hash=config_hash)
+    aid = PS._register_config_artifact(
+        conn, uri=art.uri, sha256=config_hash, size_bytes=art.size_bytes, media_type=art.media_type
+    )
+    pid, _ = PS._insert_or_verify(
+        conn,
+        table="l2f_config_payloads",
+        row={
+            "config_hash": config_hash,
+            "parameter_space_hash": plan.parameter_space_hash,
+            "schema_version": L2F_CONFIG_PAYLOAD_SCHEMA,
+            "media_type": CONFIG_ARTIFACT_MEDIA_TYPE,
+            "artifact_id": aid,
+        },
+        unique_keys=PS._CONFIG_PAYLOAD_UNIQUE_KEYS,
+    )
+    PS._insert_or_verify(
+        conn,
+        table="l2f_experiment_plan_configs",
+        row={
+            "plan_id": plan_id,
+            "config_payload_id": pid,
+            "config_hash": config_hash,
+            "parameter_space_hash": plan.parameter_space_hash,
+            "config_index": plan.candidate_count,  # one past the last valid index
+        },
+        unique_keys=PS._PLAN_CONFIG_UNIQUE_KEYS,
+    )
+
+
+def _insert_job(conn: Connection, plan_id: str) -> None:
+    member_id = conn.execute(
+        text("SELECT id FROM experiments.l2f_experiment_plan_members WHERE plan_id=:p LIMIT 1"),
+        {"p": plan_id},
+    ).scalar_one()
+    config_id = conn.execute(
+        text("SELECT id FROM experiments.l2f_experiment_plan_configs WHERE plan_id=:p LIMIT 1"),
+        {"p": plan_id},
+    ).scalar_one()
+    conn.execute(
+        text(
+            "INSERT INTO experiments.l2f_experiment_jobs "
+            "(plan_id, plan_member_id, plan_config_id, job_key, status) "
+            "VALUES (:p,:m,:c,:k,'PENDING')"
+        ),
+        {"p": plan_id, "m": member_id, "c": config_id, "k": H(f"job:{plan_id}")},
+    )
+
+
+class _ReorderedCS:
+    """A candidate-set view with two configs swapped (for the wrong-binding verifier test)."""
+
+    def __init__(self, cs: Any) -> None:
+        cfgs = list(cs.configs)
+        cfgs[0], cfgs[1] = cfgs[1], cfgs[0]
+        self.configs = tuple(cfgs)
+
+
+_HANDBUILD_REJECTS = [
+    "missing_member",
+    "missing_config",
+    "wrong_plan_count",
+    "wrong_artifact_metadata",
+    "extra_member",
+    "extra_config",
+]
+
+
+@pytest.mark.parametrize("defect", _HANDBUILD_REJECTS)
+def test_verifier_rejects_build_time_defect(
+    isolated_pg_base_url: str, tmp_path: Path, defect: str
+) -> None:
+    plan = _synthetic_plan(_SNAPSHOT_A)
+    with scratch_database(isolated_pg_base_url, "minos_l2f_synth") as url:
+        alembic_upgrade(url, _HEAD)
+        engine = _engine(url)
+        try:
+            with engine.connect() as conn, conn.begin():
+                seed_upstream_for_plan(conn, plan)
+            root = _provisioned_root(tmp_path)
+            pub = _publisher(root)
+            conn = engine.connect()
+            trans = conn.begin()
+            try:
+                plan_id, upstream = _hand_build_graph(conn, plan, pub, defect=defect)
+                with pytest.raises(PlanVerificationError):
+                    PS._verify_persisted_graph(conn, plan, _CS, plan_id, upstream)
+            finally:
+                trans.rollback()
+                conn.close()
+        finally:
+            engine.dispose()
+
+
+def test_verifier_accepts_valid_hand_built_graph(isolated_pg_base_url: str, tmp_path: Path) -> None:
+    plan = _synthetic_plan(_SNAPSHOT_A)
+    with scratch_database(isolated_pg_base_url, "minos_l2f_synth") as url:
+        alembic_upgrade(url, _HEAD)
+        engine = _engine(url)
+        try:
+            with engine.connect() as conn, conn.begin():
+                seed_upstream_for_plan(conn, plan)
+            root = _provisioned_root(tmp_path)
+            pub = _publisher(root)
+            conn = engine.connect()
+            trans = conn.begin()
+            try:
+                plan_id, upstream = _hand_build_graph(conn, plan, pub, defect=None)
+                counts = PS._verify_persisted_graph(conn, plan, _CS, plan_id, upstream)
+                assert counts["member_count"] == plan.train_member_count
+                assert counts["config_count"] == plan.candidate_count
+                assert counts["payload_count"] == plan.candidate_count
+                assert counts["jobs_count"] == 0
+            finally:
+                trans.rollback()
+                conn.close()
+        finally:
+            engine.dispose()
+
+
+def test_verifier_rejects_nonzero_jobs(isolated_pg_base_url: str, tmp_path: Path) -> None:
+    plan = _synthetic_plan(_SNAPSHOT_A)
+    with scratch_database(isolated_pg_base_url, "minos_l2f_synth") as url:
+        alembic_upgrade(url, _HEAD)
+        engine = _engine(url)
+        try:
+            with engine.connect() as conn, conn.begin():
+                seed_upstream_for_plan(conn, plan)
+            root = _provisioned_root(tmp_path)
+            pub = _publisher(root)
+            conn = engine.connect()
+            trans = conn.begin()
+            try:
+                plan_id, upstream = _hand_build_graph(conn, plan, pub, defect="nonzero_jobs")
+                with pytest.raises(PlanVerificationError):
+                    PS._verify_persisted_graph(conn, plan, _CS, plan_id, upstream)
+            finally:
+                trans.rollback()
+                conn.close()
+        finally:
+            engine.dispose()
+
+
+def test_verifier_rejects_wrong_artifact_bytes(isolated_pg_base_url: str, tmp_path: Path) -> None:
+    plan = _synthetic_plan(_SNAPSHOT_A)
+    with scratch_database(isolated_pg_base_url, "minos_l2f_synth") as url:
+        alembic_upgrade(url, _HEAD)
+        engine = _engine(url)
+        try:
+            with engine.connect() as conn, conn.begin():
+                seed_upstream_for_plan(conn, plan)
+            root = _provisioned_root(tmp_path)
+            pub = _publisher(root)
+            conn = engine.connect()
+            trans = conn.begin()
+            try:
+                plan_id, upstream = _hand_build_graph(conn, plan, pub, defect=None)
+                # corrupt one published artifact file's bytes on disk (hash will no longer match).
+                target = _artifact_files(root)[0]
+                os.chmod(target, 0o640)
+                target.write_bytes(b'{"tampered":true}')
+                with pytest.raises(PlanVerificationError):
+                    PS._verify_persisted_graph(conn, plan, _CS, plan_id, upstream)
+            finally:
+                trans.rollback()
+                conn.close()
+        finally:
+            engine.dispose()
+
+
+def test_verifier_rejects_wrong_member_uuid_binding(
+    isolated_pg_base_url: str, tmp_path: Path
+) -> None:
+    """A stored member whose bam_profile UUID does not match the expected ExperimentPlanMember
+    binding is rejected (exercised via the verifier's expected-vs-stored comparison; the FK graph
+    makes such a state otherwise unconstructable without disabling production constraints)."""
+    plan = _synthetic_plan(_SNAPSHOT_A)
+    with scratch_database(isolated_pg_base_url, "minos_l2f_synth") as url:
+        alembic_upgrade(url, _HEAD)
+        engine = _engine(url)
+        try:
+            with engine.connect() as conn, conn.begin():
+                seed_upstream_for_plan(conn, plan)
+            root = _provisioned_root(tmp_path)
+            pub = _publisher(root)
+            conn = engine.connect()
+            trans = conn.begin()
+            try:
+                plan_id, upstream = _hand_build_graph(conn, plan, pub, defect=None)
+                corrupted = dict(upstream)
+                members = [dict(rm) for rm in upstream["members"]]
+                members[0]["bam_profile_id"] = U("some:other:bam")
+                corrupted["members"] = members
+                with pytest.raises(PlanVerificationError):
+                    PS._verify_persisted_graph(conn, plan, _CS, plan_id, corrupted)
+            finally:
+                trans.rollback()
+                conn.close()
+        finally:
+            engine.dispose()
+
+
+def test_verifier_rejects_wrong_config_payload_binding(
+    isolated_pg_base_url: str, tmp_path: Path
+) -> None:
+    """A config whose payload does not correspond to its expected candidate is rejected
+    (exercised via a reordered candidate set; the payload FK/UNIQUE graph makes a wrong stored
+    binding otherwise unconstructable without disabling production constraints)."""
+    plan = _synthetic_plan(_SNAPSHOT_A)
+    with scratch_database(isolated_pg_base_url, "minos_l2f_synth") as url:
+        alembic_upgrade(url, _HEAD)
+        engine = _engine(url)
+        try:
+            with engine.connect() as conn, conn.begin():
+                seed_upstream_for_plan(conn, plan)
+            root = _provisioned_root(tmp_path)
+            pub = _publisher(root)
+            conn = engine.connect()
+            trans = conn.begin()
+            try:
+                plan_id, upstream = _hand_build_graph(conn, plan, pub, defect=None)
+                with pytest.raises(PlanVerificationError):
+                    PS._verify_persisted_graph(conn, plan, _ReorderedCS(_CS), plan_id, upstream)
+            finally:
+                trans.rollback()
+                conn.close()
         finally:
             engine.dispose()
 
