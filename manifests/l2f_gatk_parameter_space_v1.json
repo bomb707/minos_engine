@@ -186,9 +186,11 @@
       "type": "bool"
     }
   ],
-  "provenance_note": "source_gatk_object_sha256 is the SHA-256 of canonical_json_bytes(...) of the tools.gatk sub-object exactly as supplied from the endpoint; it is source-byte provenance, not a hash of the raw HTTP body. retrieved_at is provenance only and is EXCLUDED from parameter_space_hash. Numeric values are normalized to their declared type.",
-  "retrieved_at": "2026-08-21T00:00:00+00:00",
+  "provenance_note": "source_gatk_object_sha256 is the SHA-256 of the COMMITTED source artifact file bytes at source_artifact_path; source_raw_response_sha256 is the SHA-256 of the complete raw HTTP response body captured at retrieved_at. The parameters below are DERIVED from the committed source artifact by declared-type normalization, and the loader re-derives and re-binds them. retrieved_at and both provenance hashes are EXCLUDED from parameter_space_hash.",
+  "retrieved_at": "2026-08-21T15:35:23+00:00",
   "schema_version": "l2f-gatk-live-parameter-space-v1",
+  "source_artifact_path": "manifests/l2f_gatk_source_object_v1.json",
   "source_endpoint": "https://api.theminos.ai/scoring/parameter-ranges",
-  "source_gatk_object_sha256": "1b7788affb84b7291820f3fa919d0577060f660a82abcaf4acb58d06cdbfe1b0"
+  "source_gatk_object_sha256": "14b97a52ee82e05ed49606cdf9d41ae52ab9ce7a267be62c50b63e38f7498a94",
+  "source_raw_response_sha256": "ba565138211cff62fd900ed03bd2a32c7f2529dacd9b4fe67f01c09991e680c8"
 }

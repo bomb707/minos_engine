@@ -36,7 +36,9 @@ def _doc() -> dict[str, Any]:
     """A fresh mutable copy of the committed document (round-tripped through its own content)."""
     doc = dict(_SPACE.scientific_content())
     doc["parameter_space_hash"] = _SPACE.parameter_space_hash
+    doc["source_artifact_path"] = _SPACE.source_artifact_path
     doc["source_gatk_object_sha256"] = _SPACE.source_gatk_object_sha256
+    doc["source_raw_response_sha256"] = _SPACE.source_raw_response_sha256
     doc["retrieved_at"] = _SPACE.retrieved_at
     return json.loads(json.dumps(doc))
 
@@ -343,3 +345,169 @@ def test_drift_check_detects_a_changed_bound() -> None:
 def test_drift_check_requires_a_gatk_object() -> None:
     with pytest.raises(LiveSpaceError):
         check_endpoint_drift({"tools": {"deepvariant": {}}})
+
+
+# --------------------------------------------------------------------------- #
+# B: fail-closed PRODUCTION loader — every negative calls load_live_gatk_parameter_space()
+# --------------------------------------------------------------------------- #
+def _rehashed(mutate: Any) -> dict[str, Any]:
+    """A SELF-CONSISTENTLY rehashed document: the mutation is applied and the document's own
+    parameter_space_hash is recomputed, so only the loader's other invariants can reject it."""
+    doc = _doc()
+    mutate(doc)
+    scientific = {
+        k: doc[k]
+        for k in ("schema_version", "source_endpoint", "options_key", "caller", "parameters")
+    }
+    from minos_engine.common.canonical_json import canonical_json_bytes
+    from minos_engine.common.hashing import sha256_hex
+
+    doc["parameter_space_hash"] = sha256_hex(canonical_json_bytes(scientific))
+    return doc
+
+
+def test_committed_document_still_loads_through_the_production_loader() -> None:
+    space = load_live_gatk_parameter_space(_doc())
+    assert space.parameter_space_hash == _SPACE.parameter_space_hash
+    assert len(space.parameters) == 25
+
+
+def test_rehashed_24_parameter_document_is_rejected() -> None:
+    with pytest.raises(LiveSpaceError):
+        load_live_gatk_parameter_space(_rehashed(lambda d: d["parameters"].pop()))
+
+
+def test_rehashed_26th_parameter_is_rejected() -> None:
+    def _add(d: dict[str, Any]) -> None:
+        extra = dict(d["parameters"][0])
+        extra["name"] = "totally_new_knob"
+        d["parameters"].append(extra)
+
+    with pytest.raises(LiveSpaceError):
+        load_live_gatk_parameter_space(_rehashed(_add))
+
+
+def test_rehashed_renamed_or_unknown_parameter_is_rejected() -> None:
+    def _rename(d: dict[str, Any]) -> None:
+        d["parameters"][0]["name"] = "min_base_quality_score_v2"
+
+    with pytest.raises(LiveSpaceError):
+        load_live_gatk_parameter_space(_rehashed(_rename))
+
+
+def test_rehashed_wrong_registry_type_is_rejected() -> None:
+    def _retype(d: dict[str, Any]) -> None:
+        for p in d["parameters"]:
+            if p["name"] == "min_pruning":  # registry says int
+                p["type"] = "float"
+                p["min"], p["max"], p["default"] = 2.0, 10.0, 2.0
+
+    with pytest.raises(LiveSpaceError):
+        load_live_gatk_parameter_space(_rehashed(_retype))
+
+
+def test_rehashed_wrong_registry_default_is_rejected() -> None:
+    def _redefault(d: dict[str, Any]) -> None:
+        for p in d["parameters"]:
+            if p["name"] == "min_pruning":  # registry default is 2
+                p["default"] = 5
+
+    with pytest.raises(LiveSpaceError):
+        load_live_gatk_parameter_space(_rehashed(_redefault))
+
+
+def test_rehashed_forged_source_endpoint_is_rejected() -> None:
+    def _forge(d: dict[str, Any]) -> None:
+        d["source_endpoint"] = "https://evil.example/scoring/parameter-ranges"
+
+    with pytest.raises(LiveSpaceError):
+        load_live_gatk_parameter_space(_rehashed(_forge))
+
+
+def test_rehashed_duplicate_name_is_rejected() -> None:
+    def _dupe(d: dict[str, Any]) -> None:
+        d["parameters"][1] = dict(d["parameters"][0])
+
+    with pytest.raises(LiveSpaceError):
+        load_live_gatk_parameter_space(_rehashed(_dupe))
+
+
+@pytest.mark.parametrize(
+    "field", ["parameter_space_hash", "source_gatk_object_sha256", "source_raw_response_sha256"]
+)
+@pytest.mark.parametrize("bad", ["", "abc", "A" * 64, "0" * 63, 12345, None])
+def test_malformed_provenance_hashes_are_rejected(field: str, bad: Any) -> None:
+    doc = _doc()
+    doc[field] = bad
+    with pytest.raises(LiveSpaceError):
+        load_live_gatk_parameter_space(doc)
+
+
+@pytest.mark.parametrize("bad", ["", "2026-08-21", "2026-08-21T15:35:23", "not-a-time", None, 17])
+def test_missing_or_invalid_provenance_timestamp_is_rejected(bad: Any) -> None:
+    doc = _doc()
+    doc["retrieved_at"] = bad
+    with pytest.raises(LiveSpaceError):
+        load_live_gatk_parameter_space(doc)
+
+
+def test_unknown_top_level_field_is_rejected_not_silently_trusted() -> None:
+    doc = _doc()
+    doc["extra_authority"] = {"trust": True}
+    with pytest.raises(LiveSpaceError):
+        load_live_gatk_parameter_space(doc)
+
+
+def test_wrong_type_inventory_is_rejected() -> None:
+    """A rehashed document with a valid-looking but wrong 14/7/2/2 inventory cannot load."""
+
+    def _swap(d: dict[str, Any]) -> None:
+        for p in d["parameters"]:
+            if p["name"] == "recover_all_dangling_branches":  # bool -> enum
+                p["type"] = "enum"
+                p["allowed_values"] = ["A", "B"]
+                p["default"] = "A"
+
+    with pytest.raises(LiveSpaceError):
+        load_live_gatk_parameter_space(_rehashed(_swap))
+
+
+# --------------------------------------------------------------------------- #
+# C: provenance is independently reproducible from the COMMITTED source artifact
+# --------------------------------------------------------------------------- #
+def test_source_artifact_reproduces_the_committed_snapshot() -> None:
+    """The normalized snapshot is DERIVED from the committed source artifact: re-deriving it
+    from those exact bytes reproduces both the parameter list and the scientific hash."""
+    import hashlib
+    from pathlib import Path
+
+    from minos_engine.common.canonical_json import canonical_json_bytes
+    from minos_engine.common.hashing import sha256_hex
+    from minos_engine.experiments.gatk_live_space import _normalize_source_parameter
+
+    root = Path(__file__).resolve().parents[3]
+    artifact = root / _SPACE.source_artifact_path
+    raw = artifact.read_bytes()
+    # the recorded provenance hash IS the committed artifact's byte hash
+    assert hashlib.sha256(raw).hexdigest() == _SPACE.source_gatk_object_sha256
+
+    source = json.loads(raw)
+    assert source["source_endpoint"] == LIVE_SOURCE_ENDPOINT
+    assert source["tools_gatk"]["options_key"] == LIVE_OPTIONS_KEY
+    derived = {
+        "schema_version": _SPACE.schema_version,
+        "source_endpoint": _SPACE.source_endpoint,
+        "options_key": _SPACE.options_key,
+        "caller": _SPACE.caller,
+        "parameters": [_normalize_source_parameter(p) for p in source["tools_gatk"]["parameters"]],
+    }
+    assert derived == _SPACE.scientific_content()
+    assert sha256_hex(canonical_json_bytes(derived)) == _SPACE.parameter_space_hash
+
+
+def test_provenance_records_a_real_raw_response_hash_and_utc_timestamp() -> None:
+    from minos_engine.common.timestamps import is_iso8601_utc
+
+    assert len(_SPACE.source_raw_response_sha256) == 64
+    assert _SPACE.source_raw_response_sha256 != _SPACE.source_gatk_object_sha256
+    assert is_iso8601_utc(_SPACE.retrieved_at)

@@ -18,12 +18,10 @@ from typing import Any
 
 from minos_engine.callers.contracts import (
     ACTIVE_CALLER,
-    ParameterRange,
     ParameterSpaceSnapshot,
     ParameterState,
-    ParameterType,
 )
-from minos_engine.callers.gatk.config import CanonicalConfig, canonicalize_config
+from minos_engine.callers.gatk.config import CanonicalConfig
 from minos_engine.callers.gatk.parameter_registry import (
     REGISTRY,
     SPEC_SOURCE_VERSION,
@@ -31,7 +29,12 @@ from minos_engine.callers.gatk.parameter_registry import (
 )
 from minos_engine.common.hashing import canonical_hash
 
-from .gatk_live_space import live_gatk_parameter_space
+from .gatk_live_space import (
+    _canonicalize_live_against_registry,
+    canonicalize_live_gatk_config,
+    live_gatk_parameter_space,
+    live_parameter_space,
+)
 
 __all__ = [
     "EXPERIMENT_POLICY_SCHEMA",
@@ -40,11 +43,12 @@ __all__ = [
     "ExperimentParameterPolicy",
     "documented_parameter_space",
     "live_parameter_space",
+    "canonicalize_live_gatk_config",
     "experiment_seed_v1",
     "build_experiment_parameter_policy",
 ]
 
-EXPERIMENT_POLICY_SCHEMA = "l2f-experiment-parameter-policy-v1"
+EXPERIMENT_POLICY_SCHEMA = "l2f-experiment-parameter-policy-v2"
 #: TRUTHFUL, deterministic snapshot metadata derived from the accepted documented-review
 #: identity ``SPEC_SOURCE_VERSION`` (``documented-2026-08-09``). It is EXCLUDED from
 #: ``parameter_space_hash`` (which hashes only caller + ranges), so it never enters any
@@ -63,7 +67,7 @@ EXPLORABLE_REGISTRY_STATE = ParameterState.EXPERIMENTAL.value
 #: as an IMMUTABLE tuple of (key, value) pairs so the frozen policy exposes no mutable
 #: mapping after its hash is computed. Any change here changes the policy hash.
 _GENERATION_MECHANICS: tuple[tuple[str, str | bool], ...] = (
-    ("kind", "one-at-a-time-documented-endpoint"),
+    ("kind", "one-at-a-time-live-gatk-domain"),
     ("seed", "EXPERIMENT_SEED_V1 = all authoritative official_default values"),
     ("one_factor_at_a_time", True),
     ("cartesian_product", False),
@@ -122,57 +126,15 @@ def documented_parameter_space(
     return registry.documented_parameter_space(retrieved_at=_DOCUMENTED_RETRIEVED_AT)
 
 
-def live_parameter_space(
-    registry: GatkParameterRegistry = REGISTRY,
-) -> ParameterSpaceSnapshot:
-    """The LIVE-GATK validation envelope used to canonicalize every L2-F candidate.
-
-    Bounds come from the committed live endpoint snapshot, not the documented registry ranges,
-    so a value the live service would silently default can never be canonicalized. Its own
-    ``parameter_space_hash`` is a ``ParameterSpaceSnapshot`` identity and is NOT the L2-F
-    scientific parameter-space identity — that is
-    :func:`~minos_engine.experiments.gatk_live_space.live_gatk_parameter_space`'s hash, which the
-    policy binds.
-    """
-    live = live_gatk_parameter_space()
-    ranges: dict[str, ParameterRange] = {}
-    for name in registry.names():
-        param = registry.get(name)
-        lp = live.get(name)
-        if param.type is ParameterType.ENUM:
-            ranges[name] = ParameterRange(
-                type=param.type,
-                enum_values=tuple(str(v) for v in (lp.allowed_values or ())),
-                default=lp.default,
-            )
-            continue
-        minimum, maximum = lp.minimum, lp.maximum
-        if lp.allowed_values is not None and lp.type in ("int", "float"):
-            # a declared allowed-value set collapses to its own numeric envelope.
-            minimum, maximum = min(lp.allowed_values), max(lp.allowed_values)
-        ranges[name] = ParameterRange(
-            type=param.type, minimum=minimum, maximum=maximum, default=lp.default
-        )
-    phash = ParameterSpaceSnapshot.compute_hash(ACTIVE_CALLER, ranges)
-    return ParameterSpaceSnapshot(
-        caller=ACTIVE_CALLER,
-        parameters=ranges,
-        source=live.source_endpoint,
-        retrieved_at=_DOCUMENTED_RETRIEVED_AT,
-        parameter_space_hash=phash,
-        stale=False,
-    )
-
-
 def experiment_seed_v1(registry: GatkParameterRegistry = REGISTRY) -> CanonicalConfig:
     """EXPERIMENT_SEED_V1 — the canonical CONFIG of all authoritative official defaults.
 
     Built through the accepted canonicalizer with an empty request (omitted non-FIXED
     parameters resolve to their official defaults). NOT a SAFE_BASELINE, not
     BASELINE-QUALIFIED, not a production winner."""
-    return canonicalize_config(
-        {}, registry=registry, parameter_space=live_parameter_space(registry)
-    )
+    if registry is REGISTRY:
+        return canonicalize_live_gatk_config({})
+    return _canonicalize_live_against_registry({}, registry)
 
 
 def _policy_content(

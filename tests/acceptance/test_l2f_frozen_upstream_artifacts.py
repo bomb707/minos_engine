@@ -43,6 +43,19 @@ FROZEN_ARTIFACT_SHA256: dict[str, str] = {
 }
 
 
+#: the L2-F live-GATK artifacts introduced by the live-GATK corrective are NOT historical
+#: upstream evidence; they are deliberately excluded from the frozen set.
+L2F_LIVE_ARTIFACTS = (
+    "manifests/l2f_gatk_parameter_space_v1.json",
+    "manifests/l2f_gatk_source_object_v1.json",
+)
+
+
+def test_l2f_live_artifacts_are_not_in_the_frozen_upstream_set() -> None:
+    for path in L2F_LIVE_ARTIFACTS:
+        assert path not in FROZEN_ARTIFACT_SHA256
+
+
 @pytest.mark.parametrize("relative_path", sorted(FROZEN_ARTIFACT_SHA256))
 def test_upstream_artifact_is_byte_identical(relative_path: str) -> None:
     path = _REPO_ROOT / relative_path

@@ -37,7 +37,7 @@ from minos_engine.experiments.plan import iter_logical_jobs, logical_job_keys
 from minos_engine.layer2 import prerequisites as PRE
 
 #: derived historical result of the LIVE-GATK corrective (L2F-OAT-LIVE-GATK-v2).
-_ACCEPTED_PLAN_HASH = "2be6e51060bc262a39a1278e4cf15001c047ad2c1f2f38f65453a3e3b8bc2a05"
+_ACCEPTED_PLAN_HASH = "eb8de84db2e35074957ed2f812cbb4f9495195cadb99563780d00d3cfe2b5d0a"
 
 
 def test_accepted_construction_is_repeatable_and_pinned_plan_hash() -> None:

@@ -1,0 +1,194 @@
+{
+  "note": "The exact tools.gatk object as served, captured once during the L2-F live-GATK closure corrective. source_raw_response_sha256 is the SHA-256 of the COMPLETE raw HTTP response body. DeepVariant and bcftools are deliberately not captured. Ordinary tests and CI never contact the network; this committed artifact is the offline trust anchor.",
+  "retrieved_at": "2026-08-21T15:35:23+00:00",
+  "schema_version": "l2f-gatk-source-object-v1",
+  "source_endpoint": "https://api.theminos.ai/scoring/parameter-ranges",
+  "source_raw_response_sha256": "ba565138211cff62fd900ed03bd2a32c7f2529dacd9b4fe67f01c09991e680c8",
+  "tools_gatk": {
+    "options_key": "gatk_options",
+    "parameters": [
+      {
+        "default": 10,
+        "max": 50,
+        "min": 10,
+        "name": "min_base_quality_score",
+        "type": "int"
+      },
+      {
+        "default": 20,
+        "max": 60,
+        "min": 0,
+        "name": "min_mapping_quality_score",
+        "type": "int"
+      },
+      {
+        "default": 18,
+        "max": 50,
+        "min": 0,
+        "name": "base_quality_score_threshold",
+        "type": "int"
+      },
+      {
+        "default": 30.0,
+        "max": 100.0,
+        "min": 30.0,
+        "name": "standard_min_confidence_threshold_for_calling",
+        "type": "float"
+      },
+      {
+        "allowed_values": [
+          "NONE",
+          "GVCF",
+          "BP_RESOLUTION"
+        ],
+        "default": "NONE",
+        "name": "emit_ref_confidence",
+        "type": "enum"
+      },
+      {
+        "allowed_values": [
+          "NONE",
+          "HOSTILE",
+          "AGGRESSIVE",
+          "CONSERVATIVE"
+        ],
+        "default": "CONSERVATIVE",
+        "name": "pcr_indel_model",
+        "type": "enum"
+      },
+      {
+        "default": 2,
+        "max": 10,
+        "min": 2,
+        "name": "min_pruning",
+        "type": "int"
+      },
+      {
+        "default": 6,
+        "max": 20,
+        "min": 1,
+        "name": "max_alternate_alleles",
+        "type": "int"
+      },
+      {
+        "default": 4,
+        "max": 20,
+        "min": 2,
+        "name": "min_dangling_branch_length",
+        "type": "int"
+      },
+      {
+        "default": false,
+        "name": "recover_all_dangling_branches",
+        "type": "bool"
+      },
+      {
+        "default": 128,
+        "max": 128,
+        "min": 8,
+        "name": "max_num_haplotypes_in_population",
+        "type": "int"
+      },
+      {
+        "default": 0.001,
+        "max": 0.1,
+        "min": 0.0001,
+        "name": "adaptive_pruning_initial_error_rate",
+        "type": "float"
+      },
+      {
+        "default": 2.302585,
+        "max": 10.0,
+        "min": 0.5,
+        "name": "pruning_lod_threshold",
+        "type": "float"
+      },
+      {
+        "default": 0.002,
+        "max": 0.05,
+        "min": 0.001,
+        "name": "active_probability_threshold",
+        "type": "float"
+      },
+      {
+        "default": 50,
+        "max": 300,
+        "min": 1,
+        "name": "min_assembly_region_size",
+        "type": "int"
+      },
+      {
+        "default": 300,
+        "max": 700,
+        "min": 100,
+        "name": "max_assembly_region_size",
+        "type": "int"
+      },
+      {
+        "default": 100,
+        "max": 500,
+        "min": 0,
+        "name": "assembly_region_padding",
+        "type": "int"
+      },
+      {
+        "default": 10,
+        "max": 30,
+        "min": 1,
+        "name": "pair_hmm_gap_continuation_penalty",
+        "type": "int"
+      },
+      {
+        "default": 45,
+        "max": 60,
+        "min": 10,
+        "name": "phred_scaled_global_read_mismapping_rate",
+        "type": "int"
+      },
+      {
+        "default": 0.001,
+        "max": 0.01,
+        "min": 0.0001,
+        "name": "heterozygosity",
+        "type": "float"
+      },
+      {
+        "default": 0.000125,
+        "max": 0.001,
+        "min": 1e-05,
+        "name": "indel_heterozygosity",
+        "type": "float"
+      },
+      {
+        "allowed_values": [
+          2
+        ],
+        "default": 2,
+        "name": "sample_ploidy",
+        "type": "int"
+      },
+      {
+        "default": 0.0,
+        "max": 0.05,
+        "min": 0.0,
+        "name": "contamination_fraction_to_filter",
+        "type": "float"
+      },
+      {
+        "default": 50,
+        "max": 300,
+        "min": 25,
+        "name": "max_reads_per_alignment_start",
+        "type": "int"
+      },
+      {
+        "allowed_values": [
+          false
+        ],
+        "default": false,
+        "name": "dont_use_soft_clipped_bases",
+        "type": "bool"
+      }
+    ]
+  }
+}

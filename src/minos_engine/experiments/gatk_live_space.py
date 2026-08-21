@@ -27,13 +27,23 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from minos_engine.callers.contracts import (
+    ACTIVE_CALLER,
+    ParameterRange,
+    ParameterSpaceSnapshot,
+    ParameterType,
+)
+from minos_engine.callers.gatk.config import CanonicalConfig, canonicalize_config
+from minos_engine.callers.gatk.parameter_registry import REGISTRY, GatkParameterRegistry
 from minos_engine.common.canonical_json import canonical_json_bytes
 from minos_engine.common.errors import ConfigValidationError
 from minos_engine.common.hashing import sha256_hex
+from minos_engine.common.timestamps import is_iso8601_utc
 
 __all__ = [
     "LIVE_SPACE_SCHEMA",
@@ -46,8 +56,32 @@ __all__ = [
     "GatkLiveParameterSpace",
     "load_live_gatk_parameter_space",
     "live_gatk_parameter_space",
+    "live_parameter_space",
+    "canonicalize_live_gatk_config",
     "check_endpoint_drift",
 ]
+
+#: the exact type inventory the live GATK contract must always present.
+LIVE_TYPE_INVENTORY: dict[str, int] = {"int": 14, "float": 7, "bool": 2, "enum": 2}
+LIVE_PARAMETER_COUNT = 25
+
+_HEX64 = re.compile(r"^[0-9a-f]{64}$")
+#: top-level manifest fields; anything else is rejected rather than silently trusted.
+_ALLOWED_TOP_LEVEL = frozenset(
+    {
+        "schema_version",
+        "source_endpoint",
+        "options_key",
+        "caller",
+        "parameters",
+        "parameter_space_hash",
+        "source_artifact_path",
+        "source_gatk_object_sha256",
+        "source_raw_response_sha256",
+        "retrieved_at",
+        "provenance_note",
+    }
+)
 
 LIVE_SPACE_SCHEMA = "l2f-gatk-live-parameter-space-v1"
 LIVE_SOURCE_ENDPOINT = "https://api.theminos.ai/scoring/parameter-ranges"
@@ -165,7 +199,9 @@ class GatkLiveParameterSpace:
     caller: str
     parameters: tuple[LiveParameter, ...]
     parameter_space_hash: str
+    source_artifact_path: str
     source_gatk_object_sha256: str
+    source_raw_response_sha256: str
     retrieved_at: str
 
     def names(self) -> tuple[str, ...]:
@@ -291,8 +327,82 @@ def _typed_ok(ptype: str, value: Any) -> bool:
     return isinstance(value, str)
 
 
+def _require_registry_agreement(parsed: tuple[LiveParameter, ...]) -> None:
+    """FAIL-CLOSED cross-check against the accepted GATK registry.
+
+    Exactly ``LIVE_PARAMETER_COUNT`` parameters, exact name-set equality with ``REGISTRY``, exact
+    declared-type equality, exact default equality after declared-type normalization, and the
+    exact declared type inventory. A self-consistently rehashed document that drops, adds,
+    renames or retypes a parameter is therefore rejected at the production boundary.
+    """
+    if len(parsed) != LIVE_PARAMETER_COUNT:
+        raise LiveSpaceError(
+            f"live GATK inventory must contain exactly {LIVE_PARAMETER_COUNT} parameters, "
+            f"got {len(parsed)}"
+        )
+    live_names = {p.name for p in parsed}
+    registry_names = set(REGISTRY.names())
+    if live_names != registry_names:
+        missing, extra = sorted(registry_names - live_names), sorted(live_names - registry_names)
+        raise LiveSpaceError(
+            f"live GATK names disagree with the accepted registry (missing={missing}, "
+            f"unknown={extra})"
+        )
+    for p in parsed:
+        entry = REGISTRY.get(p.name)
+        if entry.type.value != p.type:
+            raise LiveSpaceError(
+                f"{p.name!r}: live type {p.type!r} disagrees with the registry "
+                f"({entry.type.value!r})"
+            )
+        expected = (
+            float(entry.official_default) if p.type in ("int", "float") else entry.official_default
+        )
+        actual = p.normalized(p.default)
+        if p.type in ("int", "float"):
+            actual = float(actual)
+        if actual != expected or _is_bool(actual) != _is_bool(expected):
+            raise LiveSpaceError(
+                f"{p.name!r}: live default {p.default!r} disagrees with the registry "
+                f"({entry.official_default!r})"
+            )
+    counts = {t: sum(1 for p in parsed if p.type == t) for t in _TYPES}
+    if counts != LIVE_TYPE_INVENTORY:
+        raise LiveSpaceError(f"live GATK type inventory {counts} != required {LIVE_TYPE_INVENTORY}")
+
+
+def _require_provenance(document: dict[str, Any]) -> None:
+    """Provenance fields must be well-formed: lowercase 64-hex hashes and a truthful UTC stamp."""
+    for field in (
+        "parameter_space_hash",
+        "source_gatk_object_sha256",
+        "source_raw_response_sha256",
+    ):
+        value = document.get(field)
+        if not isinstance(value, str) or not _HEX64.fullmatch(value):
+            raise LiveSpaceError(f"{field} must be a lowercase 64-character hex digest")
+    stamp = document.get("retrieved_at")
+    if not isinstance(stamp, str) or not is_iso8601_utc(stamp):
+        raise LiveSpaceError("retrieved_at must be a timezone-aware ISO-8601 UTC timestamp")
+
+
 def load_live_gatk_parameter_space(document: dict[str, Any]) -> GatkLiveParameterSpace:
-    """Parse + strictly validate a live-space document (no I/O, no network)."""
+    """Parse + STRICTLY validate a live-space document (no I/O, no network).
+
+    Self-hash consistency is necessary but never sufficient: after it, the document must also
+    agree with the accepted GATK registry, present the exact type inventory, name the real
+    endpoint, and carry well-formed provenance. Unknown top-level fields are rejected rather than
+    silently trusted.
+    """
+    unknown_top = set(document) - _ALLOWED_TOP_LEVEL
+    if unknown_top:
+        raise LiveSpaceError(f"unknown top-level fields: {sorted(unknown_top)}")
+    if document.get("source_endpoint") != LIVE_SOURCE_ENDPOINT:
+        raise LiveSpaceError(
+            f"source_endpoint must be {LIVE_SOURCE_ENDPOINT!r}, got "
+            f"{document.get('source_endpoint')!r}"
+        )
+    _require_provenance(document)
     if document.get("schema_version") != LIVE_SPACE_SCHEMA:
         raise LiveSpaceError(f"unexpected schema_version {document.get('schema_version')!r}")
     if document.get("options_key") != LIVE_OPTIONS_KEY:
@@ -309,15 +419,19 @@ def load_live_gatk_parameter_space(document: dict[str, Any]) -> GatkLiveParamete
         dupes = sorted({n for n in names if names.count(n) > 1})
         raise LiveSpaceError(f"duplicate live parameter names: {dupes}")
 
+    _require_registry_agreement(parsed)
+
     space = GatkLiveParameterSpace(
         schema_version=LIVE_SPACE_SCHEMA,
-        source_endpoint=str(document.get("source_endpoint", "")),
+        source_endpoint=LIVE_SOURCE_ENDPOINT,
         options_key=LIVE_OPTIONS_KEY,
         caller=LIVE_CALLER,
         parameters=parsed,
-        parameter_space_hash=str(document.get("parameter_space_hash", "")),
-        source_gatk_object_sha256=str(document.get("source_gatk_object_sha256", "")),
-        retrieved_at=str(document.get("retrieved_at", "")),
+        parameter_space_hash=str(document["parameter_space_hash"]),
+        source_artifact_path=str(document.get("source_artifact_path", "")),
+        source_gatk_object_sha256=str(document["source_gatk_object_sha256"]),
+        source_raw_response_sha256=str(document["source_raw_response_sha256"]),
+        retrieved_at=str(document["retrieved_at"]),
     )
     recomputed = space.recompute_hash()
     if space.parameter_space_hash != recomputed:
@@ -341,6 +455,73 @@ def live_gatk_parameter_space() -> GatkLiveParameterSpace:
     if _COMMITTED is None:
         _COMMITTED = _load_committed()
     return _COMMITTED
+
+
+def live_parameter_space(
+    registry: GatkParameterRegistry = REGISTRY,
+) -> ParameterSpaceSnapshot:
+    """The internal LIVE-GATK canonicalization envelope (an IMPLEMENTATION DETAIL).
+
+    Projects the committed live domain onto the historical ``ParameterSpaceSnapshot`` shape so the
+    accepted canonicalizer enforces exact types, defaults, bounds and coupling. Its own
+    ``ParameterSpaceSnapshot.parameter_space_hash`` is NOT an L2-F scientific identity and is never
+    persisted or bound to a plan — :func:`canonicalize_live_gatk_config` overwrites it with the
+    committed live-GATK identity.
+    """
+    live = live_gatk_parameter_space()
+    ranges: dict[str, ParameterRange] = {}
+    for name in registry.names():
+        param = registry.get(name)
+        lp = live.get(name)
+        if param.type is ParameterType.ENUM:
+            ranges[name] = ParameterRange(
+                type=param.type,
+                enum_values=tuple(str(v) for v in (lp.allowed_values or ())),
+                default=lp.default,
+            )
+            continue
+        minimum, maximum = lp.minimum, lp.maximum
+        if lp.allowed_values is not None and lp.type in ("int", "float"):
+            minimum, maximum = min(lp.allowed_values), max(lp.allowed_values)
+        ranges[name] = ParameterRange(
+            type=param.type, minimum=minimum, maximum=maximum, default=lp.default
+        )
+    phash = ParameterSpaceSnapshot.compute_hash(ACTIVE_CALLER, ranges)
+    return ParameterSpaceSnapshot(
+        caller=ACTIVE_CALLER,
+        parameters=ranges,
+        source=live.source_endpoint,
+        retrieved_at=live.retrieved_at,
+        parameter_space_hash=phash,
+        stale=False,
+    )
+
+
+def canonicalize_live_gatk_config(requested: dict[str, Any]) -> CanonicalConfig:
+    """THE accepted L2-F canonicalization boundary — no caller-selected trust object.
+
+    Canonicalizes ``requested`` through the accepted canonicalizer against the live envelope
+    (exact types, defaults, bounds, coupling), then validates the COMPLETE resulting
+    ``effective_config`` against the committed :class:`GatkLiveParameterSpace` — including
+    ``allowed_values`` for bool/int/enum — so any value the scoring API would silently default is
+    rejected. The returned ``CanonicalConfig.parameter_space_hash`` is exactly the committed
+    live-GATK identity, which is what every downstream L2-F identity binds.
+    """
+    return _canonicalize_live_against_registry(requested, REGISTRY)
+
+
+def _canonicalize_live_against_registry(
+    requested: dict[str, Any], registry: GatkParameterRegistry
+) -> CanonicalConfig:
+    """PRIVATE override-capable helper for synthetic tests ONLY. The accepted boundary is
+    :func:`canonicalize_live_gatk_config` (no registry override)."""
+    live = live_gatk_parameter_space()
+    config = canonicalize_config(
+        requested, registry=registry, parameter_space=live_parameter_space(registry)
+    )
+    live.validate_effective_config(dict(config.effective_config))
+    # bind the COMMITTED live-GATK scientific identity, never the internal envelope's hash.
+    return config.model_copy(update={"parameter_space_hash": live.parameter_space_hash})
 
 
 def check_endpoint_drift(fresh_response: dict[str, Any]) -> dict[str, Any]:

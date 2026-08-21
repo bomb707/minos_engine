@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from minos_engine.callers.contracts import ParameterSpaceSnapshot, ParameterState
-from minos_engine.callers.gatk.config import CanonicalConfig, canonicalize_config
+from minos_engine.callers.gatk.config import CanonicalConfig
 from minos_engine.callers.gatk.parameter_registry import (
     REGISTRY,
     GatkParameter,
@@ -28,7 +28,11 @@ from minos_engine.common.canonical_json import canonical_json_bytes
 from minos_engine.common.errors import ConfigValidationError
 from minos_engine.common.hashing import canonical_hash, sha256_hex
 
-from .gatk_live_space import LiveSpaceError, live_gatk_parameter_space
+from .gatk_live_space import (
+    LiveSpaceError,
+    _canonicalize_live_against_registry,
+    live_gatk_parameter_space,
+)
 from .policy import (
     GENERATION_POLICY_VERSION,
     ExperimentParameterPolicy,
@@ -164,9 +168,7 @@ def _generate_candidate_set_against_registry(
             continue
         for value in _endpoint_values(param):
             try:
-                candidate = canonicalize_config(
-                    {name: value}, registry=registry, parameter_space=space
-                )
+                candidate = _canonicalize_live_against_registry({name: value}, registry)
             except ConfigValidationError as exc:
                 skipped.append(SkippedProbe(parameter=name, value=value, reason=str(exc)))
                 continue
@@ -216,7 +218,6 @@ def _verify_candidate_set_against_registry(
     caller-selected registry must not be able to certify a forged set. Accepted paths call
     :func:`verify_accepted_candidate_set` (no override)."""
     truth = _generate_candidate_set_against_registry(registry)
-    space = live_parameter_space(registry)
     seed = experiment_seed_v1(registry)
     configs = candidate_set.configs
 
@@ -228,9 +229,7 @@ def _verify_candidate_set_against_registry(
     revalidates = True
     for c in configs:
         try:
-            recanon = canonicalize_config(
-                c.effective_config, registry=registry, parameter_space=space
-            )
+            recanon = _canonicalize_live_against_registry(c.effective_config, registry)
         except ConfigValidationError:
             revalidates = False
             break
@@ -275,8 +274,10 @@ def _verify_candidate_set_against_registry(
         "config_payloads_match_regenerated": tuple(c.effective_config for c in configs)
         == tuple(c.effective_config for c in truth.configs),
         "config_revalidates_under_registry": revalidates,
+        # every candidate binds the COMMITTED live-GATK identity (never the internal envelope).
         "parameter_space_hash_per_candidate": all(
-            c.parameter_space_hash == space.parameter_space_hash for c in configs
+            c.parameter_space_hash == live_gatk_parameter_space().parameter_space_hash
+            for c in configs
         ),
         "seed_equals_experiment_seed_v1": bool(configs)
         and configs[0].effective_config == seed.effective_config,
