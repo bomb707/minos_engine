@@ -617,12 +617,19 @@ def _verify_persisted_graph(
     candidate_set: CandidateSet,
     plan_id: str,
     upstream: dict[str, Any],
+    *,
+    require_zero_jobs: bool = True,
 ) -> dict[str, int]:
     """Independently re-read and validate the ENTIRE persisted graph (non-mutating).
 
     Reads only committed-in-transaction rows and the published artifact bytes; it never repairs
     or normalizes. Any mismatch raises :class:`PlanVerificationError` (which triggers pre-commit
     rollback + created-file cleanup). Returns the verified ``{member,config,payload,jobs}`` counts.
+
+    ``require_zero_jobs`` (default True) enforces the F3-C1 zero-job boundary. F3-C2 reuses this
+    same whole-graph verification as its pre-enqueue integrity gate with ``require_zero_jobs=False``
+    (jobs already exist on an enqueue replay); every F3-C1 call keeps the default, so the F3-C1
+    persistence behavior is unchanged.
     """
 
     def _fail(msg: str) -> None:
@@ -818,7 +825,7 @@ def _verify_persisted_graph(
         _fail(f"member count {member_count} != {plan.train_member_count}")
     if plan.logical_job_count != plan.train_member_count * plan.candidate_count:
         _fail("logical_job_count != train_member_count * candidate_count")
-    if jobs_count != 0:
+    if require_zero_jobs and jobs_count != 0:
         _fail(f"F3-C1 must create zero jobs, found {jobs_count}")
     return {
         "member_count": member_count,

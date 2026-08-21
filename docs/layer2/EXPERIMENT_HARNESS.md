@@ -5,7 +5,7 @@ experiment planning over the frozen L2-E train membership. It does **not** score
 select, optimize, train, or activate `Layer2Service.select_config`. `HARNESS-READY` (F7)
 is not implemented and is **not** claimed anywhere below.
 
-## Scope (F3-A accepted; F3-B accepted; F3-C1 plan persistence)
+## Scope (F3-A, F3-B, F3-C1 accepted; F3-C2 bounded enqueue)
 
 **F3-A is accepted** at commit `ff8daa4bf9bd9891e46017e3f7bcb4ea9a8edb6d`. The accepted
 identities are the migration `0006_l2f_experiment_plan` byte SHA-256
@@ -19,13 +19,48 @@ direct-SQL attack matrix, and the all-MINOS-schema populated `0005↔0006` lifec
 `ExperimentPlan` contract + no-override accepted constructor. The accepted epoch-1 plan derives
 `plan_hash = 1e6c4a5e70f370d800af91fc02ce6e312ebff29e39d0b8d554afa938f89959d8`.
 
-**F3-C1 (this commit) adds durable persistence of the accepted plan, member, CONFIG-payload,
-and plan-config inventories — no jobs.** It writes the plan graph but inserts **zero**
-`experiments.l2f_experiment_jobs` rows and performs no claiming, status transitions, execution,
-result storage, scoring, training, optimization, gating or service activation. **F3-C2 bounded
-enqueue is still absent**, as are the Python plan verifier + logical attack matrix (F3-D) and
-F4–F7. `HARNESS-READY` (F7) is **not** issued, `Layer2Service.select_config` remains blocked,
-and the operational `minos_engine_db` stays at `0005` (this boundary never migrates it).
+**F3-C1 is accepted** at commit `3d697df3015791c04c101d72012522e0c387ec8b`: durable persistence
+of the accepted plan, member, CONFIG-payload, and plan-config inventories — **no jobs** — with
+exact upstream train-set equality and an independent transaction-local read-back verifier. It
+writes the plan graph but inserts **zero** `experiments.l2f_experiment_jobs` rows.
+
+**F3-C2 (this commit) adds bounded, deterministic, idempotent experiment-job enqueue.** It
+inserts a bounded contiguous slice of the accepted plan's logical jobs into
+`experiments.l2f_experiment_jobs` and performs no claiming, status transitions, execution, result
+storage, scoring, optimization, gating or service activation. The Python plan verifier + logical
+attack matrix (F3-D) and F4–F7 **remain absent**. `HARNESS-READY` (F7) is **not** issued,
+`Layer2Service.select_config` remains blocked, and the operational `minos_engine_db` stays at
+`0005` (this boundary never migrates it).
+
+### F3-C2 bounded experiment-job enqueue
+
+`storage/l2f_job_enqueue.py` exposes the sole production entry point
+`enqueue_accepted_experiment_jobs(*, start: int, count: int) -> JobEnqueueResult` — no defaults,
+no caller-supplied plan/hashes/snapshot/partition/candidate-set/member-id/config-id/job-key/trust.
+It requires `start >= 0` and `1 <= count <= MAX_ENQUEUE_BATCH` (**64**, validated before any
+database or filesystem access) and `start + count <= plan.logical_job_count` (validated after the
+identity + revision checks). **There is no enqueue-all / implicit full-corpus operation**; the
+maximum a single call creates is `MAX_ENQUEUE_BATCH` jobs. The boundary obtains the database only
+through `MINOS_DATABASE_URL`, verifies (as the **first** access on the exact transaction
+connection) that it is the canonical operational store at revision `0006` before constructing the
+accepted plan or issuing any plan query (never running Alembic), **requires the complete accepted
+F3-C1 graph to already exist and verifies it** (reusing the F3-C1 whole-graph read-back, tolerant
+of pre-existing jobs; it never persists or repairs a missing graph), and — under the
+`plan_hash`-scoped `pg_advisory_xact_lock` — inserts only the selected jobs. The canonical order
+IS the frozen F3-B `iter_logical_jobs` order (member-major then config-index; no second ordering
+rule); for each selected job the persisted `plan_member` (by member_index) and `plan_config` (by
+config_index) are resolved, the `job_key` is independently recomputed with the frozen formula and
+required to equal the logical job, and only the immutable identity columns are inserted (`status`
+defaults to `PENDING`, `claimed_by`/`claimed_at` NULL). No count (50 / 41 / 2050) is a constant —
+all derive from the accepted plan. Idempotency: an exact existing job is a no-op success; the same
+`job_key` with a different scientific identity, or the same logical identity with a different
+`job_key`, is a typed `ImmutableMetadataConflictError`; an overlapping-range replay creates only
+the missing jobs; and a replay **never** resets an existing job's mutable `status`/claim metadata.
+`JobEnqueueResult` returns `plan_hash`, `requested_start`, `requested_count`, `created_count`,
+`existing_count`, and `total_jobs_for_plan`. A private explicit-trust boundary
+(`_enqueue_experiment_jobs_with_trust`, unexported) drives synthetic / non-75 tests only.
+**Claiming, `SKIP LOCKED`, status transitions, execution and results are F4 — not implemented
+here.**
 
 ### F3-C1 durable plan persistence (no jobs)
 
@@ -363,9 +398,9 @@ is one of:
   `gatk_registry_hash`, `experiment_parameter_policy_hash`, `candidate_set_hash` — these
   have **no** upstream persisted row to FK against, so PostgreSQL only enforces hex64 shape
   + membership in the complete logical-identity UNIQUE. Their correctness is established by
-  the future **F3-B accepted constructor** (which derives them from repository-owned
-  contracts) and re-checked by the future **F3-D verifier**. F3-A does **not** claim
-  PostgreSQL independently proves these.
+  the **accepted F3-B constructor** (`build_accepted_experiment_plan`, which derives them from
+  repository-owned contracts) and will be re-checked by the future **F3-D verifier**. F3-A does
+  **not** claim PostgreSQL independently proves these.
 - **Derived + re-verified**: `train_member_count`, `candidate_count`, `logical_job_count`
   (CHECK `logical_job_count = train_member_count * candidate_count`; the member/candidate
   values themselves are re-derived by F3-B/F3-D). Counts are intentionally excluded from
@@ -383,8 +418,11 @@ is one of:
   `0005↔0006` lifecycle is CI-verified on scratch PostgreSQL only. `0006` is **never**
   applied to the operational `minos_engine_db` in this source step.
 
-## Not in F3-A / unauthorized
+## Still unauthorized / not implemented
 
-`ExperimentPlan` builder, `plan_hash`/`job_key` formulas (F3-B), persistence, bounded
-enqueue, and the verifier (F3-C/D); `claim_next_job`, execution, results, scoring (F4+);
-`HARNESS-READY` (F7); `select_config` (blocked). No operational data is created.
+The Python plan verifier + logical attack matrix (F3-D); `claim_next_job` / `SKIP LOCKED` /
+claiming, status transitions, execution, results, scoring, optimization (F4+); `HARNESS-READY`
+(F7); `select_config` (blocked). The operational `minos_engine_db` remains at `0005` and no
+operational data is created. (Accepted and implemented: the `ExperimentPlan` builder +
+`plan_hash`/`job_key` formulas (F3-B), durable plan persistence (F3-C1), and bounded job enqueue
+(F3-C2).)
