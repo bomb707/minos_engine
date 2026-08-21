@@ -155,11 +155,13 @@ def test_member_mutation_with_recomputed_hashes_fails_against_snapshot_anchor(
         build_accepted_experiment_plan()
 
 
-def test_forged_candidate_payload_with_recomputed_hashes_fails_authority() -> None:
+def _forged_candidate_set() -> CandidateSet:
+    """A candidate set with candidate #1's payload forged (an existing parameter value
+    mutated), then its config_hash, ordered-config hashes and candidate_set_hash CONSISTENTLY
+    recomputed."""
+    from minos_engine.experiments.candidates import candidate_set_hash as _csh
+
     cs = generate_accepted_candidate_set()
-    # forge candidate #1's payload (mutate an EXISTING parameter value), then CONSISTENTLY
-    # recompute its config_hash and the candidate_set_hash — the accepted authority still
-    # rejects it because the payload does not match the code-owned regenerated set.
     cfg1 = cs.configs[1]
     key = next(iter(cfg1.effective_config))
     old = cfg1.effective_config[key]
@@ -173,9 +175,7 @@ def test_forged_candidate_payload_with_recomputed_hashes_fails_authority() -> No
     )
     ordered = list(cs.ordered_config_hashes)
     ordered[1] = new_hash
-    from minos_engine.experiments.candidates import candidate_set_hash as _csh
-
-    forged = CandidateSet(
+    return CandidateSet(
         policy=cs.policy,
         configs=(cs.configs[0], forged_cfg, *cs.configs[2:]),
         ordered_config_hashes=tuple(ordered),
@@ -183,8 +183,23 @@ def test_forged_candidate_payload_with_recomputed_hashes_fails_authority() -> No
         candidate_set_hash=_csh(policy=cs.policy, ordered_config_hashes=tuple(ordered)),
         skipped=cs.skipped,
     )
+
+
+def test_forged_candidate_payload_with_recomputed_hashes_fails_authority() -> None:
+    # the accepted authority rejects the forged-but-recomputed set directly.
     with pytest.raises(CandidateSetVerificationError):
-        verify_accepted_candidate_set(forged)
+        verify_accepted_candidate_set(_forged_candidate_set())
+
+
+def test_forged_candidate_set_fails_through_accepted_constructor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # substitute the forged set at the accepted generator boundary and prove the F3-B accepted
+    # constructor itself invokes the accepted verification (does NOT bypass it).
+    forged = _forged_candidate_set()
+    monkeypatch.setattr(AP, "generate_accepted_candidate_set", lambda: forged)
+    with pytest.raises(CandidateSetVerificationError):
+        build_accepted_experiment_plan()
 
 
 def test_no_public_override_constructor_or_trust_anchor_injection() -> None:
@@ -205,3 +220,189 @@ def test_select_config_remains_blocked() -> None:
 
     with pytest.raises(StageNotReadyError):
         Layer2Service().select_config(None)
+
+
+# --------------------------------------------------------------------------- #
+# strict E4 report: every malformed/forged report must fail via
+# AcceptedExperimentPlanError (never a raw KeyError/TypeError/JSONDecodeError/ValidationError)
+# --------------------------------------------------------------------------- #
+def _point_at_tampered(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, obj: object) -> None:
+    p = tmp_path / "L2E_E4_TRAIN_MATRIX.json"
+    p.write_text(json.dumps(obj))
+    monkeypatch.setattr(AP, "_E4_TRAIN_REPORT", p)
+
+
+def _base_report() -> dict:
+    return json.loads(AP._E4_TRAIN_REPORT.read_text())
+
+
+def _string_row(d: dict) -> dict:
+    d["row_count"] = "50"
+    return d
+
+
+def _float_row(d: dict) -> dict:
+    d["row_count"] = 50.0
+    return d
+
+
+def _bool_row(d: dict) -> dict:
+    d["row_count"] = True
+    return d
+
+
+def _string_index(d: dict) -> dict:
+    d["members"][0]["member_index"] = "0"
+    return d
+
+
+def _float_index(d: dict) -> dict:
+    d["members"][0]["member_index"] = 0.0
+    return d
+
+
+def _bool_index(d: dict) -> dict:
+    d["members"][0]["member_index"] = False
+    return d
+
+
+def _missing_field(d: dict) -> dict:
+    del d["column_count"]
+    return d
+
+
+def _extra_field(d: dict) -> dict:
+    d["surprise_field"] = 1
+    return d
+
+
+def _null_field(d: dict) -> dict:
+    d["matrix_hash"] = None
+    return d
+
+
+def _uppercase_hash(d: dict) -> dict:
+    d["matrix_hash"] = d["matrix_hash"].upper()
+    return d
+
+
+def _duplicate_dataset(d: dict) -> dict:
+    d["members"][1]["dataset_id"] = d["members"][0]["dataset_id"]
+    return d
+
+
+def _duplicate_vector(d: dict) -> dict:
+    d["members"][1]["vector_hash"] = d["members"][0]["vector_hash"]
+    return d
+
+
+def _reordered_members(d: dict) -> dict:
+    d["members"][0], d["members"][1] = d["members"][1], d["members"][0]
+    return d
+
+
+def _wrong_artifact_kind(d: dict) -> dict:
+    d["artifact_kind"] = "l2e:not-parquet"
+    return d
+
+
+def _wrong_media_type(d: dict) -> dict:
+    d["artifact_media_type"] = "application/octet-stream"
+    return d
+
+
+def _wrong_parquet_schema(d: dict) -> dict:
+    d["parquet_schema_version"] = "feature-matrix-parquet-v1"
+    return d
+
+
+def _wrong_artifact_mode(d: dict) -> dict:
+    d["artifact_mode"] = "0o644"
+    return d
+
+
+def _wrong_root_mode(d: dict) -> dict:
+    d["root_mode"] = "0o2755"
+    return d
+
+
+def _wrong_feature_registry(d: dict) -> dict:
+    d["registry_hash"] = "0" * 64
+    return d
+
+
+def _wrong_column_count(d: dict) -> dict:
+    d["column_count"] = 999
+    return d
+
+
+def _wrong_git_head(d: dict) -> dict:
+    d["git_head"] = "0" * 40
+    return d
+
+
+def _wrong_git_tree(d: dict) -> dict:
+    d["git_tree"] = "0" * 40
+    return d
+
+
+def _wrong_artifact_sha(d: dict) -> dict:
+    d["artifact_sha256"] = "0" * 64
+    return d
+
+
+def _wrong_snapshot_member_count(d: dict) -> dict:
+    d["snapshot_member_count"] = 74
+    return d
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        _string_row,
+        _float_row,
+        _bool_row,
+        _string_index,
+        _float_index,
+        _bool_index,
+        _missing_field,
+        _extra_field,
+        _null_field,
+        _uppercase_hash,
+        _duplicate_dataset,
+        _duplicate_vector,
+        _reordered_members,
+        _wrong_artifact_kind,
+        _wrong_media_type,
+        _wrong_parquet_schema,
+        _wrong_artifact_mode,
+        _wrong_root_mode,
+        _wrong_feature_registry,
+        _wrong_column_count,
+        _wrong_git_head,
+        _wrong_git_tree,
+        _wrong_artifact_sha,
+        _wrong_snapshot_member_count,
+    ],
+)
+def test_malformed_e4_report_fails_via_typed_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mutate
+) -> None:
+    _point_at_tampered(monkeypatch, tmp_path, mutate(_base_report()))
+    with pytest.raises(AcceptedExperimentPlanError):
+        build_accepted_experiment_plan()
+
+
+def test_duplicate_json_key_in_e4_report_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # a raw duplicate JSON key (json.dumps can't produce one) must be rejected by the
+    # object_pairs_hook before Pydantic ever sees it.
+    text = AP._E4_TRAIN_REPORT.read_text()
+    dup = text.replace('"epoch": 1,', '"epoch": 1,\n  "epoch": 1,', 1)
+    assert dup != text
+    p = tmp_path / "L2E_E4_TRAIN_MATRIX.json"
+    p.write_text(dup)
+    monkeypatch.setattr(AP, "_E4_TRAIN_REPORT", p)
+    with pytest.raises(AcceptedExperimentPlanError):
+        build_accepted_experiment_plan()

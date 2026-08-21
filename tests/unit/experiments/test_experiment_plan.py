@@ -455,10 +455,11 @@ def test_contracts_carry_no_nondeterministic_or_execution_fields() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# synthetic non-75 snapshots consumed verbatim with derived counts
+# pure structural assembler derives counts from the supplied member list
+# (this is NOT snapshot coverage — genuine FrozenSnapshot cases live in
+#  tests/unit/experiments/test_synthetic_snapshots.py)
 # --------------------------------------------------------------------------- #
-def test_two_synthetic_snapshots_derive_counts_from_actual_membership() -> None:
-    # snapshot A: 3 train members (uneven chromosomes); snapshot B: 7 train members.
+def test_assembler_derives_counts_from_member_list_length() -> None:
     plan_a = _synth_plan(3)
     plan_b = _synth_plan(7)
     assert plan_a.train_member_count == 3
