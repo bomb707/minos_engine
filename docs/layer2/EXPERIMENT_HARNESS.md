@@ -5,18 +5,85 @@ experiment planning over the frozen L2-E train membership. It does **not** score
 select, optimize, train, or activate `Layer2Service.select_config`. `HARNESS-READY` (F7)
 is not implemented and is **not** claimed anywhere below.
 
-## Scope of this document (F3-A) — foundation complete, inventory pending owner acceptance
+## Scope (F3-A accepted; F3-B pure plan contract)
 
-**The F3-A database foundation is complete**, with the exhaustive static inventory **frozen
-pending owner acceptance of this corrective commit.** It comprises migration
-`0006_l2f_experiment_plan` (frozen by its byte SHA and a domain-separated contract hash), the
-private SQLAlchemy Core table mappings, an exhaustive frozen static schema inventory (raw +
-effective ACLs) proven equal to the live schema, the 47-case direct-SQL constraint attack
-matrix with isolation proofs, and a populated `0005↔0006` lifecycle that restores the exact
-upstream data and the full normalized `0005` structure/security across every MINOS schema. The
-pure `ExperimentPlan` builder (F3-B), persistence + bounded enqueue (F3-C), the Python plan
-verifier and its logical attack matrix (F3-D), and F4–F7 are **unimplemented and unauthorized**.
-`HARNESS-READY` (F7) is **not** issued, and `Layer2Service.select_config` remains blocked.
+**F3-A is accepted** at commit `ff8daa4bf9bd9891e46017e3f7bcb4ea9a8edb6d`. The accepted
+identities are the migration `0006_l2f_experiment_plan` byte SHA-256
+`1eb3a12b502a5f247a2dc662642fd71931dcada815923e95d18504220445c3c6` and the F3-A contract hash
+`c7a2e978857830ccff67821ded1196472d5f38baacb19a64352ec686ce74916b` (over the exhaustive static
+inventory with raw + effective ACLs). F3-A comprises migration `0006`, the private SQLAlchemy
+Core mappings, the frozen static inventory proven equal to the live schema, the 47-case
+direct-SQL attack matrix, and the all-MINOS-schema populated `0005↔0006` lifecycle.
+
+**F3-B (this commit) adds the pure, deterministic `ExperimentPlan` contract + accepted
+no-override constructor.** It performs **no** PostgreSQL writes, artifact publication, job
+enqueueing, claiming, execution, scoring, training, optimization, or configuration selection —
+plan verification only reads committed files + git history. Persistence + bounded enqueue
+(F3-C), the Python plan verifier + logical attack matrix (F3-D), and F4–F7 remain
+**unimplemented and unauthorized**. `HARNESS-READY` (F7) is **not** issued, and
+`Layer2Service.select_config` remains blocked.
+
+### F3-B pure ExperimentPlan contract
+
+`experiments/plan.py` defines immutable, strictly-validated (`extra=forbid`, pydantic strict)
+`ExperimentPlanMember` / `ExperimentPlanConfig` / `ExperimentPlan` contracts (partition
+structurally fixed to `train`, all hash fields lowercase 64-hex, self-binding `plan_hash`),
+the two frozen domain-separated hash formulas, and a pure in-memory logical-job enumerator.
+`experiments/accepted_plan.py` exposes the sole production boundary
+`build_accepted_experiment_plan()` (no arguments): it verifies the pinned E5 gate closure
+(exact gate hashes + PASS + qualified source commit/tree + the `E4-evidence → E5-source →
+E5-evidence → HEAD` ancestry chain + the accepted train feature-view hash — a locally
+regenerated PASS gate can never authorize it), consumes the committed epoch-1 member manifest
+and E4 train metadata report verbatim (strict, duplicate-key-rejecting), reconstructs and pins
+the train feature view, generates and independently verifies the accepted candidate set, and
+assembles a deterministic plan. There is **no** public generic/accepted constructor with
+override parameters; the pure structural assembler is private (`_assemble_experiment_plan`).
+
+**Counts are derived** — `train_member_count` from the accepted snapshot's train membership,
+`candidate_count` from the accepted candidate set, and `logical_job_count =
+train_member_count * candidate_count`; no percentage or magic count is a contract constant.
+The epoch-1 figures (**50** train members, **41** candidates, **2050** logical jobs) are
+historical derived results, not inputs. **Validation and test membership are excluded** from
+the plan and the logical-job iterator; the sealed test set remains untouched.
+
+**Pure logical-job enumeration vs F3-C enqueueing.** `iter_logical_jobs` / `logical_job_keys`
+enumerate the member × config product **in memory only**, in member-major then config-index
+order, yielding exactly `logical_job_count` unique, repeatable `job_key`s. This is a pure
+derivation — it never persists, publishes, enqueues, claims, or executes anything. Durable
+enqueueing into `experiments.l2f_experiment_jobs` (with the append-only / identity triggers of
+migration `0006`) is **F3-C**, which is not implemented here.
+
+### Frozen F3-B hash formulas
+
+Both are domain-separated: `sha256(DOMAIN_bytes + canonical_json(content))` (sorted keys,
+compact separators). The `plan_hash` field is excluded from its own preimage; neither preimage
+contains timestamps, UUIDs, filesystem paths, database URLs, hostnames, worker identities,
+claim state, scores, labels, truth data, mutation tokens, raw feature values, or artifact
+locations.
+
+```
+plan_hash = sha256(
+  "minos:l2f-experiment-plan:v1\n" + canonical_json({
+    schema_version, epoch, partition: "train",
+    snapshot_hash, split_manifest_hash, registry_snapshot_hash, train_matrix_hash,
+    train_feature_view_hash, feature_set_hash, feature_registry_hash, gatk_registry_hash,
+    parameter_space_hash, experiment_parameter_policy_hash, candidate_set_hash,
+    ordered_members: [{dataset_id, profile_id, content_hash, feature_values_hash,
+                       vector_hash, member_index}],
+    ordered_configs: [{config_index, config_hash, parameter_space_hash}],
+    train_member_count, candidate_count, logical_job_count
+  }))   # plan_hash itself excluded from the preimage
+
+job_key = sha256(
+  "minos:l2f-job:v1\n" + canonical_json({
+    plan_hash, member_index, dataset_id, profile_id, content_hash,
+    feature_values_hash, config_index, config_hash
+  }))
+```
+
+The accepted epoch-1 plan derives `plan_hash =
+1e6c4a5e70f370d800af91fc02ce6e312ebff29e39d0b8d554afa938f89959d8` (a historical derived
+result, not a pinned constant).
 
 ### Migration 0006 frozen by byte SHA + contract hash
 

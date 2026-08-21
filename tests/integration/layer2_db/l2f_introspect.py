@@ -255,9 +255,56 @@ def introspect_view(conn: Connection, schema: str, name: str) -> dict[str, Any]:
     }
 
 
+def introspect_sequence(conn: Connection, schema: str, name: str) -> dict[str, Any]:
+    """Sequence relation — its ACL must use ``acldefault('s', owner)`` (sequence privileges),
+    not the relation default, so effective privileges are SELECT/UPDATE/USAGE, never table-only
+    grants such as INSERT/DELETE/TRIGGER/TRUNCATE/REFERENCES."""
+    meta = _rows(
+        conn,
+        "SELECT c.relkind AS relkind, pg_get_userbyid(c.relowner) AS owner "
+        "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE n.nspname = :s AND c.relname = :t",
+        s=schema,
+        t=name,
+    )[0]
+    seq = _rows(
+        conn,
+        "SELECT s.seqstart AS start, s.seqincrement AS increment, s.seqmax AS max, "
+        "s.seqmin AS min, s.seqcache AS cache, s.seqcycle AS cycle, "
+        "format_type(s.seqtypid, NULL) AS data_type FROM pg_sequence s "
+        "JOIN pg_class c ON c.oid = s.seqrelid JOIN pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE n.nspname = :s AND c.relname = :t",
+        s=schema,
+        t=name,
+    )[0]
+    acl = _acl_full(
+        conn,
+        acl_col="relacl",
+        owner_col="relowner",
+        objtype=_ACLDEFAULT_SEQUENCE,
+        from_where="FROM pg_class WHERE oid = to_regclass(:q)",
+        q=f"{schema}.{name}",
+    )
+    return {
+        "kind": _RELKIND[meta["relkind"]],
+        "owner": meta["owner"],
+        "reloptions": _reloptions(conn, schema, name),
+        "data_type": seq["data_type"],
+        "start": int(seq["start"]),
+        "increment": int(seq["increment"]),
+        "min": int(seq["min"]),
+        "max": int(seq["max"]),
+        "cache": int(seq["cache"]),
+        "cycle": bool(seq["cycle"]),
+        **acl,
+    }
+
+
 def introspect_relation(conn: Connection, schema: str, name: str, relkind: str) -> dict[str, Any]:
     if relkind in ("v", "m"):
         return introspect_view(conn, schema, name)
+    if relkind == "S":
+        return introspect_sequence(conn, schema, name)
     return introspect_table(conn, schema, name)
 
 

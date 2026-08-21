@@ -79,6 +79,13 @@ __all__ = [
     "E4_TRAIN_ARTIFACT_SHA256",
     "E4_VALIDATION_MATRIX_HASH",
     "E4_VALIDATION_ARTIFACT_SHA256",
+    "FEATURE_VIEW_READY_GATE_HASH",
+    "FEATURE_MATRIX_FROZEN_1_GATE_HASH",
+    "E5_SOURCE_COMMIT",
+    "E5_SOURCE_TREE",
+    "E5_EVIDENCE_COMMIT",
+    "E5_EVIDENCE_TREE",
+    "ACCEPTED_EPOCH1_TRAIN_FEATURE_VIEW_HASH",
     "ACCEPTED",
 ]
 
@@ -194,6 +201,28 @@ E4_TRAIN_MATRIX_HASH = "c6a8db848318e5c78839474fa62a4e8e408157a1e6f5cb1bdd18c9cd
 E4_TRAIN_ARTIFACT_SHA256 = "0396cb07734a18df803ac813d9d1224ecdc3ec9901d7b8a202ac8c6538f3c243"
 E4_VALIDATION_MATRIX_HASH = "7adf58eb84de471523a6a0c3507dcdfb8c2030bdee0f4eaef178fa72477a894d"
 E4_VALIDATION_ARTIFACT_SHA256 = "437a5a4a803bb2d216032019021044d6edf33cea1d73816b39081f77c9c2ab42"
+
+# Accepted L2-E E5 prerequisite closure — the owner-accepted FEATURE-VIEW-READY and
+# FEATURE-MATRIX-FROZEN-1 gates (CI-green at tip ba4fda2d). These are the ONLY identities
+# under which F3-B may proceed: the committed gates must verify against these exact hashes
+# with PASS status, the E5 qualified source commit/tree must descend the E4 evidence commit,
+# the E5 evidence must descend the qualified source, and the current HEAD must descend the
+# evidence. A locally regenerated PASS gate can never authorize F3-B. A change to any of
+# these is an explicit owner acceptance decision (see update procedure above).
+FEATURE_VIEW_READY_GATE_HASH = "c0ff49856689c994499dd3a7c04d7a1fb8ba0992b2eb1e099672bf828d515234"
+FEATURE_MATRIX_FROZEN_1_GATE_HASH = (
+    "cd34bdf96f3e7853039b2719e74a12a95740904c1b15f2f5c747516e0260d3ef"
+)
+E5_SOURCE_COMMIT = "3246e68b992f57116a1ce44be8be47e0be61ca8c"
+E5_SOURCE_TREE = "0ebf2ae0c34678dfdc200df6670f73d661c97247"
+E5_EVIDENCE_COMMIT = "ba4fda2d00a466cba2121cd84f392c625d439251"
+E5_EVIDENCE_TREE = "9bb34ae312c93563431f5bd7bd03f91a2c996e32"
+
+# Accepted epoch-1 TRAIN feature-view hash — the reconstructed train FeatureViewManifest hash
+# the F3-B plan must reproduce and bind. Evidence to reconstruct-and-match, never a trust root.
+ACCEPTED_EPOCH1_TRAIN_FEATURE_VIEW_HASH = (
+    "bd7aaca6cea478d35f2ad4a9532e1ba08eeb930fcb01a4224432f54a0289c70d"
+)
 
 #: The single frozen accepted-identity contract used by the entry-gate verifier.
 ACCEPTED = AcceptedPrerequisiteIdentity(

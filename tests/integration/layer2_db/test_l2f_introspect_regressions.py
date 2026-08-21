@@ -16,6 +16,7 @@ from tests.integration.layer2_db.conftest import alembic_upgrade, scratch_databa
 from tests.integration.layer2_db.l2f_introspect import (
     introspect_functions,
     introspect_indexes,
+    introspect_relation,
     introspect_table,
     introspect_view,
 )
@@ -57,6 +58,27 @@ def test_duplicate_index_name_across_schemas_does_not_cross_contaminate(pg_base_
             assert k1 == ["a"], k1
             assert k2 == ["c", "d"], k2
             assert k1 != k2
+        finally:
+            engine.dispose()
+
+
+def test_sequence_acl_uses_sequence_acldefault(pg_base_url: str) -> None:
+    """A sequence with a NULL raw ACL must expand effective privileges via acldefault('s', ...)
+    (SELECT/UPDATE/USAGE) — never the relation default's table-only privileges."""
+    with scratch_database(pg_base_url, "minos_l2f_seqacl") as url:
+        engine = create_engine(normalize_database_url(url))
+        try:
+            with engine.begin() as c:
+                c.execute(text("CREATE SCHEMA sq"))
+                c.execute(text("CREATE SEQUENCE sq.seq1"))
+            with engine.connect() as conn:
+                r = introspect_relation(conn, "sq", "seq1", "S")
+            assert r["kind"] == "sequence"
+            assert r["acl_is_default"] is True and r["acl_raw"] == []
+            privs = {e["privilege"] for e in r["acl_effective"]}
+            assert {"SELECT", "UPDATE", "USAGE"} <= privs
+            table_only = {"INSERT", "DELETE", "TRIGGER", "TRUNCATE", "REFERENCES"}
+            assert not (privs & table_only), f"sequence effective ACL has table-only privs: {privs}"
         finally:
             engine.dispose()
 
