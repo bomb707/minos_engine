@@ -320,3 +320,147 @@ def test_dependency_direction_is_storage_to_experiments_only():
         for f in _package_files("experiments")
     }
     assert {k: v for k, v in experiments_to_storage.items() if v} == {}
+
+
+# --------------------------------------------------------------------------- #
+# F5 execution boundary: GATK only, no truth/scoring, no shell, no legacy tables
+# --------------------------------------------------------------------------- #
+_F5_MODULES = (
+    "storage/l2f_execution.py",
+    "storage/l2f_execution_inputs.py",
+    "storage/l2f_gatk_runner.py",
+    "storage/l2f_result_publisher.py",
+    "storage/l2f_execution_config.py",
+    "storage/l2f_execution_contract.py",
+    "storage/l2f_execution_tables.py",
+    "experiments/execution_contract.py",
+)
+
+
+def _code_strings(path: Path) -> set[str]:
+    """Every string literal that is NOT a docstring, lowercased.
+
+    F5 docstrings legitimately NAME the things F5 must never touch ("never reads truth...",
+    "never touches profiling.profiles"), so a source-text scan would flag its own documentation.
+    Only real code literals are inspected.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    docstrings: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+            body = getattr(node, "body", [])
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
+                docstrings.add(id(body[0].value))
+    out: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and id(node) not in docstrings
+        ):
+            out.add(node.value.lower())
+    return out
+
+
+def _f5_files() -> list[Path]:
+    return [SRC / rel for rel in _F5_MODULES]
+
+
+def test_f5_modules_all_exist() -> None:
+    for path in _f5_files():
+        assert path.is_file(), path
+
+
+def test_f5_never_references_truth_mutation_scoring_or_labels() -> None:
+    """F5 executes GATK and records bytes; it never sees evaluation data."""
+    banned = (
+        "truth",
+        "mutation",
+        "mutated",
+        "happy",
+        "hap.py",
+        "tp_count",
+        "fp_count",
+        "fn_count",
+        "precision",
+        "recall",
+        "f1_score",
+        "leaderboard",
+        "label",
+    )
+    offenders: dict[str, set[str]] = {}
+    for path in _f5_files():
+        haystack = " ".join(_code_strings(path)) + " " + " ".join(n.lower() for n in _imports(path))
+        hits = {token for token in banned if token in haystack}
+        if hits:
+            offenders[str(path.relative_to(SRC))] = hits
+    assert offenders == {}
+
+
+def test_f5_never_imports_or_executes_other_callers() -> None:
+    for path in _f5_files():
+        for mod in _imports(path):
+            assert "deepvariant" not in mod.lower(), (path, mod)
+            assert "bcftools" not in mod.lower(), (path, mod)
+        literals = " ".join(_code_strings(path))
+        assert "deepvariant" not in literals, path
+        assert "bcftools" not in literals, path
+
+
+def test_f5_never_invokes_a_shell() -> None:
+    """No shell=True, os.system, popen or shell-string construction anywhere in F5."""
+    for path in _f5_files():
+        names = _called_names(path)
+        assert "system" not in names, path
+        assert "popen" not in names, path
+        assert "eval" not in names and "exec" not in names, path
+        body = path.read_text(encoding="utf-8")
+        assert "shell=True" not in body, path
+        assert "os.system" not in body, path
+
+
+def test_f5_never_touches_legacy_experiment_tables() -> None:
+    legacy = (
+        "profiling.profiles",
+        "experiments.jobs",
+        "experiments.results",
+        "catalog.gatk_configs",
+    )
+    for path in _f5_files():
+        literals = " ".join(_code_strings(path))
+        for table in legacy:
+            assert table not in literals, (path, table)
+
+
+def test_f5_production_entry_point_takes_only_a_worker_id() -> None:
+    """No caller-provided plan, hashes, database, paths, CONFIG, runner or trust bundle."""
+    import inspect
+
+    from minos_engine.storage.l2f_execution import execute_next_accepted_job
+
+    sig = inspect.signature(execute_next_accepted_job)
+    assert set(sig.parameters) == {"worker_id"}
+    assert sig.parameters["worker_id"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert sig.parameters["worker_id"].default is inspect.Parameter.empty
+
+
+def test_f5_trust_boundary_and_fake_runner_are_private() -> None:
+    from minos_engine.storage import l2f_execution as EX
+
+    assert "execute_next_accepted_job" in EX.__all__
+    assert "_execute_next_job_with_trust" not in EX.__all__
+    assert "FakeGatkRunner" not in EX.__all__
+
+
+def test_f5_result_identity_excludes_raw_process_streams() -> None:
+    """Raw stdout/stderr bytes never enter any scientific identity — only a bounded digest."""
+    from minos_engine.experiments.execution_contract import ExecutionResultManifest
+
+    fields = set(ExecutionResultManifest.model_fields)
+    assert "stderr" not in fields and "stdout" not in fields
+    assert not any("stderr" in f or "stdout" in f for f in fields)

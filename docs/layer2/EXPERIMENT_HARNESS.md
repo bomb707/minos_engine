@@ -5,7 +5,7 @@ experiment planning over the frozen L2-E train membership. It does **not** score
 select, optimize, train, or activate `Layer2Service.select_config`. `HARNESS-READY` (F7)
 is not implemented and is **not** claimed anywhere below.
 
-## Scope (F3-A … F3-D accepted; F4 job claiming)
+## Scope (F3-A … F4 accepted; F5 GATK execution)
 
 **F3-A is accepted** at commit `ff8daa4bf9bd9891e46017e3f7bcb4ea9a8edb6d`. The accepted
 identities are the migration `0006_l2f_experiment_plan` byte SHA-256
@@ -34,7 +34,102 @@ activation.
 accepted experiment-harness verifier + focused logical attack matrix. It only *reads*: it verifies
 an already-persisted F3-C1 graph and any F3-C2 jobs against the repository-owned contracts.
 
-**F4 (this commit) adds safe job claiming and pre-execution state transitions.** Migration
+**F4 is accepted** at commit `76c092f5f255d77fc3a6cd71805dab4b97c1d68c` (with the accepted
+corrections at `84db9cdb` and `908fc4e0`): safe job claiming and pre-execution state transitions.
+
+**F5 (this commit) adds GATK execution, terminal job transitions, success-result persistence,
+failure recording and non-mutating execution verification.** Migration
+`0008_l2f_execution_results` (additive; `0006` and `0007` stay byte-identical) adds the two
+outcome tables, the terminal transition guard and three narrowly scoped `SECURITY DEFINER`
+functions; `storage/l2f_execution.py` exposes
+`execute_next_accepted_job(*, worker_id) -> ExecutionDispatchResult | None`. **Scoring, hap.py,
+truth comparison, optimization, training, model selection, HARNESS-READY, F6 and F7 remain
+absent**, `Layer2Service.select_config` stays blocked, and the operational `minos_engine_db`
+stays at `0005`.
+
+### F5 GATK execution + terminal outcomes
+
+**Migration 0008** (down_revision `0007_l2f_job_claiming`) adds `experiments.l2f_execution_results`
+(success-only, one immutable row per SUCCEEDED job) and `experiments.l2f_execution_failures`
+(failure-only, one immutable row per FAILED job, carrying only a **bounded** failure code plus an
+optional exit code and stderr digest — never free text or raw stream bytes). Both are append-only;
+a job can hold a success XOR a failure, never both. The transition guard adds exactly
+`RUNNING -> SUCCEEDED` and `RUNNING -> FAILED`, each requiring its matching durable record to
+already exist in the same transaction — a direct terminal `UPDATE` without the record fails
+(`MN020`). `CANCELLED` stays unreachable. Terminal states preserve `claimed_by`/`claimed_at`.
+EXECUTE on the three F5 functions is granted only to `minos_runner` and `minos_admin`; PUBLIC,
+`minos_live`, `minos_trainer` and `minos_evaluator` are denied, trigger functions are not directly
+executable, and no application role holds any direct result/failure/job table mutation grant.
+
+**Revision requirements.** F3 graph operations accept `0006`/`0007`/`0008`; F4 claim/start/release
+accepts `0007`/`0008`; F5 execution requires **exactly `0008`**. No boundary runs Alembic.
+
+**Frozen result identity.**
+
+```
+result_hash = sha256("minos:l2f-gatk-execution-result:v1\n" + canonical_json(scientific_content))
+```
+
+binding the schema version, `plan_hash`, `job_key`, dataset/profile/content/feature-values
+identity, `config_hash` + `parameter_space_hash`, the BAM/BAI/reference/FAI digests, `region_hash`
+and the exact region coordinates + chromosome, `logical_argv_hash`, the GATK executable SHA-256
+and version, and the produced VCF digest and size. Host paths, UUIDs, timestamps, runtime, stderr
+and `worker_id` are **excluded**, so the same job re-executed elsewhere yields the same
+`result_hash`. The canonical result-manifest bytes additionally carry the job UUID, `runtime_ms`,
+`worker_id`, a generated timestamp and `result_hash` itself, so an independent verifier can
+recompute the whole identity from the manifest alone; the manifest artifact's own SHA-256 is a
+separate value.
+
+**Inputs and CONFIG.** The provisioned dataset root (`MINOS_L2F_DATASET_ROOT`, never a caller
+argument, never created or repaired) supplies `practice/round_<round_id>/input.bam(.bai)` and
+`reference/<chr>/<chr>.fa|.fa.fai|.dict`. BAM/FASTA are **stream**-hashed with a size/inode
+re-check, symlinks and path escapes are rejected, every digest and the BAM size are compared
+against the complete accepted dataset-registry + bam-profile identity, the member must be an
+accepted **train** member, and the `.dict` must declare the accepted chromosome (its byte hash is
+execution provenance only, never part of the frozen dataset identity). No truth or mutation
+directory is ever inspected. The CONFIG artifact is read byte-exact, re-hashed against
+`config_hash`, parsed with duplicate-key rejection, required to equal its own canonical
+serialization, re-canonicalized through `canonicalize_live_gatk_config()` unchanged, and required
+to carry the committed live parameter-space identity.
+
+**Invocation and runners.** The argv is **tokenized** (`HaplotypeCaller -R … -I … -L … -O …` plus
+rendered flags); no shell string is ever built, so spaces and shell metacharacters in any value
+stay inert data. The *logical* argv substitutes stable placeholders for the reference/BAM/output
+paths, making `logical_argv_hash` host-independent. `FakeGatkRunner` (deterministic, writes real
+VCF bytes) is the only runner tests and CI use. `SubprocessGatkRunner` pins an absolute
+provisioned executable with a required SHA-256 and version (no PATH discovery), runs `shell=False`
+with `stdin=DEVNULL`, an environment allowlist, bounded stdout/stderr files, an isolated per-job
+work directory and a timeout that terminates the whole process group, and never retries. It
+deliberately claims **no** memory limit because none is enforced. The produced VCF is validated
+from its **bytes** — regular non-symlink file inside the job work dir, nonempty, valid
+`##fileformat=VCFv4.x`, exactly one `#CHROM`, accepted chromosome, streamed digest and size — a
+runner-supplied hash is never trusted.
+
+**Artifacts.** `MINOS_L2F_RESULT_ARTIFACT_ROOT` (existing non-symlink dir, writer uid, mode
+`0o2750`, never created or repaired) receives immutable content-addressed files at mode `0o640`
+with **distinct** extensions (`.vcf`, `.result.json`), published through the same audited
+temp→fsync→credential→hard-link-no-clobber→verify→dir-fsync protocol as the F3-C1 CONFIG
+publisher. Media types are `application/vnd.ga4gh.vcf` and
+`application/vnd.minos.l2f-execution-result+json`.
+
+**Orchestration semantics.** `execute_next_accepted_job` validates `worker_id` before any DB or
+filesystem access, verifies the operational identity and exact `0008` revision as its first
+accesses, claims one job via F4, resolves the full identity and input bytes, validates the CONFIG,
+builds the logical invocation, **releases back to PENDING** if preparation fails while merely
+CLAIMED, transitions `CLAIMED -> RUNNING`, executes GATK **outside** any long-lived transaction,
+then either publishes both artifacts and transactionally registers + inserts + transitions to
+SUCCEEDED, or records a bounded failure and transitions to FAILED. It never retries. An ambiguous
+`COMMIT` raises `AmbiguousExecutionCommitError` and **retains** the immutable artifacts; a definite
+pre-commit rollback removes only newly created inodes; a successful commit followed by a wrapper
+failure retains rows and files. Terminal jobs are never reclaimable, and partial queues stay valid.
+
+**Verification.** The F3-D verifier now also accepts `SUCCEEDED`/`FAILED` (rejecting `CANCELLED`),
+requires exactly one matching outcome record and none of the other kind, and independently
+recomputes every success result — CONFIG binding, input binding, `logical_argv_hash`, both
+artifact byte digests and sizes, and `result_hash` — via the new
+`execution_results_independently_verified` check. It remains strictly non-mutating.
+
+**F4 job claiming and pre-execution state transitions.** Migration
 `0007_l2f_job_claiming` (additive; `0006` stays byte-identical) installs a strict transition guard
 plus three narrowly scoped `SECURITY DEFINER` functions, and
 `storage/l2f_job_claim.py` exposes claim / start / release. **Terminal execution and result
@@ -236,7 +331,7 @@ prove is that the normalized contract is bound, byte-for-byte, to the committed 
 source artifact. `source_gatk_object_sha256` is the byte hash of that committed artifact and is
 never described as a raw HTTP-body hash.
 
-**Fail-closed loader.** `load_live_gatk_parameter_space` treats self-hash consistency as necessary
+**Fail-closed loader.** `load_committed_live_gatk_parameter_space` treats self-hash consistency as necessary
 but never sufficient. After it, the document must name the real endpoint, use `options_key =
 gatk_options` and `caller = gatk`, contain exactly 25 parameters with exact set/type/default
 equality against `REGISTRY`, present the exact 14/7/2/2 inventory, carry no duplicate names, and

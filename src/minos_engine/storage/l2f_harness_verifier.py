@@ -30,7 +30,9 @@ database constraint.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -39,6 +41,7 @@ from sqlalchemy import Connection, Engine, text
 
 from minos_engine.common.canonical_json import canonical_json_bytes
 from minos_engine.common.errors import MinosEngineError
+from minos_engine.common.hashing import sha256_hex
 from minos_engine.experiments.accepted_plan import build_accepted_experiment_plan
 from minos_engine.experiments.candidates import (
     generate_accepted_candidate_set,
@@ -81,8 +84,13 @@ _PENDING = "PENDING"
 _CLAIMED = "CLAIMED"
 _RUNNING = "RUNNING"
 #: the only job statuses reachable in F4; SUCCEEDED/FAILED/CANCELLED arrive in F5.
+_SUCCEEDED = "SUCCEEDED"
+_FAILED = "FAILED"
 _F4_STATUSES = (_PENDING, _CLAIMED, _RUNNING)
 _F4_CLAIMED_STATUSES = (_CLAIMED, _RUNNING)
+#: every status reachable once F5 terminal transitions exist; CANCELLED stays unreachable.
+_F5_STATUSES = (_PENDING, _CLAIMED, _RUNNING, _SUCCEEDED, _FAILED)
+_F5_CLAIMED_STATUSES = (_CLAIMED, _RUNNING, _SUCCEEDED, _FAILED)
 
 #: tokens that must never appear in an accepted-boundary artifact's uri/media/provenance —
 #: truth, mutation and score-bearing material may not enter the plan/job graph.
@@ -115,6 +123,7 @@ CHECK_NAMES: tuple[str, ...] = (
     "job_uniqueness",
     "job_indices_valid_subset",
     "job_status_claim_consistency",
+    "execution_results_independently_verified",
     "verification_non_mutating",
 )
 
@@ -190,6 +199,40 @@ class PersistedJob:
     plan_config_id: str
     member_index: int | None
     config_index: int | None
+    #: F5 durable-outcome counts (0 under 0006/0007, where the tables do not exist).
+    result_count: int = 0
+    failure_count: int = 0
+
+
+@dataclass(frozen=True)
+class PersistedExecutionResult:
+    """One persisted F5 success result joined to its two published artifacts."""
+
+    job_id: str
+    job_key: str
+    plan_member_id: str
+    plan_config_id: str
+    config_hash: str
+    parameter_space_hash: str
+    input_identity_hash: str
+    logical_argv_hash: str
+    gatk_executable_sha256: str
+    gatk_version: str
+    result_hash: str
+    vcf_sha256: str
+    vcf_uri: str
+    vcf_size_bytes: int | None
+    vcf_media_type: str
+    manifest_sha256: str
+    manifest_uri: str
+    manifest_size_bytes: int | None
+    manifest_media_type: str
+    #: streamed digests of the published artifact FILES (None when unreadable).
+    vcf_file_sha256: str | None
+    vcf_file_size: int | None
+    manifest_file_sha256: str | None
+    manifest_file_size: int | None
+    manifest_document: Mapping[str, Any] | None
 
 
 @dataclass(frozen=True)
@@ -228,6 +271,8 @@ class PersistedGraph:
     legacy_gatk_config_overlap: int
     fingerprint_before: str
     fingerprint_after: str
+    #: F5 success results (empty under 0006/0007, where the outcome tables do not exist).
+    execution_results: tuple[PersistedExecutionResult, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -545,16 +590,128 @@ def _check_job_status_claim_consistency(graph: PersistedGraph) -> bool:
       (they arrive with F5 execution/results), so any job in one is invalid here.
     """
     for job in graph.jobs:
-        if job.status not in _F4_STATUSES:
-            return False
+        if job.status not in _F5_STATUSES:
+            return False  # CANCELLED and anything unknown are rejected
         if job.status == _PENDING:
             if job.claimed_by is not None or not job.claimed_at_is_null:
                 return False
-        elif job.status in _F4_CLAIMED_STATUSES:
+        elif job.status in _F5_CLAIMED_STATUSES:
             if job.claimed_by is None or not job.claimed_by.strip():
                 return False
             if job.claimed_at_is_null:
                 return False
+        # terminal states require exactly their own durable outcome record and no other kind.
+        if job.status == _SUCCEEDED and (job.result_count != 1 or job.failure_count != 0):
+            return False
+        if job.status == _FAILED and (job.failure_count != 1 or job.result_count != 0):
+            return False
+        if job.status in (_PENDING, _CLAIMED, _RUNNING) and (
+            job.result_count != 0 or job.failure_count != 0
+        ):
+            return False
+    return True
+
+
+def _check_execution_results(plan: Any, graph: PersistedGraph) -> bool:
+    """Independently re-verify EVERY persisted F5 success result.
+
+    Recomputes the CONFIG binding, the input binding, the logical argv hash, both artifact
+    byte digests and sizes, and the frozen ``result_hash`` from the manifest's own scientific
+    fields — never trusting the stored values. Purely read-only.
+    """
+    from minos_engine.experiments.execution_contract import (
+        EXECUTION_RESULT_SCHEMA,
+        RESULT_HASH_DOMAIN,
+    )
+
+    members_by_id = {m.plan_member_id: m for m in graph.members}
+    configs_by_id = {c.plan_config_id: c for c in graph.configs}
+    jobs_by_id = {j.job_id: j for j in graph.jobs}
+
+    for res in graph.execution_results:
+        job = jobs_by_id.get(res.job_id)
+        if job is None or job.job_key != res.job_key or job.status != _SUCCEEDED:
+            return False
+        member = members_by_id.get(res.plan_member_id)
+        config = configs_by_id.get(res.plan_config_id)
+        if member is None or config is None:
+            return False
+        # the result's member/config must be the ones the job itself binds.
+        if job.plan_member_id != res.plan_member_id or job.plan_config_id != res.plan_config_id:
+            return False
+        if _norm(config.config_hash) != _norm(res.config_hash):
+            return False
+        if _norm(res.parameter_space_hash) != _norm(plan.parameter_space_hash):
+            return False
+
+        # both artifacts: exact byte digests, sizes and media types.
+        if res.vcf_file_sha256 != res.vcf_sha256 or res.manifest_file_sha256 != res.manifest_sha256:
+            return False
+        if res.vcf_size_bytes is None or res.vcf_file_size != int(res.vcf_size_bytes):
+            return False
+        if res.manifest_size_bytes is None or res.manifest_file_size != int(
+            res.manifest_size_bytes
+        ):
+            return False
+        if not res.vcf_uri.endswith(f"/{res.vcf_sha256}.vcf"):
+            return False
+        if not res.manifest_uri.endswith(f"/{res.manifest_sha256}.result.json"):
+            return False
+
+        doc = res.manifest_document
+        if doc is None or doc.get("schema_version") != EXECUTION_RESULT_SCHEMA:
+            return False
+        # the manifest must agree with the stored row on every scientific field...
+        for key, stored in (
+            ("plan_hash", plan.plan_hash),
+            ("job_key", res.job_key),
+            ("config_hash", res.config_hash),
+            ("parameter_space_hash", res.parameter_space_hash),
+            ("input_identity_hash", res.input_identity_hash),
+            ("logical_argv_hash", res.logical_argv_hash),
+            ("gatk_executable_sha256", res.gatk_executable_sha256),
+            ("gatk_version", res.gatk_version),
+            ("vcf_sha256", res.vcf_sha256),
+            ("result_hash", res.result_hash),
+            ("dataset_id", member.dataset_id),
+            ("profile_id", member.profile_id),
+            ("content_hash", member.content_hash),
+            ("feature_values_hash", member.feature_values_hash),
+        ):
+            if _norm(doc.get(key)) != _norm(stored):
+                return False
+        # ...and the frozen result_hash must RECOMPUTE from those scientific fields.
+        recomputed = sha256_hex(
+            RESULT_HASH_DOMAIN.encode("utf-8")
+            + canonical_json_bytes(
+                {
+                    "schema_version": EXECUTION_RESULT_SCHEMA,
+                    "plan_hash": plan.plan_hash,
+                    "job_key": res.job_key,
+                    "dataset_id": doc["dataset_id"],
+                    "profile_id": doc["profile_id"],
+                    "content_hash": doc["content_hash"],
+                    "feature_values_hash": doc["feature_values_hash"],
+                    "config_hash": res.config_hash,
+                    "parameter_space_hash": res.parameter_space_hash,
+                    "bam_sha256": doc.get("bam_sha256"),
+                    "bai_sha256": doc.get("bai_sha256"),
+                    "reference_sha256": doc.get("reference_sha256"),
+                    "fai_sha256": doc.get("fai_sha256"),
+                    "region_hash": doc.get("region_hash"),
+                    "region_start0": doc.get("region_start0"),
+                    "region_end0_exclusive": doc.get("region_end0_exclusive"),
+                    "chromosome": doc.get("chromosome"),
+                    "logical_argv_hash": res.logical_argv_hash,
+                    "gatk_executable_sha256": res.gatk_executable_sha256,
+                    "gatk_version": res.gatk_version,
+                    "vcf_sha256": res.vcf_sha256,
+                    "vcf_size_bytes": doc.get("vcf_size_bytes"),
+                }
+            )
+        )
+        if recomputed != res.result_hash:
+            return False
     return True
 
 
@@ -589,6 +746,7 @@ def _evaluate_checks(
         "job_uniqueness": _check_job_uniqueness(graph),
         "job_indices_valid_subset": _check_job_indices_valid_subset(plan, graph, universe),
         "job_status_claim_consistency": _check_job_status_claim_consistency(graph),
+        "execution_results_independently_verified": _check_execution_results(plan, graph),
         "verification_non_mutating": graph.fingerprint_before == graph.fingerprint_after,
     }
     checks = {name: results[name] for name in CHECK_NAMES}  # deterministic order
@@ -945,6 +1103,107 @@ def _read_legacy_overlap(
     return profile_overlap, gatk_overlap
 
 
+def _f5_tables_present(conn: Connection) -> bool:
+    return bool(
+        conn.execute(
+            text(
+                "SELECT count(*) = 2 FROM information_schema.tables "
+                "WHERE table_schema='experiments' AND table_name IN "
+                "('l2f_execution_results','l2f_execution_failures')"
+            )
+        ).scalar_one()
+    )
+
+
+def _read_outcome_counts(conn: Connection, plan_id: str) -> dict[str, tuple[int, int]]:
+    """``job_id -> (result_count, failure_count)`` (all zero before 0008 exists)."""
+    if not _f5_tables_present(conn):
+        return {}
+    rows = conn.execute(
+        text(
+            "SELECT j.id AS job_id, "
+            "  (SELECT count(*) FROM experiments.l2f_execution_results r WHERE r.job_id = j.id) "
+            "    AS results, "
+            "  (SELECT count(*) FROM experiments.l2f_execution_failures f WHERE f.job_id = j.id) "
+            "    AS failures "
+            "FROM experiments.l2f_experiment_jobs j WHERE j.plan_id = :p"
+        ),
+        {"p": plan_id},
+    ).all()
+    return {str(r[0]): (int(r[1]), int(r[2])) for r in rows}
+
+
+def _read_execution_results(conn: Connection, plan_id: str) -> tuple[PersistedExecutionResult, ...]:
+    """Read every persisted F5 success result plus BOTH published artifact files."""
+    if not _f5_tables_present(conn):
+        return ()
+    rows = (
+        conn.execute(
+            text(
+                "SELECT r.job_id, r.job_key, r.plan_member_id, r.plan_config_id, r.config_hash, "
+                "       r.parameter_space_hash, r.input_identity_hash, r.logical_argv_hash, "
+                "       r.gatk_executable_sha256, r.gatk_version, r.result_hash, r.vcf_sha256, "
+                "       r.vcf_media_type, r.result_manifest_sha256, r.result_manifest_media_type, "
+                "       v.uri AS vcf_uri, v.size_bytes AS vcf_size, "
+                "       m.uri AS manifest_uri, m.size_bytes AS manifest_size "
+                "  FROM experiments.l2f_execution_results r "
+                "  JOIN catalog.artifacts v ON v.id = r.vcf_artifact_id "
+                "  JOIN catalog.artifacts m ON m.id = r.result_manifest_artifact_id "
+                " WHERE r.plan_id = :p ORDER BY r.job_key"
+            ),
+            {"p": plan_id},
+        )
+        .mappings()
+        .all()
+    )
+    out: list[PersistedExecutionResult] = []
+    for r in rows:
+        vcf_sha, vcf_size = _digest_file(str(r["vcf_uri"]))
+        man_sha, man_size = _digest_file(str(r["manifest_uri"]))
+        document: Mapping[str, Any] | None = None
+        try:
+            document = json.loads(_file_path_from_uri(str(r["manifest_uri"])).read_bytes())
+        except (OSError, ValueError, MinosEngineError):
+            document = None
+        out.append(
+            PersistedExecutionResult(
+                job_id=str(r["job_id"]),
+                job_key=str(r["job_key"]),
+                plan_member_id=str(r["plan_member_id"]),
+                plan_config_id=str(r["plan_config_id"]),
+                config_hash=str(r["config_hash"]),
+                parameter_space_hash=str(r["parameter_space_hash"]),
+                input_identity_hash=str(r["input_identity_hash"]),
+                logical_argv_hash=str(r["logical_argv_hash"]),
+                gatk_executable_sha256=str(r["gatk_executable_sha256"]),
+                gatk_version=str(r["gatk_version"]),
+                result_hash=str(r["result_hash"]),
+                vcf_sha256=str(r["vcf_sha256"]),
+                vcf_uri=str(r["vcf_uri"]),
+                vcf_size_bytes=None if r["vcf_size"] is None else int(r["vcf_size"]),
+                vcf_media_type=str(r["vcf_media_type"]),
+                manifest_sha256=str(r["result_manifest_sha256"]),
+                manifest_uri=str(r["manifest_uri"]),
+                manifest_size_bytes=None if r["manifest_size"] is None else int(r["manifest_size"]),
+                manifest_media_type=str(r["result_manifest_media_type"]),
+                vcf_file_sha256=vcf_sha,
+                vcf_file_size=vcf_size,
+                manifest_file_sha256=man_sha,
+                manifest_file_size=man_size,
+                manifest_document=document,
+            )
+        )
+    return tuple(out)
+
+
+def _digest_file(uri: str) -> tuple[str | None, int | None]:
+    try:
+        data = _file_path_from_uri(uri).read_bytes()
+    except (OSError, MinosEngineError):
+        return None, None
+    return hashlib.sha256(data).hexdigest(), len(data)
+
+
 def _read_persisted_graph(conn: Connection, plan: Any) -> PersistedGraph:
     """Read the complete persisted graph. Strictly read-only (SELECT statements only)."""
     plan_row = _resolve_accepted_plan_row(conn, plan)
@@ -957,6 +1216,16 @@ def _read_persisted_graph(conn: Connection, plan: Any) -> PersistedGraph:
 
     fingerprint_before = _state_fingerprint(conn, plan_id, uris)
     jobs = _read_jobs(conn, plan_id)
+    counts = _read_outcome_counts(conn, plan_id)
+    jobs = tuple(
+        dataclasses.replace(
+            j,
+            result_count=counts.get(j.job_id, (0, 0))[0],
+            failure_count=counts.get(j.job_id, (0, 0))[1],
+        )
+        for j in jobs
+    )
+    execution_results = _read_execution_results(conn, plan_id)
     train, nontrain, row_count = _read_upstream_inventory(
         conn, upstream_ids["profile_snapshot_id"], upstream_ids["train_feature_matrix_id"]
     )
@@ -980,6 +1249,7 @@ def _read_persisted_graph(conn: Connection, plan: Any) -> PersistedGraph:
         legacy_gatk_config_overlap=legacy_gatk,
         fingerprint_before=fingerprint_before,
         fingerprint_after=fingerprint_after,
+        execution_results=execution_results,
     )
 
 

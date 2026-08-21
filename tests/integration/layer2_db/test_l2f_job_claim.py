@@ -819,8 +819,10 @@ def test_compatibility_set_is_explicit_and_closed() -> None:
     from minos_engine.storage.l2f_plan_store import L2F_GRAPH_COMPATIBLE_REVISIONS
 
     # F5 added the additive 0008 to the closed graph set; F4 accepts 0007 or 0008.
-    assert L2F_GRAPH_COMPATIBLE_REVISIONS == frozenset({_L2F, _F4, "0008_l2f_execution_results"})
-    assert JC.F4_COMPATIBLE_REVISIONS == frozenset({_F4, "0008_l2f_execution_results"})
+    expected_graph = frozenset({_L2F, _F4, "0008_l2f_execution_results"})
+    expected_f4 = frozenset({_F4, "0008_l2f_execution_results"})
+    assert expected_graph == L2F_GRAPH_COMPATIBLE_REVISIONS
+    assert expected_f4 == JC.F4_COMPATIBLE_REVISIONS
     # never "anything later": 0005 and any hypothetical future revision are absent.
     assert "0005_l2e_feature_view" not in L2F_GRAPH_COMPATIBLE_REVISIONS
     assert "0009_future" not in L2F_GRAPH_COMPATIBLE_REVISIONS

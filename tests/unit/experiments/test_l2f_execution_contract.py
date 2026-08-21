@@ -168,6 +168,14 @@ def test_result_hash_excludes_host_paths_uuids_timestamps_and_worker() -> None:
         config_hash=_H["9"],
         parameter_space_hash=_H["a"],
         input_identity_hash=_inputs().identity_hash(),
+        bam_sha256=_H["3"],
+        bai_sha256=_H["4"],
+        reference_sha256=_H["5"],
+        fai_sha256=_H["6"],
+        region_hash=_H["8"],
+        region_start0=100,
+        region_end0_exclusive=200,
+        chromosome="chr18",
         logical_argv_hash=_invocation().argv_hash(),
         gatk_executable_sha256=_H["b"],
         gatk_version="4.5.0.0",
@@ -182,6 +190,9 @@ def test_result_hash_excludes_host_paths_uuids_timestamps_and_worker() -> None:
     doc = json.loads(raw)
     # the manifest carries the non-scientific fields...
     for key in ("job_id", "runtime_ms", "worker_id", "generated_at", "result_hash"):
+        assert key in doc
+    # ...and every scientific input component, so result_hash is recomputable from the manifest.
+    for key in ("bam_sha256", "reference_sha256", "region_hash", "region_start0", "chromosome"):
         assert key in doc
     # ...and its own artifact SHA is a DIFFERENT value from result_hash.
     assert sha256_hex(raw) != manifest.result_hash

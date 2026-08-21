@@ -200,6 +200,16 @@ class ExecutionResultManifest(BaseModel):
     config_hash: Hex64
     parameter_space_hash: Hex64
     input_identity_hash: Hex64
+    #: the raw scientific input identity, so ``result_hash`` is fully recomputable from the
+    #: manifest bytes alone by an independent verifier.
+    bam_sha256: Hex64
+    bai_sha256: Hex64
+    reference_sha256: Hex64
+    fai_sha256: Hex64
+    region_hash: Hex64
+    region_start0: int = Field(ge=0)
+    region_end0_exclusive: int = Field(ge=0)
+    chromosome: str = Field(min_length=1)
     logical_argv_hash: Hex64
     gatk_executable_sha256: Hex64
     gatk_version: str = Field(min_length=1)
