@@ -136,10 +136,10 @@ jobs:
           done
           psql "$MINOS_DATABASE_URL" -c "SELECT version();"
 
-      - name: Alembic upgrade head — confirm L2-F F4 head 0007_l2f_job_claiming
+      - name: Alembic upgrade head — confirm L2-F F5 head 0008_l2f_execution_results
         run: |
           alembic upgrade head
-          alembic current | grep 0007_l2f_job_claiming
+          alembic current | grep 0008_l2f_execution_results
 
       - name: Alembic downgrade to 0005 (L2-F removed, L2-E retained) then re-upgrade
         run: |
@@ -287,10 +287,10 @@ jobs:
           assert n == 0, f"stage schemas not removed: {n}"
           PY
 
-      - name: Alembic re-upgrade head — confirm L2-F F4 head 0007_l2f_job_claiming
+      - name: Alembic re-upgrade head — confirm L2-F F5 head 0008_l2f_execution_results
         run: |
           alembic upgrade head
-          alembic current | grep 0007_l2f_job_claiming
+          alembic current | grep 0008_l2f_execution_results
           python - <<'PY'
           from sqlalchemy import create_engine, text
           from minos_engine.storage.database import database_url

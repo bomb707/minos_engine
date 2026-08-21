@@ -46,6 +46,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "F4_MIGRATION_REVISION",
+    "F4_COMPATIBLE_REVISIONS",
     "JOB_STATUS_PENDING",
     "JOB_STATUS_CLAIMED",
     "JOB_STATUS_RUNNING",
@@ -65,6 +66,10 @@ __all__ = [
 
 #: the exact live revision this boundary requires (it NEVER runs Alembic).
 F4_MIGRATION_REVISION = "0007_l2f_job_claiming"
+#: F4 claim/start/release run unchanged under 0007 and under the additive 0008.
+F4_COMPATIBLE_REVISIONS: frozenset[str] = frozenset(
+    {F4_MIGRATION_REVISION, "0008_l2f_execution_results"}
+)
 
 JOB_STATUS_PENDING = "PENDING"
 JOB_STATUS_CLAIMED = "CLAIMED"
@@ -166,10 +171,11 @@ def _coerce_job_id(job_id: UUID) -> str:
 
 def _require_f4_revision(conn: Connection) -> None:
     rev = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one_or_none()
-    if rev != F4_MIGRATION_REVISION:
+    if rev not in F4_COMPATIBLE_REVISIONS:
         raise PlanRevisionError(
-            f"live database revision is {rev!r}, not the required {F4_MIGRATION_REVISION!r}; "
-            "refusing to claim (this boundary NEVER runs Alembic)"
+            f"live database revision is {rev!r}, which is not one of the F4-compatible "
+            f"revisions {sorted(F4_COMPATIBLE_REVISIONS)!r}; refusing to claim (this boundary "
+            "NEVER runs Alembic)"
         )
 
 

@@ -82,13 +82,14 @@ __all__ = [
 
 #: The EXPLICIT closed set of live Alembic revisions under which the L2-F graph operations
 #: (F3-C1 persistence, F3-C2 bounded enqueue, F3-D verification) are known to be compatible.
-#: ``0007_l2f_job_claiming`` is purely additive over ``0006_l2f_experiment_plan`` — it adds a
-#: transition-guard trigger and three claim functions and changes no table, column or scientific
-#: identity — so the graph contract is byte-for-byte the same under both. Membership is
-#: enumerated deliberately: ``0005`` and any unknown or future revision are rejected. F4
-#: claim/start/release additionally requires exactly ``0007`` (see ``l2f_job_claim``).
+#: ``0007_l2f_job_claiming`` and ``0008_l2f_execution_results`` are purely additive over
+#: ``0006_l2f_experiment_plan`` — they add triggers, functions and NEW outcome tables but change
+#: no existing table, column or scientific identity — so the plan-graph contract is byte-for-byte
+#: the same under all three. Membership is enumerated deliberately: ``0005`` and any unknown or
+#: future revision are rejected. F4 claim/start/release requires ``0007`` or ``0008``
+#: (``l2f_job_claim``); F5 execution requires exactly ``0008`` (``l2f_execution``).
 L2F_GRAPH_COMPATIBLE_REVISIONS: frozenset[str] = frozenset(
-    {L2F_MIGRATION_REVISION, "0007_l2f_job_claiming"}
+    {L2F_MIGRATION_REVISION, "0007_l2f_job_claiming", "0008_l2f_execution_results"}
 )
 
 #: env var naming the provisioned CONFIG-payload artifact root (config, not a caller arg).

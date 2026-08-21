@@ -26,6 +26,7 @@ from tests.integration.layer2_db.conftest import (
 _HEAD = "0006_l2f_experiment_plan"
 _PREV = "0005_l2e_feature_view"
 _F4_HEAD = "0007_l2f_job_claiming"
+_F5_HEAD = "0008_l2f_execution_results"
 _L2F_TABLES = (
     "l2f_experiment_plans",
     "l2f_experiment_plan_members",
@@ -62,18 +63,17 @@ def _l2f_tables(url: str) -> int:
     )
 
 
-def test_single_head_is_the_f4_revision_descending_0006() -> None:
-    """One head only. F4 advanced it to 0007_l2f_job_claiming, which descends exactly 0006 —
-    which itself still descends exactly 0005 (the 0006 lineage is unchanged)."""
+def test_single_head_descends_the_unchanged_0006_lineage() -> None:
+    """One head only. F5 advanced it to 0008_l2f_execution_results, which descends exactly 0007,
+    which descends exactly 0006, which still descends exactly 0005 (lineage unchanged)."""
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert script.get_heads() == [_F4_HEAD]
-    f4_down = {r.down_revision for r in script.get_revisions(_F4_HEAD)}
-    assert f4_down == {_HEAD}  # 0007 descends exactly 0006
-    down = {r.down_revision for r in script.get_revisions(_HEAD)}
-    assert down == {_PREV}  # 0006 still descends exactly 0005
+    assert script.get_heads() == [_F5_HEAD]
+    assert {r.down_revision for r in script.get_revisions(_F5_HEAD)} == {_F4_HEAD}
+    assert {r.down_revision for r in script.get_revisions(_F4_HEAD)} == {_HEAD}
+    assert {r.down_revision for r in script.get_revisions(_HEAD)} == {_PREV}
 
 
 def test_migrations_0001_0005_byte_identical() -> None:
