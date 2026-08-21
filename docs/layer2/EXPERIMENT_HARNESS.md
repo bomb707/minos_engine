@@ -5,7 +5,7 @@ experiment planning over the frozen L2-E train membership. It does **not** score
 select, optimize, train, or activate `Layer2Service.select_config`. `HARNESS-READY` (F7)
 is not implemented and is **not** claimed anywhere below.
 
-## Scope (F3-A accepted; F3-B pure plan contract)
+## Scope (F3-A accepted; F3-B accepted; F3-C1 plan persistence)
 
 **F3-A is accepted** at commit `ff8daa4bf9bd9891e46017e3f7bcb4ea9a8edb6d`. The accepted
 identities are the migration `0006_l2f_experiment_plan` byte SHA-256
@@ -15,13 +15,63 @@ inventory with raw + effective ACLs). F3-A comprises migration `0006`, the priva
 Core mappings, the frozen static inventory proven equal to the live schema, the 47-case
 direct-SQL attack matrix, and the all-MINOS-schema populated `0005↔0006` lifecycle.
 
-**F3-B (this commit) adds the pure, deterministic `ExperimentPlan` contract + accepted
-no-override constructor.** It performs **no** PostgreSQL writes, artifact publication, job
-enqueueing, claiming, execution, scoring, training, optimization, or configuration selection —
-plan verification only reads committed files + git history. Persistence + bounded enqueue
-(F3-C), the Python plan verifier + logical attack matrix (F3-D), and F4–F7 remain
-**unimplemented and unauthorized**. `HARNESS-READY` (F7) is **not** issued, and
-`Layer2Service.select_config` remains blocked.
+**F3-B is accepted** at commit `961b1eb51e912340c7a5c0b80a8bcf2c8f1ddea0`: the pure deterministic
+`ExperimentPlan` contract + no-override accepted constructor. The accepted epoch-1 plan derives
+`plan_hash = 1e6c4a5e70f370d800af91fc02ce6e312ebff29e39d0b8d554afa938f89959d8`.
+
+**F3-C1 (this commit) adds durable persistence of the accepted plan, member, CONFIG-payload,
+and plan-config inventories — no jobs.** It writes the plan graph but inserts **zero**
+`experiments.l2f_experiment_jobs` rows and performs no claiming, status transitions, execution,
+result storage, scoring, training, optimization, gating or service activation. **F3-C2 bounded
+enqueue is still absent**, as are the Python plan verifier + logical attack matrix (F3-D) and
+F4–F7. `HARNESS-READY` (F7) is **not** issued, `Layer2Service.select_config` remains blocked,
+and the operational `minos_engine_db` stays at `0005` (this boundary never migrates it).
+
+### F3-C1 durable plan persistence (no jobs)
+
+`storage/l2f_plan_store.py` exposes the sole production entry point
+`persist_accepted_experiment_plan()` (no arguments, no caller-provided plan/snapshot/candidate
+set/hashes/partition/trust/paths). It builds the plan via `build_accepted_experiment_plan()`,
+independently regenerates and verifies the accepted `CandidateSet`, obtains the database through
+`MINOS_DATABASE_URL`, and — as the **first** access on the transaction connection, before any
+other query or artifact file — calls `verify_operational_database_identity(conn)` and requires
+the live Alembic revision to be exactly `0006_l2f_experiment_plan` (it **never** runs Alembic).
+It uses the private `l2f_tables` Core mappings (never `Base.metadata`). A private explicit-trust
+persister (`_persist_experiment_plan_with_trust`, unexported) drives scratch / non-75 tests.
+
+Every upstream UUID is resolved by **complete immutable identity** (exactly one row, else a typed
+`UpstreamIdentityError`, raised **before** any payload publication): profile snapshot by
+`(snapshot, split-manifest, registry-snapshot)` hashes; train feature matrix by
+`(snapshot, partition=train, matrix hash, feature set)`; feature set by
+`(feature-set, feature-registry)` hashes; each snapshot member (and its exact `bam_profile`) and
+matrix member by their full composite identities. Legacy `profiling.profiles`,
+`experiments.jobs`, `experiments.results` and `catalog.gatk_configs` are never read or written.
+
+Persistence runs as `minos_admin` under a **transaction advisory lock derived from `plan_hash`**
+(`pg_advisory_xact_lock`). Every immutable table is idempotent: an equal existing row is
+idempotent success; the same unique key with any differing immutable metadata is a typed
+`ImmutableMetadataConflictError`; a uniqueness violation is never swallowed without an exact
+re-read comparison. The accepted epoch-1 result is 1 plan, snapshot-derived train members,
+candidate-derived configs, one CONFIG payload per distinct config, and **zero** job rows
+(counts are derived — 50/41 are historical, never persistence constants). A replay duplicates
+no rows and rewrites no artifacts, followed by a transaction-local read-back verification.
+
+**Content-addressed CONFIG-payload contract** (`storage/l2f_config_publisher.py`): for each
+accepted candidate the persisted bytes are exactly `canonical_json_bytes(effective_config)`
+(`sha256 == config_hash`) — no wrapper/envelope. Each payload binds `schema_version =
+l2f-config-payload-v1`, `media_type = application/vnd.minos.l2f-config+json`, the accepted
+`parameter_space_hash`, a `catalog.artifacts` row (`sha256 == config_hash`, exact byte length,
+content-addressed `file://` URI) registered with get-or-verify semantics. The **provisioned**
+publisher requires an existing, non-symlink root owned by the writer uid at mode `0o2750`
+(`CONFIG_ARTIFACT_ROOT_MODE`; never created or repaired) and publishes immutable
+content-addressed `<root>/<config_hash>.json` files at mode `0o640`
+(`CONFIG_ARTIFACT_FILE_MODE`) via atomic temp-write → fsync → `fchmod`/`fchown` → hard-link →
+directory fsync, never overwriting an existing final path (existing bytes/sha/size/regular-file/
+uid/gid/mode are verified and reused). A **pre-commit** failure rolls back all inserts and
+removes only the inodes this call created; an **ambiguous** commit (a raising `COMMIT`) retains
+the immutable artifacts; a **successful commit followed by a wrapper failure** leaves rows and
+files intact. The root is configured via `MINOS_L2F_CONFIG_ARTIFACT_ROOT` — never a caller
+argument.
 
 ### F3-B pure ExperimentPlan contract
 
