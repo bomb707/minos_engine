@@ -5,7 +5,7 @@ experiment planning over the frozen L2-E train membership. It does **not** score
 select, optimize, train, or activate `Layer2Service.select_config`. `HARNESS-READY` (F7)
 is not implemented and is **not** claimed anywhere below.
 
-## Scope (F3-A, F3-B, F3-C1 accepted; F3-C2 bounded enqueue)
+## Scope (F3-A … F3-C2 accepted; F3-D harness verifier)
 
 **F3-A is accepted** at commit `ff8daa4bf9bd9891e46017e3f7bcb4ea9a8edb6d`. The accepted
 identities are the migration `0006_l2f_experiment_plan` byte SHA-256
@@ -24,13 +24,83 @@ of the accepted plan, member, CONFIG-payload, and plan-config inventories — **
 exact upstream train-set equality and an independent transaction-local read-back verifier. It
 writes the plan graph but inserts **zero** `experiments.l2f_experiment_jobs` rows.
 
-**F3-C2 (this commit) adds bounded, deterministic, idempotent experiment-job enqueue.** It
-inserts a bounded contiguous slice of the accepted plan's logical jobs into
-`experiments.l2f_experiment_jobs` and performs no claiming, status transitions, execution, result
-storage, scoring, optimization, gating or service activation. The Python plan verifier + logical
-attack matrix (F3-D) and F4–F7 **remain absent**. `HARNESS-READY` (F7) is **not** issued,
-`Layer2Service.select_config` remains blocked, and the operational `minos_engine_db` stays at
-`0005` (this boundary never migrates it).
+**F3-C2 is accepted** at commit `ace24e726f557658d4b68a35f59adf0de89adc78`: bounded,
+deterministic, idempotent experiment-job enqueue. It inserts a bounded contiguous slice of the
+accepted plan's logical jobs into `experiments.l2f_experiment_jobs` and performs no claiming,
+status transitions, execution, result storage, scoring, optimization, gating or service
+activation.
+
+**F3-D (this commit) adds the non-mutating accepted experiment-harness verifier + a focused
+logical attack matrix.** It only *reads*: it verifies an already-persisted F3-C1 graph and any
+F3-C2 jobs against the repository-owned contracts. **F4 claiming is still absent** (no
+`claim_next_job`, no `SKIP LOCKED`, no status transitions), as are execution, results, scoring,
+optimization and F5–F7. `HARNESS-READY` (F7) is **not** issued, `Layer2Service.select_config`
+remains blocked, and the operational `minos_engine_db` stays at `0005` (no L2-F boundary ever
+migrates it).
+
+### F3-D accepted experiment-harness verifier (read-only)
+
+`experiments/harness_verifier.py` exposes the sole production entry point
+`verify_accepted_experiment_harness() -> HarnessVerificationResult` (no arguments; no
+caller-provided plan / candidate set / hashes / database / partition / job keys / trust bundle).
+It obtains the database only through `MINOS_DATABASE_URL`, verifies (as the **first** access on
+the exact transaction connection) that it is the canonical operational store at revision `0006`
+**before** constructing accepted inputs or querying any stage table, builds the plan only through
+`build_accepted_experiment_plan()`, and generates + independently verifies the accepted
+`CandidateSet` internally. It **never** runs Alembic and **never** inserts, updates, deletes,
+publishes, repairs, normalizes, get-or-inserts or takes an advisory lock — its read transaction is
+always **rolled back**, so it cannot durably change any row, timestamp, status, claim field or
+file. A private explicit-trust verifier (`_verify_experiment_harness_with_trust`, unexported)
+drives synthetic / non-75 tests only.
+
+**Verification is not persistence and not enqueue.** F3-C1 *writes* the plan graph, F3-C2 *writes*
+bounded job rows; F3-D only *reads* an already-persisted graph and reports. It re-implements
+neither the plan-hash nor the job-key formula (both are imported from the frozen F3-B contracts).
+Verification fails **closed** with a typed `HarnessGraphError` when the accepted plan graph is
+absent or ambiguous — the persisted plan is resolved by its **complete logical identity** (the 11
+scientific hashes), so a forged `plan_hash` surfaces as a named check rather than a silent miss.
+
+Rather than a bare boolean the result carries `status` (`PASS`/`FAIL`), `plan_hash`,
+`candidate_set_hash`, `logical_job_count`, `persisted_job_count`, `missing_job_count`, the ordered
+named-check map, and the ordered failure names. Every check that can safely be evaluated **is**
+evaluated (no early exit), so the caller receives the complete failure set. The 17 named checks
+(`CHECK_NAMES`, in order) are:
+
+| check | proves |
+|---|---|
+| `plan_identity_self_binding` | the accepted `plan_hash` binds its own content under the frozen formula |
+| `plan_row_identity_hashes` | the persisted row's 11 scientific hashes + `partition` + `plan_hash` |
+| `plan_upstream_uuid_binding` | the persisted snapshot / train-matrix / feature-set UUIDs |
+| `derived_counts` | stored + actual member/config/payload counts and `jobs = members × candidates` |
+| `member_inventory_exact` | the ordered member inventory (dataset/profile/content/fvh/vector/index/train) |
+| `config_inventory_exact` | the ordered config inventory (index, `config_hash`, parameter space, candidate order) |
+| `config_payload_bytes_canonical` | payload + artifact metadata, content-addressed URI, and the **exact canonical CONFIG bytes + file hash** |
+| `upstream_membership_exact` | the live snapshot-train and train-matrix membership equals the plan exactly (no extras) |
+| `no_nontrain_or_truth_data` | no validation/test partition membership and no truth/mutation/score-bearing artifact |
+| `legacy_tables_excluded` | the accepted graph references no legacy `profiling.profiles` / `catalog.gatk_configs` row |
+| `jobs_within_logical_universe` | every persisted `job_key` is a member of the accepted logical-job universe |
+| `job_keys_recompute` | every stored `job_key` recomputes from the plan identity + its bound member/config |
+| `job_member_config_binding` | each job's `plan_member_id`/`plan_config_id` are the ones its `job_key` encodes |
+| `job_uniqueness` | no duplicate `job_key` and no duplicate logical identity |
+| `job_indices_valid_subset` | persisted job indices are a valid subset of the logical-job space |
+| `jobs_pending_unclaimed` | every job is `PENDING` with `claimed_by`/`claimed_at` NULL (claiming is F4) |
+| `verification_non_mutating` | the before/after state fingerprint (row counts, timestamps, status/claim, artifact files) is unchanged |
+
+**Partial job coverage is valid.** A plan with zero, some, or all of its logical jobs enqueued all
+verify: the result reports `missing_job_count`, and verification never fails merely because fewer
+than `logical_job_count` jobs have been enqueued. Every count derives from the accepted plan's
+membership × candidates — 50 / 41 / 2050 are historical derived results, never constants.
+
+The **focused logical attack matrix** covers wrong plan/candidate-set hashes, wrong member
+dataset/profile/content/`feature_values_hash`/`vector_hash`/`member_index`, wrong
+`config_hash`/`parameter_space_hash`, reordered configs, a forged `job_key` with otherwise valid
+foreign keys, a genuine `job_key` attached to the wrong plan member or plan config, a job outside
+the accepted logical-job universe, noncanonical CONFIG artifact bytes, artifact-metadata
+mismatches, a non-train member introduced into the train plan, truth/mutation/score-bearing
+material entering the accepted boundary, and a verification run that mutates state. Each attack
+fails through a **specific named check** or a typed verifier error. Relational attacks use real
+PostgreSQL; constraint-impossible corruptions are exercised against a **controlled immutable
+representation** of the persisted graph, so no production constraint is ever disabled.
 
 ### F3-C2 bounded experiment-job enqueue
 
@@ -420,9 +490,9 @@ is one of:
 
 ## Still unauthorized / not implemented
 
-The Python plan verifier + logical attack matrix (F3-D); `claim_next_job` / `SKIP LOCKED` /
-claiming, status transitions, execution, results, scoring, optimization (F4+); `HARNESS-READY`
-(F7); `select_config` (blocked). The operational `minos_engine_db` remains at `0005` and no
-operational data is created. (Accepted and implemented: the `ExperimentPlan` builder +
-`plan_hash`/`job_key` formulas (F3-B), durable plan persistence (F3-C1), and bounded job enqueue
-(F3-C2).)
+`claim_next_job` / `SKIP LOCKED` / claiming, status transitions, execution, results, scoring,
+training, optimization (F4–F6); `HARNESS-READY` (F7); `select_config` (blocked). The operational
+`minos_engine_db` remains at `0005` and no operational data is created. (Accepted and implemented:
+the `ExperimentPlan` builder + `plan_hash`/`job_key` formulas (F3-B), durable plan persistence
+(F3-C1), bounded job enqueue (F3-C2), and the non-mutating harness verifier + logical attack
+matrix (F3-D).)
