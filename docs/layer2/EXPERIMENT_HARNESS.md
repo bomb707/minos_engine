@@ -40,7 +40,13 @@ migrates it).
 
 ### F3-D accepted experiment-harness verifier (read-only)
 
-`experiments/harness_verifier.py` exposes the sole production entry point
+The verifier is **operational infrastructure, not a pure experiment-domain module** (it uses
+SQLAlchemy, the storage layer, `MINOS_DATABASE_URL`-derived connections and filesystem artifact
+reads), so it lives under `storage/`. The package dependency direction is one-way —
+`storage → experiments` contracts, never `experiments → storage` — enforced by the
+`experiments`-package AST boundary test in `tests/leakage/test_architecture_boundaries.py`.
+
+`storage/l2f_harness_verifier.py` exposes the sole production entry point
 `verify_accepted_experiment_harness() -> HarnessVerificationResult` (no arguments; no
 caller-provided plan / candidate set / hashes / database / partition / job keys / trust bundle).
 It obtains the database only through `MINOS_DATABASE_URL`, verifies (as the **first** access on

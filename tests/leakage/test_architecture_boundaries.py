@@ -200,3 +200,123 @@ def test_submission_and_parameter_space_reject_non_gatk():
             parameter_space_hash="a" * 64,
             stale=False,
         )
+
+
+# --------------------------------------------------------------------------- #
+# experiments package: pure domain only (storage -> experiments, never the reverse)
+# --------------------------------------------------------------------------- #
+def _called_names(path: Path) -> set[str]:
+    """Every callee name in the module (bare ``f()`` and attribute ``x.f()`` forms)."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name):
+                names.add(func.id)
+            elif isinstance(func, ast.Attribute):
+                names.add(func.attr)
+    return names
+
+
+def _attribute_names(path: Path) -> set[str]:
+    """Every attribute accessed in the module (e.g. the ``environ`` of ``os.environ``)."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+
+
+def _repo_rooted_constants(tree: ast.Module) -> set[str]:
+    """Module-level constants transitively derived from ``Path(__file__)``.
+
+    A path built from ``__file__`` is a committed, repository-owned location — it can never be
+    redirected by the environment, a caller argument or runtime state.
+    """
+    rooted: set[str] = set()
+    for _ in range(4):  # transitive closure (_REPO_ROOT -> _MANIFEST -> ...)
+        for node in tree.body:
+            if not isinstance(node, ast.Assign):
+                continue
+            names = {n.id for n in node.targets if isinstance(n, ast.Name)}
+            refs = {n.id for n in ast.walk(node.value) if isinstance(n, ast.Name)}
+            uses_file = any(
+                isinstance(n, ast.Name) and n.id == "__file__" for n in ast.walk(node.value)
+            )
+            if uses_file or (refs & rooted):
+                rooted |= names
+    return rooted
+
+
+def test_experiments_package_cannot_import_storage_or_database_drivers():
+    """The experiments package is a PURE domain layer: it defines the plan/candidate contracts
+    that the storage layer consumes. It must never import the storage layer or any database
+    driver, or the dependency direction would invert (storage -> experiments only)."""
+    forbidden = ("sqlalchemy", "alembic", "psycopg", "minos_engine.storage")
+    assert _violations(_package_files("experiments"), forbidden) == {}
+
+
+def test_experiments_package_performs_no_db_env_or_write_operations():
+    """AST guard: no engine creation, SQL text construction, environment parsing, raw ``open()``
+    or any write anywhere in the experiments package."""
+    banned_calls = {
+        "create_db_engine",
+        "create_engine",
+        "text",  # SQL text construction
+        "getenv",
+        "open",
+        "write_bytes",
+        "write_text",
+        "mkdir",
+        "unlink",
+    }
+    banned_attributes = {"environ"}
+    offenders: dict[str, set[str]] = {}
+    for f in _package_files("experiments"):
+        bad = (_called_names(f) & banned_calls) | (_attribute_names(f) & banned_attributes)
+        if bad:
+            offenders[str(f.relative_to(SRC))] = bad
+    assert offenders == {}
+
+
+def test_experiments_reads_only_committed_repo_rooted_artifacts():
+    """The only filesystem reads permitted in the domain package are the accepted constructor's
+    reads of COMMITTED repository evidence (the epoch-1 member manifest and the E4 train report).
+    Each such read must target a module-level constant transitively rooted at ``Path(__file__)``
+    — never an environment value, caller argument or runtime-derived path."""
+    readers = {"read_text", "read_bytes"}
+    offenders: dict[str, set[str]] = {}
+    for f in _package_files("experiments"):
+        tree = ast.parse(f.read_text(encoding="utf-8"))
+        rooted = _repo_rooted_constants(tree)
+        bad: set[str] = set()
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in readers
+            ):
+                receiver = node.func.value
+                if not (isinstance(receiver, ast.Name) and receiver.id in rooted):
+                    bad.add(ast.unparse(node.func))
+        if bad:
+            offenders[str(f.relative_to(SRC))] = bad
+    assert offenders == {}
+
+
+def test_dependency_direction_is_storage_to_experiments_only():
+    """The one-way dependency must hold in BOTH directions: storage genuinely consumes the pure
+    experiments contracts, and no experiments module imports storage."""
+    storage_to_experiments = {
+        str(f.relative_to(SRC))
+        for f in _package_files("storage")
+        for mod in _imports(f)
+        if mod.startswith("minos_engine.experiments")
+    }
+    assert storage_to_experiments, "expected storage to consume the pure experiments contracts"
+
+    experiments_to_storage = {
+        str(f.relative_to(SRC)): {
+            mod for mod in _imports(f) if mod.startswith("minos_engine.storage")
+        }
+        for f in _package_files("experiments")
+    }
+    assert {k: v for k, v in experiments_to_storage.items() if v} == {}

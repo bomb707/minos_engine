@@ -5,7 +5,7 @@ to the wrong member/config, tampered artifact bytes, non-train membership introd
 upstream), the fail-closed absent/ambiguous-graph behavior, the identity + revision ordering, the
 external proof that verification mutates nothing, and partial/complete job coverage over two
 uneven non-75 plans. Pure hash/contract attacks live in
-``tests/unit/experiments/test_harness_verifier_attacks.py``.
+``tests/unit/storage/test_l2f_harness_verifier_attacks.py``.
 
 Uses the dedicated ``isolated_pg_base_url`` cluster (see the plan-store suite for the CI-isolation
 rationale); the real operational store is never touched.
@@ -20,16 +20,16 @@ from typing import Any
 import pytest
 from sqlalchemy import Engine, text
 
-from minos_engine.experiments import harness_verifier as HV
-from minos_engine.experiments.harness_verifier import (
+from minos_engine.experiments.plan import iter_logical_jobs
+from minos_engine.storage import l2f_harness_verifier as HV
+from minos_engine.storage import l2f_job_enqueue as EN
+from minos_engine.storage.database import OperationalDatabaseIdentityError
+from minos_engine.storage.l2f_harness_verifier import (
     STATUS_FAIL,
     STATUS_PASS,
     HarnessGraphError,
     verify_accepted_experiment_harness,
 )
-from minos_engine.experiments.plan import iter_logical_jobs
-from minos_engine.storage import l2f_job_enqueue as EN
-from minos_engine.storage.database import OperationalDatabaseIdentityError
 from minos_engine.storage.l2f_plan_store import (
     PlanRevisionError,
     _persist_experiment_plan_with_trust,
