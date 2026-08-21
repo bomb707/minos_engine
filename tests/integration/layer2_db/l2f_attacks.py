@@ -1,10 +1,14 @@
 """The 47-case L2-F direct-SQL constraint attack manifest (F3-A4).
 
-Each case is a single, independently meaningful attempt to violate exactly one PostgreSQL
-invariant of the ``0006`` schema against the seeded valid graph. A case declares its target
-operation, the mutation, the expected SQLSTATE, and the expected named constraint or trigger
-mechanism. Cases are executed one at a time inside a SAVEPOINT and rolled back so they cannot
-contaminate one another (see ``test_l2f_attack_matrix``).
+Each case is a single, independently meaningful attempt to violate a PostgreSQL invariant of
+the ``0006`` schema against the seeded valid graph, reaching exactly one named mechanism — with
+one documented exception: ``member_duplicate_logical_membership`` is a three-UNIQUE equivalence
+class (a fully FK-valid duplicate plan member necessarily collides with all three member UNIQUE
+constraints at once), so it asserts SQLSTATE 23505 with an observed constraint from that set via
+``expect_any`` rather than one isolatable invariant. A case declares its target operation, the
+mutation, the expected SQLSTATE, and the expected named constraint or trigger mechanism. Cases
+are executed one at a time inside a SAVEPOINT and rolled back so they cannot contaminate one
+another (see ``test_l2f_attack_matrix``).
 
 Grouping and count are frozen: 12 plan + 10 plan-member + 10 config/payload + 15
 job/immutability = 47 unique cases. (The member group is 10: the three separately-named

@@ -3,8 +3,10 @@
 Migration ``0006_l2f_experiment_plan`` is the AUTHORITATIVE DDL. These Core ``Table``
 objects mirror it 1:1 for later F3-C inserts/selects, but live on a DEDICATED private
 ``l2f_metadata`` — they are **never** added to the L2-B declarative ``Base.metadata`` (that
-would silently change the accepted DB-READY storage fingerprint) and ``create_all`` /
-``drop_all`` are never called on them.
+would silently change the accepted DB-READY storage fingerprint). ``create_all`` / ``drop_all``
+are **never called on a production or operational path**; ``create_all`` is invoked **only** by
+the isolated mapping-parity scratch test (``test_l2f_tables_parity``), which materializes this
+private metadata into a throwaway scratch database to compare it against migration ``0006``.
 
 External L2-D/L2-E tables referenced by composite FKs are declared as minimal STUBS on the
 same private metadata (only the columns needed to resolve the FK targets), tagged

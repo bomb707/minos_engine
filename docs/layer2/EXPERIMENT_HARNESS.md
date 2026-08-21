@@ -5,17 +5,18 @@ experiment planning over the frozen L2-E train membership. It does **not** score
 select, optimize, train, or activate `Layer2Service.select_config`. `HARNESS-READY` (F7)
 is not implemented and is **not** claimed anywhere below.
 
-## Scope of this document (F3-A) — COMPLETE
+## Scope of this document (F3-A) — foundation complete, inventory pending owner acceptance
 
-**The F3-A database foundation is complete.** It comprises migration `0006_l2f_experiment_plan`
-(frozen by its byte SHA and a domain-separated contract hash), the private SQLAlchemy Core
-table mappings, an exhaustive frozen static schema inventory proven equal to the live schema,
-the 47-case direct-SQL constraint attack matrix with isolation proofs, and a populated
-`0005↔0006` lifecycle that restores the exact upstream data and `0005` structure/security.
-The pure `ExperimentPlan` builder (F3-B), persistence + bounded enqueue (F3-C), the Python
-plan verifier and its logical attack matrix (F3-D), and F4–F7 are **unimplemented and
-unauthorized**. `HARNESS-READY` (F7) is **not** issued, and `Layer2Service.select_config`
-remains blocked.
+**The F3-A database foundation is complete**, with the exhaustive static inventory **frozen
+pending owner acceptance of this corrective commit.** It comprises migration
+`0006_l2f_experiment_plan` (frozen by its byte SHA and a domain-separated contract hash), the
+private SQLAlchemy Core table mappings, an exhaustive frozen static schema inventory (raw +
+effective ACLs) proven equal to the live schema, the 47-case direct-SQL constraint attack
+matrix with isolation proofs, and a populated `0005↔0006` lifecycle that restores the exact
+upstream data and the full normalized `0005` structure/security across every MINOS schema. The
+pure `ExperimentPlan` builder (F3-B), persistence + bounded enqueue (F3-C), the Python plan
+verifier and its logical attack matrix (F3-D), and F4–F7 are **unimplemented and unauthorized**.
+`HARNESS-READY` (F7) is **not** issued, and `Layer2Service.select_config` remains blocked.
 
 ### Migration 0006 frozen by byte SHA + contract hash
 
@@ -48,14 +49,21 @@ mapping's.
 
 ### Exhaustive static + live schema equality
 
-`storage/l2f_introspect.py` is a reusable read-only normalized introspector built entirely
-from `pg_catalog` + `aclexplode` (never `information_schema` grant views). The frozen
-owner-reviewed `L2F_STATIC_INVENTORY` enumerates every owned table's ordered
-columns/types/nullability/defaults, every PK/UNIQUE/CHECK/FK with full definitions and options,
-every index, the six composite targets, the six triggers, the job function, ownership and exact
-ACLs, and the absence of application-role table grants. `test_l2f_static_inventory` proves live
-`0006` equals the frozen inventory exactly and that an explicit `0005→0006→0005→0006` lifecycle
-re-derives it and restores the captured normalized `0005` state exactly.
+`tests/integration/layer2_db/l2f_introspect.py` is a reusable read-only normalized
+introspector (**test infrastructure**, not a production module) built entirely from
+`pg_catalog` + `aclexplode` over `COALESCE(acl, acldefault(...))` (never `information_schema`
+grant views). The **frozen static inventory pending owner acceptance** `L2F_STATIC_INVENTORY`
+enumerates every owned table's ordered columns/types/nullability/defaults, every PK/UNIQUE/CHECK/FK
+with full definitions and options, every index, the six composite targets, the six triggers, the
+job function, ownership, and both **raw and effective** ACLs (so the job function's NULL raw ACL
+surfaces its implicit PUBLIC EXECUTE and the owned tables' absence of effective application-role
+or PUBLIC grants is explicit). `test_l2f_static_inventory` proves live `0006` equals the frozen
+inventory exactly, with a mutation matrix over every nested section, the revision lineage, each
+prior-migration SHA, the migration SHA and the static constants, and an explicit
+`0005→0006→0005→0006` lifecycle that re-derives it and restores the captured normalized `0005`
+state exactly. `test_l2f_introspect_regressions` proves the effective-ACL facts on a live schema
+(incl. sealed-test views remaining ungranted) and that identically-named indexes in two schemas
+do not cross-contaminate.
 
 ### Curated 47-case behavioral attack matrix
 
@@ -75,8 +83,12 @@ hash and matrix index — so it asserts SQLSTATE `23505` with an observed constr
 set, not one isolatable invariant. Positive controls (permitted job status/claim updates
 preserve scientific identity; every table accepts a valid new row) and the populated
 `0005↔0006` lifecycle (`test_l2f_populated_lifecycle`) — which proves a downgrade preserves the
-complete upstream row snapshot and the full `0005` ownership/grant/role/constraint/index/ACL
-state exactly — are included.
+complete upstream row snapshot and restores the full normalized `0005` state across **every
+MINOS schema** (catalog, profiling, experiments, evaluation, models, runtime, audit): every
+relation kind incl. **views** (definitions, security_barrier, check_option), constraints,
+indexes, triggers, functions, raw + effective ACLs for schemas/tables/views/functions/columns,
+default ACLs, roles (with membership/admin/inherit/set options), the database and the alembic
+revision — are included.
 
 The operational `minos_engine_db` remains at `0005`; `0006` is never applied operationally in
 any F3-A step. F3-B and later stages remain unauthorized.

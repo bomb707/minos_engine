@@ -5,11 +5,15 @@ destructive teardown of only the L2-F stage:
 
 * a **complete** deterministic snapshot of every seeded upstream row (all columns, PK order)
   is byte/logically unchanged across the downgrade and re-upgrade; and
-* the **full normalized structure + security state** — captured with the shared introspector
-  (``full_structural_state``), which uses raw ``pg_catalog`` + ``aclexplode`` (never
-  ``information_schema`` grant views) and therefore includes PUBLIC, grantor, grantee, grant
-  option, table/schema/function ACLs, default ACLs, function signatures and role-membership
-  options — is restored exactly.
+* the **full normalized structure + security state across every MINOS schema** (catalog,
+  profiling, experiments, evaluation, models, runtime, audit) — captured with the shared
+  introspector (``full_structural_state``), which uses ``pg_catalog`` + ``aclexplode`` over
+  ``COALESCE(acl, acldefault(...))`` (never ``information_schema`` grant views) and therefore
+  covers every relation kind including **views** (definitions, security_barrier, check_option),
+  constraints, indexes, triggers, functions, raw + **effective** ACLs (PUBLIC, grantor,
+  grantee, grant option) for schemas/tables/views/functions/columns, default ACLs, roles (with
+  membership admin/inherit/set options), the database and the alembic revision — is restored
+  exactly.
 
 Post-downgrade it also proves the five L2-F tables, six composite targets, six L2-F triggers
 and the L2-F job function are gone while shared pre-0006 functions survive.
@@ -59,8 +63,8 @@ _L2F_TRIGGERS = (
     "trg_l2f_jobs_identity_immutable",
     "trg_l2f_jobs_no_delete",
 )
-_SCHEMAS = ["profiling", "catalog", "experiments"]
 _ROLES = ["minos_admin", "minos_live", "minos_runner", "minos_trainer", "minos_evaluator"]
+_DBNAME = "minos_l2f_populated"
 
 
 def _scalar(engine: Engine, sql: str, **p: object) -> Any:
@@ -78,8 +82,9 @@ def _capture_upstream_rows(engine: Engine) -> dict[str, list[dict]]:
 
 
 def _capture_structural(engine: Engine) -> dict[str, Any]:
+    # exhaustive normalized state across ALL MINOS schemas (introspector uses MINOS_SCHEMAS).
     with engine.connect() as c:
-        return full_structural_state(c, _SCHEMAS, _ROLES)
+        return full_structural_state(c, _ROLES, dbname=_DBNAME)
 
 
 def _l2f_table_count(engine: Engine) -> int:

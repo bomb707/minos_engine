@@ -1,23 +1,24 @@
 """Frozen contract for the L2-F F3-A migration ``0006_l2f_experiment_plan``.
 
 Binds the additive experiment-plan migration's identity: revision lineage, the exact five
-canonical tables and six external mapping stubs, the additive composite-UNIQUE targets on
-the immutable 0004/0005 tables, the declarative composite foreign keys that enforce the
-train lineage, the immutability triggers, the L2-F job identity function, and the byte
-SHA-256 of every accepted prior migration (0001-0005).
+canonical tables and six external mapping stubs, the additive composite-UNIQUE targets on the
+immutable 0004/0005 tables, the declarative composite foreign keys, the immutability triggers,
+the L2-F job identity function, and the byte SHA-256 of every accepted prior migration.
 
-F3-A closure adds an **exhaustive, frozen, owner-reviewed static inventory**
+F3-A closure adds an **exhaustive frozen static inventory (pending owner acceptance)**
 (``L2F_STATIC_INVENTORY``) of the deployed 0006 schema — every owned table's ordered
-columns/types/nullability/defaults, every PK/UNIQUE/CHECK/FK with its full normalized
-definition and options, every explicit index, the six composite targets, the six triggers,
-the job function, ownership and exact ACLs, and the absence of application-role table grants.
-The inventory is static data captured once from a live scratch upgrade and reviewed; tests
-re-derive the live inventory and assert exact equality, and a live-schema equality test
-proves the deployed 0006 matches it byte-for-definition.
+columns/types/nullability/defaults, all constraints with full normalized definitions and
+options, all indexes, the six composite targets, the six triggers, the job function, ownership,
+raw + **effective** ACLs (via ``aclexplode`` over ``COALESCE(acl, acldefault(...))``), and the
+absence of effective application-role/PUBLIC table grants. The inventory was captured once from
+a live scratch upgrade using the read-only introspector at
+``tests/integration/layer2_db/l2f_introspect.py``; tests re-derive the live inventory and assert
+exact equality. Until this corrective commit is reviewed and explicitly accepted, treat this as
+"frozen static inventory pending owner acceptance", not owner-reviewed.
 
 ``L2F_MIGRATION_SHA256`` freezes the migration file bytes and ``L2F_CONTRACT_HASH`` is a
-domain-separated canonical hash over the migration SHA, revision lineage, accepted prior
-migration hashes and the full static inventory (no self-reference in its preimage).
+domain-separated canonical hash over the migration SHA + revision lineage + accepted prior
+migration hashes + the full static inventory (no self-reference in its preimage).
 """
 
 from __future__ import annotations
@@ -48,9 +49,12 @@ __all__ = [
     "L2F_STATIC_INVENTORY",
     "L2F_MIGRATION_SHA256",
     "L2F_CONTRACT_HASH",
+    "CONTRACT_DOMAIN",
+    "CONTRACT_VERSION",
     "l2f_contract_hash",
     "migration_file_sha256",
     "compute_migration_sha256",
+    "contract_preimage",
     "compute_contract_hash",
 ]
 
@@ -58,8 +62,7 @@ L2F_MIGRATION_REVISION = "0006_l2f_experiment_plan"
 L2F_DOWN_REVISION = "0005_l2e_feature_view"
 L2F_MIGRATION_FILE = "migrations/versions/0006_l2f_experiment_plan.py"
 
-#: The five canonical L2-F tables (experiments schema). Legacy jobs/results/profiles
-#: are NOT touched and are not part of this set.
+#: The five canonical L2-F tables (experiments schema).
 L2F_TABLES = (
     "l2f_experiment_plans",
     "l2f_experiment_plan_members",
@@ -81,8 +84,7 @@ L2F_EXTERNAL_STUB_TABLES = (
 #: The L2-F job scientific-identity immutability function.
 L2F_JOB_FUNCTION = "experiments.minos_l2f_reject_job_identity_change"
 
-#: Additive composite-UNIQUE targets added to immutable 0004/0005 tables (removed on
-#: downgrade) — the composite-FK targets that make the train lineage declarative.
+#: Additive composite-UNIQUE targets added to immutable 0004/0005 tables (removed on downgrade).
 L2F_COMPOSITE_TARGETS = (
     ("profiling", "feature_matrices", "uq_l2f_feature_matrices_composite"),
     ("profiling", "profile_snapshots", "uq_l2f_profile_snapshots_composite"),
@@ -160,9 +162,9 @@ L2F_INVENTORY: dict[str, object] = {
 }
 
 # --------------------------------------------------------------------------- #
-# Exhaustive frozen static inventory (owner-reviewed; captured once from a live
-# scratch 0006 upgrade via tests/integration/layer2_db/l2f_introspect.py).
-# Tests re-derive the live inventory and assert exact equality against this literal.
+# Exhaustive frozen static inventory (pending owner acceptance), captured once from a live
+# scratch 0006 upgrade via tests/integration/layer2_db/l2f_introspect.py with raw + effective
+# ACLs. Tests re-derive the live inventory and assert exact equality against this literal.
 # --------------------------------------------------------------------------- #
 _L2F_LIVE_INVENTORY_JSON = """{
  "composite_targets": [
@@ -249,7 +251,40 @@ _L2F_LIVE_INVENTORY_JSON = """{
  ],
  "experiments_schema": [
   {
-   "acl": [
+   "acl_effective": [
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "CREATE"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "USAGE"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_evaluator",
+     "grantor": "minos_admin",
+     "privilege": "USAGE"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_runner",
+     "grantor": "minos_admin",
+     "privilege": "USAGE"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_trainer",
+     "grantor": "minos_admin",
+     "privilege": "USAGE"
+    }
+   ],
+   "acl_is_default": false,
+   "acl_raw": [
     {
      "grantable": false,
      "grantee": "minos_admin",
@@ -287,8 +322,22 @@ _L2F_LIVE_INVENTORY_JSON = """{
  ],
  "job_function": [
   {
-   "acl": [],
+   "acl_effective": [
+    {
+     "grantable": false,
+     "grantee": "PUBLIC",
+     "grantor": "minos_admin",
+     "privilege": "EXECUTE"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "EXECUTE"
+    }
+   ],
    "acl_is_default": true,
+   "acl_raw": [],
    "body_md5": "7315057dc52f51d62e0b08b51aa1ac25",
    "config": [
     "search_path=pg_catalog"
@@ -1481,7 +1530,7 @@ _L2F_LIVE_INVENTORY_JSON = """{
  ],
  "owned_tables": {
   "experiments.l2f_config_payloads": {
-   "acl": [
+   "acl_effective": [
     {
      "grantable": false,
      "grantee": "minos_admin",
@@ -1526,6 +1575,51 @@ _L2F_LIVE_INVENTORY_JSON = """{
     }
    ],
    "acl_is_default": false,
+   "acl_raw": [
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "DELETE"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "INSERT"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "REFERENCES"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "SELECT"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "TRIGGER"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "TRUNCATE"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "UPDATE"
+    }
+   ],
+   "column_acls": [],
    "columns": [
     {
      "collation": null,
@@ -1598,12 +1692,17 @@ _L2F_LIVE_INVENTORY_JSON = """{
      "type": "timestamp with time zone"
     }
    ],
+   "kind": "table",
    "owner": "minos_admin",
    "persistence": "permanent",
-   "rowsecurity": false
+   "reloptions": null,
+   "replica_identity": "default",
+   "rls_policies": [],
+   "rowsecurity": false,
+   "rowsecurity_forced": false
   },
   "experiments.l2f_experiment_jobs": {
-   "acl": [
+   "acl_effective": [
     {
      "grantable": false,
      "grantee": "minos_admin",
@@ -1648,6 +1747,51 @@ _L2F_LIVE_INVENTORY_JSON = """{
     }
    ],
    "acl_is_default": false,
+   "acl_raw": [
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "DELETE"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "INSERT"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "REFERENCES"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "SELECT"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "TRIGGER"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "TRUNCATE"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "UPDATE"
+    }
+   ],
+   "column_acls": [],
    "columns": [
     {
      "collation": null,
@@ -1750,12 +1894,17 @@ _L2F_LIVE_INVENTORY_JSON = """{
      "type": "timestamp with time zone"
     }
    ],
+   "kind": "table",
    "owner": "minos_admin",
    "persistence": "permanent",
-   "rowsecurity": false
+   "reloptions": null,
+   "replica_identity": "default",
+   "rls_policies": [],
+   "rowsecurity": false,
+   "rowsecurity_forced": false
   },
   "experiments.l2f_experiment_plan_configs": {
-   "acl": [
+   "acl_effective": [
     {
      "grantable": false,
      "grantee": "minos_admin",
@@ -1800,6 +1949,51 @@ _L2F_LIVE_INVENTORY_JSON = """{
     }
    ],
    "acl_is_default": false,
+   "acl_raw": [
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "DELETE"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "INSERT"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "REFERENCES"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "SELECT"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "TRIGGER"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "TRUNCATE"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "UPDATE"
+    }
+   ],
+   "column_acls": [],
    "columns": [
     {
      "collation": null,
@@ -1872,12 +2066,17 @@ _L2F_LIVE_INVENTORY_JSON = """{
      "type": "timestamp with time zone"
     }
    ],
+   "kind": "table",
    "owner": "minos_admin",
    "persistence": "permanent",
-   "rowsecurity": false
+   "reloptions": null,
+   "replica_identity": "default",
+   "rls_policies": [],
+   "rowsecurity": false,
+   "rowsecurity_forced": false
   },
   "experiments.l2f_experiment_plan_members": {
-   "acl": [
+   "acl_effective": [
     {
      "grantable": false,
      "grantee": "minos_admin",
@@ -1922,6 +2121,51 @@ _L2F_LIVE_INVENTORY_JSON = """{
     }
    ],
    "acl_is_default": false,
+   "acl_raw": [
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "DELETE"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "INSERT"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "REFERENCES"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "SELECT"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "TRIGGER"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "TRUNCATE"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "UPDATE"
+    }
+   ],
+   "column_acls": [],
    "columns": [
     {
      "collation": null,
@@ -2044,12 +2288,17 @@ _L2F_LIVE_INVENTORY_JSON = """{
      "type": "timestamp with time zone"
     }
    ],
+   "kind": "table",
    "owner": "minos_admin",
    "persistence": "permanent",
-   "rowsecurity": false
+   "reloptions": null,
+   "replica_identity": "default",
+   "rls_policies": [],
+   "rowsecurity": false,
+   "rowsecurity_forced": false
   },
   "experiments.l2f_experiment_plans": {
-   "acl": [
+   "acl_effective": [
     {
      "grantable": false,
      "grantee": "minos_admin",
@@ -2094,6 +2343,51 @@ _L2F_LIVE_INVENTORY_JSON = """{
     }
    ],
    "acl_is_default": false,
+   "acl_raw": [
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "DELETE"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "INSERT"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "REFERENCES"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "SELECT"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "TRIGGER"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "TRUNCATE"
+    },
+    {
+     "grantable": false,
+     "grantee": "minos_admin",
+     "grantor": "minos_admin",
+     "privilege": "UPDATE"
+    }
+   ],
+   "column_acls": [],
    "columns": [
     {
      "collation": null,
@@ -2306,9 +2600,14 @@ _L2F_LIVE_INVENTORY_JSON = """{
      "type": "timestamp with time zone"
     }
    ],
+   "kind": "table",
    "owner": "minos_admin",
    "persistence": "permanent",
-   "rowsecurity": false
+   "reloptions": null,
+   "replica_identity": "default",
+   "rls_policies": [],
+   "rowsecurity": false,
+   "rowsecurity_forced": false
   }
  },
  "owned_triggers": [
@@ -2369,13 +2668,10 @@ _L2F_LIVE_INVENTORY_JSON = """{
  ]
 }"""
 
-#: Exhaustive normalized inventory of every deployed L2-F schema object (owned tables +
-#: columns/types/defaults, all constraints with full definitions/options, all indexes,
-#: composite targets, triggers, job function, ownership + ACLs, no-app-role-grants).
+#: Exhaustive normalized inventory of every deployed L2-F schema object.
 L2F_LIVE_INVENTORY: dict[str, Any] = json.loads(_L2F_LIVE_INVENTORY_JSON)
 
-#: The complete frozen static inventory (static facts + the exhaustive live detail). This is
-#: the sole object hashed into L2F_CONTRACT_HASH's inventory section.
+#: The complete frozen static inventory (static facts + the exhaustive live detail).
 L2F_STATIC_INVENTORY: dict[str, Any] = {
     "schema_version": "l2f-static-inventory-v1",
     "revision": L2F_MIGRATION_REVISION,
@@ -2396,8 +2692,8 @@ L2F_STATIC_INVENTORY: dict[str, Any] = {
 #: Frozen byte SHA-256 of the authoritative migration file.
 L2F_MIGRATION_SHA256 = "1eb3a12b502a5f247a2dc662642fd71931dcada815923e95d18504220445c3c6"
 
-_CONTRACT_DOMAIN = "minos.l2f.migration-contract"
-_CONTRACT_VERSION = "v1"
+CONTRACT_DOMAIN = "minos.l2f.migration-contract"
+CONTRACT_VERSION = "v1"
 
 
 def compute_migration_sha256() -> str:
@@ -2405,26 +2701,52 @@ def compute_migration_sha256() -> str:
     return hashlib.sha256(Path(L2F_MIGRATION_FILE).read_bytes()).hexdigest()
 
 
-def compute_contract_hash(*, migration_sha256: str, inventory: dict[str, Any] | None = None) -> str:
+def contract_preimage(
+    *,
+    migration_sha256: str,
+    revision: str = L2F_MIGRATION_REVISION,
+    down_revision: str = L2F_DOWN_REVISION,
+    prior_migration_shas: dict[str, str] | None = None,
+    inventory: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the (non-self-referential) contract-hash preimage. All inputs are overridable so
+    mutation tests can perturb any field without monkeypatching module globals."""
+    return {
+        "domain": CONTRACT_DOMAIN,
+        "version": CONTRACT_VERSION,
+        "migration_sha256": migration_sha256,
+        "revision": revision,
+        "down_revision": down_revision,
+        "prior_migration_shas": ACCEPTED_PRIOR_MIGRATION_SHAS
+        if prior_migration_shas is None
+        else prior_migration_shas,
+        "inventory": L2F_STATIC_INVENTORY if inventory is None else inventory,
+    }
+
+
+def compute_contract_hash(
+    *,
+    migration_sha256: str,
+    revision: str = L2F_MIGRATION_REVISION,
+    down_revision: str = L2F_DOWN_REVISION,
+    prior_migration_shas: dict[str, str] | None = None,
+    inventory: dict[str, Any] | None = None,
+) -> str:
     """Domain-separated canonical hash over the migration SHA + revision lineage + prior
-    migration hashes + the full static inventory. The preimage never contains the contract
-    hash itself (no self-reference). ``inventory`` defaults to the frozen static inventory;
-    mutation tests pass a perturbed copy to prove every section is covered."""
+    migration hashes + the full static inventory."""
     return canonical_hash(
-        {
-            "domain": _CONTRACT_DOMAIN,
-            "version": _CONTRACT_VERSION,
-            "migration_sha256": migration_sha256,
-            "revision": L2F_MIGRATION_REVISION,
-            "down_revision": L2F_DOWN_REVISION,
-            "prior_migration_shas": ACCEPTED_PRIOR_MIGRATION_SHAS,
-            "inventory": L2F_STATIC_INVENTORY if inventory is None else inventory,
-        }
+        contract_preimage(
+            migration_sha256=migration_sha256,
+            revision=revision,
+            down_revision=down_revision,
+            prior_migration_shas=prior_migration_shas,
+            inventory=inventory,
+        )
     )
 
 
 #: Frozen contract hash over the migration bytes + full static inventory.
-L2F_CONTRACT_HASH = "3802f01c5873e08b3268462eb69861652c1cb4fef41fd8b21db394bb6193c318"
+L2F_CONTRACT_HASH = "c7a2e978857830ccff67821ded1196472d5f38baacb19a64352ec686ce74916b"
 
 
 def l2f_contract_hash(migration_file_sha256: str) -> str:
