@@ -25,6 +25,7 @@ GATK-only: the DeepVariant and bcftools inventories are never admitted. The endp
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -54,7 +55,7 @@ __all__ = [
     "LiveSpaceError",
     "LiveParameter",
     "GatkLiveParameterSpace",
-    "load_live_gatk_parameter_space",
+    "load_committed_live_gatk_parameter_space",
     "live_gatk_parameter_space",
     "live_parameter_space",
     "canonicalize_live_gatk_config",
@@ -103,8 +104,51 @@ _TYPES = ("int", "float", "bool", "enum")
 _COUPLED_MIN = "min_assembly_region_size"
 _COUPLED_MAX = "max_assembly_region_size"
 
+LIVE_SOURCE_SCHEMA = "l2f-gatk-source-object-v1"
+#: the EXACT committed source-artifact path the normalized manifest must name.
+LIVE_SOURCE_ARTIFACT_PATH = "manifests/l2f_gatk_source_object_v1.json"
+LIVE_MANIFEST_PATH = "manifests/l2f_gatk_parameter_space_v1.json"
+
+#: top-level fields of the committed SOURCE artifact; anything else is rejected.
+_ALLOWED_SOURCE_TOP_LEVEL = frozenset(
+    {
+        "schema_version",
+        "source_endpoint",
+        "retrieved_at",
+        "source_raw_response_sha256",
+        "note",
+        "tools_gatk",
+    }
+)
+#: fields of the captured ``tools_gatk`` object; anything else is rejected.
+_ALLOWED_TOOLS_GATK = frozenset({"options_key", "parameters"})
+
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_LIVE_SPACE_PATH = _REPO_ROOT / "manifests" / "l2f_gatk_parameter_space_v1.json"
+_LIVE_SPACE_PATH = _REPO_ROOT / LIVE_MANIFEST_PATH
+_LIVE_SOURCE_PATH = _REPO_ROOT / LIVE_SOURCE_ARTIFACT_PATH
+
+
+def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """``object_pairs_hook`` that rejects duplicate JSON keys instead of last-one-wins."""
+    seen: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in seen:
+            raise LiveSpaceError(f"duplicate JSON key {key!r} in a committed live-GATK artifact")
+        seen[key] = value
+    return seen
+
+
+def _parse_strict_json(raw: bytes, what: str) -> dict[str, Any]:
+    """Parse committed JSON bytes with duplicate-key rejection."""
+    try:
+        parsed = json.loads(raw.decode("utf-8"), object_pairs_hook=_no_duplicate_keys)
+    except LiveSpaceError:
+        raise
+    except Exception as exc:
+        raise LiveSpaceError(f"{what} is not valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise LiveSpaceError(f"{what} must be a JSON object")
+    return parsed
 
 
 class LiveSpaceError(ConfigValidationError):
@@ -386,8 +430,15 @@ def _require_provenance(document: dict[str, Any]) -> None:
         raise LiveSpaceError("retrieved_at must be a timezone-aware ISO-8601 UTC timestamp")
 
 
-def load_live_gatk_parameter_space(document: dict[str, Any]) -> GatkLiveParameterSpace:
-    """Parse + STRICTLY validate a live-space document (no I/O, no network).
+def _parse_live_space_document(document: dict[str, Any]) -> GatkLiveParameterSpace:
+    """PRIVATE structural parser — NON-AUTHORITATIVE.
+
+    It validates a live-space document's structure, registry agreement and self-hash, but it
+    performs NO provenance binding, so a caller-supplied document can never authorize the
+    production live domain. The accepted authority is
+    :func:`load_committed_live_gatk_parameter_space` (no arguments, committed paths only).
+
+    Structural validation (no I/O, no network).
 
     Self-hash consistency is necessary but never sufficient: after it, the document must also
     agree with the accepted GATK registry, present the exact type inventory, name the real
@@ -442,8 +493,137 @@ def load_live_gatk_parameter_space(document: dict[str, Any]) -> GatkLiveParamete
     return space
 
 
+def _validate_source_artifact(source: dict[str, Any]) -> dict[str, Any]:
+    """Strictly validate the committed source artifact and return its ``tools_gatk`` object."""
+    unknown = set(source) - _ALLOWED_SOURCE_TOP_LEVEL
+    if unknown:
+        raise LiveSpaceError(f"unknown source-artifact top-level fields: {sorted(unknown)}")
+    if source.get("schema_version") != LIVE_SOURCE_SCHEMA:
+        raise LiveSpaceError(
+            f"source artifact schema_version must be {LIVE_SOURCE_SCHEMA!r}, got "
+            f"{source.get('schema_version')!r}"
+        )
+    if source.get("source_endpoint") != LIVE_SOURCE_ENDPOINT:
+        raise LiveSpaceError(
+            f"source artifact source_endpoint must be {LIVE_SOURCE_ENDPOINT!r}, got "
+            f"{source.get('source_endpoint')!r}"
+        )
+    stamp = source.get("retrieved_at")
+    if not isinstance(stamp, str) or not is_iso8601_utc(stamp):
+        raise LiveSpaceError(
+            "source artifact retrieved_at must be a timezone-aware ISO-8601 UTC timestamp"
+        )
+    raw_sha = source.get("source_raw_response_sha256")
+    if not isinstance(raw_sha, str) or not _HEX64.fullmatch(raw_sha):
+        raise LiveSpaceError(
+            "source artifact source_raw_response_sha256 must be a lowercase 64-hex digest"
+        )
+    gatk = source.get("tools_gatk")
+    if not isinstance(gatk, dict):
+        raise LiveSpaceError("source artifact tools_gatk must be a JSON object")
+    unknown_gatk = set(gatk) - _ALLOWED_TOOLS_GATK
+    if unknown_gatk:
+        raise LiveSpaceError(f"unknown tools_gatk fields: {sorted(unknown_gatk)}")
+    if gatk.get("options_key") != LIVE_OPTIONS_KEY:
+        raise LiveSpaceError(
+            f"source artifact tools_gatk.options_key must be {LIVE_OPTIONS_KEY!r}, got "
+            f"{gatk.get('options_key')!r}"
+        )
+    params = gatk.get("parameters")
+    if not isinstance(params, list) or len(params) != LIVE_PARAMETER_COUNT:
+        raise LiveSpaceError(
+            f"source artifact must carry exactly {LIVE_PARAMETER_COUNT} GATK parameters, got "
+            f"{len(params) if isinstance(params, list) else type(params).__name__}"
+        )
+    return gatk
+
+
+def _require_artifact_agreement(manifest: dict[str, Any], source: dict[str, Any]) -> None:
+    """Provenance fields shared by the two committed artifacts must agree exactly."""
+    for field in ("source_endpoint", "retrieved_at", "source_raw_response_sha256"):
+        if manifest.get(field) != source.get(field):
+            raise LiveSpaceError(
+                f"committed artifacts disagree on {field!r}: manifest "
+                f"{manifest.get(field)!r} != source artifact {source.get(field)!r}"
+            )
+    if manifest.get("options_key") != source["tools_gatk"].get("options_key"):
+        raise LiveSpaceError("committed artifacts disagree on options_key")
+
+
+def load_committed_live_gatk_parameter_space() -> GatkLiveParameterSpace:
+    """THE accepted live-GATK loader — no arguments, no caller-supplied document.
+
+    Reads ONLY the two fixed committed repository paths, parses both with duplicate-key
+    rejection, and BINDS them: the manifest must name the exact source-artifact path, the
+    recomputed SHA-256 of the source artifact's committed bytes must equal the manifest's
+    ``source_gatk_object_sha256``, the shared provenance fields must agree, and every normalized
+    parameter must be RE-DERIVED from ``tools_gatk.parameters`` and equal the manifest's
+    scientific content exactly — including parameter order — with ``parameter_space_hash``
+    recomputed from that re-derived content.
+
+    Honest limitation: the complete raw HTTP response body is NOT committed, so
+    ``source_raw_response_sha256`` is RECORDED provenance that offline verification cannot
+    reconstruct. What offline verification does prove is that the normalized contract is bound to
+    the committed ``tools.gatk`` source artifact.
+    """
+    try:
+        manifest_bytes = _LIVE_SPACE_PATH.read_bytes()
+    except OSError as exc:
+        raise LiveSpaceError(f"committed live-GATK manifest is unreadable: {exc}") from exc
+    manifest = _parse_strict_json(manifest_bytes, "the committed live-GATK manifest")
+
+    if manifest.get("source_artifact_path") != LIVE_SOURCE_ARTIFACT_PATH:
+        raise LiveSpaceError(
+            f"source_artifact_path must be exactly {LIVE_SOURCE_ARTIFACT_PATH!r}, got "
+            f"{manifest.get('source_artifact_path')!r}"
+        )
+    try:
+        source_bytes = _LIVE_SOURCE_PATH.read_bytes()
+    except OSError as exc:
+        raise LiveSpaceError(
+            f"committed source artifact {LIVE_SOURCE_ARTIFACT_PATH} is unreadable: {exc}"
+        ) from exc
+
+    actual_sha = hashlib.sha256(source_bytes).hexdigest()
+    if manifest.get("source_gatk_object_sha256") != actual_sha:
+        raise LiveSpaceError(
+            f"source_gatk_object_sha256 {manifest.get('source_gatk_object_sha256')!r} does not "
+            f"bind the committed source artifact bytes (actual {actual_sha!r})"
+        )
+
+    source = _parse_strict_json(source_bytes, "the committed live-GATK source artifact")
+    gatk = _validate_source_artifact(source)
+    _require_artifact_agreement(manifest, source)
+
+    # RE-DERIVE the scientific content from the committed source bytes and require exact
+    # equality with the manifest's own scientific content (parameter order included).
+    rederived = {
+        "schema_version": LIVE_SPACE_SCHEMA,
+        "source_endpoint": LIVE_SOURCE_ENDPOINT,
+        "options_key": LIVE_OPTIONS_KEY,
+        "caller": LIVE_CALLER,
+        "parameters": [_normalize_source_parameter(p) for p in gatk["parameters"]],
+    }
+    declared = {
+        key: manifest.get(key)
+        for key in ("schema_version", "source_endpoint", "options_key", "caller", "parameters")
+    }
+    if declared != rederived:
+        raise LiveSpaceError(
+            "the normalized manifest does not equal the content re-derived from the committed "
+            "source artifact"
+        )
+    rederived_hash = sha256_hex(canonical_json_bytes(rederived))
+    if manifest.get("parameter_space_hash") != rederived_hash:
+        raise LiveSpaceError(
+            f"parameter_space_hash {manifest.get('parameter_space_hash')!r} does not bind the "
+            f"re-derived source content (recomputed {rederived_hash!r})"
+        )
+    return _parse_live_space_document(manifest)
+
+
 def _load_committed() -> GatkLiveParameterSpace:
-    return load_live_gatk_parameter_space(json.loads(_LIVE_SPACE_PATH.read_text(encoding="utf-8")))
+    return load_committed_live_gatk_parameter_space()
 
 
 _COMMITTED: GatkLiveParameterSpace | None = None

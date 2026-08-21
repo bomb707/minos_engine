@@ -207,12 +207,34 @@ candidate.config.parameter_space_hash
   == b2d401918084d64023305d9262baf5011a89fe517bee4e0bd33af79fb14aee2e
 ```
 
-**Provenance is independently reproducible.** `manifests/l2f_gatk_source_object_v1.json` commits
-the exact captured `tools.gatk` object plus the SHA-256 of the complete raw HTTP response body
-(`ba565138211cff62…`) and the real UTC retrieval timestamp. The normalized snapshot's parameters
-are **derived** from those committed source bytes, and a test re-derives them to reproduce both
-the parameter list and `parameter_space_hash`. `source_gatk_object_sha256` is the byte hash of the
-committed source artifact — it is never described as a raw HTTP-body hash.
+**Provenance is bound to the committed source artifact.**
+`load_committed_live_gatk_parameter_space()` is the accepted loader: it takes **no arguments** and
+reads only the two fixed committed paths — `manifests/l2f_gatk_parameter_space_v1.json` and
+`manifests/l2f_gatk_source_object_v1.json` — parsing both with **duplicate-key rejection**. It then
+*binds* them:
+
+1. the manifest's `source_artifact_path` must equal exactly `manifests/l2f_gatk_source_object_v1.json`;
+2. the recomputed SHA-256 of the source artifact's committed **bytes** must equal
+   `source_gatk_object_sha256` (`14b97a52ee82e05e…`);
+3. the source artifact must strictly validate (exact `schema_version`, exact `source_endpoint`,
+   valid UTC `retrieved_at`, lowercase 64-hex `source_raw_response_sha256`, `options_key =
+   gatk_options`, exactly 25 parameters, no unknown top-level or `tools_gatk` fields);
+4. `source_endpoint`, `retrieved_at`, `source_raw_response_sha256` and `options_key` must **agree
+   between the two artifacts**;
+5. every normalized parameter is **re-derived** from `tools_gatk.parameters` and must equal the
+   manifest's scientific content exactly — parameter order included;
+6. `parameter_space_hash` is recomputed from that re-derived content.
+
+A caller-supplied document therefore cannot authorize the production live domain. The generic
+document parser remains as the **private, non-authoritative** `_parse_live_space_document`
+(structure, registry agreement and self-hash only — no provenance binding).
+
+**Honest limitation.** The complete raw HTTP response body is **not committed**, so
+`source_raw_response_sha256` (`ba565138211cff62…`) is *recorded provenance* that offline
+verification cannot reconstruct or independently reproduce. What offline verification *does*
+prove is that the normalized contract is bound, byte-for-byte, to the committed `tools.gatk`
+source artifact. `source_gatk_object_sha256` is the byte hash of that committed artifact and is
+never described as a raw HTTP-body hash.
 
 **Fail-closed loader.** `load_live_gatk_parameter_space` treats self-hash consistency as necessary
 but never sufficient. After it, the document must name the real endpoint, use `options_key =

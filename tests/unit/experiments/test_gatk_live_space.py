@@ -1,5 +1,9 @@
 """L2-F committed live-GATK parameter-space contract — pure behavioral tests (no network).
 
+These exercise the PRIVATE structural parser ``_parse_live_space_document`` (shape, registry
+agreement, self-hash). Provenance BINDING to the committed source artifact is the accepted
+loader's job and is covered by ``test_gatk_live_provenance.py``.
+
 Nothing here performs I/O beyond reading the COMMITTED snapshot through the module's own
 repo-rooted constant; the endpoint is never contacted.
 """
@@ -24,9 +28,9 @@ from minos_engine.experiments.gatk_live_space import (
     LOCAL_EXECUTION_PARAMETERS,
     GatkLiveParameterSpace,
     LiveSpaceError,
+    _parse_live_space_document,
     check_endpoint_drift,
     live_gatk_parameter_space,
-    load_live_gatk_parameter_space,
 )
 
 _SPACE = live_gatk_parameter_space()
@@ -53,7 +57,7 @@ def _reload(doc: dict[str, Any]) -> GatkLiveParameterSpace:
     from minos_engine.common.hashing import sha256_hex
 
     doc["parameter_space_hash"] = sha256_hex(canonical_json_bytes(scientific))
-    return load_live_gatk_parameter_space(doc)
+    return _parse_live_space_document(doc)
 
 
 # --------------------------------------------------------------------------- #
@@ -123,7 +127,7 @@ def test_forged_hash_is_rejected() -> None:
     doc = _doc()
     doc["parameter_space_hash"] = "0" * 64
     with pytest.raises(LiveSpaceError):
-        load_live_gatk_parameter_space(doc)
+        _parse_live_space_document(doc)
 
 
 @pytest.mark.parametrize(
@@ -348,7 +352,7 @@ def test_drift_check_requires_a_gatk_object() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# B: fail-closed PRODUCTION loader — every negative calls load_live_gatk_parameter_space()
+# B: fail-closed PRODUCTION loader — every negative calls _parse_live_space_document()
 # --------------------------------------------------------------------------- #
 def _rehashed(mutate: Any) -> dict[str, Any]:
     """A SELF-CONSISTENTLY rehashed document: the mutation is applied and the document's own
@@ -367,14 +371,14 @@ def _rehashed(mutate: Any) -> dict[str, Any]:
 
 
 def test_committed_document_still_loads_through_the_production_loader() -> None:
-    space = load_live_gatk_parameter_space(_doc())
+    space = _parse_live_space_document(_doc())
     assert space.parameter_space_hash == _SPACE.parameter_space_hash
     assert len(space.parameters) == 25
 
 
 def test_rehashed_24_parameter_document_is_rejected() -> None:
     with pytest.raises(LiveSpaceError):
-        load_live_gatk_parameter_space(_rehashed(lambda d: d["parameters"].pop()))
+        _parse_live_space_document(_rehashed(lambda d: d["parameters"].pop()))
 
 
 def test_rehashed_26th_parameter_is_rejected() -> None:
@@ -384,7 +388,7 @@ def test_rehashed_26th_parameter_is_rejected() -> None:
         d["parameters"].append(extra)
 
     with pytest.raises(LiveSpaceError):
-        load_live_gatk_parameter_space(_rehashed(_add))
+        _parse_live_space_document(_rehashed(_add))
 
 
 def test_rehashed_renamed_or_unknown_parameter_is_rejected() -> None:
@@ -392,7 +396,7 @@ def test_rehashed_renamed_or_unknown_parameter_is_rejected() -> None:
         d["parameters"][0]["name"] = "min_base_quality_score_v2"
 
     with pytest.raises(LiveSpaceError):
-        load_live_gatk_parameter_space(_rehashed(_rename))
+        _parse_live_space_document(_rehashed(_rename))
 
 
 def test_rehashed_wrong_registry_type_is_rejected() -> None:
@@ -403,7 +407,7 @@ def test_rehashed_wrong_registry_type_is_rejected() -> None:
                 p["min"], p["max"], p["default"] = 2.0, 10.0, 2.0
 
     with pytest.raises(LiveSpaceError):
-        load_live_gatk_parameter_space(_rehashed(_retype))
+        _parse_live_space_document(_rehashed(_retype))
 
 
 def test_rehashed_wrong_registry_default_is_rejected() -> None:
@@ -413,7 +417,7 @@ def test_rehashed_wrong_registry_default_is_rejected() -> None:
                 p["default"] = 5
 
     with pytest.raises(LiveSpaceError):
-        load_live_gatk_parameter_space(_rehashed(_redefault))
+        _parse_live_space_document(_rehashed(_redefault))
 
 
 def test_rehashed_forged_source_endpoint_is_rejected() -> None:
@@ -421,7 +425,7 @@ def test_rehashed_forged_source_endpoint_is_rejected() -> None:
         d["source_endpoint"] = "https://evil.example/scoring/parameter-ranges"
 
     with pytest.raises(LiveSpaceError):
-        load_live_gatk_parameter_space(_rehashed(_forge))
+        _parse_live_space_document(_rehashed(_forge))
 
 
 def test_rehashed_duplicate_name_is_rejected() -> None:
@@ -429,7 +433,7 @@ def test_rehashed_duplicate_name_is_rejected() -> None:
         d["parameters"][1] = dict(d["parameters"][0])
 
     with pytest.raises(LiveSpaceError):
-        load_live_gatk_parameter_space(_rehashed(_dupe))
+        _parse_live_space_document(_rehashed(_dupe))
 
 
 @pytest.mark.parametrize(
@@ -440,7 +444,7 @@ def test_malformed_provenance_hashes_are_rejected(field: str, bad: Any) -> None:
     doc = _doc()
     doc[field] = bad
     with pytest.raises(LiveSpaceError):
-        load_live_gatk_parameter_space(doc)
+        _parse_live_space_document(doc)
 
 
 @pytest.mark.parametrize("bad", ["", "2026-08-21", "2026-08-21T15:35:23", "not-a-time", None, 17])
@@ -448,14 +452,14 @@ def test_missing_or_invalid_provenance_timestamp_is_rejected(bad: Any) -> None:
     doc = _doc()
     doc["retrieved_at"] = bad
     with pytest.raises(LiveSpaceError):
-        load_live_gatk_parameter_space(doc)
+        _parse_live_space_document(doc)
 
 
 def test_unknown_top_level_field_is_rejected_not_silently_trusted() -> None:
     doc = _doc()
     doc["extra_authority"] = {"trust": True}
     with pytest.raises(LiveSpaceError):
-        load_live_gatk_parameter_space(doc)
+        _parse_live_space_document(doc)
 
 
 def test_wrong_type_inventory_is_rejected() -> None:
@@ -469,7 +473,7 @@ def test_wrong_type_inventory_is_rejected() -> None:
                 p["default"] = "A"
 
     with pytest.raises(LiveSpaceError):
-        load_live_gatk_parameter_space(_rehashed(_swap))
+        _parse_live_space_document(_rehashed(_swap))
 
 
 # --------------------------------------------------------------------------- #
