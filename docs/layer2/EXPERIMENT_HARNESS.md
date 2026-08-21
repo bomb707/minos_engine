@@ -79,8 +79,15 @@ bound parameters:
 | function | grant |
 |---|---|
 | `experiments.minos_l2f_claim_next_job(text, text)` | EXECUTE → `minos_runner`, `minos_admin` |
-| `experiments.minos_l2f_start_job(uuid, text)` | EXECUTE → `minos_runner`, `minos_admin` |
-| `experiments.minos_l2f_release_job(uuid, text)` | EXECUTE → `minos_runner`, `minos_admin` |
+| `experiments.minos_l2f_start_job(text, uuid, text)` | EXECUTE → `minos_runner`, `minos_admin` |
+| `experiments.minos_l2f_release_job(text, uuid, text)` | EXECUTE → `minos_runner`, `minos_admin` |
+
+All three take the plan hash as their first argument: **start and release are accepted-plan-bound**
+and never transition an arbitrary job UUID. Each resolves the plan from that hash and updates only
+when `job.id` matches the request **and** `job.plan_id` equals the resolved plan **and** the job is
+in the required state **and** `job.claimed_by` equals the requesting worker. A job belonging to any
+other plan is rejected with a typed error and leaves every row untouched — even when the same
+worker legitimately holds claims on both plans.
 
 EXECUTE is revoked from `PUBLIC`; `minos_live`, `minos_trainer` and `minos_evaluator` are denied.
 `minos_runner` receives **no** direct `SELECT`/`INSERT`/`UPDATE`/`DELETE` grant on
@@ -95,15 +102,31 @@ plan / plan hash / candidate set / database / partition / trust bundle, obtains 
 through `MINOS_DATABASE_URL`, verifies the exact transaction connection with
 `verify_operational_database_identity` and requires live revision exactly `0007_l2f_job_claiming`
 before any stage query (never running Alembic), constructs the accepted plan internally, and
-verifies the persisted plan identity before claiming. It never touches legacy `experiments.jobs`,
+verifies the complete persisted accepted-plan identity before claiming **and before every start
+or release** — passing that plan's hash to the database function so the transition can only touch
+a job of the accepted plan. It never touches legacy `experiments.jobs`,
 never executes GATK and never creates a result artifact. `worker_id` is validated against a frozen
 conservative contract (1–64 chars, `^[A-Za-z0-9][A-Za-z0-9._:-]*$`) **before** any database
 access, and bound parameters are used regardless. Private `_*_with_trust` counterparts serve
-scratch/non-75 tests only.
+scratch/non-75 tests only; they take the trusted plan and apply the same plan binding.
 
-Because F3-C1 persistence and F3-C2 enqueue each pin live revision exactly
-`0006_l2f_experiment_plan`, the operational sequence is: persist + enqueue at `0006`, then upgrade
-to `0007` to claim.
+**Revision compatibility.** `0007` is purely additive over `0006` — it adds a trigger and three
+functions and changes no table, column or scientific identity — so every F3 graph operation
+remains fully available at `0007`. The compatible set is an **explicit, closed** enumeration
+(`L2F_GRAPH_COMPATIBLE_REVISIONS` in `storage/l2f_plan_store.py`), never "any later revision":
+
+| boundary | accepted live revisions |
+|---|---|
+| F3-C1 `persist_accepted_experiment_plan` (incl. idempotent replay) | `0006`, `0007` |
+| F3-C2 `enqueue_accepted_experiment_jobs` (incl. additional bounded batches) | `0006`, `0007` |
+| F3-D `verify_accepted_experiment_harness` | `0006`, `0007` |
+| F4 `claim` / `start` / `release` | `0007` only |
+| anything else (`0005`, unknown, future) | rejected |
+
+There is therefore **no requirement to persist or enqueue before upgrading**: a database taken
+directly to `0007` supports persist → enqueue → enqueue again → verify → claim → verify with no
+downgrade. No boundary ever runs Alembic, and the exact-connection identity + revision checks
+remain the first database accesses.
 
 ### F3-D accepted experiment-harness verifier (read-only)
 

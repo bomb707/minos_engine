@@ -41,7 +41,10 @@ from tests.integration.layer2_db.conftest import (
     alembic_upgrade,
     scratch_database,
 )
-from tests.integration.layer2_db.l2f_plan_seed import seed_upstream_for_plan
+from tests.integration.layer2_db.l2f_plan_seed import (
+    seed_upstream_for_plan,
+    split_snapshot_id_for,
+)
 from tests.integration.layer2_db.test_l2f_plan_store import (
     _CS,
     _SNAPSHOT_A,
@@ -59,8 +62,8 @@ _F4 = "0007_l2f_job_claiming"
 _OP_DB = "minos_engine_db"
 
 _CLAIM_SIG = "experiments.minos_l2f_claim_next_job(text, text)"
-_START_SIG = "experiments.minos_l2f_start_job(uuid, text)"
-_RELEASE_SIG = "experiments.minos_l2f_release_job(uuid, text)"
+_START_SIG = "experiments.minos_l2f_start_job(text, uuid, text)"
+_RELEASE_SIG = "experiments.minos_l2f_release_job(text, uuid, text)"
 _F4_SIGS = (_CLAIM_SIG, _START_SIG, _RELEASE_SIG)
 _JOBS = "experiments.l2f_experiment_jobs"
 
@@ -452,25 +455,25 @@ def test_start_and_release_only_for_the_owning_worker(
             # a different worker can neither start nor release the claim.
             for fn in (JC._start_job_with_trust, JC._release_job_with_trust):
                 with pytest.raises(InvalidJobTransitionError):
-                    fn(engine, job_id=jid, worker_id="intruder-9")
+                    fn(engine, plan, job_id=jid, worker_id="intruder-9")
             assert _job_state(engine, got.job_id) == ("CLAIMED", "owner-1", False)
 
             # the owner may start: CLAIMED -> RUNNING, claim metadata preserved.
-            started = JC._start_job_with_trust(engine, job_id=jid, worker_id="owner-1")
+            started = JC._start_job_with_trust(engine, plan, job_id=jid, worker_id="owner-1")
             assert started.status == "RUNNING" and started.claimed_by == "owner-1"
             assert _job_state(engine, got.job_id) == ("RUNNING", "owner-1", False)
 
             # RUNNING may not be released or re-started in F4 (only CLAIMED can transition).
             for fn in (JC._start_job_with_trust, JC._release_job_with_trust):
                 with pytest.raises(InvalidJobTransitionError):
-                    fn(engine, job_id=jid, worker_id="owner-1")
+                    fn(engine, plan, job_id=jid, worker_id="owner-1")
             assert _job_state(engine, got.job_id) == ("RUNNING", "owner-1", False)
 
             # a second job: the owner releases it back to PENDING, clearing both claim fields.
             other = _claim(engine, plan, "owner-2")
             assert other is not None
             released = JC._release_job_with_trust(
-                engine, job_id=uuid.UUID(other.job_id), worker_id="owner-2"
+                engine, plan, job_id=uuid.UUID(other.job_id), worker_id="owner-2"
             )
             assert released.status == "PENDING" and released.claimed_by is None
             assert _job_state(engine, other.job_id) == ("PENDING", None, True)
@@ -616,7 +619,7 @@ def test_verifier_accepts_mixed_pending_claimed_running_and_rejects_malformed(
             # a mixed but VALID subset: 1 RUNNING, 1 CLAIMED, 3 PENDING.
             a = _claim(engine, plan, "w-run")
             assert a is not None
-            JC._start_job_with_trust(engine, job_id=uuid.UUID(a.job_id), worker_id="w-run")
+            JC._start_job_with_trust(engine, plan, job_id=uuid.UUID(a.job_id), worker_id="w-run")
             b = _claim(engine, plan, "w-claim")
             assert b is not None
             r = HV._verify_experiment_harness_with_trust(engine, plan, _CS)
@@ -667,15 +670,301 @@ def test_legacy_and_f3c_data_unchanged_by_claiming(
 
             got = _claim(engine, plan, "w-x")
             assert got is not None
-            JC._start_job_with_trust(engine, job_id=uuid.UUID(got.job_id), worker_id="w-x")
+            JC._start_job_with_trust(engine, plan, job_id=uuid.UUID(got.job_id), worker_id="w-x")
             other = _claim(engine, plan, "w-y")
             assert other is not None
-            JC._release_job_with_trust(engine, job_id=uuid.UUID(other.job_id), worker_id="w-y")
+            JC._release_job_with_trust(
+                engine, plan, job_id=uuid.UUID(other.job_id), worker_id="w-y"
+            )
 
             for t, n in legacy_before.items():
                 assert _count(engine, f"SELECT count(*) FROM {t}") == n  # noqa: S608
             for t, n in f3c_before.items():
                 assert _count(engine, f"SELECT count(*) FROM experiments.{t}") == n  # noqa: S608
             assert {f.name: f.read_bytes() for f in _artifact_files(root)} == files_before
+        finally:
+            engine.dispose()
+
+
+# --------------------------------------------------------------------------- #
+# revision compatibility: F3 graph operations work at BOTH 0006 and 0007
+# --------------------------------------------------------------------------- #
+def test_full_graph_lifecycle_directly_at_0007(isolated_pg_base_url: str, tmp_path: Path) -> None:
+    """Starting a database DIRECTLY at 0007 (never downgrading to 0006), the complete sequence
+    persist -> enqueue -> enqueue again -> verify -> claim -> verify all succeeds."""
+    plan = _synthetic_plan(_SNAPSHOT_A)
+    with scratch_database(isolated_pg_base_url, "minos_f4") as url:
+        alembic_upgrade(url, _F4)  # straight to 0007; no 0006 step, no downgrade
+        engine = _engine(url)
+        try:
+            with engine.connect() as conn, conn.begin():
+                seed_upstream_for_plan(conn, plan)
+
+            # 1. persist the complete plan graph at 0007
+            root = _provisioned_root(tmp_path)
+            first = _persist_experiment_plan_with_trust(
+                engine, plan, _CS, publisher=_publisher(root)
+            )
+            assert first.plan_created is True and first.jobs_count == 0
+            # ...and F3-C1 idempotent replay still works at 0007
+            replay = _persist_experiment_plan_with_trust(
+                engine, plan, _CS, publisher=_publisher(root)
+            )
+            assert replay.plan_created is False and replay.replay is True
+
+            # 2 + 3. two bounded enqueue batches at 0007
+            b1 = _enqueue_experiment_jobs_with_trust(engine, plan, _CS, start=0, count=4)
+            b2 = _enqueue_experiment_jobs_with_trust(engine, plan, _CS, start=4, count=3)
+            assert b1.created_count == 4 and b2.created_count == 3
+            assert b2.total_jobs_for_plan == 7
+
+            # 4. harness verification at 0007
+            v1 = HV._verify_experiment_harness_with_trust(engine, plan, _CS)
+            assert v1.status == HV.STATUS_PASS, v1.failures
+            assert v1.persisted_job_count == 7
+
+            # 5. claim a job at 0007
+            claimed = _claim(engine, plan, "w-e2e")
+            assert claimed is not None and claimed.status == "CLAIMED"
+
+            # 6. verify again — a CLAIMED job is valid under the F4 consistency check
+            v2 = HV._verify_experiment_harness_with_trust(engine, plan, _CS)
+            assert v2.status == HV.STATUS_PASS, v2.failures
+            assert v2.persisted_job_count == 7
+
+            # the database never left 0007. (A fresh engine: the persistence path leaves
+            # SET ROLE minos_admin on its pooled session, and minos_admin cannot read
+            # public.alembic_version.)
+            probe = _engine(url)
+            try:
+                with probe.connect() as c:
+                    assert (
+                        str(c.execute(text("SELECT version_num FROM alembic_version")).scalar_one())
+                        == _F4
+                    )
+            finally:
+                probe.dispose()
+        finally:
+            engine.dispose()
+
+
+def test_graph_operations_still_work_at_0006(isolated_pg_base_url: str, tmp_path: Path) -> None:
+    """The same F3 operations remain compatible at 0006 (the compatibility set has two members)."""
+    plan = _synthetic_plan(_SNAPSHOT_B)
+    with scratch_database(isolated_pg_base_url, "minos_f4") as url:
+        alembic_upgrade(url, _L2F)
+        engine = _engine(url)
+        try:
+            with engine.connect() as conn, conn.begin():
+                seed_upstream_for_plan(conn, plan)
+            _persist_experiment_plan_with_trust(
+                engine, plan, _CS, publisher=_publisher(_provisioned_root(tmp_path))
+            )
+            _enqueue_experiment_jobs_with_trust(engine, plan, _CS, start=0, count=3)
+            r = HV._verify_experiment_harness_with_trust(engine, plan, _CS)
+            assert r.status == HV.STATUS_PASS and r.persisted_job_count == 3
+        finally:
+            engine.dispose()
+
+
+def test_f4_claiming_rejects_0006(isolated_pg_base_url: str, tmp_path: Path) -> None:
+    """F4 claim/start/release require EXACTLY 0007 — 0006 lacks the claim functions."""
+    plan = _synthetic_plan(_SNAPSHOT_A)
+    with scratch_database(isolated_pg_base_url, "minos_f4") as url:
+        alembic_upgrade(url, _L2F)
+        engine = _engine(url)
+        try:
+            with engine.connect() as conn, conn.begin():
+                seed_upstream_for_plan(conn, plan)
+            _persist_experiment_plan_with_trust(
+                engine, plan, _CS, publisher=_publisher(_provisioned_root(tmp_path))
+            )
+            _enqueue_experiment_jobs_with_trust(engine, plan, _CS, start=0, count=1)
+            with engine.connect() as c:
+                n = int(
+                    c.execute(
+                        text(
+                            "SELECT count(*) FROM pg_proc p JOIN pg_namespace n "
+                            "ON n.oid=p.pronamespace WHERE n.nspname='experiments' "
+                            "AND p.proname='minos_l2f_claim_next_job'"
+                        )
+                    ).scalar_one()
+                )
+            assert n == 0  # the F4 function does not exist at 0006
+        finally:
+            engine.dispose()
+
+
+@pytest.mark.parametrize("boundary", ["persist", "enqueue", "verify", "claim"])
+def test_revision_0005_rejected_by_every_boundary(
+    isolated_pg_base_url: str, tmp_path: Path, boundary: str
+) -> None:
+    with scratch_database(isolated_pg_base_url, _OP_DB) as url:
+        alembic_upgrade(url, "0005_l2e_feature_view")
+        engine = _engine(url)
+        try:
+            conn = engine.connect()
+            trans = conn.begin()
+            try:
+                with pytest.raises(PlanRevisionError):
+                    if boundary == "claim":
+                        JC._require_f4_revision(conn)
+                    else:
+                        from minos_engine.storage.l2f_plan_store import _require_live_revision
+
+                        _require_live_revision(conn)
+            finally:
+                trans.rollback()
+                conn.close()
+        finally:
+            engine.dispose()
+
+
+def test_compatibility_set_is_explicit_and_closed() -> None:
+    from minos_engine.storage.l2f_plan_store import L2F_GRAPH_COMPATIBLE_REVISIONS
+
+    assert frozenset({_L2F, _F4}) == L2F_GRAPH_COMPATIBLE_REVISIONS
+    # never "anything later": 0005 and any hypothetical future revision are absent.
+    assert "0005_l2e_feature_view" not in L2F_GRAPH_COMPATIBLE_REVISIONS
+    assert "0008_future" not in L2F_GRAPH_COMPATIBLE_REVISIONS
+    assert JC.F4_MIGRATION_REVISION == _F4
+
+
+def _independent_plan(spec: list[tuple[str, str, str]], tag: str) -> Any:
+    """A synthetic plan whose fixed hashes are salted by ``tag``.
+
+    The shared ``_synthetic_plan`` helper hardcodes the split / registry / matrix / artifact
+    hashes, so two of its plans collide on ``uq_feature_matrices_matrix_hash``. Salting them lets
+    genuinely independent plans coexist in one database for the cross-plan binding test.
+    """
+    from minos_engine.common.hashing import sha256_hex
+    from minos_engine.experiments.accepted_plan import _build_plan_from_verified_inputs
+    from minos_engine.layer2.features.extraction import FrozenSnapshot, SnapshotMember
+    from minos_engine.layer2.features.feature_view import (
+        FeatureViewMember,
+        build_feature_view_manifest,
+    )
+
+    def _h(label: str) -> str:
+        return sha256_hex(f"{tag}:{label}".encode())
+
+    members = tuple(
+        SnapshotMember(
+            dataset_id=ds,
+            profile_id=f"profile-{ds}",
+            partition=part,  # type: ignore[arg-type]
+            content_hash=_h(f"content:{ds}"),
+            feature_values_hash=_h(f"fvh:{ds}"),
+            profile_sha256=_h(f"sha:{ds}"),
+            chromosome=chrom,  # type: ignore[arg-type]
+        )
+        for ds, part, chrom in spec
+    )
+    snapshot = FrozenSnapshot(
+        epoch=1,
+        split_manifest_hash=_h("split"),
+        registry_snapshot_hash=_h("reg"),
+        members=members,
+    )
+    train = snapshot.members_for("train")
+    fv = build_feature_view_manifest(
+        epoch=1,
+        partition="train",
+        snapshot_hash=snapshot.snapshot_hash,
+        split_manifest_hash=snapshot.split_manifest_hash,
+        registry_snapshot_hash=snapshot.registry_snapshot_hash,
+        matrix_hash=_h("matrix"),
+        artifact_sha256=_h("artifact"),
+        row_count=len(train),
+        members=tuple(
+            FeatureViewMember(
+                dataset_id=m.dataset_id,
+                member_index=i,
+                vector_hash=_h(f"vec:{m.dataset_id}"),
+                feature_values_hash=m.feature_values_hash,
+            )
+            for i, m in enumerate(train)
+        ),
+        feature_set=None,
+    )
+    return _build_plan_from_verified_inputs(snapshot, fv, _CS)
+
+
+# --------------------------------------------------------------------------- #
+# C: start/release are bound to the accepted plan (cross-plan rejection)
+# --------------------------------------------------------------------------- #
+def test_start_release_are_bound_to_their_plan(isolated_pg_base_url: str, tmp_path: Path) -> None:
+    """Two valid plans coexist; the SAME worker claims one job from each. A start/release bound
+    to plan A must refuse plan B's job (typed error, no mutation) and vice versa."""
+    plan_a = _independent_plan(_SNAPSHOT_A, "planA")
+    plan_b = _independent_plan(_SNAPSHOT_B, "planB")
+    assert plan_a.plan_hash != plan_b.plan_hash
+    assert plan_a.train_matrix_hash != plan_b.train_matrix_hash
+    worker = "shared-worker"
+    with scratch_database(isolated_pg_base_url, "minos_f4") as url:
+        alembic_upgrade(url, _F4)
+        engine = _engine(url)
+        try:
+            root = _provisioned_root(tmp_path)
+            for variant, plan in enumerate((plan_a, plan_b)):
+                with engine.connect() as conn, conn.begin():
+                    seed_upstream_for_plan(
+                        conn,
+                        plan,
+                        variant=variant,
+                        parent_split_snapshot_id=(
+                            None if variant == 0 else split_snapshot_id_for(plan_a)
+                        ),
+                    )
+                _persist_experiment_plan_with_trust(engine, plan, _CS, publisher=_publisher(root))
+                _enqueue_experiment_jobs_with_trust(engine, plan, _CS, start=0, count=2)
+
+            job_a = _claim(engine, plan_a, worker)
+            job_b = _claim(engine, plan_b, worker)
+            assert job_a is not None and job_b is not None
+            assert job_a.plan_id != job_b.plan_id
+            identity_before = _identity_rows(engine)
+
+            # plan A's boundary must refuse plan B's job, and vice versa — even though the
+            # worker legitimately holds BOTH claims.
+            for plan, other_job in ((plan_a, job_b), (plan_b, job_a)):
+                for fn in (JC._start_job_with_trust, JC._release_job_with_trust):
+                    with pytest.raises(InvalidJobTransitionError):
+                        fn(engine, plan, job_id=uuid.UUID(other_job.job_id), worker_id=worker)
+
+            # both jobs retain their correct pre-rejection state.
+            assert _job_state(engine, job_a.job_id) == ("CLAIMED", worker, False)
+            assert _job_state(engine, job_b.job_id) == ("CLAIMED", worker, False)
+            assert _identity_rows(engine) == identity_before
+
+            # the correctly-bound calls still succeed.
+            started = JC._start_job_with_trust(
+                engine, plan_a, job_id=uuid.UUID(job_a.job_id), worker_id=worker
+            )
+            assert started.status == "RUNNING"
+            released = JC._release_job_with_trust(
+                engine, plan_b, job_id=uuid.UUID(job_b.job_id), worker_id=worker
+            )
+            assert released.status == "PENDING" and released.claimed_by is None
+        finally:
+            engine.dispose()
+
+
+def test_start_release_reject_a_job_of_an_unpersisted_plan(
+    isolated_pg_base_url: str, tmp_path: Path
+) -> None:
+    """A plan whose graph is not persisted at all cannot transition any job (fails closed)."""
+    persisted = _synthetic_plan(_SNAPSHOT_A)
+    absent = _synthetic_plan(_SNAPSHOT_B)
+    with scratch_database(isolated_pg_base_url, "minos_f4") as url:
+        engine = _prepare(url, persisted, _provisioned_root(tmp_path), jobs=1)
+        try:
+            job = _claim(engine, persisted, "w-1")
+            assert job is not None
+            before = _job_state(engine, job.job_id)
+            for fn in (JC._start_job_with_trust, JC._release_job_with_trust):
+                with pytest.raises((JobPlanMissingError, HV.HarnessGraphError)):
+                    fn(engine, absent, job_id=uuid.UUID(job.job_id), worker_id="w-1")
+            assert _job_state(engine, job.job_id) == before
         finally:
             engine.dispose()

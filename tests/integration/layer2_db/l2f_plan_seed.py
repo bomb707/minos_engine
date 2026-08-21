@@ -58,6 +58,11 @@ SET_DEFECTS = (
 )
 
 
+def split_snapshot_id_for(plan: Any) -> str:
+    """The deterministic ``catalog.split_snapshots`` id this seeder creates for ``plan``."""
+    return U(f"ss:{plan.plan_hash}")
+
+
 def _plan_dataset_row(dataset_id: str, idx: int, dsr_id: str) -> dict[str, Any]:
     row = _dataset_row(dataset_id, idx)
     row["id"] = dsr_id
@@ -211,7 +216,23 @@ def seed_upstream_for_plan(
     corrupt: str | None = None,
     corrupt_index: int = 0,
     set_defect: str | None = None,
+    variant: int = 0,
+    parent_split_snapshot_id: str | None = None,
 ) -> None:
+    """Seed one plan's upstream.
+
+    ``variant`` lets several plans coexist in one database: ``catalog.split_snapshots.epoch`` and
+    ``profiling.profile_snapshots.epoch`` are both globally UNIQUE, so a second plan must be
+    seeded at ``variant=1`` (and so on), supplying ``parent_split_snapshot_id`` — the
+    :func:`split_snapshot_id_for` of an already-seeded ``variant - 1`` plan — to satisfy the
+    split-snapshot parent chain. ``variant=0`` reproduces the original behavior exactly. The
+    ``profiling.feature_sets`` row is genuinely shared between plans built from the same accepted
+    candidate set, so at ``variant > 0`` it is inserted idempotently.
+    """
+    if variant < 0:
+        raise ValueError("variant must be >= 0")
+    if variant > 0 and parent_split_snapshot_id is None:
+        raise ValueError("variant > 0 requires parent_split_snapshot_id")
     if corrupt is not None and corrupt not in CORRUPTIONS:
         raise ValueError(f"unknown corruption {corrupt!r}")
     if set_defect is not None and set_defect not in SET_DEFECTS:
@@ -231,19 +252,26 @@ def seed_upstream_for_plan(
         },
     )
     fs = U(f"fs:{plan.feature_set_hash}:{plan.feature_registry_hash}")
-    _insert(
-        conn,
-        "profiling",
-        "feature_sets",
-        {
-            "id": fs,
-            "feature_set_hash": plan.feature_set_hash,
-            "registry_hash": plan.feature_registry_hash,
-            "column_count": 3,
-            "column_manifest": "[]",
-        },
-        jsonb_cols=("column_manifest",),
-    )
+    fs_row = {
+        "id": fs,
+        "feature_set_hash": plan.feature_set_hash,
+        "registry_hash": plan.feature_registry_hash,
+        "column_count": 3,
+        "column_manifest": "[]",
+    }
+    if variant == 0:
+        _insert(conn, "profiling", "feature_sets", fs_row, jsonb_cols=("column_manifest",))
+    else:
+        # identical row shared with the already-seeded plan(s): insert idempotently.
+        conn.execute(
+            text(
+                "INSERT INTO profiling.feature_sets "
+                "(id, feature_set_hash, registry_hash, column_count, column_manifest) "
+                "VALUES (:id, :feature_set_hash, :registry_hash, :column_count, "
+                "CAST(:column_manifest AS jsonb)) ON CONFLICT DO NOTHING"
+            ),
+            fs_row,
+        )
     ss = U(f"ss:{tag}")
     _insert(
         conn,
@@ -251,17 +279,17 @@ def seed_upstream_for_plan(
         "split_snapshots",
         {
             "id": ss,
-            "epoch": 1,
+            "epoch": 1 + variant,
             "salt": "salt",
             "split_policy_version": "v1",
             "policy_hash": H(f"policy:{tag}"),
             "manifest_hash": H(f"ssman:{tag}"),
             "registry_snapshot_hash": H(f"ssreg:{tag}"),
             "ancestor_v1_dataset_registry_hash": H(f"anc:{tag}"),
-            "parent_registry_snapshot_hash": None,
-            "parent_manifest_hash": None,
-            "parent_snapshot_id": None,
-            "parent_epoch": None,
+            "parent_registry_snapshot_hash": None if variant == 0 else H(f"pssreg:{tag}"),
+            "parent_manifest_hash": None if variant == 0 else H(f"pssman:{tag}"),
+            "parent_snapshot_id": parent_split_snapshot_id,
+            "parent_epoch": None if variant == 0 else variant,
             "transition_count": 0,
             "sample_count": 3,
             "count_train": 1,
@@ -276,7 +304,7 @@ def seed_upstream_for_plan(
         "profile_snapshots",
         {
             "id": snap,
-            "epoch": plan.epoch,
+            "epoch": plan.epoch + variant,
             "split_snapshot_id": ss,
             "split_manifest_hash": plan.split_manifest_hash,
             "registry_snapshot_hash": plan.registry_snapshot_hash,

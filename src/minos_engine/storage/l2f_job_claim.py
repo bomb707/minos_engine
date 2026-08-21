@@ -260,13 +260,21 @@ def _claim_in_transaction(
 
 
 def _transition_in_transaction(
-    conn: Connection, function: str, job_id: str, worker_id: str
+    conn: Connection, function: str, plan: ExperimentPlan, job_id: str, worker_id: str
 ) -> JobStateResult:
+    """Transition one job that MUST belong to the verified accepted plan.
+
+    The persisted accepted-plan identity is resolved and verified first, and the plan hash is
+    passed to the database function, which updates only when the job's ``plan_id`` resolves from
+    that same hash. A job belonging to any other plan is therefore rejected with a typed error
+    and leaves every row untouched.
+    """
+    _verify_persisted_plan(conn, plan)
     with _typed_errors():
         row = (
             conn.execute(
-                text(f"SELECT * FROM {function}(:job_id, :worker_id)"),  # noqa: S608
-                {"job_id": job_id, "worker_id": worker_id},
+                text(f"SELECT * FROM {function}(:plan_hash, :job_id, :worker_id)"),  # noqa: S608
+                {"plan_hash": plan.plan_hash, "job_id": job_id, "worker_id": worker_id},
             )
             .mappings()
             .first()
@@ -323,7 +331,11 @@ def claim_next_accepted_job(*, worker_id: str) -> ClaimedJob | None:
 
 
 def start_accepted_job(*, job_id: UUID, worker_id: str) -> JobStateResult:
-    """Transition ``CLAIMED -> RUNNING`` for a job this worker holds (claim metadata preserved)."""
+    """Transition ``CLAIMED -> RUNNING`` for a job of the ACCEPTED plan this worker holds.
+
+    The accepted plan is built internally and its complete persisted identity verified; the job
+    must belong to that plan. A job from any other plan is rejected with a typed error and no
+    mutation. Claim metadata is preserved across the transition."""
     validate_worker_id(worker_id)
     jid = _coerce_job_id(job_id)
     engine = create_db_engine()
@@ -331,14 +343,20 @@ def start_accepted_job(*, job_id: UUID, worker_id: str) -> JobStateResult:
         return _run_in_new_transaction(
             engine,
             verify_identity=True,
-            action=lambda conn: _transition_in_transaction(conn, _START_FN, jid, worker_id),
+            action=lambda conn: _transition_in_transaction(
+                conn, _START_FN, _build_accepted_plan(), jid, worker_id
+            ),
         )
     finally:
         engine.dispose()
 
 
 def release_accepted_job(*, job_id: UUID, worker_id: str) -> JobStateResult:
-    """Transition ``CLAIMED -> PENDING`` for a job this worker holds, clearing both claim fields."""
+    """Transition ``CLAIMED -> PENDING`` for a job of the ACCEPTED plan this worker holds.
+
+    The accepted plan is built internally and its complete persisted identity verified; the job
+    must belong to that plan. A job from any other plan is rejected with a typed error and no
+    mutation. Both claim fields are cleared."""
     validate_worker_id(worker_id)
     jid = _coerce_job_id(job_id)
     engine = create_db_engine()
@@ -346,7 +364,9 @@ def release_accepted_job(*, job_id: UUID, worker_id: str) -> JobStateResult:
         return _run_in_new_transaction(
             engine,
             verify_identity=True,
-            action=lambda conn: _transition_in_transaction(conn, _RELEASE_FN, jid, worker_id),
+            action=lambda conn: _transition_in_transaction(
+                conn, _RELEASE_FN, _build_accepted_plan(), jid, worker_id
+            ),
         )
     finally:
         engine.dispose()
@@ -366,21 +386,25 @@ def _claim_next_job_with_trust(
     )
 
 
-def _start_job_with_trust(engine: Engine, *, job_id: UUID, worker_id: str) -> JobStateResult:
+def _start_job_with_trust(
+    engine: Engine, plan: ExperimentPlan, *, job_id: UUID, worker_id: str
+) -> JobStateResult:
     validate_worker_id(worker_id)
     jid = _coerce_job_id(job_id)
     return _run_in_new_transaction(
         engine,
         verify_identity=False,
-        action=lambda conn: _transition_in_transaction(conn, _START_FN, jid, worker_id),
+        action=lambda conn: _transition_in_transaction(conn, _START_FN, plan, jid, worker_id),
     )
 
 
-def _release_job_with_trust(engine: Engine, *, job_id: UUID, worker_id: str) -> JobStateResult:
+def _release_job_with_trust(
+    engine: Engine, plan: ExperimentPlan, *, job_id: UUID, worker_id: str
+) -> JobStateResult:
     validate_worker_id(worker_id)
     jid = _coerce_job_id(job_id)
     return _run_in_new_transaction(
         engine,
         verify_identity=False,
-        action=lambda conn: _transition_in_transaction(conn, _RELEASE_FN, jid, worker_id),
+        action=lambda conn: _transition_in_transaction(conn, _RELEASE_FN, plan, jid, worker_id),
     )

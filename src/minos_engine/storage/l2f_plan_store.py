@@ -68,6 +68,7 @@ if TYPE_CHECKING:
     from minos_engine.experiments.plan import ExperimentPlan
 
 __all__ = [
+    "L2F_GRAPH_COMPATIBLE_REVISIONS",
     "L2FPersistenceError",
     "UpstreamIdentityError",
     "ImmutableMetadataConflictError",
@@ -78,6 +79,17 @@ __all__ = [
     "PlanPersistResult",
     "persist_accepted_experiment_plan",
 ]
+
+#: The EXPLICIT closed set of live Alembic revisions under which the L2-F graph operations
+#: (F3-C1 persistence, F3-C2 bounded enqueue, F3-D verification) are known to be compatible.
+#: ``0007_l2f_job_claiming`` is purely additive over ``0006_l2f_experiment_plan`` — it adds a
+#: transition-guard trigger and three claim functions and changes no table, column or scientific
+#: identity — so the graph contract is byte-for-byte the same under both. Membership is
+#: enumerated deliberately: ``0005`` and any unknown or future revision are rejected. F4
+#: claim/start/release additionally requires exactly ``0007`` (see ``l2f_job_claim``).
+L2F_GRAPH_COMPATIBLE_REVISIONS: frozenset[str] = frozenset(
+    {L2F_MIGRATION_REVISION, "0007_l2f_job_claiming"}
+)
 
 #: env var naming the provisioned CONFIG-payload artifact root (config, not a caller arg).
 ENV_CONFIG_ARTIFACT_ROOT = "MINOS_L2F_CONFIG_ARTIFACT_ROOT"
@@ -166,11 +178,20 @@ def _advisory_key(sha256: str) -> int:
 
 
 def _require_live_revision(conn: Connection) -> None:
+    """Require the live revision to be one of the EXPLICIT known-compatible L2-F graph revisions.
+
+    The plan/member/payload/config graph and its job rows are structurally identical under
+    ``0006`` and ``0007`` — ``0007`` is purely additive (a transition guard plus three claim
+    functions) and touches no table or scientific identity column — so every F3 graph operation
+    (persist, enqueue, verify) works unchanged at either. This is a closed, enumerated set:
+    ``0005`` and any unknown/future revision are rejected, never "accept anything later".
+    """
     rev = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one_or_none()
-    if rev != L2F_MIGRATION_REVISION:
+    if rev not in L2F_GRAPH_COMPATIBLE_REVISIONS:
         raise PlanRevisionError(
-            f"live database revision is {rev!r}, not the required {L2F_MIGRATION_REVISION!r}; "
-            "refusing to persist (this boundary NEVER runs Alembic)"
+            f"live database revision is {rev!r}, which is not one of the known-compatible L2-F "
+            f"graph revisions {sorted(L2F_GRAPH_COMPATIBLE_REVISIONS)!r}; refusing to proceed "
+            "(this boundary NEVER runs Alembic)"
         )
 
 
