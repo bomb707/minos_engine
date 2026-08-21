@@ -218,6 +218,7 @@ def seed_upstream_for_plan(
     set_defect: str | None = None,
     variant: int = 0,
     parent_split_snapshot_id: str | None = None,
+    dataset_identity: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     """Seed one plan's upstream.
 
@@ -233,6 +234,9 @@ def seed_upstream_for_plan(
         raise ValueError("variant must be >= 0")
     if variant > 0 and parent_split_snapshot_id is None:
         raise ValueError("variant > 0 requires parent_split_snapshot_id")
+    # ``dataset_identity`` lets an F5 execution test seed the REAL byte hashes of provisioned
+    # input files (catalog.dataset_registry is append-only, so it can never be corrected later).
+    identity_overrides = dataset_identity or {}
     if corrupt is not None and corrupt not in CORRUPTIONS:
         raise ValueError(f"unknown corruption {corrupt!r}")
     if set_defect is not None and set_defect not in SET_DEFECTS:
@@ -340,6 +344,7 @@ def seed_upstream_for_plan(
 
         dsr = U(f"dsr:{m.dataset_id}")
         dsr_row = _plan_dataset_row(m.dataset_id, m.member_index, dsr)
+        dsr_row.update(identity_overrides.get(m.dataset_id, {}))
         if do == "dataset_id":
             dsr_row["dataset_id"] = f"{m.dataset_id}::WRONG"
         _insert(conn, "catalog", "dataset_registry", dsr_row)
