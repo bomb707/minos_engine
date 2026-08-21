@@ -8,18 +8,23 @@ F3-C2), and performs no claiming, execution, scoring, gating or service activati
 
 Trust boundaries:
 * ``persist_accepted_experiment_plan()`` is the sole production entry point — no caller-provided
-  plan/snapshot/candidate-set/hashes/partition/trust. It builds the plan through
-  ``build_accepted_experiment_plan()``, independently regenerates + verifies the accepted
-  ``CandidateSet``, connects via ``MINOS_DATABASE_URL``, verifies the exact transaction
-  connection is the canonical operational store and is at revision ``0006`` (no auto-upgrade),
-  and persists.
+  plan/snapshot/candidate-set/hashes/partition/trust/paths. It opens the transaction
+  connection, verifies (as the FIRST access on that exact connection, before anything is built,
+  any candidate generated, any publisher/root touched, any upstream read or file published) that
+  the connection is the canonical operational store AND is at revision ``0006`` (no
+  auto-upgrade), and only THEN builds the plan via ``build_accepted_experiment_plan()``,
+  independently regenerates + verifies the accepted ``CandidateSet``, constructs the provisioned
+  publisher, resolves upstream, publishes, and writes — all on that same verified connection.
 * ``_persist_experiment_plan_with_trust`` is a PRIVATE explicit-trust boundary for scratch /
   non-75 tests only (no operational-identity check); it is not exported.
 
 Every upstream UUID is resolved by complete immutable identity (exactly one row, else a typed
-error) before any artifact publication. Persistence is idempotent under a plan_hash-scoped
-transaction advisory lock; a differing immutable row for an existing unique key is a typed
-conflict, never a silently swallowed uniqueness violation.
+``UpstreamIdentityError``) before any artifact publication — including the ``bam_profile`` the
+snapshot member points to (its ``profile_id`` / ``content_hash`` / ``feature_values_hash`` /
+``dataset_registry_id`` / COMPLETE status) and the matrix member's ``vector_hash``. Persistence
+is idempotent under a plan_hash-scoped transaction advisory lock: every immutable table is
+insert-or-verify against **every** immutable column and **every** unique constraint; a differing
+existing row is a typed conflict, never a silently swallowed uniqueness violation.
 """
 
 from __future__ import annotations
@@ -27,11 +32,13 @@ from __future__ import annotations
 import contextlib
 import os
 import struct
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import Connection, Engine, text
+from sqlalchemy.exc import IntegrityError
 
 from minos_engine.common.canonical_json import canonical_json_bytes
 from minos_engine.common.errors import MinosEngineError
@@ -73,6 +80,39 @@ __all__ = [
 #: env var naming the provisioned CONFIG-payload artifact root (config, not a caller arg).
 ENV_CONFIG_ARTIFACT_ROOT = "MINOS_L2F_CONFIG_ARTIFACT_ROOT"
 _TRAIN = "train"
+_COMPLETE = "COMPLETE"
+_UNIQUE_VIOLATION = "23505"
+
+# Every alternate UNIQUE constraint that can collide on a fresh insert (constraints that carry
+# the freshly generated primary-key ``id`` can never collide and are intentionally omitted).
+_PLAN_UNIQUE_KEYS: dict[str, list[str]] = {
+    "uq_l2f_plans_plan_hash": ["plan_hash"],
+    "uq_l2f_plans_logical_identity": [
+        "snapshot_hash",
+        "split_manifest_hash",
+        "registry_snapshot_hash",
+        "train_matrix_hash",
+        "train_feature_view_hash",
+        "feature_set_hash",
+        "feature_registry_hash",
+        "gatk_registry_hash",
+        "parameter_space_hash",
+        "experiment_parameter_policy_hash",
+        "candidate_set_hash",
+    ],
+}
+_MEMBER_UNIQUE_KEYS: dict[str, list[str]] = {
+    "uq_l2f_pm_plan_snapshot_member": ["plan_id", "profile_snapshot_member_id"],
+    "uq_l2f_pm_plan_matrix_member": ["plan_id", "feature_matrix_member_id"],
+    "uq_l2f_pm_plan_member_index": ["plan_id", "member_index"],
+}
+_CONFIG_PAYLOAD_UNIQUE_KEYS: dict[str, list[str]] = {
+    "uq_l2f_config_payloads_config_hash": ["config_hash"],
+}
+_PLAN_CONFIG_UNIQUE_KEYS: dict[str, list[str]] = {
+    "uq_l2f_pc_plan_payload": ["plan_id", "config_payload_id"],
+    "uq_l2f_pc_plan_index": ["plan_id", "config_index"],
+}
 
 
 class L2FPersistenceError(MinosEngineError):
@@ -88,7 +128,7 @@ class ImmutableMetadataConflictError(L2FPersistenceError):
 
 
 class ArtifactMetadataConflictError(L2FPersistenceError):
-    """An existing catalog.artifacts row shares the sha256 but differs on metadata."""
+    """An existing catalog.artifacts row shares the sha256 but differs on / has invalid metadata."""
 
 
 class PlanRevisionError(L2FPersistenceError):
@@ -128,6 +168,20 @@ def _require_live_revision(conn: Connection) -> None:
         )
 
 
+def _norm(value: Any) -> str | None:
+    """Normalize a scalar for immutable-column comparison (UUID/CHAR/Text/BigInteger → str)."""
+    return None if value is None else str(value)
+
+
+def _sqlstate(exc: IntegrityError) -> str | None:
+    return getattr(getattr(exc, "orig", None), "sqlstate", None)
+
+
+def _constraint_name(exc: IntegrityError) -> str | None:
+    diag = getattr(getattr(exc, "orig", None), "diag", None)
+    return getattr(diag, "constraint_name", None)
+
+
 def _resolve_one(conn: Connection, sql: str, params: dict[str, Any], what: str) -> dict[str, Any]:
     rows = conn.execute(text(sql), params).mappings().all()
     if len(rows) != 1:
@@ -137,10 +191,37 @@ def _resolve_one(conn: Connection, sql: str, params: dict[str, Any], what: str) 
     return dict(rows[0])
 
 
+def _artifact_metadata_matches(
+    row: Any, *, uri: str, size_bytes: int, media_type: str, provenance: str
+) -> bool:
+    """True iff the stored catalog.artifacts row matches the expected metadata exactly.
+
+    Any NULL or malformed stored value (e.g. a NULL ``size_bytes``, or a non-integer stored
+    size) is treated as a mismatch — never a raised ``TypeError``/``ValueError``.
+    """
+    stored_size = row["size_bytes"]
+    if stored_size is None:
+        return False
+    try:
+        stored_size_int = int(stored_size)
+    except (TypeError, ValueError):
+        return False
+    return (
+        row["uri"] == uri
+        and stored_size_int == size_bytes
+        and row["media_type"] == media_type
+        and row["provenance"] == provenance
+    )
+
+
 def _register_config_artifact(
     conn: Connection, *, uri: str, sha256: str, size_bytes: int, media_type: str
 ) -> str:
-    """Get-or-verify a catalog.artifacts row (sha256==config_hash, media_type==config media)."""
+    """Get-or-verify a catalog.artifacts row (sha256==config_hash, media_type==config media).
+
+    Every mismatch — including NULL or malformed stored metadata — fails with a typed
+    ``ArtifactMetadataConflictError``; no raw database/type exception escapes.
+    """
     sel = (
         "SELECT id, uri, size_bytes, media_type, provenance FROM catalog.artifacts "
         "WHERE sha256 = :h"
@@ -154,15 +235,16 @@ def _register_config_artifact(
             ),
             {"u": uri, "h": sha256, "m": media_type, "s": size_bytes, "p": CONFIG_ARTIFACT_KIND},
         )
-        row = conn.execute(text(sel), {"h": sha256}).mappings().one()
-    if (
-        row["uri"] != uri
-        or int(row["size_bytes"]) != size_bytes
-        or row["media_type"] != media_type
-        or row["provenance"] != CONFIG_ARTIFACT_KIND
+        row = conn.execute(text(sel), {"h": sha256}).mappings().first()
+    if row is None:  # pragma: no cover - a row must exist after the get-or-insert
+        raise ArtifactMetadataConflictError(
+            f"catalog.artifacts row for sha256 {sha256} could not be registered"
+        )
+    if not _artifact_metadata_matches(
+        row, uri=uri, size_bytes=size_bytes, media_type=media_type, provenance=CONFIG_ARTIFACT_KIND
     ):
         raise ArtifactMetadataConflictError(
-            f"catalog.artifacts for sha256 {sha256} exists with differing metadata"
+            f"catalog.artifacts for sha256 {sha256} exists with differing or invalid metadata"
         )
     return str(row["id"])
 
@@ -172,72 +254,81 @@ def _insert_or_verify(
     *,
     table: str,
     row: dict[str, Any],
-    conflict_cols: list[str],
-    compare_cols: list[str],
+    unique_keys: dict[str, list[str]],
 ) -> tuple[str, bool]:
     """Insert an immutable row idempotently. Returns (id, created).
 
-    On a uniqueness collision the existing row is re-read and every ``compare_cols`` value is
-    checked; an exact match is idempotent success, any difference is a typed conflict (a
-    uniqueness violation is never swallowed without this comparison).
+    A plain INSERT is attempted inside a SAVEPOINT. On a uniqueness violation (SQLSTATE 23505)
+    — on ANY of the table's unique constraints, not only one preselected conflict target — the
+    savepoint is rolled back, the constraint is classified deterministically by name, the
+    conflicting row is re-read by that constraint's logical key, and **every** immutable column
+    of ``row`` is compared. An exact match is idempotent success; any difference is a typed
+    :class:`ImmutableMetadataConflictError`. A raw uniqueness/integrity exception is never
+    exposed. Non-uniqueness integrity errors (which indicate a genuine structural violation,
+    not idempotency) propagate unchanged.
     """
     cols = list(row)
     placeholders = ", ".join(f":{c}" for c in cols)
-    conflict = ", ".join(conflict_cols)
-    inserted = conn.execute(
-        text(
-            f"INSERT INTO experiments.{table} ({', '.join(cols)}) VALUES ({placeholders}) "  # noqa: S608
-            f"ON CONFLICT ({conflict}) DO NOTHING RETURNING id"
-        ),
-        row,
-    ).first()
-    if inserted is not None:
+    insert_sql = text(
+        f"INSERT INTO experiments.{table} ({', '.join(cols)}) VALUES ({placeholders}) "  # noqa: S608
+        "RETURNING id"
+    )
+    sp = conn.begin_nested()
+    try:
+        inserted = conn.execute(insert_sql, row).first()
+        sp.commit()
+        assert inserted is not None  # noqa: S101 - RETURNING id always yields a row on insert
         return str(inserted[0]), True
-    where = " AND ".join(f"{c} = :{c}" for c in conflict_cols)
+    except IntegrityError as exc:
+        sp.rollback()
+        if _sqlstate(exc) != _UNIQUE_VIOLATION:
+            raise
+        return _verify_existing_conflict(conn, table, row, unique_keys, exc), False
+
+
+def _verify_existing_conflict(
+    conn: Connection,
+    table: str,
+    row: dict[str, Any],
+    unique_keys: dict[str, list[str]],
+    exc: IntegrityError,
+) -> str:
+    constraint = _constraint_name(exc)
+    key_cols = unique_keys.get(constraint) if constraint is not None else None
+    if key_cols is None:
+        raise ImmutableMetadataConflictError(
+            f"experiments.{table}: uniqueness violation on unhandled constraint {constraint!r}"
+        ) from exc
+    where = " AND ".join(f"{c} = :{c}" for c in key_cols)
     existing = (
         conn.execute(
-            text(f"SELECT id, {', '.join(compare_cols)} FROM experiments.{table} WHERE {where}"),  # noqa: S608
-            {c: row[c] for c in conflict_cols},
+            text(f"SELECT * FROM experiments.{table} WHERE {where}"),  # noqa: S608
+            {c: row[c] for c in key_cols},
         )
         .mappings()
-        .one()
+        .one_or_none()
     )
-    for col in compare_cols:
-        if str(existing[col]) != str(row[col]):
+    if existing is None:
+        raise ImmutableMetadataConflictError(
+            f"experiments.{table}: unique key {constraint!r} collided but no row re-read"
+        ) from exc
+    for col in row:
+        if _norm(existing[col]) != _norm(row[col]):
             raise ImmutableMetadataConflictError(
-                f"experiments.{table} row for {conflict_cols} already exists with differing "
-                f"immutable column {col!r}"
+                f"experiments.{table}: existing row for {constraint!r} differs on immutable "
+                f"column {col!r}"
             )
-    return str(existing["id"]), False
+    return str(existing["id"])
 
 
-def _persist_plan_with_trust(
-    conn: Connection,
-    plan: ExperimentPlan,
-    candidate_set: CandidateSet,
-    *,
-    publisher: ConfigPayloadPublisher,
-    created_files: list[PublishedConfigArtifact],
-) -> PlanPersistResult:
-    """Core persistence given an open connection in a transaction (no identity check).
+def _resolve_plan_upstream(conn: Connection, plan: ExperimentPlan) -> dict[str, Any]:
+    """Resolve every upstream UUID by COMPLETE immutable identity (exactly one row each).
 
-    Runs as the schema owner, serialized on a plan_hash advisory lock. Resolves ALL upstream
-    identities before publishing anything, then publishes payloads + registers artifacts +
-    inserts the plan/member/payload/config graph idempotently, and read-back verifies.
+    Raises :class:`UpstreamIdentityError` (before any publication) if any required upstream row
+    is missing, ambiguous, or fails a complete-identity check — including the ``bam_profile``
+    the snapshot member points to (dataset registry, profile id, content hash, feature-values
+    hash, COMPLETE status) and the matrix member's ``vector_hash``.
     """
-    conn.execute(text(f"SET ROLE {SCHEMA_OWNER}"))
-    conn.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _advisory_key(plan.plan_hash)})
-
-    # cross-bind the plan's configs to the accepted candidate set at the same index.
-    if len(plan.configs) != len(candidate_set.configs):
-        raise L2FPersistenceError("plan config count != accepted candidate count")
-    for cfg, cand in zip(plan.configs, candidate_set.configs, strict=True):
-        if cfg.config_hash != cand.config_hash:
-            raise L2FPersistenceError("plan config does not match the accepted candidate at index")
-        if cfg.parameter_space_hash != plan.parameter_space_hash:
-            raise L2FPersistenceError("plan config parameter_space_hash mismatch")
-
-    # ---- resolve upstream identities (exactly one row each) BEFORE any publication ----
     feature_set = _resolve_one(
         conn,
         "SELECT id FROM profiling.feature_sets WHERE feature_set_hash = :fsh AND registry_hash = :frh",
@@ -283,15 +374,34 @@ def _persist_plan_with_trust(
             {"sid": snapshot["id"], "drid": dsr["id"], "p": _TRAIN, "fvh": m.feature_values_hash},
             f"profile_snapshot_member[{m.dataset_id}]",
         )
+        # the snapshot member MUST point at a bam_profile whose COMPLETE, of this dataset, with
+        # the plan member's exact profile_id / content_hash / feature_values_hash.
+        bam = _resolve_one(
+            conn,
+            "SELECT id FROM profiling.bam_profiles WHERE id = :bid AND dataset_registry_id = :drid "
+            "AND profile_id = :pid AND content_hash = :ch AND feature_values_hash = :fvh "
+            "AND profile_status = :st",
+            {
+                "bid": sm["bam_profile_id"],
+                "drid": dsr["id"],
+                "pid": m.profile_id,
+                "ch": m.content_hash,
+                "fvh": m.feature_values_hash,
+                "st": _COMPLETE,
+            },
+            f"bam_profile[{m.dataset_id}]",
+        )
         fmm = _resolve_one(
             conn,
             "SELECT id FROM profiling.feature_matrix_members WHERE feature_matrix_id = :mid "
-            "AND dataset_registry_id = :drid AND member_index = :idx AND feature_values_hash = :fvh",
+            "AND dataset_registry_id = :drid AND member_index = :idx "
+            "AND feature_values_hash = :fvh AND vector_hash = :vh",
             {
                 "mid": matrix["id"],
                 "drid": dsr["id"],
                 "idx": m.member_index,
                 "fvh": m.feature_values_hash,
+                "vh": m.vector_hash,
             },
             f"feature_matrix_member[{m.dataset_id}]",
         )
@@ -299,14 +409,32 @@ def _persist_plan_with_trust(
             {
                 "dataset_registry_id": dsr["id"],
                 "profile_snapshot_member_id": sm["id"],
-                "bam_profile_id": sm["bam_profile_id"],
+                "bam_profile_id": bam["id"],
                 "feature_matrix_member_id": fmm["id"],
                 "feature_values_hash": m.feature_values_hash,
                 "member_index": m.member_index,
             }
         )
+    return {
+        "feature_set_id": feature_set["id"],
+        "profile_snapshot_id": snapshot["id"],
+        "train_feature_matrix_id": matrix["id"],
+        "members": resolved_members,
+    }
 
-    # ---- publish CONFIG payloads + register catalog.artifacts + insert config_payloads ----
+
+def _publish_config_payloads(
+    conn: Connection,
+    plan: ExperimentPlan,
+    candidate_set: CandidateSet,
+    *,
+    publisher: ConfigPayloadPublisher,
+    created_files: list[PublishedConfigArtifact],
+) -> tuple[list[str], int]:
+    """Publish each canonical CONFIG payload + register its artifact + insert its config_payload.
+
+    Returns ``(payload_ids, artifacts_created)`` in candidate order.
+    """
     payload_ids: list[str] = []
     artifacts_created = 0
     for cand in candidate_set.configs:
@@ -332,19 +460,58 @@ def _persist_plan_with_trust(
                 "media_type": CONFIG_ARTIFACT_MEDIA_TYPE,
                 "artifact_id": artifact_id,
             },
-            conflict_cols=["config_hash"],
-            compare_cols=["parameter_space_hash", "schema_version", "media_type", "artifact_id"],
+            unique_keys=_CONFIG_PAYLOAD_UNIQUE_KEYS,
         )
         payload_ids.append(payload_id)
+    return payload_ids, artifacts_created
 
-    # ---- insert the plan ----
+
+def _persist_plan_with_trust(
+    conn: Connection,
+    plan: ExperimentPlan,
+    candidate_set: CandidateSet,
+    *,
+    publisher: ConfigPayloadPublisher,
+    created_files: list[PublishedConfigArtifact],
+) -> PlanPersistResult:
+    """Core persistence given an open connection in a transaction (no identity check).
+
+    Runs as the schema owner, serialized on a plan_hash advisory lock. Resolves ALL upstream
+    identities before publishing anything, then publishes payloads + registers artifacts +
+    inserts the plan/member/payload/config graph idempotently, and read-back verifies.
+    """
+    conn.execute(text(f"SET ROLE {SCHEMA_OWNER}"))
+    conn.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _advisory_key(plan.plan_hash)})
+
+    # cross-bind the plan's configs to the accepted candidate set at the same index.
+    if len(plan.configs) != len(candidate_set.configs):
+        raise L2FPersistenceError("plan config count != accepted candidate count")
+    for cfg, cand in zip(plan.configs, candidate_set.configs, strict=True):
+        if cfg.config_hash != cand.config_hash:
+            raise L2FPersistenceError("plan config does not match the accepted candidate at index")
+        if cfg.parameter_space_hash != plan.parameter_space_hash:
+            raise L2FPersistenceError("plan config parameter_space_hash mismatch")
+
+    # ---- resolve upstream identities (exactly one row each) BEFORE any publication ----
+    upstream = _resolve_plan_upstream(conn, plan)
+    snapshot_id = upstream["profile_snapshot_id"]
+    matrix_id = upstream["train_feature_matrix_id"]
+    feature_set_id = upstream["feature_set_id"]
+    resolved_members = upstream["members"]
+
+    # ---- publish CONFIG payloads + register catalog.artifacts + insert config_payloads ----
+    payload_ids, artifacts_created = _publish_config_payloads(
+        conn, plan, candidate_set, publisher=publisher, created_files=created_files
+    )
+
+    # ---- insert the plan (every immutable column; every unique key) ----
     plan_id, plan_created = _insert_or_verify(
         conn,
         table="l2f_experiment_plans",
         row={
-            "profile_snapshot_id": snapshot["id"],
-            "train_feature_matrix_id": matrix["id"],
-            "feature_set_id": feature_set["id"],
+            "profile_snapshot_id": snapshot_id,
+            "train_feature_matrix_id": matrix_id,
+            "feature_set_id": feature_set_id,
             "partition": _TRAIN,
             "snapshot_hash": plan.snapshot_hash,
             "split_manifest_hash": plan.split_manifest_hash,
@@ -362,19 +529,7 @@ def _persist_plan_with_trust(
             "logical_job_count": plan.logical_job_count,
             "plan_hash": plan.plan_hash,
         },
-        conflict_cols=["plan_hash"],
-        compare_cols=[
-            "profile_snapshot_id",
-            "train_feature_matrix_id",
-            "feature_set_id",
-            "snapshot_hash",
-            "train_matrix_hash",
-            "train_feature_view_hash",
-            "candidate_set_hash",
-            "train_member_count",
-            "candidate_count",
-            "logical_job_count",
-        ],
+        unique_keys=_PLAN_UNIQUE_KEYS,
     )
 
     # ---- insert the complete member inventory ----
@@ -384,8 +539,8 @@ def _persist_plan_with_trust(
             table="l2f_experiment_plan_members",
             row={
                 "plan_id": plan_id,
-                "profile_snapshot_id": snapshot["id"],
-                "feature_matrix_id": matrix["id"],
+                "profile_snapshot_id": snapshot_id,
+                "feature_matrix_id": matrix_id,
                 "profile_snapshot_member_id": rm["profile_snapshot_member_id"],
                 "feature_matrix_member_id": rm["feature_matrix_member_id"],
                 "bam_profile_id": rm["bam_profile_id"],
@@ -394,14 +549,7 @@ def _persist_plan_with_trust(
                 "feature_values_hash": rm["feature_values_hash"],
                 "member_index": rm["member_index"],
             },
-            conflict_cols=["plan_id", "member_index"],
-            compare_cols=[
-                "profile_snapshot_member_id",
-                "feature_matrix_member_id",
-                "bam_profile_id",
-                "dataset_registry_id",
-                "feature_values_hash",
-            ],
+            unique_keys=_MEMBER_UNIQUE_KEYS,
         )
 
     # ---- insert the complete plan-config inventory ----
@@ -416,8 +564,7 @@ def _persist_plan_with_trust(
                 "parameter_space_hash": cfg.parameter_space_hash,
                 "config_index": cfg.config_index,
             },
-            conflict_cols=["plan_id", "config_index"],
-            compare_cols=["config_payload_id", "config_hash", "parameter_space_hash"],
+            unique_keys=_PLAN_CONFIG_UNIQUE_KEYS,
         )
 
     # ---- transaction-local read-back verification ----
@@ -487,24 +634,64 @@ def _post_commit_hook() -> None:
     return None
 
 
-def _persist_in_new_transaction(
+# --------------------------------------------------------------------------- #
+# accepted-input construction seams (monkeypatchable; the accepted production path invokes them
+# ONLY after the exact-connection identity + revision checks have passed).
+# --------------------------------------------------------------------------- #
+def _build_accepted_plan() -> ExperimentPlan:
+    return build_accepted_experiment_plan()
+
+
+def _build_accepted_candidate_set() -> CandidateSet:
+    candidate_set = generate_accepted_candidate_set()
+    verify_accepted_candidate_set(candidate_set)
+    return candidate_set
+
+
+def _config_artifact_root_from_env() -> Path:
+    raw = os.environ.get(ENV_CONFIG_ARTIFACT_ROOT)
+    if raw is None or not raw.strip():
+        raise ConfigArtifactRootError(
+            f"{ENV_CONFIG_ARTIFACT_ROOT} is not set; the provisioned CONFIG-payload artifact "
+            f"root (mode {oct(CONFIG_ARTIFACT_ROOT_MODE)}) must be configured explicitly"
+        )
+    return Path(raw.strip())
+
+
+def _build_publisher() -> ConfigPayloadPublisher:
+    """Construct the provisioned publisher (this is the step that first touches the artifact
+    root on the filesystem)."""
+    return ConfigPayloadPublisher(_config_artifact_root_from_env())
+
+
+_BuildInputs = Callable[[Connection], "tuple[ExperimentPlan, CandidateSet, ConfigPayloadPublisher]"]
+
+
+def _execute_persistence_txn(
     engine: Engine,
-    plan: ExperimentPlan,
-    candidate_set: CandidateSet,
     *,
-    publisher: ConfigPayloadPublisher,
     verify_identity: bool,
+    build_inputs: _BuildInputs,
 ) -> PlanPersistResult:
+    """Open one transaction, optionally verify the exact-connection identity + revision FIRST,
+    then build the accepted inputs and persist — all on the same verified connection.
+
+    When ``verify_identity`` is True the identity + revision checks are the FIRST accesses on the
+    connection; ``build_inputs`` (which builds the plan, generates candidates, constructs the
+    publisher and touches the artifact root) is invoked ONLY after they pass, so a wrong database
+    or revision produces zero calls to the plan builder, candidate builder, publisher/root
+    access, upstream resolver and publication.
+    """
     conn = engine.connect()
     trans = conn.begin()
     committed = False
     created_files: list[PublishedConfigArtifact] = []
+    publisher: ConfigPayloadPublisher | None = None
     try:
         if verify_identity:
-            # identity verification is the FIRST access on this connection (before any other
-            # query, advisory lock, upstream read or artifact file publication).
             verify_operational_database_identity(conn)
             _require_live_revision(conn)
+        plan, candidate_set, publisher = build_inputs(conn)
         result = _persist_plan_with_trust(
             conn, plan, candidate_set, publisher=publisher, created_files=created_files
         )
@@ -519,40 +706,36 @@ def _persist_in_new_transaction(
         if not committed:
             with contextlib.suppress(Exception):
                 trans.rollback()
-            for art in created_files:
-                publisher.unpublish_if_created(art)
+            if publisher is not None:
+                for art in created_files:
+                    publisher.unpublish_if_created(art)
         raise
     finally:
         conn.close()
 
 
-def _config_artifact_root_from_env() -> Path:
-    raw = os.environ.get(ENV_CONFIG_ARTIFACT_ROOT)
-    if raw is None or not raw.strip():
-        raise ConfigArtifactRootError(
-            f"{ENV_CONFIG_ARTIFACT_ROOT} is not set; the provisioned CONFIG-payload artifact "
-            f"root (mode {oct(CONFIG_ARTIFACT_ROOT_MODE)}) must be configured explicitly"
-        )
-    return Path(raw.strip())
-
-
 def persist_accepted_experiment_plan() -> PlanPersistResult:
     """THE accepted F3-C1 persistence entry point — no caller-provided trust or paths.
 
-    Builds the accepted plan, regenerates + independently verifies the accepted candidate set,
-    connects via ``MINOS_DATABASE_URL``, verifies the exact transaction connection is the
-    canonical operational store at revision ``0006`` (never auto-upgrading), and persists the
-    plan/member/payload/config graph (zero jobs). Idempotent on replay.
+    Opens the transaction connection and, as the FIRST access on that exact connection, verifies
+    it is the canonical operational store at revision ``0006`` (never auto-upgrading). Only then
+    does it build the accepted plan, regenerate + independently verify the accepted candidate
+    set, construct the provisioned publisher (first filesystem touch), resolve upstream, publish
+    payloads, and persist the plan/member/payload/config graph (zero jobs) on the same verified
+    connection. Idempotent on replay.
     """
-    plan = build_accepted_experiment_plan()
-    candidate_set = generate_accepted_candidate_set()
-    verify_accepted_candidate_set(candidate_set)
-    publisher = ConfigPayloadPublisher(_config_artifact_root_from_env())
     engine = create_db_engine()
     try:
-        return _persist_in_new_transaction(
-            engine, plan, candidate_set, publisher=publisher, verify_identity=True
-        )
+
+        def _build(
+            _conn: Connection,
+        ) -> tuple[ExperimentPlan, CandidateSet, ConfigPayloadPublisher]:
+            plan = _build_accepted_plan()
+            candidate_set = _build_accepted_candidate_set()
+            publisher = _build_publisher()
+            return plan, candidate_set, publisher
+
+        return _execute_persistence_txn(engine, verify_identity=True, build_inputs=_build)
     finally:
         engine.dispose()
 
@@ -567,6 +750,8 @@ def _persist_experiment_plan_with_trust(
     """PRIVATE explicit-trust persistence for scratch / non-75 tests ONLY (no operational
     identity check). Never exported; the accepted production path is
     :func:`persist_accepted_experiment_plan`."""
-    return _persist_in_new_transaction(
-        engine, plan, candidate_set, publisher=publisher, verify_identity=False
+    return _execute_persistence_txn(
+        engine,
+        verify_identity=False,
+        build_inputs=lambda _conn: (plan, candidate_set, publisher),
     )

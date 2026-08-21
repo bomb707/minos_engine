@@ -1,10 +1,21 @@
-"""F3-C1 durable plan persistence — real-PostgreSQL behavioral tests (scratch only).
+"""F3-C1 durable plan persistence — real-PostgreSQL behavioral tests.
 
-Covers the accepted-graph creation, idempotent replay, concurrency, typed conflicts, upstream
-resolution, artifact publication contract, transaction/commit-ambiguity handling, exact-
-connection identity + revision guards, and non-75 synthetic derivation. Uses scratch databases
-(the accepted-path ones are named ``minos_engine_db`` on the ephemeral server so the operational
-identity check passes; the real operational store is never touched).
+Covers accepted-graph creation, idempotent replay, concurrency, complete upstream identity
+binding (with an independent negative per identity field), exact immutable get-or-verify across
+every column and every unique constraint, exact-connection identity + revision ordering
+(sentinel-proven), artifact/payload metadata conflicts, transaction / commit-ambiguity handling,
+and non-75 synthetic derivation.
+
+CI database isolation
+---------------------
+The accepted production entry point requires ``current_database() == minos_engine_db``. In
+GitHub Actions the service container's database is ALSO named ``minos_engine_db``, which cannot
+be dropped from a connection attached to it (``cannot drop the currently open database``) and,
+by contract, must never be dropped / recreated / migrated / written. Every database-backed test
+here therefore uses the dedicated ``isolated_pg_base_url`` cluster (a separate bundled
+``pgserver`` whose maintenance database is ``postgres``), so a throwaway ``minos_engine_db`` can
+be created and dropped without ever touching the CI service database. The real operational store
+is never touched (``MINOS_DATABASE_URL`` is monkeypatched only to the isolated scratch URL).
 """
 
 from __future__ import annotations
@@ -12,13 +23,15 @@ from __future__ import annotations
 import contextlib
 import os
 import stat
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 import pytest
-from sqlalchemy import Engine, create_engine, text
+from sqlalchemy import Connection, Engine, create_engine, text
 
+from minos_engine.common.canonical_json import canonical_json_bytes
 from minos_engine.common.hashing import sha256_hex
 from minos_engine.experiments.accepted_plan import (
     _build_plan_from_verified_inputs,
@@ -35,7 +48,11 @@ from minos_engine.storage.database import (
     OperationalDatabaseIdentityError,
     normalize_database_url,
 )
-from minos_engine.storage.l2f_config_publisher import ConfigPayloadPublisher
+from minos_engine.storage.l2f_config_publisher import (
+    CONFIG_ARTIFACT_KIND,
+    CONFIG_ARTIFACT_MEDIA_TYPE,
+    ConfigPayloadPublisher,
+)
 from minos_engine.storage.l2f_plan_store import (
     AmbiguousPlanCommitError,
     ArtifactMetadataConflictError,
@@ -46,7 +63,7 @@ from minos_engine.storage.l2f_plan_store import (
     persist_accepted_experiment_plan,
 )
 from tests.integration.layer2_db.conftest import alembic_upgrade, scratch_database
-from tests.integration.layer2_db.l2f_plan_seed import seed_upstream_for_plan
+from tests.integration.layer2_db.l2f_plan_seed import CORRUPTIONS, seed_upstream_for_plan
 
 _HEAD = "0006_l2f_experiment_plan"
 _PREV = "0005_l2e_feature_view"
@@ -93,6 +110,21 @@ def _artifact_files(root: Path) -> list[Path]:
     return sorted(root.glob("*.json"))
 
 
+@contextlib.contextmanager
+def _admin_conn(engine: Engine) -> Iterator[Connection]:
+    conn = engine.connect()
+    trans = conn.begin()
+    try:
+        conn.execute(text("SET ROLE minos_admin"))
+        yield conn
+        trans.commit()
+    except BaseException:
+        trans.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 # --------------------------------------------------------------------------- #
 # synthetic (non-75) plans built from real FrozenSnapshots
 # --------------------------------------------------------------------------- #
@@ -100,7 +132,7 @@ def _h(label: str) -> str:
     return sha256_hex(label.encode())
 
 
-def _synthetic_plan(spec: list[tuple[str, str, str]]):
+def _synthetic_plan(spec: list[tuple[str, str, str]]) -> Any:
     members = tuple(
         SnapshotMember(
             dataset_id=ds,
@@ -164,15 +196,21 @@ _SNAPSHOT_B = [
     ("dsB10", "test", "chr19"),
     ("dsB11", "test", "chr20"),
 ]  # 11 total, 2 train
+# one-train-member snapshot used by the per-identity-field negative matrix.
+_SNAPSHOT_ONE = [
+    ("dsN1", "train", "chr18"),
+    ("dsN2", "validation", "chr19"),
+    ("dsN3", "test", "chr20"),
+]
 
 
 # --------------------------------------------------------------------------- #
 # accepted graph creation + idempotency + legacy/jobs invariants
 # --------------------------------------------------------------------------- #
 def test_accepted_persistence_creates_exact_graph(
-    pg_base_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    isolated_pg_base_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with scratch_database(pg_base_url, _OP_DB) as url:
+    with scratch_database(isolated_pg_base_url, _OP_DB) as url:
         alembic_upgrade(url, _HEAD)
         engine = _engine(url)
         try:
@@ -219,9 +257,9 @@ def test_accepted_persistence_creates_exact_graph(
 
 
 def test_sequential_replay_is_idempotent(
-    pg_base_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    isolated_pg_base_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with scratch_database(pg_base_url, _OP_DB) as url:
+    with scratch_database(isolated_pg_base_url, _OP_DB) as url:
         alembic_upgrade(url, _HEAD)
         engine = _engine(url)
         try:
@@ -245,8 +283,8 @@ def test_sequential_replay_is_idempotent(
             engine.dispose()
 
 
-def test_two_engines_race_produce_one_graph(pg_base_url: str, tmp_path: Path) -> None:
-    with scratch_database(pg_base_url, _OP_DB) as url:
+def test_two_engines_race_produce_one_graph(isolated_pg_base_url: str, tmp_path: Path) -> None:
+    with scratch_database(isolated_pg_base_url, _OP_DB) as url:
         alembic_upgrade(url, _HEAD)
         engine = _engine(url)
         try:
@@ -312,7 +350,7 @@ def _resolve_upstream_ids(engine: Engine, plan: Any) -> dict[str, str]:
     return {"feature_set_id": str(fsid), "profile_snapshot_id": str(sid), "matrix_id": str(mid)}
 
 
-def _insert_poisoned_plan(engine: Engine, plan: Any, ids: dict[str, str], **override: Any) -> None:
+def _poisoned_plan_row(plan: Any, ids: dict[str, str], **override: Any) -> dict[str, Any]:
     row = {
         "profile_snapshot_id": ids["profile_snapshot_id"],
         "train_feature_matrix_id": ids["matrix_id"],
@@ -335,9 +373,13 @@ def _insert_poisoned_plan(engine: Engine, plan: Any, ids: dict[str, str], **over
         "plan_hash": plan.plan_hash,
     }
     row.update(override)
+    return row
+
+
+def _insert_poisoned_plan(engine: Engine, plan: Any, ids: dict[str, str], **override: Any) -> None:
+    row = _poisoned_plan_row(plan, ids, **override)
     cols = list(row)
-    with engine.connect() as c, c.begin():
-        c.execute(text("SET ROLE minos_admin"))
+    with _admin_conn(engine) as c:
         c.execute(
             text(
                 f"INSERT INTO experiments.l2f_experiment_plans ({', '.join(cols)}) "  # noqa: S608
@@ -348,9 +390,9 @@ def _insert_poisoned_plan(engine: Engine, plan: Any, ids: dict[str, str], **over
 
 
 def test_conflicting_immutable_metadata_is_typed_and_rolls_back_files(
-    pg_base_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    isolated_pg_base_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with scratch_database(pg_base_url, _OP_DB) as url:
+    with scratch_database(isolated_pg_base_url, _OP_DB) as url:
         alembic_upgrade(url, _HEAD)
         engine = _engine(url)
         try:
@@ -386,10 +428,188 @@ def test_conflicting_immutable_metadata_is_typed_and_rolls_back_files(
             engine.dispose()
 
 
-def test_missing_upstream_identity_fails_before_publication(
-    pg_base_url: str, tmp_path: Path
+def test_plan_logical_identity_collision_is_typed(
+    isolated_pg_base_url: str, tmp_path: Path
 ) -> None:
-    with scratch_database(pg_base_url, _OP_DB) as url:
+    """An alternate unique path: a pre-existing plan with the SAME complete logical identity but
+    a DIFFERENT plan_hash collides on ``uq_l2f_plans_logical_identity`` (not ``plan_hash``); the
+    store must classify that constraint, re-read, and raise the typed conflict."""
+    with scratch_database(isolated_pg_base_url, _OP_DB) as url:
+        alembic_upgrade(url, _HEAD)
+        engine = _engine(url)
+        try:
+            with engine.connect() as conn, conn.begin():
+                seed_upstream_for_plan(conn, _ACCEPTED_PLAN)
+            ids = _resolve_upstream_ids(engine, _ACCEPTED_PLAN)
+            # same 11 logical-identity hashes, different plan_hash (FK-free, hex64).
+            _insert_poisoned_plan(engine, _ACCEPTED_PLAN, ids, plan_hash="f" * 64)
+            root = _provisioned_root(tmp_path)
+            with pytest.raises(ImmutableMetadataConflictError):
+                _persist_experiment_plan_with_trust(
+                    engine, _ACCEPTED_PLAN, _CS, publisher=_publisher(root)
+                )
+            assert _count(engine, "SELECT count(*) FROM experiments.l2f_experiment_plans") == 1
+            assert _artifact_files(root) == []
+        finally:
+            engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "column",
+    ["parameter_space_hash", "experiment_parameter_policy_hash", "gatk_registry_hash"],
+)
+def test_plan_previously_omitted_immutable_column_conflict(
+    isolated_pg_base_url: str, tmp_path: Path, column: str
+) -> None:
+    """A pre-existing plan sharing ``plan_hash`` but differing on an immutable column that the
+    original comparison omitted (parameter-space / policy / gatk-registry hash) must now be a
+    typed conflict, not a false idempotent success."""
+    with scratch_database(isolated_pg_base_url, _OP_DB) as url:
+        alembic_upgrade(url, _HEAD)
+        engine = _engine(url)
+        try:
+            with engine.connect() as conn, conn.begin():
+                seed_upstream_for_plan(conn, _ACCEPTED_PLAN)
+            ids = _resolve_upstream_ids(engine, _ACCEPTED_PLAN)
+            _insert_poisoned_plan(engine, _ACCEPTED_PLAN, ids, **{column: "1" * 64})
+            root = _provisioned_root(tmp_path)
+            with pytest.raises(ImmutableMetadataConflictError):
+                _persist_experiment_plan_with_trust(
+                    engine, _ACCEPTED_PLAN, _CS, publisher=_publisher(root)
+                )
+            assert _count(engine, "SELECT count(*) FROM experiments.l2f_experiment_plans") == 1
+        finally:
+            engine.dispose()
+
+
+def test_plan_config_alternate_unique_paths(isolated_pg_base_url: str, tmp_path: Path) -> None:
+    """Both plan-config unique constraints are classified: an identical row is idempotent; a row
+    colliding on ``(plan_id, config_index)`` or ``(plan_id, config_payload_id)`` with differing
+    immutable metadata is a typed conflict — no raw uniqueness error escapes."""
+    plan = _synthetic_plan(_SNAPSHOT_A)
+    with scratch_database(isolated_pg_base_url, "minos_l2f_synth") as url:
+        alembic_upgrade(url, _HEAD)
+        engine = _engine(url)
+        try:
+            with engine.connect() as conn, conn.begin():
+                seed_upstream_for_plan(conn, plan)
+            root = _provisioned_root(tmp_path)
+            _persist_experiment_plan_with_trust(engine, plan, _CS, publisher=_publisher(root))
+            with engine.connect() as c:
+                plan_id = c.execute(
+                    text("SELECT id FROM experiments.l2f_experiment_plans WHERE plan_hash=:h"),
+                    {"h": plan.plan_hash},
+                ).scalar_one()
+                rows = (
+                    c.execute(
+                        text(
+                            "SELECT config_payload_id, config_hash, parameter_space_hash, config_index "
+                            "FROM experiments.l2f_experiment_plan_configs WHERE plan_id=:p "
+                            "ORDER BY config_index LIMIT 2"
+                        ),
+                        {"p": plan_id},
+                    )
+                    .mappings()
+                    .all()
+                )
+            c0, c1 = dict(rows[0]), dict(rows[1])
+
+            def _row(**over: Any) -> dict[str, Any]:
+                base = {"plan_id": str(plan_id), **c0}
+                base.update(over)
+                return base
+
+            # idempotent: identical row on both keys -> replay, no new row.
+            with _admin_conn(engine) as conn:
+                _id, created = PS._insert_or_verify(
+                    conn,
+                    table="l2f_experiment_plan_configs",
+                    row=_row(),
+                    unique_keys=PS._PLAN_CONFIG_UNIQUE_KEYS,
+                )
+                assert created is False
+            # conflict on (plan_id, config_index): reuse index 0 but bind config 1's payload.
+            with _admin_conn(engine) as conn, pytest.raises(ImmutableMetadataConflictError):
+                PS._insert_or_verify(
+                    conn,
+                    table="l2f_experiment_plan_configs",
+                    row=_row(
+                        config_payload_id=c1["config_payload_id"],
+                        config_hash=c1["config_hash"],
+                        parameter_space_hash=c1["parameter_space_hash"],
+                    ),
+                    unique_keys=PS._PLAN_CONFIG_UNIQUE_KEYS,
+                )
+            # conflict on (plan_id, config_payload_id): reuse index 0's payload at a new index.
+            with _admin_conn(engine) as conn, pytest.raises(ImmutableMetadataConflictError):
+                PS._insert_or_verify(
+                    conn,
+                    table="l2f_experiment_plan_configs",
+                    row=_row(config_index=99999),
+                    unique_keys=PS._PLAN_CONFIG_UNIQUE_KEYS,
+                )
+            assert (
+                _count(
+                    engine,
+                    "SELECT count(*) FROM experiments.l2f_experiment_plan_configs WHERE plan_id=:p",
+                    p=str(plan_id),
+                )
+                == plan.candidate_count
+            )
+        finally:
+            engine.dispose()
+
+
+def test_plan_member_duplicate_is_idempotent(isolated_pg_base_url: str, tmp_path: Path) -> None:
+    """A fully FK-valid duplicate plan-member collides on all three member unique constraints at
+    once (the composite FKs pin dataset / feature-values / matrix-index / bam_profile), so the
+    only reachable get-or-verify outcome is idempotent success. The store must classify whichever
+    member unique constraint PostgreSQL reports, re-read, match every immutable column, and add
+    no row — never surface a raw uniqueness error."""
+    plan = _synthetic_plan(_SNAPSHOT_A)
+    with scratch_database(isolated_pg_base_url, "minos_l2f_synth") as url:
+        alembic_upgrade(url, _HEAD)
+        engine = _engine(url)
+        try:
+            with engine.connect() as conn, conn.begin():
+                seed_upstream_for_plan(conn, plan)
+            root = _provisioned_root(tmp_path)
+            _persist_experiment_plan_with_trust(engine, plan, _CS, publisher=_publisher(root))
+            with engine.connect() as c:
+                member = (
+                    c.execute(
+                        text(
+                            "SELECT plan_id, profile_snapshot_id, feature_matrix_id, "
+                            "profile_snapshot_member_id, feature_matrix_member_id, bam_profile_id, "
+                            "dataset_registry_id, partition, feature_values_hash, member_index "
+                            "FROM experiments.l2f_experiment_plan_members LIMIT 1"
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+            before = _count(engine, "SELECT count(*) FROM experiments.l2f_experiment_plan_members")
+            with _admin_conn(engine) as conn:
+                _id, created = PS._insert_or_verify(
+                    conn,
+                    table="l2f_experiment_plan_members",
+                    row={k: str(v) for k, v in member.items()},
+                    unique_keys=PS._MEMBER_UNIQUE_KEYS,
+                )
+                assert created is False
+            after = _count(engine, "SELECT count(*) FROM experiments.l2f_experiment_plan_members")
+            assert after == before
+        finally:
+            engine.dispose()
+
+
+# --------------------------------------------------------------------------- #
+# complete upstream identity binding — one independent negative per field
+# --------------------------------------------------------------------------- #
+def test_missing_upstream_identity_fails_before_publication(
+    isolated_pg_base_url: str, tmp_path: Path
+) -> None:
+    with scratch_database(isolated_pg_base_url, _OP_DB) as url:
         alembic_upgrade(url, _HEAD)  # NO upstream seeded
         engine = _engine(url)
         try:
@@ -404,48 +624,113 @@ def test_missing_upstream_identity_fails_before_publication(
             engine.dispose()
 
 
-def test_existing_artifact_with_wrong_media_type_is_rejected(
-    pg_base_url: str, tmp_path: Path
+@pytest.mark.parametrize("field", CORRUPTIONS)
+def test_upstream_identity_field_negative(
+    isolated_pg_base_url: str, tmp_path: Path, field: str
 ) -> None:
-    with scratch_database(pg_base_url, _OP_DB) as url:
+    """Corrupting exactly one upstream identity field of a plan member makes the store fail with a
+    typed ``UpstreamIdentityError`` BEFORE any payload publication, leaving zero rows / files."""
+    plan = _synthetic_plan(_SNAPSHOT_ONE)
+    assert plan.train_member_count == 1
+    with scratch_database(isolated_pg_base_url, "minos_l2f_synth") as url:
         alembic_upgrade(url, _HEAD)
         engine = _engine(url)
         try:
             with engine.connect() as conn, conn.begin():
+                seed_upstream_for_plan(conn, plan, corrupt=field)
+            root = _provisioned_root(tmp_path)
+            with pytest.raises(UpstreamIdentityError):
+                _persist_experiment_plan_with_trust(engine, plan, _CS, publisher=_publisher(root))
+            assert _artifact_files(root) == []
+            counts = _graph_counts(engine)
+            assert counts["l2f_experiment_plans"] == 0
+            assert counts["l2f_experiment_plan_members"] == 0
+            assert counts["l2f_config_payloads"] == 0
+        finally:
+            engine.dispose()
+
+
+def test_valid_upstream_after_seed_fix_persists(isolated_pg_base_url: str, tmp_path: Path) -> None:
+    """The (fixed) seed's claimed valid graph contains the exact accepted identities: a
+    one-train-member plan with a matching bam_profile / snapshot-member / matrix-member persists
+    cleanly (proving the negatives above fail for the right reason, not a broken seed)."""
+    plan = _synthetic_plan(_SNAPSHOT_ONE)
+    with scratch_database(isolated_pg_base_url, "minos_l2f_synth") as url:
+        alembic_upgrade(url, _HEAD)
+        engine = _engine(url)
+        try:
+            with engine.connect() as conn, conn.begin():
+                seed_upstream_for_plan(conn, plan)
+            root = _provisioned_root(tmp_path)
+            result = _persist_experiment_plan_with_trust(
+                engine, plan, _CS, publisher=_publisher(root)
+            )
+            assert result.member_count == 1
+            assert result.jobs_count == 0
+        finally:
+            engine.dispose()
+
+
+# --------------------------------------------------------------------------- #
+# artifact / payload metadata conflicts (typed; NULL/malformed safe)
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "case", ["wrong_uri", "wrong_size", "null_size", "wrong_media", "wrong_provenance"]
+)
+def test_artifact_metadata_conflict_is_typed(
+    isolated_pg_base_url: str, tmp_path: Path, case: str
+) -> None:
+    """Every catalog.artifacts mismatch — including a NULL stored size — raises the typed
+    ``ArtifactMetadataConflictError`` (never TypeError/ValueError/raw DB error) and leaves the
+    accepted graph unchanged."""
+    with scratch_database(isolated_pg_base_url, _OP_DB) as url:
+        alembic_upgrade(url, _HEAD)
+        engine = _engine(url)
+        try:
+            root = _provisioned_root(tmp_path)
+            pub = _publisher(root)
+            cfg0 = _CS.configs[0]
+            payload = canonical_json_bytes(cfg0.effective_config)
+            # a matching artifact row with exactly one field wrong.
+            row = {
+                "u": pub.content_uri(cfg0.config_hash),
+                "h": cfg0.config_hash,
+                "m": CONFIG_ARTIFACT_MEDIA_TYPE,
+                "s": len(payload),
+                "p": CONFIG_ARTIFACT_KIND,
+            }
+            if case == "wrong_uri":
+                row["u"] = "mem://wrong"
+            elif case == "wrong_size":
+                row["s"] = len(payload) + 1
+            elif case == "null_size":
+                row["s"] = None
+            elif case == "wrong_media":
+                row["m"] = "application/octet-stream"
+            elif case == "wrong_provenance":
+                row["p"] = "not-l2f"
+            with engine.connect() as conn, conn.begin():
                 seed_upstream_for_plan(conn, _ACCEPTED_PLAN)
-                # pre-register a catalog.artifacts row for the first config_hash with a WRONG
-                # media_type — the get-or-verify must reject it.
                 conn.execute(text("SET ROLE minos_admin"))
                 conn.execute(
                     text(
                         "INSERT INTO catalog.artifacts (uri, sha256, media_type, size_bytes, provenance)"
-                        " VALUES (:u, :h, :m, :s, :p)"
+                        " VALUES (:u,:h,:m,:s,:p)"
                     ),
-                    {
-                        "u": "mem://wrong",
-                        "h": _CS.configs[0].config_hash,
-                        "m": "application/octet-stream",
-                        "s": 1,
-                        "p": "wrong",
-                    },
+                    row,
                 )
-            root = _provisioned_root(tmp_path)
             with pytest.raises(ArtifactMetadataConflictError):
-                _persist_experiment_plan_with_trust(
-                    engine, _ACCEPTED_PLAN, _CS, publisher=_publisher(root)
-                )
+                _persist_experiment_plan_with_trust(engine, _ACCEPTED_PLAN, _CS, publisher=pub)
             assert _graph_counts(engine)["l2f_experiment_plans"] == 0
+            assert _graph_counts(engine)["l2f_config_payloads"] == 0
         finally:
             engine.dispose()
 
 
 def test_existing_config_payload_with_wrong_param_space_is_rejected(
-    pg_base_url: str, tmp_path: Path
+    isolated_pg_base_url: str, tmp_path: Path
 ) -> None:
-    from minos_engine.common.canonical_json import canonical_json_bytes
-    from minos_engine.storage.l2f_config_publisher import CONFIG_ARTIFACT_KIND
-
-    with scratch_database(pg_base_url, _OP_DB) as url:
+    with scratch_database(isolated_pg_base_url, _OP_DB) as url:
         alembic_upgrade(url, _HEAD)
         engine = _engine(url)
         try:
@@ -456,9 +741,9 @@ def test_existing_config_payload_with_wrong_param_space_is_rejected(
             with engine.connect() as conn, conn.begin():
                 seed_upstream_for_plan(conn, _ACCEPTED_PLAN)
                 conn.execute(text("SET ROLE minos_admin"))
-                # an artifact that MATCHES what the publisher will produce (uri/size/media/
-                # provenance), then a config_payload with a WRONG parameter_space_hash -> the
-                # get-or-verify passes and the config_payload conflict is the typed failure.
+                # an artifact that MATCHES what the publisher will produce, then a config_payload
+                # with a WRONG parameter_space_hash -> the get-or-verify passes and the
+                # config_payload conflict is the typed failure.
                 aid = conn.execute(
                     text(
                         "INSERT INTO catalog.artifacts (uri, sha256, media_type, size_bytes, provenance)"
@@ -467,7 +752,7 @@ def test_existing_config_payload_with_wrong_param_space_is_rejected(
                     {
                         "u": pub.content_uri(cfg0.config_hash),
                         "h": cfg0.config_hash,
-                        "m": "application/vnd.minos.l2f-config+json",
+                        "m": CONFIG_ARTIFACT_MEDIA_TYPE,
                         "s": len(payload),
                         "p": CONFIG_ARTIFACT_KIND,
                     },
@@ -482,7 +767,7 @@ def test_existing_config_payload_with_wrong_param_space_is_rejected(
                         "h": cfg0.config_hash,
                         "ps": "0" * 64,
                         "sv": "l2f-config-payload-v1",
-                        "m": "application/vnd.minos.l2f-config+json",
+                        "m": CONFIG_ARTIFACT_MEDIA_TYPE,
                         "a": aid,
                     },
                 )
@@ -492,10 +777,13 @@ def test_existing_config_payload_with_wrong_param_space_is_rejected(
             engine.dispose()
 
 
+# --------------------------------------------------------------------------- #
+# transaction / commit-ambiguity handling
+# --------------------------------------------------------------------------- #
 def test_ambiguous_commit_retains_artifacts(
-    pg_base_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    isolated_pg_base_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with scratch_database(pg_base_url, _OP_DB) as url:
+    with scratch_database(isolated_pg_base_url, _OP_DB) as url:
         alembic_upgrade(url, _HEAD)
         engine = _engine(url)
         try:
@@ -518,9 +806,9 @@ def test_ambiguous_commit_retains_artifacts(
 
 
 def test_post_commit_failure_keeps_rows_and_files(
-    pg_base_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    isolated_pg_base_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with scratch_database(pg_base_url, _OP_DB) as url:
+    with scratch_database(isolated_pg_base_url, _OP_DB) as url:
         alembic_upgrade(url, _HEAD)
         engine = _engine(url)
         try:
@@ -545,10 +833,35 @@ def test_post_commit_failure_keeps_rows_and_files(
             engine.dispose()
 
 
-def test_wrong_database_identity_rejected_before_any_write(
-    pg_base_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+# --------------------------------------------------------------------------- #
+# exact-connection identity + revision ordering (sentinel-proven)
+# --------------------------------------------------------------------------- #
+def _install_build_sentinels(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+    calls = {"plan": 0, "candidates": 0, "publisher": 0, "resolve": 0, "publish": 0}
+
+    def _wrap(name: str, orig: Any) -> Any:
+        def _w(*a: Any, **k: Any) -> Any:
+            calls[name] += 1
+            return orig(*a, **k)
+
+        return _w
+
+    monkeypatch.setattr(PS, "_build_accepted_plan", _wrap("plan", PS._build_accepted_plan))
+    monkeypatch.setattr(
+        PS, "_build_accepted_candidate_set", _wrap("candidates", PS._build_accepted_candidate_set)
+    )
+    monkeypatch.setattr(PS, "_build_publisher", _wrap("publisher", PS._build_publisher))
+    monkeypatch.setattr(PS, "_resolve_plan_upstream", _wrap("resolve", PS._resolve_plan_upstream))
+    monkeypatch.setattr(
+        PS, "_publish_config_payloads", _wrap("publish", PS._publish_config_payloads)
+    )
+    return calls
+
+
+def test_wrong_identity_builds_and_touches_nothing(
+    isolated_pg_base_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with scratch_database(pg_base_url, "not_the_operational_store") as url:
+    with scratch_database(isolated_pg_base_url, "not_the_operational_store") as url:
         alembic_upgrade(url, _HEAD)
         engine = _engine(url)
         try:
@@ -557,27 +870,32 @@ def test_wrong_database_identity_rejected_before_any_write(
             root = _provisioned_root(tmp_path)
             monkeypatch.setenv("MINOS_DATABASE_URL", url)
             monkeypatch.setenv(PS.ENV_CONFIG_ARTIFACT_ROOT, str(root))
+            calls = _install_build_sentinels(monkeypatch)
             with pytest.raises(OperationalDatabaseIdentityError):
                 persist_accepted_experiment_plan()
-            # rejected before any write or file access.
+            # zero calls to plan builder, candidate builder, publisher/root access, upstream
+            # resolver and publication; nothing written or published.
+            assert calls == {"plan": 0, "candidates": 0, "publisher": 0, "resolve": 0, "publish": 0}
             assert _artifact_files(root) == []
             assert _graph_counts(engine)["l2f_experiment_plans"] == 0
         finally:
             engine.dispose()
 
 
-def test_revision_0005_rejected_without_upgrade(
-    pg_base_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_revision_0005_builds_and_touches_nothing(
+    isolated_pg_base_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with scratch_database(pg_base_url, _OP_DB) as url:
+    with scratch_database(isolated_pg_base_url, _OP_DB) as url:
         alembic_upgrade(url, _PREV)  # 0005, NOT 0006
         engine = _engine(url)
         try:
             root = _provisioned_root(tmp_path)
             monkeypatch.setenv("MINOS_DATABASE_URL", url)
             monkeypatch.setenv(PS.ENV_CONFIG_ARTIFACT_ROOT, str(root))
+            calls = _install_build_sentinels(monkeypatch)
             with pytest.raises(PlanRevisionError):
                 persist_accepted_experiment_plan()
+            assert calls == {"plan": 0, "candidates": 0, "publisher": 0, "resolve": 0, "publish": 0}
             # the boundary NEVER upgrades: still at 0005, nothing published.
             assert _count(engine, "SELECT version_num = :h FROM alembic_version", h=_PREV) == 1
             assert _artifact_files(root) == []
@@ -585,16 +903,24 @@ def test_revision_0005_rejected_without_upgrade(
             engine.dispose()
 
 
+# --------------------------------------------------------------------------- #
+# non-75 synthetic derivation + boundary export invariants
+# --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(
     ("spec", "expected_train"),
     [(_SNAPSHOT_A, 4), (_SNAPSHOT_B, 2)],
 )
 def test_non75_synthetic_plan_persists_derived_counts(
-    pg_base_url: str, tmp_path: Path, spec: list[tuple[str, str, str]], expected_train: int
+    isolated_pg_base_url: str,
+    tmp_path: Path,
+    spec: list[tuple[str, str, str]],
+    expected_train: int,
 ) -> None:
     plan = _synthetic_plan(spec)
     assert plan.train_member_count == expected_train  # non-75, derived from actual membership
-    with scratch_database(pg_base_url, "minos_l2f_synth") as url:  # NOT the operational name
+    with scratch_database(
+        isolated_pg_base_url, "minos_l2f_synth"
+    ) as url:  # NOT the operational name
         alembic_upgrade(url, _HEAD)
         engine = _engine(url)
         try:

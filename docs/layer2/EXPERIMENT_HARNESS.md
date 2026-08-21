@@ -56,6 +56,29 @@ candidate-derived configs, one CONFIG payload per distinct config, and **zero** 
 (counts are derived — 50/41 are historical, never persistence constants). A replay duplicates
 no rows and rewrites no artifacts, followed by a transaction-local read-back verification.
 
+**F3-C1 corrective (CI isolation + complete identity binding + exact ordering).** The
+accepted-path persistence tests require `current_database() == minos_engine_db`; because the
+GitHub Actions service container's database is itself named `minos_engine_db` (which cannot be
+dropped from a connection attached to it and, by contract, is never dropped / recreated /
+migrated / written), those tests now run against a **dedicated isolated `pgserver` cluster**
+(`isolated_pg_base_url`) whose maintenance database is `postgres`, so a throwaway
+`minos_engine_db` is created and migrated only inside that isolated cluster and the collision
+cannot recur. Every plan member is now bound to **one exact, unambiguous** upstream lineage: the
+snapshot member's `bam_profile` is resolved and required to match the member's `profile_id`,
+`content_hash`, `feature_values_hash`, `dataset_registry_id` and `profile_status = COMPLETE`,
+and the matrix member's `vector_hash` (and `member_index` / `feature_values_hash` /
+`dataset_registry_id`) must match — any single mismatch is a typed `UpstreamIdentityError`
+raised before any payload publication (one independent behavioral negative per identity field).
+Immutable get-or-verify compares **every** immutable column and classifies **every** unique
+constraint (not only the `INSERT … ON CONFLICT` target): a colliding row with any differing
+immutable metadata is a typed `ImmutableMetadataConflictError`; a raw uniqueness/integrity
+exception is never surfaced. The no-argument production boundary verifies the exact transaction
+connection's operational identity **and** revision `0006` **first** — before the plan builder,
+candidate builder, publisher/root access, upstream resolver, or any publication runs
+(sentinel-proven zero calls on a wrong database or revision `0005`). Every `catalog.artifacts`
+mismatch — including NULL or malformed stored metadata — fails through
+`ArtifactMetadataConflictError` (never a `TypeError`/`ValueError`/raw database error).
+
 **Content-addressed CONFIG-payload contract** (`storage/l2f_config_publisher.py`): for each
 accepted candidate the persisted bytes are exactly `canonical_json_bytes(effective_config)`
 (`sha256 == config_hash`) — no wrapper/envelope. Each payload binds `schema_version =

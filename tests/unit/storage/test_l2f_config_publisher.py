@@ -93,6 +93,34 @@ def test_get_or_verify_rejects_existing_file_with_wrong_bytes(tmp_path: Path) ->
     assert bad.read_bytes() == b"not the real payload"
 
 
+def test_get_or_verify_rejects_existing_file_with_wrong_size(tmp_path: Path) -> None:
+    root = _provisioned_root(tmp_path)
+    pub = ConfigPayloadPublisher(root)
+    payload, config_hash = _payload()
+    # a different-length file at the content-addressed path (its bytes cannot hash to
+    # config_hash, so the content-hash check rejects it before any inode is created).
+    bad = root / f"{config_hash}.json"
+    bad.write_bytes(payload + b"   extra trailing bytes")
+    os.chmod(bad, 0o640)
+    with pytest.raises(ConfigArtifactIntegrityError):
+        pub.publish(payload, config_hash=config_hash)
+    assert bad.stat().st_size == len(payload) + len(b"   extra trailing bytes")
+
+
+def test_get_or_verify_rejects_existing_file_with_wrong_mode(tmp_path: Path) -> None:
+    root = _provisioned_root(tmp_path)
+    pub = ConfigPayloadPublisher(root)
+    payload, config_hash = _payload()
+    # correct bytes (hash matches) but the WRONG mode -> the credential check rejects it (the
+    # same inode-credential path also verifies uid/gid).
+    good_bytes_wrong_mode = root / f"{config_hash}.json"
+    good_bytes_wrong_mode.write_bytes(payload)
+    os.chmod(good_bytes_wrong_mode, 0o600)
+    with pytest.raises(ConfigArtifactIntegrityError):
+        pub.publish(payload, config_hash=config_hash)
+    assert stat.S_IMODE(good_bytes_wrong_mode.stat().st_mode) == 0o600  # left unchanged
+
+
 def test_unpublish_if_created_removes_only_created_inode(tmp_path: Path) -> None:
     root = _provisioned_root(tmp_path)
     pub = ConfigPayloadPublisher(root)

@@ -113,6 +113,38 @@ def scratch_database(base_url: str, name: str) -> Iterator[str]:
 
 
 @pytest.fixture(scope="session")
+def isolated_pg_base_url() -> Iterator[str]:
+    """A dedicated, isolated bundled PostgreSQL cluster for F3-C1 accepted-path tests.
+
+    The accepted-path persistence entry point requires ``current_database() ==
+    minos_engine_db``, so its tests must run against a database literally named
+    ``minos_engine_db``. In GitHub Actions the service container's database is ALSO named
+    ``minos_engine_db`` (the canonical operational name); creating/dropping a scratch database
+    of that name there is impossible — the admin connection is itself attached to
+    ``minos_engine_db`` (``cannot drop the currently open database``) — and the contract forbids
+    dropping, recreating, migrating or writing the CI service database at all.
+
+    This fixture therefore always spins up a **separate** bundled ``pgserver`` cluster,
+    independent of ``MINOS_DATABASE_URL``. Its base URL points at that cluster's own maintenance
+    database (``postgres``), so ``scratch_database(isolated_pg_base_url, "minos_engine_db")`` can
+    create and drop a throwaway ``minos_engine_db`` inside it without the admin connection ever
+    being attached to the database being dropped, and without ever touching the CI service
+    database. ``pgserver`` is a hard dev dependency (installed in CI), so this never skips there.
+    """
+    try:
+        import pgserver
+    except Exception:  # pragma: no cover - pgserver is a dev dependency, present in CI
+        pytest.skip("pgserver is required for the isolated accepted-path cluster")
+    tmp = tempfile.mkdtemp(prefix="minos_l2f_iso_")
+    server = pgserver.get_server(tmp)
+    try:
+        yield server.get_uri()
+    finally:
+        with contextlib.suppress(Exception):
+            server.cleanup()
+
+
+@pytest.fixture(scope="session")
 def main_db_url(pg_base_url: str) -> Iterator[str]:
     # Pin the L2-B suite to the L2-B revision so a later stage's migration (L2-C's
     # 0002 and beyond) never changes what these L2-B tests observe (exactly 10 tables,
