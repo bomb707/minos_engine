@@ -464,3 +464,193 @@ def test_f5_result_identity_excludes_raw_process_streams() -> None:
     fields = set(ExecutionResultManifest.model_fields)
     assert "stderr" not in fields and "stdout" not in fields
     assert not any("stderr" in f or "stdout" in f for f in fields)
+
+
+# --------------------------------------------------------------------------- #
+# F6 — leakage boundary: execution and verification never consume evaluation data
+# --------------------------------------------------------------------------- #
+#: every evaluation-only concept F5/F6 must never resolve, open, select or emit.
+#: Each token is PRECISE on purpose. Broad substrings like "score" or "f1" would collide with
+#: legitimate GATK parameter names (``min_base_quality_score``) and with hex digests, producing
+#: false positives that would have to be excepted away - which would weaken the guard.
+_F6_FORBIDDEN_CONCEPTS = (
+    "truth",
+    "hap.py",
+    "hap_py",
+    "happy_",
+    "mutation_manifest",
+    "mutations",
+    "tp_count",
+    "fp_count",
+    "fn_count",
+    "true_positive",
+    "false_positive",
+    "false_negative",
+    "precision",
+    "recall",
+    "scoring",
+    "leaderboard",
+    "training_target",
+    "train_label",
+    "ground_truth",
+)
+
+#: the F6 surface = the F5 modules plus the harness verifier.
+_F6_MODULES = (*_F5_MODULES, "storage/l2f_harness_verifier.py")
+
+
+def _f6_files() -> list[Path]:
+    return [SRC / rel for rel in _F6_MODULES]
+
+
+def test_f6_code_literals_never_name_evaluation_concepts() -> None:
+    """AST literal scan (docstrings excluded): no evaluation concept is ever addressed in code."""
+    from minos_engine.storage.l2f_harness_verifier import _FORBIDDEN_ARTIFACT_TOKENS
+
+    # The ONLY permitted occurrences are the verifier's own DENYLIST — literals that exist
+    # precisely to REJECT such material — and the negative check that reports it. They are
+    # resolved from the live module, so the exemption can never drift wider than the denylist.
+    verifier_denylist = {t.lower() for t in _FORBIDDEN_ARTIFACT_TOKENS} | {
+        "no_nontrain_or_truth_data"
+    }
+    for path in _f6_files():
+        allowed = verifier_denylist if path.name == "l2f_harness_verifier.py" else set()
+        for literal in _code_strings(path):
+            if literal in allowed:
+                continue
+            for concept in _F6_FORBIDDEN_CONCEPTS:
+                assert concept not in literal, (path.name, literal, concept)
+
+
+def test_f6_sql_never_selects_an_evaluation_column() -> None:
+    """Every SQL literal in the F6 surface is inspected for evaluation columns and tables."""
+    evaluation_sql = (
+        "truth_vcf",
+        "truth_bed",
+        "mutations",
+        "happy_",
+        "hap_py",
+        "leaderboard",
+        "scoring",
+        "tp_count",
+        "fp_count",
+        "fn_count",
+    )
+    legacy_sql = (
+        "experiments.results",
+        "experiments.jobs ",
+        "profiling.profiles",
+        "catalog.gatk_configs",
+    )
+    for path in _f6_files():
+        for literal in _code_strings(path):
+            if not any(verb in literal for verb in ("select", "insert", "update", "delete")):
+                continue
+            for token in evaluation_sql:
+                assert token not in literal, (path.name, token, literal[:120])
+            for token in legacy_sql:
+                if token not in literal:
+                    continue
+                # A legacy table may be named ONLY inside a count(*) PROOF-OF-ABSENCE probe
+                # (the verifier's `legacy_tables_excluded` check). It is never a data source.
+                assert path.name == "l2f_harness_verifier.py", (path.name, token)
+                assert literal.strip().startswith("select count(*) from "), literal[:120]
+
+
+def test_f6_only_train_members_are_executable() -> None:
+    """The input resolver requires the TRAIN partition; it has no validation/test branch."""
+    import minos_engine.storage.l2f_execution_inputs as INPUTS
+
+    literals = _code_strings(SRC / "storage/l2f_execution_inputs.py")
+    assert "train" in literals
+    assert "validation" not in literals and "test" not in literals
+    assert hasattr(INPUTS, "resolve_accepted_execution_input")
+
+
+def test_f6_resolves_no_truth_or_scoring_path() -> None:
+    """Only the two provisioned dataset subtrees are ever addressed by name."""
+    literals = _code_strings(SRC / "storage/l2f_execution_inputs.py")
+    path_like = {lit for lit in literals if "/" in lit or lit.endswith((".bam", ".fa", ".dict"))}
+    for literal in path_like:
+        assert not any(c in literal for c in ("truth", "happy", "hap.py", "mutation", "score"))
+
+
+def test_f6_failure_records_carry_only_bounded_fields() -> None:
+    """A failure record is a bounded code plus an optional exit code and digest — nothing else."""
+    from minos_engine.experiments.execution_contract import ExecutionFailure
+
+    assert set(ExecutionFailure.model_fields) == {"failure_code", "exit_code", "stderr_sha256"}
+
+
+def test_f6_failure_codes_are_a_closed_non_scientific_vocabulary() -> None:
+    from minos_engine.storage.l2f_execution_contract import L2F_EXECUTION_FAILURE_CODES
+
+    assert len(L2F_EXECUTION_FAILURE_CODES) == 6
+    for code in L2F_EXECUTION_FAILURE_CODES:
+        assert not any(c in code.lower() for c in _F6_FORBIDDEN_CONCEPTS)
+
+
+def test_f6_child_environment_allowlist_carries_no_secret_or_evaluation_variable() -> None:
+    from minos_engine.storage.l2f_gatk_runner import _ENV_ALLOWLIST
+
+    assert set(_ENV_ALLOWLIST) == {"PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "JAVA_HOME", "TZ"}
+    for name in _ENV_ALLOWLIST:
+        lowered = name.lower()
+        assert not any(c in lowered for c in _F6_FORBIDDEN_CONCEPTS)
+        assert not any(s in lowered for s in ("url", "dsn", "password", "secret", "token", "key"))
+
+
+def test_f6_experiments_package_stays_pure() -> None:
+    """AST dependency check: the pure domain package imports no storage/db/subprocess module."""
+    forbidden_roots = {
+        "sqlalchemy",
+        "psycopg",
+        "alembic",
+        "subprocess",
+        "socket",
+        "urllib",
+        "requests",
+        "httpx",
+    }
+    for path in sorted((SRC / "experiments").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert alias.name.split(".")[0] not in forbidden_roots, (path.name, alias.name)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                root = node.module.split(".")[0]
+                assert root not in forbidden_roots, (path.name, node.module)
+                assert not node.module.startswith("minos_engine.storage"), (path.name, node.module)
+
+
+def test_f6_verifier_never_mutates(monkeypatch: object) -> None:
+    """AST check: the verifier module issues no INSERT/UPDATE/DELETE/COPY/TRUNCATE literal."""
+    mutating = ("insert into", "update ", "delete from", "truncate", "copy ", "create ", "drop ")
+    for literal in _code_strings(SRC / "storage/l2f_harness_verifier.py"):
+        stripped = literal.strip().lower()
+        for verb in mutating:
+            assert not stripped.startswith(verb), (verb, literal[:120])
+
+
+def test_f6_recovery_never_retries() -> None:
+    """No retry/backoff machinery exists anywhere on the F6 surface."""
+    for path in _f6_files():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        names = {
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        }
+        for name in names:
+            assert "retry" not in name.lower(), (path.name, name)
+            assert "backoff" not in name.lower(), (path.name, name)
+
+
+def test_f6_cancelled_remains_unreachable() -> None:
+    """No F6 code path can ever request the CANCELLED status."""
+    from minos_engine.storage.l2f_job_claim import F4_TRANSITIONS
+
+    assert not any("CANCELLED" in s for pair in F4_TRANSITIONS for s in pair)
+    for path in _f6_files():
+        assert "cancelled" not in _code_strings(path)

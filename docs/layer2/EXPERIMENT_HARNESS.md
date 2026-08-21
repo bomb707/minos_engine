@@ -5,7 +5,7 @@ experiment planning over the frozen L2-E train membership. It does **not** score
 select, optimize, train, or activate `Layer2Service.select_config`. `HARNESS-READY` (F7)
 is not implemented and is **not** claimed anywhere below.
 
-## Scope (F3-A … F4 accepted; F5 GATK execution)
+## Scope (F3-A … F5 accepted; F6 recovery + security)
 
 **F3-A is accepted** at commit `ff8daa4bf9bd9891e46017e3f7bcb4ea9a8edb6d`. The accepted
 identities are the migration `0006_l2f_experiment_plan` byte SHA-256
@@ -37,19 +37,116 @@ an already-persisted F3-C1 graph and any F3-C2 jobs against the repository-owned
 **F4 is accepted** at commit `76c092f5f255d77fc3a6cd71805dab4b97c1d68c` (with the accepted
 corrections at `84db9cdb` and `908fc4e0`): safe job claiming and pre-execution state transitions.
 
-**F5 adds GATK execution, terminal job transitions, success-result persistence,
-failure recording and non-mutating execution verification.** Migration
-`0008_l2f_execution_results` (additive; `0006` and `0007` stay byte-identical) adds the two
-outcome tables, the terminal transition guard and three narrowly scoped `SECURITY DEFINER`
-functions; `storage/l2f_execution.py` exposes
-`execute_next_accepted_job(*, worker_id) -> ExecutionDispatchResult | None`. **Scoring, hap.py,
-truth comparison, optimization, training, model selection, HARNESS-READY, F6 and F7 remain
-absent**, `Layer2Service.select_config` stays blocked, and the operational `minos_engine_db`
-stays at `0005`. **This corrective commit** hardens F5 before acceptance: the exact relational job
-binding, concurrency-safe outcome exclusivity, a complete success get-or-verify, exact-connection
-authorization, per-attempt workspace hygiene, genuinely bounded child streams, strict
-single-sample in-region VCF validation, matching failure commit-state semantics, and independent
-recomputation of every input/argv/result identity.
+**F5 is accepted** at commit `f00ceafb85fe4c6dfa6b698a34313445322c4b6b`: GATK execution,
+terminal job transitions, success-result persistence, failure recording and non-mutating execution
+verification. Migration `0008_l2f_execution_results` (additive; `0006` and `0007` stay
+byte-identical) adds the two outcome tables, the terminal transition guard and three narrowly
+scoped `SECURITY DEFINER` functions; `storage/l2f_execution.py` exposes
+`execute_next_accepted_job(*, worker_id) -> ExecutionDispatchResult | None`. The accepted
+identities are the corrected `0008` byte SHA-256
+`95614d67fbfbafb735a0651275dd06f1949ae513b43b96b3776a5a90c436f3ff` and the F5 contract hash
+`8b7d8e8961934f46d295646b4bc049bf118ba352c644d6e5d4d5d256dd201bdc`.
+
+**F6 (this commit) adds execution recovery, security hardening, injection resistance, leakage
+enforcement and consistent-forgery verification.** It changes **no** migration (0001-0008 stay
+byte-identical, no `0009` exists), **no** scientific identity or hash formula, and **no**
+candidate generation. **Scoring, hap.py, truth comparison, optimization, training, model
+selection, `HARNESS-READY` and F7 remain absent**, `Layer2Service.select_config` still raises
+`StageNotReadyError`, and the operational `minos_engine_db` remains exactly at
+`0005_l2e_feature_view` with zero `l2f%` tables — F6 applies no migration and runs no operational
+job.
+
+### F6 execution recovery contract
+
+After a job is claimed, **every** exit produces exactly one of these outcomes. Each row is a
+typed exception, so a caller can always tell them apart; nothing is ever retried automatically.
+
+| Situation | Final state | Raised |
+|---|---|---|
+| Preparation fails while `CLAIMED` | `PENDING` | `PreTerminalExecutionError` (`recovered_to`) |
+| Release commit ambiguous | unknown | `AmbiguousRecoveryCommitError` |
+| Release itself fails | unknown | `ExecutionRecoveryError` (`recovery_cause`) |
+| Start commit ambiguous | unknown; **GATK never runs** | `AmbiguousStartCommitError` |
+| Non-ambiguous error after `RUNNING` | durable bounded `FAILED` | `ExecutionRecordedFailureError` |
+| Successful result commit | `SUCCEEDED` | — |
+| Failure-result commit | `FAILED` | — |
+| Terminal commit ambiguous | unknown; artifacts retained | `AmbiguousExecutionCommitError` |
+| Wrapper failure after a confirmed commit | the committed terminal state | `PostCommitWrapperError` |
+
+The four gaps F5 left open are closed: attempt-directory creation/validation, invocation
+rendering, runner setup / executable verification / subprocess startup / output reading, and a
+non-ambiguous success-persistence failure all now sit **inside** the recovery scope, so none of
+them can leave a job in `RUNNING`. Recovery failures are never suppressed: the original cause is
+always chained (`__cause__`) and the recovery failure is carried on `recovery_cause`, so both
+statuses survive. `find_nonterminal_jobs()` / `assert_no_stranded_jobs()` are the final-state
+assertions used to prove there are no unexpected `CLAIMED` or `RUNNING` rows.
+
+A planted FIFO or device node in the provisioned dataset root previously blocked the worker
+indefinitely, because `os.open(..., O_RDONLY)` waits for a writer **before** the regular-file
+check can reject it. Both stream hashers now open with `O_NONBLOCK | O_NOFOLLOW`, so a
+non-regular input or output is rejected immediately instead of hanging.
+
+### F6 workspace and filesystem hardening
+
+Each attempt's directory records its `(st_dev, st_ino)` immediately after `mkdir` **and** writes a
+private `O_EXCL` sentinel with an unguessable name — because a filesystem may **reuse an inode
+number** after `rmdir`, a dev/ino comparison alone can be defeated by a rmdir/mkdir substitution.
+Cleanup removes only that verified inode, so a replacement directory or symlink installed under
+the same path is never descended into or deleted. If validation fails after creation, only the
+inode that call created is removed. Refused: symlinked work roots, symlinked intermediate
+components, pre-existing attempt paths, pre-existing output paths, outputs outside the exact
+attempt inode, non-regular outputs, path traversal, hard-linked outputs (`st_nlink != 1`) and
+mutation during hashing or between validation and publication.
+
+### F6 execution security and environment boundary
+
+`shell=False` always; the argv is tokenized, and the fixed skeleton
+(`HaplotypeCaller -R … -I … -L … -O …`) always leads and each of its tokens appears exactly once,
+so no CONFIG value can redirect the tool, BAM, reference, interval or output. The CONFIG contract
+rejects unknown keys, wrong types, bool-as-int, string-as-int, NaN, ±infinity, out-of-range values
+and unsupported enums **before** any subprocess starts, and no accepted parameter accepts a
+free-form string, so shell metacharacters, whitespace, quotes, backticks, `$()`, redirection
+characters and leading-dash payloads are rejected by the contract or remain single inert argv
+tokens.
+
+The child environment is the explicit allowlist `PATH, HOME, LANG, LC_ALL, TMPDIR, JAVA_HOME, TZ`
+and nothing else — `PYTHONPATH`, `PYTHONHOME`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, database DSNs,
+API keys, cloud credentials and any truth/scoring variable are all absent, proven by dumping the
+real child environment. stdout/stderr stay bounded **while the process runs**, and a timeout
+terminates the entire process group (proven by a forked grandchild that is also reaped).
+
+**GATK provenance, stated precisely.** The executable is pinned by absolute non-symlink path and a
+verified SHA-256. The version is **provisioned metadata bound to that verified SHA-256** — the
+runner performs **no** `--version` probe, so the version is not a measured property of the binary
+and is never described as one.
+
+### F6 leakage exclusions
+
+Execution and verification never consume or expose truth VCF/BED, mutation manifests, hap.py
+output, TP/FP/FN, labels, scores, leaderboard data, validation/test payloads or training targets.
+This is enforced by AST dependency and literal checks over the whole F5/F6 surface (not source-text
+scanning alone): no evaluation concept appears in any code literal, no F5/F6 SQL selects an
+evaluation column, and a legacy table may be named **only** inside a `count(*)` proof-of-absence
+probe. Only accepted **train** members are executable; no truth or scoring path is ever resolved
+or opened; failure records carry only a bounded code, an optional exit code and a digest; and
+`experiments` remains a pure domain package with no storage, database, subprocess or network
+dependency.
+
+### F6 consistent-forgery inventory
+
+Fifteen named forgeries, each **internally consistent** (the attacker recomputes whatever hash the
+mutation would break) and each mapped to the deterministic named check that rejects it: plan
+member replaced and rehashed; plan config replaced with a recomputed job key; job member/config
+pair changed consistently; CONFIG payload mutated with matching file and artifact hashes; an input
+component mutated with a recomputed `input_identity_hash`; manifest input fields mutated with a
+recomputed input hash; logical argv mutated with a recomputed argv hash; VCF bytes mutated with a
+matching artifact hash; result manifest mutated with a matching artifact hash; result scientific
+fields mutated with a matching `result_hash`; cross-plan member and cross-plan result
+substitution; success/failure outcome substitution; a terminal row with a missing, duplicated or
+wrong-kind durable outcome; and a truth-bearing artifact inserted with internally consistent
+hashes. Where a PostgreSQL constraint makes the state unconstructable, the pure evaluator is
+driven with a controlled immutable `PersistedGraph` — no production constraint is ever disabled,
+and the production boundary keeps its own control tests.
 
 ### F5 GATK execution + terminal outcomes
 

@@ -23,6 +23,9 @@ from minos_engine.storage import l2f_harness_verifier as HV
 from minos_engine.storage import l2f_job_claim as JC
 from minos_engine.storage.l2f_execution import (
     AmbiguousExecutionCommitError,
+    ExecutionRecordedFailureError,
+    PostCommitWrapperError,
+    PreTerminalExecutionError,
     _execute_next_job_with_trust,
 )
 from minos_engine.storage.l2f_execution_inputs import DatasetRoot
@@ -267,8 +270,11 @@ def test_success_and_failure_are_mutually_exclusive_across_jobs(env: Any) -> Non
 # --------------------------------------------------------------------------- #
 def test_missing_input_releases_the_claim_back_to_pending(env: Any, tmp_path: Path) -> None:
     (tmp_path / "datasets" / "practice" / "round_r0" / "input.bam").unlink()
-    with pytest.raises(InputResolutionError):
+    # F6: a pre-terminal failure is typed, and the ORIGINAL cause stays chained.
+    with pytest.raises(PreTerminalExecutionError) as excinfo:
         env.run()
+    assert excinfo.value.recovered_to == "PENDING"
+    assert isinstance(excinfo.value.__cause__, InputResolutionError)
     pending = _count(
         env.engine,
         f"SELECT count(*) FROM {_JOBS} WHERE status='PENDING'",  # noqa: S608
@@ -295,8 +301,10 @@ def test_mutated_config_artifact_releases_the_claim(env: Any) -> None:
         path = Path(uri.removeprefix("file://"))
         os.chmod(path, 0o640)
         path.write_bytes(b'{"tampered": true}')
-    with pytest.raises(ConfigArtifactError):
+    with pytest.raises(PreTerminalExecutionError) as excinfo:
         env.run()
+    assert excinfo.value.recovered_to == "PENDING"
+    assert isinstance(excinfo.value.__cause__, ConfigArtifactError)
     assert _count(env.engine, f"SELECT count(*) FROM {_RESULTS}") == 0  # noqa: S608
 
 
@@ -320,8 +328,10 @@ def test_post_commit_wrapper_failure_retains_rows_and_artifacts(
         raise RuntimeError("post-commit wrapper failure")
 
     monkeypatch.setattr(EX, "_post_commit_hook", _boom)
-    with pytest.raises(RuntimeError):
+    # F6: a wrapper failure AFTER a confirmed commit is typed distinctly and never retried.
+    with pytest.raises(PostCommitWrapperError) as excinfo:
         env.run()
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
     assert _count(env.engine, f"SELECT count(*) FROM {_RESULTS}") == 1  # noqa: S608
     assert len(env.artifacts()) == 2
 
@@ -333,10 +343,15 @@ def test_precommit_rollback_removes_only_newly_created_artifacts(
         raise RuntimeError("injected pre-commit failure")
 
     monkeypatch.setattr(EX, "_register_artifact", _boom)
-    with pytest.raises(RuntimeError):
+    # F6: a NON-ambiguous success-persistence failure drives the job to a durable FAILED outcome
+    # instead of stranding it in RUNNING, and preserves the original cause.
+    with pytest.raises(ExecutionRecordedFailureError) as excinfo:
         env.run()
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
     assert env.artifacts() == []  # every newly created inode was removed
     assert _count(env.engine, f"SELECT count(*) FROM {_RESULTS}") == 0  # noqa: S608
+    assert _count(env.engine, f"SELECT count(*) FROM {_FAILURES}") == 1  # noqa: S608
+    EX.assert_no_stranded_jobs(env.engine, env.plan.plan_hash)
 
 
 def test_direct_terminal_update_without_a_record_is_rejected(env: Any) -> None:

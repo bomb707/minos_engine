@@ -52,8 +52,11 @@ def _stream_sha256(path: Path) -> tuple[str, int]:
     """Stream-hash a regular file, rejecting symlinks and any change during the read."""
     if path.is_symlink():
         raise InputResolutionError(f"input {path} is a symlink")
+    # O_NONBLOCK so a planted FIFO/device returns IMMEDIATELY instead of blocking this worker
+    # forever before the regular-file check below can reject it; O_NOFOLLOW refuses a symlink at
+    # the syscall level. On Linux both are no-ops for an ordinary regular file.
     try:
-        fd = os.open(path, os.O_RDONLY)
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
     except OSError as exc:
         raise InputResolutionError(f"input {path} is unreadable: {exc}") from exc
     try:

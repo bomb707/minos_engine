@@ -149,8 +149,10 @@ def _stream_sha256(path: Path) -> tuple[str, int]:
     """Stream-hash a produced file, rejecting symlinks and mutation during the read."""
     if path.is_symlink():
         raise GatkOutputError(f"produced output {path} is a symlink")
+    # O_NONBLOCK so a FIFO/device planted as the output cannot block forever before the
+    # regular-file check rejects it; O_NOFOLLOW refuses a symlinked output at the syscall level.
     try:
-        fd = os.open(path, os.O_RDONLY)
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
     except OSError as exc:
         raise GatkOutputError(f"produced output {path} is unreadable: {exc}") from exc
     try:

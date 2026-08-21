@@ -34,6 +34,7 @@ from minos_engine.storage.l2f_execution import (
     ATTEMPT_DIR_MODE,
     AmbiguousExecutionCommitError,
     ExecutionWorkspaceError,
+    PostCommitWrapperError,
     _create_attempt_dir,
     _execute_next_job_with_trust,
     _require_absent_output,
@@ -529,7 +530,16 @@ def test_a_later_connection_failing_its_own_check_aborts_the_run(
         real(conn)
 
     monkeypatch.setattr(EX, "_require_f5_revision", _nth_fails)
-    with pytest.raises(PlanRevisionError):
+    # F6: a later connection's own failed check still aborts, but is now surfaced through the
+    # recovery contract (the job is released or durably failed, never stranded).
+    with pytest.raises(
+        (
+            PlanRevisionError,
+            EX.PreTerminalExecutionError,
+            EX.ExecutionRecoveryError,
+            EX.ExecutionRecordedFailureError,
+        )
+    ):
         _execute_next_job_with_trust(
             opsenv.engine,
             opsenv.plan,
@@ -540,7 +550,7 @@ def test_a_later_connection_failing_its_own_check_aborts_the_run(
             work_root=opsenv.work_root,
             require_operational_identity=True,
         )
-    assert calls["n"] == failing_call
+    assert calls["n"] >= failing_call
     assert _count(opsenv.engine, f"SELECT count(*) FROM {_RESULTS}") == 0  # noqa: S608
 
 
@@ -597,8 +607,9 @@ def test_failure_wrapper_failure_after_commit_keeps_the_durable_row(
         raise RuntimeError("post-commit wrapper failure")
 
     monkeypatch.setattr(EX, "_post_commit_hook", _boom)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(PostCommitWrapperError) as excinfo:
         env.run(runner=FakeGatkRunner(exit_code=7))
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
     assert _count(env.engine, f"SELECT count(*) FROM {_FAILURES}") == 1  # noqa: S608
 
 
@@ -675,11 +686,15 @@ def test_a_substituted_symlink_attempt_path_is_never_reused(tmp_path: Path) -> N
 def test_a_fresh_attempt_directory_is_private_and_inside_the_root(tmp_path: Path) -> None:
     root = tmp_path / "work"
     root.mkdir()
-    attempt = _create_attempt_dir(root, job_id="job-3", attempt_id="ccc")
+    workspace = _create_attempt_dir(root, job_id="job-3", attempt_id="ccc")
+    attempt = workspace.path
     info = os.lstat(attempt)
     assert (info.st_mode & 0o777) == ATTEMPT_DIR_MODE
     assert attempt.parent == root.resolve()
     assert attempt.is_dir() and not attempt.is_symlink()
+    # F6: the created inode identity is captured and re-checkable.
+    assert (workspace.st_dev, workspace.st_ino) == (info.st_dev, info.st_ino)
+    assert workspace.still_ours()
 
 
 def test_a_preexisting_output_path_is_never_reused(tmp_path: Path) -> None:
@@ -697,10 +712,10 @@ def test_each_attempt_uses_a_distinct_directory(env: Any, monkeypatch: pytest.Mo
     seen: list[str] = []
     real = EX._create_attempt_dir
 
-    def _record(work_root: Path, *, job_id: str, attempt_id: str) -> Path:
-        path = real(work_root, job_id=job_id, attempt_id=attempt_id)
-        seen.append(path.name)
-        return path
+    def _record(work_root: Path, *, job_id: str, attempt_id: str) -> Any:
+        workspace = real(work_root, job_id=job_id, attempt_id=attempt_id)
+        seen.append(workspace.path.name)
+        return workspace
 
     monkeypatch.setattr(EX, "_create_attempt_dir", _record)
     env.run()
@@ -1005,10 +1020,21 @@ def test_no_f6_or_f7_behaviour_is_introduced() -> None:
     assert set(EX.__all__) == {
         "F5_EXECUTION_REVISION",
         "ATTEMPT_DIR_MODE",
+        "AttemptWorkspace",
+        "reject_symlinked_components",
+        "verify_produced_output",
         "ExecutionDispatchResult",
         "AmbiguousExecutionCommitError",
         "ExecutionResultConflictError",
         "ExecutionWorkspaceError",
+        "AmbiguousStartCommitError",
+        "AmbiguousRecoveryCommitError",
+        "PreTerminalExecutionError",
+        "ExecutionRecordedFailureError",
+        "ExecutionRecoveryError",
+        "PostCommitWrapperError",
+        "find_nonterminal_jobs",
+        "assert_no_stranded_jobs",
         "execute_next_accepted_job",
     }
     forbidden = ("score", "happy", "hap_py", "leaderboard", "select_config", "optimi", "rank")

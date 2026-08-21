@@ -36,16 +36,15 @@ from sqlalchemy.exc import DBAPIError
 
 from minos_engine.experiments.execution_contract import (
     EXECUTION_RESULT_SCHEMA,
-    ConfigArtifactError,
     ExecutionConfig,
     ExecutionFailure,
     ExecutionInput,
     ExecutionResultManifest,
     GatkExecutionError,
     GatkExecutionOutcome,
+    GatkInvocationError,
     GatkOutputError,
     GatkTimeoutError,
-    InputResolutionError,
     L2FExecutionError,
     LogicalGatkInvocation,
     build_result_manifest_bytes,
@@ -68,6 +67,7 @@ from minos_engine.storage.l2f_gatk_runner import (
     work_root_from_env,
 )
 from minos_engine.storage.l2f_job_claim import (
+    AmbiguousClaimCommitError,
     InvalidJobTransitionError,
     JobPlanMissingError,
     _claim_next_job_with_trust,
@@ -93,10 +93,21 @@ if TYPE_CHECKING:
 __all__ = [
     "F5_EXECUTION_REVISION",
     "ATTEMPT_DIR_MODE",
+    "AttemptWorkspace",
+    "reject_symlinked_components",
+    "verify_produced_output",
     "ExecutionDispatchResult",
     "AmbiguousExecutionCommitError",
     "ExecutionResultConflictError",
     "ExecutionWorkspaceError",
+    "AmbiguousStartCommitError",
+    "AmbiguousRecoveryCommitError",
+    "PreTerminalExecutionError",
+    "ExecutionRecordedFailureError",
+    "ExecutionRecoveryError",
+    "PostCommitWrapperError",
+    "find_nonterminal_jobs",
+    "assert_no_stranded_jobs",
     "execute_next_accepted_job",
 ]
 
@@ -120,6 +131,51 @@ class ExecutionResultConflictError(L2FExecutionError):
 
 class ExecutionWorkspaceError(L2FExecutionError):
     """The per-attempt work directory could not be created exclusively, or was substituted."""
+
+
+class AmbiguousStartCommitError(AmbiguousExecutionCommitError):
+    """The CLAIMED -> RUNNING commit was ambiguous. GATK is NEVER executed; never retried."""
+
+
+class AmbiguousRecoveryCommitError(AmbiguousExecutionCommitError):
+    """The recovery (release or failure-record) commit was ambiguous. Never retried."""
+
+
+class PreTerminalExecutionError(L2FExecutionError):
+    """A non-ambiguous failure BEFORE any terminal state; the job was recovered to PENDING.
+
+    The original cause is chained, and :attr:`recovered_to` records the confirmed final state.
+    """
+
+    def __init__(self, message: str, *, recovered_to: str) -> None:
+        super().__init__(message)
+        self.recovered_to = recovered_to
+
+
+class ExecutionRecordedFailureError(L2FExecutionError):
+    """A non-ambiguous failure AFTER the job entered RUNNING; a durable bounded FAILED outcome
+    was recorded. The original cause is chained and :attr:`failure_code` names the bounded code."""
+
+    def __init__(self, message: str, *, failure_code: str) -> None:
+        super().__init__(message)
+        self.failure_code = failure_code
+
+
+class ExecutionRecoveryError(L2FExecutionError):
+    """The recovery itself failed: the job's final state is NOT the required one.
+
+    Both failures are preserved — the original cause is chained, and :attr:`recovery_cause`
+    holds the exception the recovery attempt raised. Nothing is ever retried automatically.
+    """
+
+    def __init__(self, message: str, *, recovery_cause: BaseException) -> None:
+        super().__init__(message)
+        self.recovery_cause = recovery_cause
+
+
+class PostCommitWrapperError(L2FExecutionError):
+    """A wrapper failed AFTER a CONFIRMED commit. The committed terminal state and the published
+    artifacts are preserved exactly; the original wrapper failure is chained."""
 
 
 @dataclass(frozen=True)
@@ -186,17 +242,83 @@ def _now_utc() -> str:
 
 
 # --------------------------------------------------------------------------- #
-# per-attempt workspace: fresh, exclusive, private, never reused
+# per-attempt workspace: fresh, exclusive, private, inode-verified, never reused
 # --------------------------------------------------------------------------- #
-def _create_attempt_dir(work_root: Path, *, job_id: str, attempt_id: str) -> Path:
+@dataclass(frozen=True)
+class AttemptWorkspace:
+    """One per-attempt directory bound to the EXACT inode this process created.
+
+    ``(st_dev, st_ino)`` are captured immediately after ``mkdir`` and re-checked before any
+    removal, so a directory or symlink that replaced the path afterwards is never descended
+    into or deleted. Because a filesystem may REUSE an inode number after ``rmdir``, the identity
+    is additionally pinned by a private ``O_EXCL`` sentinel file written at creation time with an
+    unguessable name: a directory that replaced the path cannot contain it.
+    """
+
+    path: Path
+    st_dev: int
+    st_ino: int
+    sentinel: str
+
+    def same_inode(self) -> bool:
+        """True when the path still resolves to a directory with the created ``(dev, ino)``."""
+        try:
+            info = os.lstat(self.path)
+        except OSError:
+            return False
+        return (
+            stat.S_ISDIR(info.st_mode) and info.st_dev == self.st_dev and info.st_ino == self.st_ino
+        )
+
+    def still_ours(self) -> bool:
+        """True only when the path is still the EXACT directory this attempt created."""
+        if not self.same_inode():
+            return False
+        try:
+            marker = os.lstat(self.path / self.sentinel)
+        except OSError:
+            return False  # an inode-number reuse cannot reproduce the private sentinel
+        return stat.S_ISREG(marker.st_mode)
+
+
+def reject_symlinked_components(path: Path) -> Path:
+    """Reject a path any of whose components (including intermediates) is a symlink."""
+    absolute = Path(os.path.abspath(path))
+    walked = Path(absolute.anchor or os.sep)
+    for part in absolute.relative_to(walked).parts:
+        walked = walked / part
+        if walked.is_symlink():
+            raise ExecutionWorkspaceError(
+                f"path component {walked} is a symlink; symlinked work paths are refused"
+            )
+    return absolute
+
+
+def _remove_created_inode(workspace: AttemptWorkspace, *, require_sentinel: bool = True) -> None:
+    """Remove ONLY the directory inode this call created; never a replacement.
+
+    ``require_sentinel=False`` is used exclusively on the creation-failure path, where the
+    sentinel may not have been written yet; the ``(st_dev, st_ino)`` check still applies.
+    """
+    if not workspace.same_inode():
+        return
+    if require_sentinel and not workspace.still_ours():
+        return
+    with contextlib.suppress(OSError):
+        shutil.rmtree(workspace.path)
+
+
+def _create_attempt_dir(work_root: Path, *, job_id: str, attempt_id: str) -> AttemptWorkspace:
     """Create a FRESH, EXCLUSIVE per-attempt directory (never ``exist_ok``, never reused).
 
     ``mkdir`` without ``exist_ok`` fails closed if anything already occupies the path, so a stale
     directory, a pre-planted output file or a substituted symlink cannot be adopted. The created
-    inode is then re-verified through its own file descriptor to be a real directory, owned by
-    this user, at mode ``0o700`` and located directly under the resolved provisioned root.
+    inode's ``(st_dev, st_ino)`` is captured immediately and every later check runs against that
+    identity; if validation fails afterwards, ONLY that inode is removed.
     """
-    root = work_root.resolve(strict=True)
+    root = reject_symlinked_components(work_root)
+    if not root.is_dir():
+        raise ExecutionWorkspaceError(f"work root {root} is not an existing directory")
     attempt = root / f"l2f-{job_id}-{attempt_id}"
     try:
         attempt.mkdir(mode=ATTEMPT_DIR_MODE)
@@ -209,23 +331,48 @@ def _create_attempt_dir(work_root: Path, *, job_id: str, attempt_id: str) -> Pat
             f"attempt work directory {attempt} is unusable: {exc}"
         ) from exc
 
-    if attempt.is_symlink():
-        raise ExecutionWorkspaceError(f"attempt work directory {attempt} is a symlink")
-    info = os.lstat(attempt)
-    if not stat.S_ISDIR(info.st_mode):
-        raise ExecutionWorkspaceError(f"attempt work directory {attempt} is not a directory")
-    if info.st_uid != os.geteuid():
-        raise ExecutionWorkspaceError(f"attempt work directory {attempt} is not owned by this user")
-    if stat.S_IMODE(info.st_mode) != ATTEMPT_DIR_MODE:
-        raise ExecutionWorkspaceError(
-            f"attempt work directory {attempt} has mode {stat.S_IMODE(info.st_mode):#o}, "
-            f"expected {ATTEMPT_DIR_MODE:#o}"
-        )
-    if attempt.resolve(strict=True).parent != root:
-        raise ExecutionWorkspaceError(
-            f"attempt work directory {attempt} resolves outside the provisioned work root {root}"
-        )
-    return attempt
+    # capture the created inode identity BEFORE any further check, so a substitution racing the
+    # validation can only ever fail the validation - never be adopted, and never be deleted.
+    try:
+        info = os.lstat(attempt)
+    except OSError as exc:  # pragma: no cover - the directory was just created
+        raise ExecutionWorkspaceError(f"attempt work directory {attempt} vanished") from exc
+    sentinel = f".minos-attempt-{uuid.uuid4().hex}"
+    workspace = AttemptWorkspace(
+        path=attempt, st_dev=info.st_dev, st_ino=info.st_ino, sentinel=sentinel
+    )
+
+    try:
+        try:  # a private O_EXCL marker pins the identity beyond inode-number reuse
+            os.close(os.open(attempt / sentinel, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+        except OSError as exc:
+            raise ExecutionWorkspaceError(
+                f"attempt work directory {attempt} could not be marked: {exc}"
+            ) from exc
+        if not stat.S_ISDIR(info.st_mode):
+            raise ExecutionWorkspaceError(f"attempt work directory {attempt} is not a directory")
+        if info.st_uid != os.geteuid():
+            raise ExecutionWorkspaceError(
+                f"attempt work directory {attempt} is not owned by this user"
+            )
+        if stat.S_IMODE(info.st_mode) != ATTEMPT_DIR_MODE:
+            raise ExecutionWorkspaceError(
+                f"attempt work directory {attempt} has mode {stat.S_IMODE(info.st_mode):#o}, "
+                f"expected {ATTEMPT_DIR_MODE:#o}"
+            )
+        if attempt.parent != root:
+            raise ExecutionWorkspaceError(
+                f"attempt work directory {attempt} is not directly under the work root {root}"
+            )
+        if not workspace.still_ours():  # pragma: no cover - substitution racing this call
+            raise ExecutionWorkspaceError(
+                f"attempt work directory {attempt} was replaced during validation"
+            )
+    except BaseException:
+        # remove ONLY the inode this call created (the sentinel may not exist yet).
+        _remove_created_inode(workspace, require_sentinel=False)
+        raise
+    return workspace
 
 
 def _require_absent_output(vcf_path: Path) -> None:
@@ -236,13 +383,44 @@ def _require_absent_output(vcf_path: Path) -> None:
         )
 
 
-def _remove_attempt_dir(attempt_dir: Path | None) -> None:
-    """Remove the per-attempt directory. Called after EVERY terminal outcome, including a
-    successful commit, an ambiguous commit, a recorded failure and any pre-commit exception."""
-    if attempt_dir is None:
+def verify_produced_output(vcf_path: Path, workspace: AttemptWorkspace) -> None:
+    """Require the produced output to be a private regular file INSIDE the created attempt inode.
+
+    Rejects symlinks, non-regular files, hard links (``st_nlink != 1``) and anything whose parent
+    directory is not the exact inode this attempt created (so path traversal or a swapped parent
+    cannot smuggle a file in).
+    """
+    try:
+        info = os.lstat(vcf_path)
+    except OSError as exc:
+        raise GatkOutputError(f"produced output {vcf_path} is unreadable: {exc}") from exc
+    if stat.S_ISLNK(info.st_mode):
+        raise GatkOutputError(f"produced output {vcf_path} is a symlink")
+    if not stat.S_ISREG(info.st_mode):
+        raise GatkOutputError(f"produced output {vcf_path} is not a regular file")
+    if info.st_nlink != 1:
+        raise GatkOutputError(
+            f"produced output {vcf_path} has {info.st_nlink} links; hard-linked outputs are refused"
+        )
+    if not workspace.still_ours():
+        raise GatkOutputError(
+            f"the attempt directory holding {vcf_path} was replaced during execution"
+        )
+    parent = os.lstat(vcf_path.parent)
+    if (parent.st_dev, parent.st_ino) != (workspace.st_dev, workspace.st_ino):
+        raise GatkOutputError(
+            f"produced output {vcf_path} is not inside the attempt directory this run created"
+        )
+
+
+def _remove_attempt_dir(workspace: AttemptWorkspace | None) -> None:
+    """Remove the per-attempt directory after EVERY terminal outcome — success, nonzero exit,
+    timeout, subprocess-start failure, invalid output, persistence rollback, an ambiguous commit
+    and a confirmed post-commit wrapper failure — but ONLY when the path still resolves to the
+    inode this attempt created."""
+    if workspace is None:
         return
-    with contextlib.suppress(Exception):
-        shutil.rmtree(attempt_dir, ignore_errors=True)
+    _remove_created_inode(workspace)
 
 
 def _register_artifact(conn: Connection, art: PublishedResultArtifact) -> str:
@@ -377,6 +555,21 @@ def _post_commit_hook() -> None:
     return None
 
 
+def _confirmed_post_commit() -> None:
+    """Run the post-commit seam and label any failure as POST-COMMIT.
+
+    The commit is already confirmed durable, so this never rolls back, never removes artifacts
+    and never attempts a second terminal transition; it only re-types the wrapper failure so a
+    caller can tell it apart from a pre-terminal failure or an ambiguous commit.
+    """
+    try:
+        _post_commit_hook()
+    except BaseException as exc:
+        raise PostCommitWrapperError(
+            "a wrapper failed AFTER a confirmed commit; the terminal state and artifacts stand"
+        ) from exc
+
+
 def _record_failure(
     engine: Engine,
     plan: ExperimentPlan,
@@ -414,7 +607,7 @@ def _record_failure(
             ).mappings().one()
         _commit_or_ambiguous(trans)
         committed = True
-        _post_commit_hook()  # post-durable-commit: the FAILED row must survive a wrapper failure
+        _confirmed_post_commit()  # the FAILED row must survive any wrapper failure below
         return ExecutionDispatchResult(
             job_id=job_id,
             job_key=job_key,
@@ -423,8 +616,8 @@ def _record_failure(
             worker_id=worker_id,
             failure_code=failure.failure_code,
         )
-    except AmbiguousExecutionCommitError:
-        raise  # outcome unknown: do NOT roll back and do NOT retry
+    except (AmbiguousExecutionCommitError, PostCommitWrapperError):
+        raise  # unknown OR already confirmed: do NOT roll back and do NOT retry
     except BaseException:
         if not committed:
             with contextlib.suppress(Exception):
@@ -549,7 +742,7 @@ def _complete_success(
             )
         _commit_or_ambiguous(trans)
         committed = True
-        _post_commit_hook()  # a failure here is post-durable-commit: keep rows + artifacts
+        _confirmed_post_commit()  # post-durable-commit: keep the rows AND the artifacts
         return ExecutionDispatchResult(
             job_id=prepared.job_id,
             job_key=prepared.job_key,
@@ -562,8 +755,8 @@ def _complete_success(
             runtime_ms=outcome.runtime_ms,
             replay=not bool(row["created"]),
         )
-    except AmbiguousExecutionCommitError:
-        raise  # outcome unknown: DO NOT roll back and DO NOT remove immutable artifacts
+    except (AmbiguousExecutionCommitError, PostCommitWrapperError):
+        raise  # unknown OR already confirmed: never roll back, never remove immutable artifacts
     except BaseException:
         if not committed:
             with contextlib.suppress(Exception):
@@ -579,6 +772,16 @@ _FAILURE_CODES: tuple[tuple[type[BaseException], str], ...] = (
     (GatkTimeoutError, "GATK_TIMEOUT"),
     (GatkOutputError, "GATK_OUTPUT_INVALID"),
     (GatkExecutionError, "GATK_NONZERO_EXIT"),
+    (ExecutionWorkspaceError, "EXECUTION_ERROR"),
+    (GatkInvocationError, "EXECUTION_ERROR"),
+)
+
+#: the recognized GATK execution failures whose bounded FAILED outcome IS the dispatch result.
+_RUNNER_FAILURES: tuple[type[BaseException], ...] = (
+    GatkTimeoutError,
+    GatkExecutionError,
+    GatkOutputError,
+    OSError,
 )
 
 
@@ -587,6 +790,117 @@ def _failure_code_for(exc: BaseException) -> str:
         if isinstance(exc, kind):
             return code
     return "EXECUTION_ERROR"
+
+
+# --------------------------------------------------------------------------- #
+# final-state assertions (used by tests to prove no job is ever stranded)
+# --------------------------------------------------------------------------- #
+def find_nonterminal_jobs(engine: Engine, plan_hash: str) -> tuple[tuple[str, str], ...]:
+    """Every ``(job_id, status)`` of this plan still sitting in CLAIMED or RUNNING."""
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT j.id, j.status FROM experiments.l2f_experiment_jobs j "
+                "JOIN experiments.l2f_experiment_plans p ON p.id = j.plan_id "
+                "WHERE p.plan_hash = :h AND j.status IN ('CLAIMED', 'RUNNING') "
+                "ORDER BY j.created_at, j.id"
+            ),
+            {"h": plan_hash},
+        ).all()
+    return tuple((str(r[0]), str(r[1])) for r in rows)
+
+
+def assert_no_stranded_jobs(engine: Engine, plan_hash: str) -> None:
+    """Raise unless EVERY job of this plan is PENDING or terminal.
+
+    After any handled non-ambiguous failure the recovery contract requires exactly one of
+    PENDING / SUCCEEDED / FAILED, so a CLAIMED or RUNNING row means a job was stranded.
+    """
+    stranded = find_nonterminal_jobs(engine, plan_hash)
+    if stranded:
+        raise ExecutionRecoveryError(
+            f"{len(stranded)} job(s) are stranded in CLAIMED/RUNNING: {stranded}",
+            recovery_cause=AssertionError("stranded jobs"),
+        )
+
+
+# --------------------------------------------------------------------------- #
+# recovery primitives
+# --------------------------------------------------------------------------- #
+def _recover_to_pending(
+    engine: Engine,
+    plan: ExperimentPlan,
+    *,
+    job_id: str,
+    worker_id: str,
+    cause: BaseException,
+    require_operational_identity: bool,
+) -> None:
+    """Release a merely-CLAIMED job back to PENDING, preserving BOTH failure statuses.
+
+    Never suppresses the release failure: an ambiguous release commit raises
+    :class:`AmbiguousRecoveryCommitError` and any other release failure raises
+    :class:`ExecutionRecoveryError`, in both cases chained from the ORIGINAL cause.
+    """
+    try:
+        _release_job_with_trust(
+            engine,
+            plan,
+            job_id=uuid.UUID(job_id),
+            worker_id=worker_id,
+            require_operational_identity=require_operational_identity,
+            revision_check=_require_f5_revision,
+        )
+    except AmbiguousClaimCommitError:
+        raise AmbiguousRecoveryCommitError(
+            f"the release of job {job_id} committed ambiguously; it is NOT retried"
+        ) from cause
+    except BaseException as rel:
+        raise ExecutionRecoveryError(
+            f"job {job_id} could not be released back to PENDING after a pre-terminal failure",
+            recovery_cause=rel,
+        ) from cause
+    raise PreTerminalExecutionError(
+        f"job {job_id} failed before any terminal state and was released to PENDING",
+        recovered_to="PENDING",
+    ) from cause
+
+
+def _recover_to_failed(
+    engine: Engine,
+    plan: ExperimentPlan,
+    *,
+    job_id: str,
+    job_key: str,
+    worker_id: str,
+    cause: BaseException,
+    require_operational_identity: bool,
+) -> ExecutionDispatchResult:
+    """Record the durable bounded FAILED outcome for a RUNNING job, preserving both statuses."""
+    code = _failure_code_for(cause)
+    try:
+        return _record_failure(
+            engine,
+            plan,
+            job_id=job_id,
+            job_key=job_key,
+            worker_id=worker_id,
+            failure=ExecutionFailure(failure_code=code),
+            require_operational_identity=require_operational_identity,
+        )
+    except PostCommitWrapperError:
+        # the FAILED row is already durable; a wrapper failure after that CONFIRMED commit is
+        # not a failed recovery and must keep its own type.
+        raise
+    except AmbiguousExecutionCommitError:
+        raise AmbiguousRecoveryCommitError(
+            f"the FAILED record for job {job_id} committed ambiguously; it is NOT retried"
+        ) from cause
+    except BaseException as rec:
+        raise ExecutionRecoveryError(
+            f"job {job_id} could not be transitioned to a durable FAILED outcome",
+            recovery_cause=rec,
+        ) from cause
 
 
 def _execute(
@@ -602,7 +916,23 @@ def _execute(
     gatk_version: str,
     require_operational_identity: bool,
 ) -> ExecutionDispatchResult | None:
-    """Claim one accepted job, prepare it, run GATK, and record its terminal outcome."""
+    """Claim one accepted job, prepare it, run GATK, and record its terminal outcome.
+
+    Recovery contract — after the claim, EVERY exit produces exactly one of:
+
+    ==========================================  ==========================================
+    situation                                   final state
+    ==========================================  ==========================================
+    preparation fails while CLAIMED             PENDING (PreTerminalExecutionError)
+    release commit ambiguous                    unknown (AmbiguousRecoveryCommitError)
+    start commit ambiguous                      unknown (AmbiguousStartCommitError); no GATK
+    non-ambiguous error after RUNNING           FAILED (ExecutionRecordedFailureError)
+    successful result commit                    SUCCEEDED
+    failure-result commit                       FAILED
+    terminal commit ambiguous                   unknown (AmbiguousExecutionCommitError)
+    wrapper failure after confirmed commit      the committed terminal state (PostCommitWrapperError)
+    ==========================================  ==========================================
+    """
     claimed = _claim_next_job_with_trust(
         engine,
         plan,
@@ -614,7 +944,7 @@ def _execute(
         return None
     job_id, job_key = claimed.job_id, claimed.job_key
 
-    # ---- preparation while merely CLAIMED: a failure here RELEASES back to PENDING ----
+    # ---- everything while merely CLAIMED recovers to PENDING -----------------------------
     try:
         prepared = _prepare(
             engine,
@@ -626,37 +956,83 @@ def _execute(
             gatk_version=gatk_version,
             require_operational_identity=require_operational_identity,
         )
-    except (InputResolutionError, ConfigArtifactError, JobPlanMissingError):
-        with contextlib.suppress(Exception):
-            _release_job_with_trust(
-                engine,
-                plan,
-                job_id=uuid.UUID(job_id),
-                worker_id=worker_id,
-                require_operational_identity=require_operational_identity,
-                revision_check=_require_f5_revision,
-            )
-        raise
+    except AmbiguousExecutionCommitError:
+        raise  # outcome unknown: never a second attempt, never a release
+    except BaseException as exc:
+        _recover_to_pending(
+            engine,
+            plan,
+            job_id=job_id,
+            worker_id=worker_id,
+            cause=exc,
+            require_operational_identity=require_operational_identity,
+        )
+        raise  # pragma: no cover - _recover_to_pending always raises
 
-    _start_job_with_trust(
+    # ---- CLAIMED -> RUNNING ---------------------------------------------------------------
+    try:
+        _start_job_with_trust(
+            engine,
+            plan,
+            job_id=uuid.UUID(job_id),
+            worker_id=worker_id,
+            require_operational_identity=require_operational_identity,
+            revision_check=_require_f5_revision,
+        )
+    except AmbiguousClaimCommitError as exc:
+        # the CLAIMED -> RUNNING outcome is UNKNOWN: GATK is never executed and nothing retried.
+        raise AmbiguousStartCommitError(
+            f"the CLAIMED -> RUNNING commit for job {job_id} is ambiguous; GATK was NOT executed"
+        ) from exc
+    except BaseException as exc:
+        # the transition did not happen, so the job is still merely CLAIMED: release it.
+        _recover_to_pending(
+            engine,
+            plan,
+            job_id=job_id,
+            worker_id=worker_id,
+            cause=exc,
+            require_operational_identity=require_operational_identity,
+        )
+        raise  # pragma: no cover - _recover_to_pending always raises
+
+    # ---- from here the job is RUNNING: every non-ambiguous exit must be durably terminal ----
+    return _run_and_finalize(
         engine,
         plan,
-        job_id=uuid.UUID(job_id),
+        prepared,
         worker_id=worker_id,
+        runner=runner,
+        publisher=publisher,
+        work_root=work_root,
         require_operational_identity=require_operational_identity,
-        revision_check=_require_f5_revision,
     )
 
-    # ---- execution happens OUTSIDE any long-lived database transaction ----
-    # The per-attempt directory is created fresh and exclusively, and is removed on EVERY exit
-    # path below: success, nonzero exit, timeout, invalid/missing VCF, failure-record persistence,
-    # a pre-commit exception, and a successful OR ambiguous terminal commit.
-    attempt_dir: Path | None = None
+
+def _run_and_finalize(
+    engine: Engine,
+    plan: ExperimentPlan,
+    prepared: _Prepared,
+    *,
+    worker_id: str,
+    runner: GatkRunner,
+    publisher: ResultArtifactPublisher,
+    work_root: Path,
+    require_operational_identity: bool,
+) -> ExecutionDispatchResult:
+    """Run GATK for a RUNNING job and drive it to exactly one durable terminal outcome.
+
+    Workspace creation/validation, invocation rendering, runner setup, subprocess startup, output
+    reading and success persistence are ALL inside the recovery scope, so none of them can leave
+    the job stranded in RUNNING.
+    """
+    job_id, job_key = prepared.job_id, prepared.job_key
+    workspace: AttemptWorkspace | None = None
     try:
-        attempt_dir = _create_attempt_dir(work_root, job_id=job_id, attempt_id=uuid.uuid4().hex)
-        vcf_path = attempt_dir / "output.vcf"
-        _require_absent_output(vcf_path)
         try:
+            workspace = _create_attempt_dir(work_root, job_id=job_id, attempt_id=uuid.uuid4().hex)
+            vcf_path = workspace.path / "output.vcf"
+            _require_absent_output(vcf_path)
             argv = render_execution_argv(
                 effective_config=prepared.config.effective_config,
                 inputs=prepared.inputs,
@@ -665,31 +1041,79 @@ def _execute(
                 output_path=str(vcf_path),
             )
             outcome = runner.run(
-                argv=argv, work_dir=attempt_dir, vcf_path=vcf_path, inputs=prepared.inputs
+                argv=argv, work_dir=workspace.path, vcf_path=vcf_path, inputs=prepared.inputs
             )
+            verify_produced_output(vcf_path, workspace)
             vcf_bytes = vcf_path.read_bytes()
-        except (GatkTimeoutError, GatkExecutionError, GatkOutputError, OSError) as exc:
-            return _record_failure(
+            # the runner NEVER supplies a trusted hash: the bytes about to be published must
+            # still digest to the validated value, so a mutation between validation and
+            # publication is caught here.
+            if hashlib.sha256(vcf_bytes).hexdigest() != outcome.vcf_sha256:
+                raise GatkOutputError(
+                    f"produced VCF for job {job_id} changed between validation and publication"
+                )
+        except _RUNNER_FAILURES as exc:
+            # a recognized GATK execution failure: the bounded FAILED outcome IS the result.
+            return _recover_to_failed(
                 engine,
                 plan,
                 job_id=job_id,
                 job_key=job_key,
                 worker_id=worker_id,
-                failure=ExecutionFailure(failure_code=_failure_code_for(exc)),
+                cause=exc,
                 require_operational_identity=require_operational_identity,
             )
-        return _complete_success(
-            engine,
-            plan,
-            prepared,
-            outcome,
-            worker_id=worker_id,
-            publisher=publisher,
-            vcf_bytes=vcf_bytes,
-            require_operational_identity=require_operational_identity,
-        )
+        except AmbiguousExecutionCommitError:
+            raise
+        except BaseException as exc:
+            # workspace, invocation or any other non-ambiguous pre-GATK failure: still durable.
+            recorded = _recover_to_failed(
+                engine,
+                plan,
+                job_id=job_id,
+                job_key=job_key,
+                worker_id=worker_id,
+                cause=exc,
+                require_operational_identity=require_operational_identity,
+            )
+            raise ExecutionRecordedFailureError(
+                f"job {job_id} failed after entering RUNNING and was durably recorded as FAILED",
+                failure_code=recorded.failure_code or "EXECUTION_ERROR",
+            ) from exc
+
+        try:
+            return _complete_success(
+                engine,
+                plan,
+                prepared,
+                outcome,
+                worker_id=worker_id,
+                publisher=publisher,
+                vcf_bytes=vcf_bytes,
+                require_operational_identity=require_operational_identity,
+            )
+        except (AmbiguousExecutionCommitError, PostCommitWrapperError):
+            raise  # outcome unknown or already confirmed: never a second terminal attempt
+        except ExecutionResultConflictError:
+            raise  # a differing durable outcome already exists: the job is already terminal
+        except BaseException as exc:
+            # a NON-ambiguous success-persistence failure after GATK completed: the transaction
+            # rolled back and the job is still RUNNING, so drive it to a durable FAILED outcome.
+            recorded = _recover_to_failed(
+                engine,
+                plan,
+                job_id=job_id,
+                job_key=job_key,
+                worker_id=worker_id,
+                cause=exc,
+                require_operational_identity=require_operational_identity,
+            )
+            raise ExecutionRecordedFailureError(
+                f"job {job_id} could not persist its success and was durably recorded as FAILED",
+                failure_code=recorded.failure_code or "EXECUTION_ERROR",
+            ) from exc
     finally:
-        _remove_attempt_dir(attempt_dir)
+        _remove_attempt_dir(workspace)
 
 
 def execute_next_accepted_job(*, worker_id: str) -> ExecutionDispatchResult | None:
