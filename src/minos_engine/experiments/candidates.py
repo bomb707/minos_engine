@@ -1,9 +1,14 @@
-"""L2-F deterministic candidate generation (policy L2F-OAT-ENDPOINT-v1).
+"""L2-F deterministic candidate generation (policy L2F-OAT-LIVE-GATK-v2).
 
-Pure, deterministic one-at-a-time documented-endpoint generation of canonical GATK
+Pure, deterministic one-at-a-time LIVE-GATK-domain generation of canonical GATK
 CONFIG candidates from the accepted registry + EXPERIMENT_SEED_V1, cross-bound to the
 owner-approved offline experiment parameter policy. No randomness, no optimizer, no
 Cartesian product, no feature values, no scores, no timestamps/paths/UUIDs.
+
+Alternatives come from the COMMITTED live endpoint domain
+(``experiments.gatk_live_space``), never from the documented registry ranges, and every
+generated candidate is re-checked fail-closed against that live domain — so no candidate can
+ever rely on the live service silently defaulting an out-of-range value.
 """
 
 from __future__ import annotations
@@ -12,7 +17,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
-from minos_engine.callers.contracts import ParameterSpaceSnapshot, ParameterState, ParameterType
+from minos_engine.callers.contracts import ParameterSpaceSnapshot, ParameterState
 from minos_engine.callers.gatk.config import CanonicalConfig, canonicalize_config
 from minos_engine.callers.gatk.parameter_registry import (
     REGISTRY,
@@ -23,12 +28,13 @@ from minos_engine.common.canonical_json import canonical_json_bytes
 from minos_engine.common.errors import ConfigValidationError
 from minos_engine.common.hashing import canonical_hash, sha256_hex
 
+from .gatk_live_space import LiveSpaceError, live_gatk_parameter_space
 from .policy import (
     GENERATION_POLICY_VERSION,
     ExperimentParameterPolicy,
     build_experiment_parameter_policy,
-    documented_parameter_space,
     experiment_seed_v1,
+    live_parameter_space,
 )
 
 __all__ = [
@@ -38,6 +44,7 @@ __all__ = [
     "generate_accepted_candidate_set",
     "candidate_set_hash",
     "verify_accepted_candidate_set",
+    "verify_candidates_against_live_domain",
     "CandidateSetVerificationError",
 ]
 
@@ -79,20 +86,31 @@ class CandidateSet:
 
 
 def _endpoint_values(param: GatkParameter) -> Iterator[Any]:
-    """Deterministic one-at-a-time alternatives for one EXPERIMENTAL parameter."""
-    default = param.official_default
-    if param.type in (ParameterType.INT, ParameterType.FLOAT):
-        for num in (param.documented_min, param.documented_max):  # min then max
-            if num is not None and num != default:
-                yield num
-    elif param.type is ParameterType.BOOL:
-        yield (not default)
-    elif param.type is ParameterType.ENUM:
-        for opt in param.enum_values or ():  # registry enum order
-            if opt != default:
-                yield opt
-    else:  # pragma: no cover - registry types are exhaustive
+    """Deterministic one-at-a-time alternatives from the COMMITTED LIVE domain.
+
+    ``allowed_values`` (declared order) when the live endpoint declares them — which is how a
+    singleton legal domain such as ``sample_ploidy=[2]`` or
+    ``dont_use_soft_clipped_bases=[false]`` yields NO alternative — otherwise the live legal min
+    then max for numerics and the single opposite value for bool. The default is always excluded.
+    """
+    live = live_gatk_parameter_space().get(param.name)
+    if live.type not in ("int", "float", "bool", "enum"):  # pragma: no cover - validated at load
         raise ConfigValidationError(f"unsupported parameter type for generation: {param.type}")
+    yield from live.alternative_values()
+
+
+def verify_candidates_against_live_domain(configs: tuple[CanonicalConfig, ...]) -> None:
+    """FAIL-CLOSED: every candidate's effective_config must be admissible, unchanged, under the
+    committed live-GATK domain. Raises :class:`CandidateSetVerificationError` otherwise."""
+    live = live_gatk_parameter_space()
+    for config in configs:
+        try:
+            live.validate_effective_config(dict(config.effective_config))
+        except LiveSpaceError as exc:
+            raise CandidateSetVerificationError(
+                f"candidate {config.config_hash} is not accepted unchanged by the live GATK "
+                f"domain: {exc}"
+            ) from exc
 
 
 def candidate_set_hash(
@@ -121,7 +139,7 @@ def _generate_candidate_set_against_registry(
     space: ParameterSpaceSnapshot | None = None,
     policy: ExperimentParameterPolicy | None = None,
 ) -> CandidateSet:
-    """Deterministically generate the L2F-OAT-ENDPOINT-v1 candidate set.
+    """Deterministically generate the L2F-OAT-LIVE-GATK-v2 candidate set.
 
     seed first; then parameters in ascending lexicographic name order; within a parameter
     numeric min-then-max / enum-order / bool-toggle. Each non-seed candidate differs from
@@ -130,7 +148,7 @@ def _generate_candidate_set_against_registry(
     deterministically omitted (never replaced). Deduplicated by config_hash (first wins),
     preserving semantic order.
     """
-    space = space or documented_parameter_space(registry)
+    space = space or live_parameter_space(registry)
     policy = policy or build_experiment_parameter_policy(registry)
 
     seed = experiment_seed_v1(registry)
@@ -156,6 +174,10 @@ def _generate_candidate_set_against_registry(
                 continue
             seen.add(candidate.config_hash)
             ordered.append(candidate)
+
+    # FAIL-CLOSED: every generated candidate must be accepted UNCHANGED by the committed live
+    # domain, so no candidate can trigger the live service's silent defaulting.
+    verify_candidates_against_live_domain(tuple(ordered))
 
     ordered_hashes = tuple(c.config_hash for c in ordered)
     return CandidateSet(
@@ -194,7 +216,7 @@ def _verify_candidate_set_against_registry(
     caller-selected registry must not be able to certify a forged set. Accepted paths call
     :func:`verify_accepted_candidate_set` (no override)."""
     truth = _generate_candidate_set_against_registry(registry)
-    space = documented_parameter_space(registry)
+    space = live_parameter_space(registry)
     seed = experiment_seed_v1(registry)
     configs = candidate_set.configs
 

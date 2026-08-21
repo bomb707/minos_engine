@@ -413,8 +413,11 @@ def test_missing_graph_fails_before_job_insertion(
 
 
 def test_range_exceeding_logical_job_count_fails(isolated_pg_base_url: str, tmp_path: Path) -> None:
-    plan = _synthetic_plan(_SNAPSHOT_A)  # 4 train * 41 = 164 logical jobs
-    assert plan.logical_job_count == 164
+    plan = _synthetic_plan(_SNAPSHOT_A)
+    # DERIVED from this snapshot's train membership x the accepted candidate count — never a
+    # hardcoded product (the live-GATK corrective changed the candidate count).
+    ljc = plan.train_member_count * len(_CS.configs)
+    assert plan.logical_job_count == ljc
     with scratch_database(isolated_pg_base_url, "minos_l2f_synth") as url:
         alembic_upgrade(url, _HEAD)
         engine = _engine(url)
@@ -423,7 +426,7 @@ def test_range_exceeding_logical_job_count_fails(isolated_pg_base_url: str, tmp_
                 seed_upstream_for_plan(conn, plan)
             _persist(engine, plan, _provisioned_root(tmp_path))
             with pytest.raises(JobEnqueueRangeError):
-                _enqueue(engine, plan, start=161, count=4)  # 165 > 164
+                _enqueue(engine, plan, start=ljc - 3, count=4)  # ljc + 1 > ljc
             assert _graph_counts(engine)["l2f_experiment_jobs"] == 0
         finally:
             engine.dispose()

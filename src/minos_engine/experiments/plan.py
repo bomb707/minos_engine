@@ -334,11 +334,14 @@ def _assemble_experiment_plan(
     ``accepted_plan.build_accepted_experiment_plan`` (no parameters). This helper is private and
     not exported; tests and the accepted constructor call it after establishing their own trust.
     """
+    # Each plan-config binds the L2-F scientific parameter-space identity (the policy's
+    # live-GATK domain hash), NOT the internal ParameterSpaceSnapshot canonicalization envelope
+    # recorded on the CanonicalConfig. The plan validator requires the two to agree.
     configs = tuple(
         ExperimentPlanConfig(
             config_index=i,
             config_hash=c.config_hash,
-            parameter_space_hash=c.parameter_space_hash,
+            parameter_space_hash=candidate_set.policy.parameter_space_hash,
         )
         for i, c in enumerate(candidate_set.configs)
     )

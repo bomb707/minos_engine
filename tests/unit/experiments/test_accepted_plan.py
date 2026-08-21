@@ -36,7 +36,8 @@ from minos_engine.experiments.candidates import (
 from minos_engine.experiments.plan import iter_logical_jobs, logical_job_keys
 from minos_engine.layer2 import prerequisites as PRE
 
-_ACCEPTED_PLAN_HASH = "1e6c4a5e70f370d800af91fc02ce6e312ebff29e39d0b8d554afa938f89959d8"
+#: derived historical result of the LIVE-GATK corrective (L2F-OAT-LIVE-GATK-v2).
+_ACCEPTED_PLAN_HASH = "2be6e51060bc262a39a1278e4cf15001c047ad2c1f2f38f65453a3e3b8bc2a05"
 
 
 def test_accepted_construction_is_repeatable_and_pinned_plan_hash() -> None:
@@ -44,7 +45,7 @@ def test_accepted_construction_is_repeatable_and_pinned_plan_hash() -> None:
     b = build_accepted_experiment_plan()
     assert a == b
     assert a.plan_hash == b.plan_hash == _ACCEPTED_PLAN_HASH
-    assert (a.train_member_count, a.candidate_count, a.logical_job_count) == (50, 41, 2050)
+    assert (a.train_member_count, a.candidate_count, a.logical_job_count) == (50, 39, 1950)
 
 
 def test_e5_closure_pins_source_tree_ancestry_not_merely_pass() -> None:
@@ -130,12 +131,14 @@ def test_production_api_takes_no_arguments() -> None:
 
 def test_logical_jobs_count_product_and_unique_ordered() -> None:
     plan = build_accepted_experiment_plan()
-    assert plan.logical_job_count == plan.train_member_count * plan.candidate_count == 2050
+    assert plan.logical_job_count == plan.train_member_count * plan.candidate_count == 1950
     keys = logical_job_keys(plan)
-    assert len(keys) == 2050
-    assert len(set(keys)) == 2050
+    assert len(keys) == 1950
+    assert len(set(keys)) == 1950
     order = [(j.member_index, j.config_index) for j in iter_logical_jobs(plan)]
-    assert order == [(mi, ci) for mi in range(50) for ci in range(41)]
+    assert order == [
+        (mi, ci) for mi in range(plan.train_member_count) for ci in range(plan.candidate_count)
+    ]
 
 
 def test_member_mutation_with_recomputed_hashes_fails_against_snapshot_anchor(
