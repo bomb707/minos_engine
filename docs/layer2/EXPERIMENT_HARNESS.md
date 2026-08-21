@@ -5,7 +5,7 @@ experiment planning over the frozen L2-E train membership. It does **not** score
 select, optimize, train, or activate `Layer2Service.select_config`. `HARNESS-READY` (F7)
 is not implemented and is **not** claimed anywhere below.
 
-## Scope (F3-A … F3-C2 accepted; F3-D harness verifier)
+## Scope (F3-A … F3-D accepted; F4 job claiming)
 
 **F3-A is accepted** at commit `ff8daa4bf9bd9891e46017e3f7bcb4ea9a8edb6d`. The accepted
 identities are the migration `0006_l2f_experiment_plan` byte SHA-256
@@ -30,13 +30,80 @@ accepted plan's logical jobs into `experiments.l2f_experiment_jobs` and performs
 status transitions, execution, result storage, scoring, optimization, gating or service
 activation.
 
-**F3-D (this commit) adds the non-mutating accepted experiment-harness verifier + a focused
-logical attack matrix.** It only *reads*: it verifies an already-persisted F3-C1 graph and any
-F3-C2 jobs against the repository-owned contracts. **F4 claiming is still absent** (no
-`claim_next_job`, no `SKIP LOCKED`, no status transitions), as are execution, results, scoring,
-optimization and F5–F7. `HARNESS-READY` (F7) is **not** issued, `Layer2Service.select_config`
-remains blocked, and the operational `minos_engine_db` stays at `0005` (no L2-F boundary ever
-migrates it).
+**F3-D is accepted** at commit `8a05cb0a754c00e3277d106ba711ce38ab5b7d65`: the non-mutating
+accepted experiment-harness verifier + focused logical attack matrix. It only *reads*: it verifies
+an already-persisted F3-C1 graph and any F3-C2 jobs against the repository-owned contracts.
+
+**F4 (this commit) adds safe job claiming and pre-execution state transitions.** Migration
+`0007_l2f_job_claiming` (additive; `0006` stays byte-identical) installs a strict transition guard
+plus three narrowly scoped `SECURITY DEFINER` functions, and
+`storage/l2f_job_claim.py` exposes claim / start / release. **Terminal execution and result
+storage remain F5** — `SUCCEEDED`, `FAILED` and `CANCELLED` are unreachable here, and F4
+implements no GATK execution, result artifacts, scoring, optimization, leases, stale-claim
+reclamation, heartbeats or automatic retries. `HARNESS-READY` (F7) is **not** issued,
+`Layer2Service.select_config` remains blocked, and the operational `minos_engine_db` stays at
+`0005` (no L2-F boundary ever migrates it).
+
+### F4 job claiming + pre-execution state machine
+
+`0007_l2f_job_claiming` (down_revision `0006_l2f_experiment_plan`) is exercised on scratch
+PostgreSQL only. It adds **no** column to and changes **no** scientific identity of the five L2-F
+tables. The complete F4 transition table — enforced by BOTH the database trigger
+`trg_l2f_jobs_transition_guard` and the Python boundary — is:
+
+| from | to | via | claim metadata |
+|---|---|---|---|
+| `PENDING` | `CLAIMED` | `claim_next_accepted_job` | sets `claimed_by` (non-empty) + `claimed_at` |
+| `CLAIMED` | `RUNNING` | `start_accepted_job` | **preserves** the same `claimed_by`/`claimed_at` |
+| `CLAIMED` | `PENDING` | `release_accepted_job` | clears **both** claim fields |
+
+Invariants: `PENDING` requires `claimed_by IS NULL` **and** `claimed_at IS NULL`; `CLAIMED` and
+`RUNNING` each require a non-empty `claimed_by` **and** a non-null `claimed_at`; a
+status-preserving update may not move the claim; a different worker can neither start nor release
+another worker's claim; every other transition (including any direct move to a terminal state) is
+rejected. The `0006` identity-immutability and delete-rejection triggers remain in force, so job
+scientific identity stays immutable and deletion stays impossible.
+
+**Claim ordering and concurrency.** `claim_next_accepted_job` selects the plan's next `PENDING`
+job in the deterministic order `(created_at, id)` under `FOR UPDATE SKIP LOCKED`: a row locked by
+another worker is skipped, never waited on. Concurrent workers therefore claim **distinct** jobs,
+two workers racing a single pending job produce exactly one winner (the loser receives `None`),
+and an empty queue returns `None`. Claiming is transactional — a rolled-back claim leaves the job
+`PENDING` with no claim metadata, and a committed claim stays `CLAIMED`. A raising `COMMIT` is
+surfaced as the typed `AmbiguousClaimCommitError` and is **never** retried automatically.
+
+**Least-privilege database API.** All three operations are PostgreSQL `SECURITY DEFINER`
+functions owned by `minos_admin` with the fixed secure `search_path = pg_catalog`, taking only
+bound parameters:
+
+| function | grant |
+|---|---|
+| `experiments.minos_l2f_claim_next_job(text, text)` | EXECUTE → `minos_runner`, `minos_admin` |
+| `experiments.minos_l2f_start_job(uuid, text)` | EXECUTE → `minos_runner`, `minos_admin` |
+| `experiments.minos_l2f_release_job(uuid, text)` | EXECUTE → `minos_runner`, `minos_admin` |
+
+EXECUTE is revoked from `PUBLIC`; `minos_live`, `minos_trainer` and `minos_evaluator` are denied.
+`minos_runner` receives **no** direct `SELECT`/`INSERT`/`UPDATE`/`DELETE` grant on
+`experiments.l2f_experiment_jobs` — the three functions are its only path. Downgrading `0007`
+removes every F4 function, trigger and grant and restores exact `0006` behavior.
+
+**Python boundary.** `storage/l2f_job_claim.py` exposes
+`claim_next_accepted_job(*, worker_id) -> ClaimedJob | None`,
+`start_accepted_job(*, job_id, worker_id) -> JobStateResult` and
+`release_accepted_job(*, job_id, worker_id) -> JobStateResult`. Each takes no caller-provided
+plan / plan hash / candidate set / database / partition / trust bundle, obtains the database only
+through `MINOS_DATABASE_URL`, verifies the exact transaction connection with
+`verify_operational_database_identity` and requires live revision exactly `0007_l2f_job_claiming`
+before any stage query (never running Alembic), constructs the accepted plan internally, and
+verifies the persisted plan identity before claiming. It never touches legacy `experiments.jobs`,
+never executes GATK and never creates a result artifact. `worker_id` is validated against a frozen
+conservative contract (1–64 chars, `^[A-Za-z0-9][A-Za-z0-9._:-]*$`) **before** any database
+access, and bound parameters are used regardless. Private `_*_with_trust` counterparts serve
+scratch/non-75 tests only.
+
+Because F3-C1 persistence and F3-C2 enqueue each pin live revision exactly
+`0006_l2f_experiment_plan`, the operational sequence is: persist + enqueue at `0006`, then upgrade
+to `0007` to claim.
 
 ### F3-D accepted experiment-harness verifier (read-only)
 
@@ -89,7 +156,7 @@ evaluated (no early exit), so the caller receives the complete failure set. The 
 | `job_member_config_binding` | each job's `plan_member_id`/`plan_config_id` are the ones its `job_key` encodes |
 | `job_uniqueness` | no duplicate `job_key` and no duplicate logical identity |
 | `job_indices_valid_subset` | persisted job indices are a valid subset of the logical-job space |
-| `jobs_pending_unclaimed` | every job is `PENDING` with `claimed_by`/`claimed_at` NULL (claiming is F4) |
+| `job_status_claim_consistency` | every job is in an F4-reachable state (`PENDING` unclaimed; `CLAIMED`/`RUNNING` with a valid worker + `claimed_at`); terminal states remain invalid until F5 |
 | `verification_non_mutating` | the before/after state fingerprint (row counts, timestamps, status/claim, artifact files) is unchanged |
 
 **Partial job coverage is valid.** A plan with zero, some, or all of its logical jobs enqueued all
@@ -496,9 +563,10 @@ is one of:
 
 ## Still unauthorized / not implemented
 
-`claim_next_job` / `SKIP LOCKED` / claiming, status transitions, execution, results, scoring,
-training, optimization (F4–F6); `HARNESS-READY` (F7); `select_config` (blocked). The operational
-`minos_engine_db` remains at `0005` and no operational data is created. (Accepted and implemented:
-the `ExperimentPlan` builder + `plan_hash`/`job_key` formulas (F3-B), durable plan persistence
-(F3-C1), bounded job enqueue (F3-C2), and the non-mutating harness verifier + logical attack
-matrix (F3-D).)
+GATK execution, result storage, terminal status transitions (`SUCCEEDED`/`FAILED`/`CANCELLED`),
+scoring, training, optimization (F5–F6); `HARNESS-READY` (F7); `select_config` (blocked). F4 also
+deliberately omits leases, stale-claim reclamation, heartbeats and automatic retries. The
+operational `minos_engine_db` remains at `0005` and no operational data is created. (Accepted and
+implemented: the `ExperimentPlan` builder + `plan_hash`/`job_key` formulas (F3-B), durable plan
+persistence (F3-C1), bounded job enqueue (F3-C2), the non-mutating harness verifier + logical
+attack matrix (F3-D), and safe job claiming + pre-execution transitions (F4).)

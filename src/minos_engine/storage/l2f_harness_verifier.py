@@ -78,6 +78,11 @@ STATUS_FAIL = "FAIL"
 
 _TRAIN = "train"
 _PENDING = "PENDING"
+_CLAIMED = "CLAIMED"
+_RUNNING = "RUNNING"
+#: the only job statuses reachable in F4; SUCCEEDED/FAILED/CANCELLED arrive in F5.
+_F4_STATUSES = (_PENDING, _CLAIMED, _RUNNING)
+_F4_CLAIMED_STATUSES = (_CLAIMED, _RUNNING)
 
 #: tokens that must never appear in an accepted-boundary artifact's uri/media/provenance —
 #: truth, mutation and score-bearing material may not enter the plan/job graph.
@@ -109,7 +114,7 @@ CHECK_NAMES: tuple[str, ...] = (
     "job_member_config_binding",
     "job_uniqueness",
     "job_indices_valid_subset",
-    "jobs_pending_unclaimed",
+    "job_status_claim_consistency",
     "verification_non_mutating",
 )
 
@@ -530,12 +535,27 @@ def _check_job_indices_valid_subset(
     return True
 
 
-def _check_jobs_pending_unclaimed(graph: PersistedGraph) -> bool:
-    """F3-C2 enqueues PENDING/unclaimed jobs only; claiming is F4 and is not implemented."""
-    return all(
-        job.status == _PENDING and job.claimed_by is None and job.claimed_at_is_null
-        for job in graph.jobs
-    )
+def _check_job_status_claim_consistency(graph: PersistedGraph) -> bool:
+    """Every job's status must be an F4-reachable state whose claim metadata is consistent.
+
+    * ``PENDING``  — no claim metadata at all (``claimed_by`` and ``claimed_at`` both absent).
+    * ``CLAIMED``  — a non-empty worker identity AND a ``claimed_at``.
+    * ``RUNNING``  — a non-empty worker identity AND a ``claimed_at``.
+    * ``SUCCEEDED`` / ``FAILED`` / ``CANCELLED`` — terminal states are unreachable during F4
+      (they arrive with F5 execution/results), so any job in one is invalid here.
+    """
+    for job in graph.jobs:
+        if job.status not in _F4_STATUSES:
+            return False
+        if job.status == _PENDING:
+            if job.claimed_by is not None or not job.claimed_at_is_null:
+                return False
+        elif job.status in _F4_CLAIMED_STATUSES:
+            if job.claimed_by is None or not job.claimed_by.strip():
+                return False
+            if job.claimed_at_is_null:
+                return False
+    return True
 
 
 def _evaluate_checks(
@@ -568,7 +588,7 @@ def _evaluate_checks(
         "job_member_config_binding": _check_job_member_config_binding(graph, universe_positions),
         "job_uniqueness": _check_job_uniqueness(graph),
         "job_indices_valid_subset": _check_job_indices_valid_subset(plan, graph, universe),
-        "jobs_pending_unclaimed": _check_jobs_pending_unclaimed(graph),
+        "job_status_claim_consistency": _check_job_status_claim_consistency(graph),
         "verification_non_mutating": graph.fingerprint_before == graph.fingerprint_after,
     }
     checks = {name: results[name] for name in CHECK_NAMES}  # deterministic order

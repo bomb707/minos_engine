@@ -439,14 +439,66 @@ def test_duplicate_job_key_rejected() -> None:
     assert "job_uniqueness" in _result(dataclasses.replace(graph, jobs=jobs)).failures
 
 
-def test_claimed_job_rejected_while_f4_absent() -> None:
+# --------------------------------------------------------------------------- #
+# F4 status/claim consistency (replaces the pre-F4 "every job must be PENDING" rule)
+# --------------------------------------------------------------------------- #
+def _with_job(graph: PersistedGraph, **changes: Any) -> PersistedGraph:
+    return dataclasses.replace(graph, jobs=(dataclasses.replace(graph.jobs[0], **changes),))
+
+
+@pytest.mark.parametrize("status", ["PENDING", "CLAIMED", "RUNNING"])
+def test_valid_f4_status_claim_combinations_accepted(status: str) -> None:
+    """A correctly-claimed CLAIMED/RUNNING job and an unclaimed PENDING job are all valid now
+    that F4 claiming exists."""
     graph = _valid_graph(job_count=1)
-    jobs = (
-        dataclasses.replace(
-            graph.jobs[0], status="CLAIMED", claimed_by="worker-1", claimed_at_is_null=False
-        ),
+    if status == "PENDING":
+        graph = _with_job(graph, status=status, claimed_by=None, claimed_at_is_null=True)
+    else:
+        graph = _with_job(graph, status=status, claimed_by="worker-1", claimed_at_is_null=False)
+    r = _result(graph)
+    assert r.checks["job_status_claim_consistency"] is True
+    assert r.status == STATUS_PASS
+
+
+@pytest.mark.parametrize(
+    ("status", "claimed_by", "claimed_at_is_null"),
+    [
+        # PENDING must carry no claim metadata at all
+        ("PENDING", "worker-1", True),
+        ("PENDING", None, False),
+        ("PENDING", "worker-1", False),
+        # CLAIMED/RUNNING require BOTH a non-empty worker and a claimed_at
+        ("CLAIMED", None, False),
+        ("CLAIMED", "worker-1", True),
+        ("CLAIMED", "   ", False),
+        ("RUNNING", None, False),
+        ("RUNNING", "worker-1", True),
+        ("RUNNING", "", False),
+    ],
+)
+def test_malformed_status_claim_combinations_rejected(
+    status: str, claimed_by: str | None, claimed_at_is_null: bool
+) -> None:
+    graph = _with_job(
+        _valid_graph(job_count=1),
+        status=status,
+        claimed_by=claimed_by,
+        claimed_at_is_null=claimed_at_is_null,
     )
-    assert "jobs_pending_unclaimed" in _result(dataclasses.replace(graph, jobs=jobs)).failures
+    r = _result(graph)
+    assert r.status == STATUS_FAIL
+    assert "job_status_claim_consistency" in r.failures
+
+
+@pytest.mark.parametrize("status", ["SUCCEEDED", "FAILED", "CANCELLED"])
+def test_terminal_states_remain_invalid_during_f4(status: str) -> None:
+    """Terminal execution states are unreachable until F5; a job in one is invalid now."""
+    graph = _with_job(
+        _valid_graph(job_count=1), status=status, claimed_by="worker-1", claimed_at_is_null=False
+    )
+    r = _result(graph)
+    assert r.status == STATUS_FAIL
+    assert "job_status_claim_consistency" in r.failures
 
 
 def test_derived_count_mismatch_rejected() -> None:
