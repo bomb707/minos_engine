@@ -52,6 +52,7 @@ __all__ = [
     "GatkExecutionOutcome",
     "ExecutionResultManifest",
     "ExecutionFailure",
+    "execution_input_from_manifest",
     "compute_input_identity_hash",
     "compute_logical_argv_hash",
     "compute_result_hash",
@@ -194,18 +195,23 @@ class ExecutionResultManifest(BaseModel):
     job_id: str = Field(min_length=1)
     job_key: Hex64
     dataset_id: str = Field(min_length=1)
+    round_id: str = Field(min_length=1)
     profile_id: str = Field(min_length=1)
     content_hash: Hex64
     feature_values_hash: Hex64
     config_hash: Hex64
     parameter_space_hash: Hex64
     input_identity_hash: Hex64
-    #: the raw scientific input identity, so ``result_hash`` is fully recomputable from the
-    #: manifest bytes alone by an independent verifier.
+    #: the COMPLETE raw input identity, so an independent verifier can reconstruct a strict
+    #: :class:`ExecutionInput` and recompute BOTH ``input_identity_hash`` and ``result_hash``
+    #: from the manifest bytes alone. ``dictionary_sha256`` and ``bam_size_bytes`` are execution
+    #: provenance: they enter ``input_identity_hash`` but NOT the frozen ``result_hash``.
     bam_sha256: Hex64
     bai_sha256: Hex64
     reference_sha256: Hex64
     fai_sha256: Hex64
+    dictionary_sha256: Hex64
+    bam_size_bytes: int = Field(ge=0)
     region_hash: Hex64
     region_start0: int = Field(ge=0)
     region_end0_exclusive: int = Field(ge=0)
@@ -229,6 +235,32 @@ class ExecutionFailure(BaseModel):
     failure_code: FailureCode
     exit_code: int | None = None
     stderr_sha256: Hex64 | None = None
+
+
+def execution_input_from_manifest(manifest: ExecutionResultManifest) -> ExecutionInput:
+    """Reconstruct the STRICT :class:`ExecutionInput` from the manifest's own fields.
+
+    Every component of ``input_identity_hash`` is carried by the manifest, so an independent
+    verifier can rebuild the validated contract object and recompute the identity itself instead
+    of trusting either the manifest's or the database row's stored hash.
+    """
+    return ExecutionInput(
+        dataset_id=manifest.dataset_id,
+        round_id=manifest.round_id,
+        chromosome=manifest.chromosome,
+        profile_id=manifest.profile_id,
+        content_hash=manifest.content_hash,
+        feature_values_hash=manifest.feature_values_hash,
+        bam_sha256=manifest.bam_sha256,
+        bai_sha256=manifest.bai_sha256,
+        reference_sha256=manifest.reference_sha256,
+        fai_sha256=manifest.fai_sha256,
+        dictionary_sha256=manifest.dictionary_sha256,
+        bam_size_bytes=manifest.bam_size_bytes,
+        region_hash=manifest.region_hash,
+        region_start0=manifest.region_start0,
+        region_end0_exclusive=manifest.region_end0_exclusive,
+    )
 
 
 def compute_input_identity_hash(inputs: ExecutionInput) -> str:

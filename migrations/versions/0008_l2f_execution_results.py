@@ -89,6 +89,12 @@ _F5_COMPOSITE_TARGETS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
     ("experiments", "l2f_experiment_jobs", "uq_l2f_jobs_id_job_key", ("id", "job_key")),
     (
         "experiments",
+        "l2f_experiment_jobs",
+        "uq_l2f_jobs_id_member_config",
+        ("id", "plan_member_id", "plan_config_id"),
+    ),
+    (
+        "experiments",
         "l2f_experiment_plan_configs",
         "uq_l2f_pc_id_hash_space",
         ("id", "config_hash", "parameter_space_hash"),
@@ -178,6 +184,13 @@ def _create_results() -> None:
             ["job_id", "job_key"],
             [f"{_JOBS}.id", f"{_JOBS}.job_key"],
             name="fk_l2f_exec_results_job_key",
+        ),
+        # the recorded member AND config MUST be the exact pair the job itself binds: a result
+        # naming any other member or config - even one of the SAME plan - fails through this FK.
+        sa.ForeignKeyConstraint(
+            ["job_id", "plan_member_id", "plan_config_id"],
+            [f"{_JOBS}.id", f"{_JOBS}.plan_member_id", f"{_JOBS}.plan_config_id"],
+            name="fk_l2f_exec_results_job_member_config",
         ),
         # the member and config MUST belong to the same plan.
         sa.ForeignKeyConstraint(
@@ -292,8 +305,15 @@ def _create_outcome_exclusivity() -> None:
     op.execute(
         f"CREATE OR REPLACE FUNCTION {_EXCLUSIVE}() RETURNS trigger LANGUAGE plpgsql "
         "SET search_path = pg_catalog AS $excl$ "
-        "DECLARE v_other integer; "
+        "DECLARE v_other integer; v_job uuid; "
         "BEGIN "
+        # serialize every outcome creation for this job on the job ROW LOCK, so a concurrent
+        # success and failure can never both observe an empty opposite table and both commit.
+        f"SELECT j.id INTO v_job FROM {_JOBS} j WHERE j.id = NEW.job_id FOR UPDATE; "
+        "IF v_job IS NULL THEN "
+        "  RAISE EXCEPTION 'L2-F outcome references an unknown job %', NEW.job_id "
+        f"    USING ERRCODE = '{_SQLSTATE_MISSING_RECORD}'; "
+        "END IF; "
         "IF TG_TABLE_NAME = 'l2f_execution_results' THEN "
         f"  SELECT count(*) INTO v_other FROM {_FAILURES} f WHERE f.job_id = NEW.job_id; "
         "  IF v_other > 0 THEN "
@@ -475,7 +495,8 @@ def _create_execution_functions() -> None:
         " p_manifest_sha256 text, p_result_hash text, p_runtime_ms bigint) "
         "RETURNS TABLE(result_id uuid, created boolean) LANGUAGE plpgsql SECURITY DEFINER "
         "SET search_path = pg_catalog AS $complete$ "
-        "DECLARE v_plan_id uuid; v_member uuid; v_config uuid; v_existing record; v_id uuid; "
+        "DECLARE v_plan_id uuid; v_member uuid; v_config uuid; v_status text; "
+        "        v_existing record; v_id uuid; v_created boolean := false; v_rows integer; "
         "BEGIN "
         "IF p_worker_id IS NULL OR btrim(p_worker_id) = '' THEN "
         "  RAISE EXCEPTION 'worker_id must be a non-empty identifier' "
@@ -486,51 +507,77 @@ def _create_execution_functions() -> None:
         "  RAISE EXCEPTION 'accepted L2-F plan is not persisted' "
         f"    USING ERRCODE = '{_SQLSTATE_PLAN_ABSENT}'; "
         "END IF; "
-        "SELECT j.plan_member_id, j.plan_config_id INTO v_member, v_config "
+        # LOCK the job row BEFORE inspecting either outcome table: this is what makes a
+        # concurrent success and failure for one job mutually exclusive rather than a race.
+        "SELECT j.plan_member_id, j.plan_config_id, j.status "
+        "  INTO v_member, v_config, v_status "
         f"  FROM {_JOBS} j "
         " WHERE j.id = p_job_id AND j.plan_id = v_plan_id AND j.job_key = p_job_key "
-        "   AND j.claimed_by = p_worker_id AND j.status IN ('RUNNING', 'SUCCEEDED'); "
-        "IF v_member IS NULL THEN "
+        "   AND j.claimed_by = p_worker_id AND j.status IN ('RUNNING', 'SUCCEEDED') "
+        "   FOR UPDATE; "
+        "IF NOT FOUND THEN "
         "  RAISE EXCEPTION 'job % of plan % is not completable by worker %', "
         f"    p_job_id, p_plan_hash, p_worker_id USING ERRCODE = '{_SQLSTATE_NOT_OWNED}'; "
         "END IF; "
-        # idempotent: an EXACT existing result is success; any difference is a typed conflict.
+        # under the lock: a durable failure forbids a success outcome for the same job.
+        f"IF EXISTS (SELECT 1 FROM {_FAILURES} f WHERE f.job_id = p_job_id) THEN "
+        "  RAISE EXCEPTION 'L2-F job % already has a failure record', p_job_id "
+        f"    USING ERRCODE = '{_SQLSTATE_DUAL_OUTCOME}'; "
+        "END IF; "
+        # idempotent get-or-verify: an EXACT existing result is success; ANY difference in ANY
+        # immutable stored column - including runtime_ms and the media types - is a conflict.
         f"SELECT * INTO v_existing FROM {_RESULTS} r WHERE r.job_id = p_job_id; "
         "IF FOUND THEN "
-        "  IF v_existing.result_hash IS DISTINCT FROM p_result_hash "
+        "  IF v_existing.plan_id IS DISTINCT FROM v_plan_id "
+        "     OR v_existing.job_id IS DISTINCT FROM p_job_id "
         "     OR v_existing.job_key IS DISTINCT FROM p_job_key "
+        "     OR v_existing.plan_member_id IS DISTINCT FROM v_member "
+        "     OR v_existing.plan_config_id IS DISTINCT FROM v_config "
         "     OR v_existing.config_hash IS DISTINCT FROM p_config_hash "
         "     OR v_existing.parameter_space_hash IS DISTINCT FROM p_parameter_space_hash "
         "     OR v_existing.input_identity_hash IS DISTINCT FROM p_input_identity_hash "
         "     OR v_existing.logical_argv_hash IS DISTINCT FROM p_logical_argv_hash "
         "     OR v_existing.gatk_executable_sha256 IS DISTINCT FROM p_gatk_executable_sha256 "
         "     OR v_existing.gatk_version IS DISTINCT FROM p_gatk_version "
-        "     OR v_existing.vcf_sha256 IS DISTINCT FROM p_vcf_sha256 "
-        "     OR v_existing.result_manifest_sha256 IS DISTINCT FROM p_manifest_sha256 "
         "     OR v_existing.vcf_artifact_id IS DISTINCT FROM p_vcf_artifact_id "
+        "     OR v_existing.vcf_sha256 IS DISTINCT FROM p_vcf_sha256 "
+        f"     OR v_existing.vcf_media_type IS DISTINCT FROM '{VCF_MEDIA_TYPE}' "
         "     OR v_existing.result_manifest_artifact_id IS DISTINCT FROM p_manifest_artifact_id "
+        "     OR v_existing.result_manifest_sha256 IS DISTINCT FROM p_manifest_sha256 "
+        "     OR v_existing.result_manifest_media_type IS DISTINCT FROM "
+        f"        '{RESULT_MANIFEST_MEDIA_TYPE}' "
+        "     OR v_existing.result_hash IS DISTINCT FROM p_result_hash "
+        "     OR v_existing.runtime_ms IS DISTINCT FROM p_runtime_ms "
         "  THEN "
         "    RAISE EXCEPTION 'an existing L2-F execution result for job % differs', p_job_id "
         f"      USING ERRCODE = '{_SQLSTATE_RESULT_CONFLICT}'; "
         "  END IF; "
         "  v_id := v_existing.id; "
+        "ELSE "
+        f"  INSERT INTO {_RESULTS} "
+        "    (plan_id, job_id, job_key, plan_member_id, plan_config_id, config_hash, "
+        "     parameter_space_hash, input_identity_hash, logical_argv_hash, "
+        "     gatk_executable_sha256, gatk_version, vcf_artifact_id, vcf_sha256, "
+        "     result_manifest_artifact_id, result_manifest_sha256, result_hash, runtime_ms) "
+        "  VALUES (v_plan_id, p_job_id, p_job_key, v_member, v_config, p_config_hash, "
+        "          p_parameter_space_hash, p_input_identity_hash, p_logical_argv_hash, "
+        "          p_gatk_executable_sha256, p_gatk_version, p_vcf_artifact_id, p_vcf_sha256, "
+        "          p_manifest_artifact_id, p_manifest_sha256, p_result_hash, p_runtime_ms) "
+        "  RETURNING id INTO v_id; "
+        "  v_created := true; "
+        "END IF; "
+        # the terminal UPDATE must affect EXACTLY one row (an already-SUCCEEDED replay performs
+        # no UPDATE at all, so no already-terminal row is silently re-stamped).
+        "IF v_status = 'RUNNING' THEN "
         f"  UPDATE {_JOBS} j SET status = 'SUCCEEDED', updated_at = now() "
         "   WHERE j.id = p_job_id AND j.status = 'RUNNING'; "
-        "  RETURN QUERY SELECT v_id, false; RETURN; "
+        "  GET DIAGNOSTICS v_rows = ROW_COUNT; "
+        "  IF v_rows <> 1 THEN "
+        "    RAISE EXCEPTION 'terminal SUCCEEDED transition affected % rows, expected 1', v_rows "
+        f"      USING ERRCODE = '{_SQLSTATE_TRANSITION}'; "
+        "  END IF; "
         "END IF; "
-        f"INSERT INTO {_RESULTS} "
-        "  (plan_id, job_id, job_key, plan_member_id, plan_config_id, config_hash, "
-        "   parameter_space_hash, input_identity_hash, logical_argv_hash, "
-        "   gatk_executable_sha256, gatk_version, vcf_artifact_id, vcf_sha256, "
-        "   result_manifest_artifact_id, result_manifest_sha256, result_hash, runtime_ms) "
-        "VALUES (v_plan_id, p_job_id, p_job_key, v_member, v_config, p_config_hash, "
-        "        p_parameter_space_hash, p_input_identity_hash, p_logical_argv_hash, "
-        "        p_gatk_executable_sha256, p_gatk_version, p_vcf_artifact_id, p_vcf_sha256, "
-        "        p_manifest_artifact_id, p_manifest_sha256, p_result_hash, p_runtime_ms) "
-        "RETURNING id INTO v_id; "
-        f"UPDATE {_JOBS} j SET status = 'SUCCEEDED', updated_at = now() "
-        " WHERE j.id = p_job_id AND j.status = 'RUNNING'; "
-        "RETURN QUERY SELECT v_id, true; "
+        "RETURN QUERY SELECT v_id, v_created; "
         "END; $complete$;"
     )
 
@@ -541,7 +588,8 @@ def _create_execution_functions() -> None:
         " p_exit_code integer, p_stderr_sha256 text) "
         "RETURNS TABLE(failure_id uuid, created boolean) LANGUAGE plpgsql SECURITY DEFINER "
         "SET search_path = pg_catalog AS $fail$ "
-        "DECLARE v_plan_id uuid; v_job_key text; v_existing record; v_id uuid; "
+        "DECLARE v_plan_id uuid; v_job_key text; v_status text; v_existing record; v_id uuid; "
+        "        v_created boolean := false; v_rows integer; "
         "BEGIN "
         "IF p_worker_id IS NULL OR btrim(p_worker_id) = '' THEN "
         "  RAISE EXCEPTION 'worker_id must be a non-empty identifier' "
@@ -552,17 +600,26 @@ def _create_execution_functions() -> None:
         "  RAISE EXCEPTION 'accepted L2-F plan is not persisted' "
         f"    USING ERRCODE = '{_SQLSTATE_PLAN_ABSENT}'; "
         "END IF; "
-        "SELECT j.job_key INTO v_job_key "
+        # identical serialization to the success path: LOCK the job row BEFORE looking at either
+        # outcome table, so success and failure for one job can never both commit.
+        "SELECT j.job_key, j.status INTO v_job_key, v_status "
         f"  FROM {_JOBS} j "
         " WHERE j.id = p_job_id AND j.plan_id = v_plan_id AND j.claimed_by = p_worker_id "
-        "   AND j.status IN ('RUNNING', 'FAILED'); "
-        "IF v_job_key IS NULL THEN "
+        "   AND j.status IN ('RUNNING', 'FAILED') "
+        "   FOR UPDATE; "
+        "IF NOT FOUND THEN "
         "  RAISE EXCEPTION 'job % of plan % is not failable by worker %', "
         f"    p_job_id, p_plan_hash, p_worker_id USING ERRCODE = '{_SQLSTATE_NOT_OWNED}'; "
         "END IF; "
+        f"IF EXISTS (SELECT 1 FROM {_RESULTS} r WHERE r.job_id = p_job_id) THEN "
+        "  RAISE EXCEPTION 'L2-F job % already has a success result', p_job_id "
+        f"    USING ERRCODE = '{_SQLSTATE_DUAL_OUTCOME}'; "
+        "END IF; "
         f"SELECT * INTO v_existing FROM {_FAILURES} f WHERE f.job_id = p_job_id; "
         "IF FOUND THEN "
-        "  IF v_existing.failure_code IS DISTINCT FROM p_failure_code "
+        "  IF v_existing.plan_id IS DISTINCT FROM v_plan_id "
+        "     OR v_existing.job_key IS DISTINCT FROM v_job_key "
+        "     OR v_existing.failure_code IS DISTINCT FROM p_failure_code "
         "     OR v_existing.worker_id IS DISTINCT FROM p_worker_id "
         "     OR v_existing.exit_code IS DISTINCT FROM p_exit_code "
         "     OR v_existing.stderr_sha256 IS DISTINCT FROM p_stderr_sha256 THEN "
@@ -570,17 +627,23 @@ def _create_execution_functions() -> None:
         f"      USING ERRCODE = '{_SQLSTATE_RESULT_CONFLICT}'; "
         "  END IF; "
         "  v_id := v_existing.id; "
+        "ELSE "
+        f"  INSERT INTO {_FAILURES} "
+        "    (plan_id, job_id, job_key, worker_id, failure_code, exit_code, stderr_sha256) "
+        "  VALUES (v_plan_id, p_job_id, v_job_key, p_worker_id, p_failure_code, p_exit_code, "
+        "          p_stderr_sha256) RETURNING id INTO v_id; "
+        "  v_created := true; "
+        "END IF; "
+        "IF v_status = 'RUNNING' THEN "
         f"  UPDATE {_JOBS} j SET status = 'FAILED', updated_at = now() "
         "   WHERE j.id = p_job_id AND j.status = 'RUNNING'; "
-        "  RETURN QUERY SELECT v_id, false; RETURN; "
+        "  GET DIAGNOSTICS v_rows = ROW_COUNT; "
+        "  IF v_rows <> 1 THEN "
+        "    RAISE EXCEPTION 'terminal FAILED transition affected % rows, expected 1', v_rows "
+        f"      USING ERRCODE = '{_SQLSTATE_TRANSITION}'; "
+        "  END IF; "
         "END IF; "
-        f"INSERT INTO {_FAILURES} "
-        "  (plan_id, job_id, job_key, worker_id, failure_code, exit_code, stderr_sha256) "
-        "VALUES (v_plan_id, p_job_id, v_job_key, p_worker_id, p_failure_code, p_exit_code, "
-        "        p_stderr_sha256) RETURNING id INTO v_id; "
-        f"UPDATE {_JOBS} j SET status = 'FAILED', updated_at = now() "
-        " WHERE j.id = p_job_id AND j.status = 'RUNNING'; "
-        "RETURN QUERY SELECT v_id, true; "
+        "RETURN QUERY SELECT v_id, v_created; "
         "END; $fail$;"
     )
 

@@ -37,7 +37,7 @@ an already-persisted F3-C1 graph and any F3-C2 jobs against the repository-owned
 **F4 is accepted** at commit `76c092f5f255d77fc3a6cd71805dab4b97c1d68c` (with the accepted
 corrections at `84db9cdb` and `908fc4e0`): safe job claiming and pre-execution state transitions.
 
-**F5 (this commit) adds GATK execution, terminal job transitions, success-result persistence,
+**F5 adds GATK execution, terminal job transitions, success-result persistence,
 failure recording and non-mutating execution verification.** Migration
 `0008_l2f_execution_results` (additive; `0006` and `0007` stay byte-identical) adds the two
 outcome tables, the terminal transition guard and three narrowly scoped `SECURITY DEFINER`
@@ -45,7 +45,11 @@ functions; `storage/l2f_execution.py` exposes
 `execute_next_accepted_job(*, worker_id) -> ExecutionDispatchResult | None`. **Scoring, hap.py,
 truth comparison, optimization, training, model selection, HARNESS-READY, F6 and F7 remain
 absent**, `Layer2Service.select_config` stays blocked, and the operational `minos_engine_db`
-stays at `0005`.
+stays at `0005`. **This corrective commit** hardens F5 before acceptance: the exact relational job
+binding, concurrency-safe outcome exclusivity, a complete success get-or-verify, exact-connection
+authorization, per-attempt workspace hygiene, genuinely bounded child streams, strict
+single-sample in-region VCF validation, matching failure commit-state semantics, and independent
+recomputation of every input/argv/result identity.
 
 ### F5 GATK execution + terminal outcomes
 
@@ -61,8 +65,36 @@ EXECUTE on the three F5 functions is granted only to `minos_runner` and `minos_a
 `minos_live`, `minos_trainer` and `minos_evaluator` are denied, trigger functions are not directly
 executable, and no application role holds any direct result/failure/job table mutation grant.
 
-**Revision requirements.** F3 graph operations accept `0006`/`0007`/`0008`; F4 claim/start/release
-accepts `0007`/`0008`; F5 execution requires **exactly `0008`**. No boundary runs Alembic.
+**Exact job binding.** 0008 adds three additive composite-UNIQUE targets to
+`experiments.l2f_experiment_jobs` — `uq_l2f_jobs_id_plan`, `uq_l2f_jobs_id_job_key` and
+`uq_l2f_jobs_id_member_config` — and a success result carries three matching named foreign keys:
+`fk_l2f_exec_results_job_plan`, `fk_l2f_exec_results_job_key` and
+`fk_l2f_exec_results_job_member_config`. The third means a result naming **any other member or
+config — including a member or config that genuinely belongs to the same plan** — is rejected by
+the database, by name, before any application logic runs.
+
+**Outcome concurrency.** Both terminal functions, and the mutual-exclusion trigger itself, take a
+`FOR UPDATE` lock on the referenced **job row before** inspecting either outcome table. Two
+transactions racing a success and a failure for one RUNNING job therefore serialize: exactly one
+commits a terminal outcome and the other fails with a typed SQLSTATE, rather than both observing
+an empty opposite table. Each terminal function additionally requires its final job `UPDATE` to
+affect **exactly one row** (`MN012` otherwise); an already-terminal idempotent replay performs no
+`UPDATE` at all, so no terminal row is silently re-stamped.
+
+**Success get-or-verify** compares **every** immutable stored column — plan, job, job_key, member,
+config, both hashes, the input and argv identities, the executable identity and version, both
+artifact ids/digests/media types, the result hash and `runtime_ms`. An exact replay succeeds and
+creates nothing; any single differing field, `runtime_ms` included, raises `MN022`.
+
+**Revision requirements and exact-connection authorization.** F3 graph operations accept
+`0006`/`0007`/`0008`; F4 claim/start/release accepts `0007`/`0008`; F5 execution requires
+**exactly `0008`**. No boundary runs Alembic. There is no "authorize once, reuse everywhere" step:
+**every** live connection the production path opens — claim, preparation reads, start, release,
+success persistence and failure persistence — runs `verify_operational_database_identity()` and
+the exact-`0008` revision check as its **first statements**, before any other query, publication
+or mutation. `require_operational_identity` is threaded explicitly through the private boundaries
+(`True` for the accepted entry point, `False` for explicit-trust scratch tests), so a successful
+check on one connection can never authorize another.
 
 **Frozen result identity.**
 
@@ -73,7 +105,9 @@ result_hash = sha256("minos:l2f-gatk-execution-result:v1\n" + canonical_json(sci
 binding the schema version, `plan_hash`, `job_key`, dataset/profile/content/feature-values
 identity, `config_hash` + `parameter_space_hash`, the BAM/BAI/reference/FAI digests, `region_hash`
 and the exact region coordinates + chromosome, `logical_argv_hash`, the GATK executable SHA-256
-and version, and the produced VCF digest and size. Host paths, UUIDs, timestamps, runtime, stderr
+and version, and the produced VCF digest and size. `dictionary_sha256` and
+`bam_size_bytes` are execution provenance: they enter `input_identity_hash` but **not**
+`result_hash`. Host paths, UUIDs, timestamps, runtime, stderr
 and `worker_id` are **excluded**, so the same job re-executed elsewhere yields the same
 `result_hash`. The canonical result-manifest bytes additionally carry the job UUID, `runtime_ms`,
 `worker_id`, a generated timestamp and `result_hash` itself, so an independent verifier can
@@ -100,10 +134,24 @@ VCF bytes) is the only runner tests and CI use. `SubprocessGatkRunner` pins an a
 provisioned executable with a required SHA-256 and version (no PATH discovery), runs `shell=False`
 with `stdin=DEVNULL`, an environment allowlist, bounded stdout/stderr files, an isolated per-job
 work directory and a timeout that terminates the whole process group, and never retries. It
-deliberately claims **no** memory limit because none is enforced. The produced VCF is validated
-from its **bytes** — regular non-symlink file inside the job work dir, nonempty, valid
-`##fileformat=VCFv4.x`, exactly one `#CHROM`, accepted chromosome, streamed digest and size — a
-runner-supplied hash is never trusted.
+deliberately claims **no** memory limit because none is enforced. Both child streams are drained
+**continuously while the process runs**, in constant memory: reading never stops before EOF (so
+the child can never block on a full pipe) but everything past `max_captured_stream_bytes` is
+discarded rather than buffered or written, so a process emitting gigabytes bounds both memory and
+disk. Truncating after exit would bound neither, and is not what happens. The produced VCF is validated
+from its **bytes** — regular non-symlink file inside the attempt dir, nonempty, valid
+`##fileformat=VCFv4.x`, exactly one `#CHROM` header laying out a **single-sample** VCF (the eight
+fixed columns plus `FORMAT` plus exactly one sample), every record carrying that same column
+count, an integer `POS`, the accepted chromosome and a position **inside the accepted interval** —
+a runner-supplied hash is never trusted. A variant-free region stays legitimate.
+
+**Workspaces.** Each attempt gets a **fresh, exclusive** directory under the provisioned work
+root, created with `mkdir` at mode `0o700` and **never** `exist_ok`: a stale directory, a planted
+output file or a substituted symlink cannot be adopted, and the created inode is re-verified to be
+a real directory owned by this user directly under the resolved root. The output path must not
+pre-exist. The directory is removed on **every** exit path — success, nonzero exit, timeout,
+invalid or missing VCF, failure-record persistence, a pre-commit exception, and a successful or
+ambiguous terminal commit.
 
 **Artifacts.** `MINOS_L2F_RESULT_ARTIFACT_ROOT` (existing non-symlink dir, writer uid, mode
 `0o2750`, never created or repaired) receives immutable content-addressed files at mode `0o640`
@@ -118,16 +166,27 @@ accesses, claims one job via F4, resolves the full identity and input bytes, val
 builds the logical invocation, **releases back to PENDING** if preparation fails while merely
 CLAIMED, transitions `CLAIMED -> RUNNING`, executes GATK **outside** any long-lived transaction,
 then either publishes both artifacts and transactionally registers + inserts + transitions to
-SUCCEEDED, or records a bounded failure and transitions to FAILED. It never retries. An ambiguous
-`COMMIT` raises `AmbiguousExecutionCommitError` and **retains** the immutable artifacts; a definite
-pre-commit rollback removes only newly created inodes; a successful commit followed by a wrapper
-failure retains rows and files. Terminal jobs are never reclaimable, and partial queues stay valid.
+SUCCEEDED, or records a bounded failure and transitions to FAILED. It never retries. The two persistence paths share
+identical commit-state semantics: a pre-commit exception rolls back, a raising `COMMIT` is an
+`AmbiguousExecutionCommitError` that is **never** retried, and a wrapper failure after a
+successful commit leaves the durable row in place. On success an ambiguous `COMMIT` additionally
+**retains** the immutable artifacts, while a definite pre-commit rollback removes only newly
+created inodes. Failure persistence receives the `job_key` already resolved by the claim, so it
+performs no post-commit database lookup. Terminal jobs are never reclaimable, and partial queues stay valid.
 
-**Verification.** The F3-D verifier now also accepts `SUCCEEDED`/`FAILED` (rejecting `CANCELLED`),
-requires exactly one matching outcome record and none of the other kind, and independently
-recomputes every success result — CONFIG binding, input binding, `logical_argv_hash`, both
-artifact byte digests and sizes, and `result_hash` — via the new
-`execution_results_independently_verified` check. It remains strictly non-mutating.
+**Verification.** The F3-D verifier also accepts `SUCCEEDED`/`FAILED` (rejecting `CANCELLED`) and
+requires exactly one matching outcome record and none of the other kind. The
+`execution_results_independently_verified` check trusts **nothing** stored: it parses the manifest
+artifact strictly (duplicate JSON keys rejected, bytes required to equal their own canonical
+serialization, validated against the frozen `extra="forbid"` strict contract), reconstructs a
+strict `ExecutionInput` from the manifest's own fields, and then **recomputes**
+`input_identity_hash` (required to equal both the manifest's and the database row's value),
+`logical_argv_hash` (rebuilt from the bound CONFIG artifact through `build_logical_invocation`)
+and the frozen `result_hash` (through `compute_result_hash` itself, not a duplicated dictionary).
+It also re-derives both artifacts' byte digests, sizes, URIs and fixed media types. A manifest
+whose `dictionary_sha256` or `bam_size_bytes` was mutated and whose stored `input_identity_hash`
+was forged to stay internally consistent still fails, because the recomputation must also equal
+the database row. The verifier remains strictly non-mutating.
 
 **F4 job claiming and pre-execution state transitions.** Migration
 `0007_l2f_job_claiming` (additive; `0006` stays byte-identical) installs a strict transition guard

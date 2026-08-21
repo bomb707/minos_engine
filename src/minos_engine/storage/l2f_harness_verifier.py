@@ -41,7 +41,6 @@ from sqlalchemy import Connection, Engine, text
 
 from minos_engine.common.canonical_json import canonical_json_bytes
 from minos_engine.common.errors import MinosEngineError
-from minos_engine.common.hashing import sha256_hex
 from minos_engine.experiments.accepted_plan import build_accepted_experiment_plan
 from minos_engine.experiments.candidates import (
     generate_accepted_candidate_set,
@@ -233,6 +232,12 @@ class PersistedExecutionResult:
     manifest_file_sha256: str | None
     manifest_file_size: int | None
     manifest_document: Mapping[str, Any] | None
+    #: the EXACT manifest artifact bytes (strict parsing + canonical-byte equality are the
+    #: verifier's own job; the parsed ``manifest_document`` is only a convenience view).
+    manifest_bytes: bytes | None
+    #: the effective CONFIG bound to this result, read from its own content-addressed artifact,
+    #: so the logical argv can be recomputed through the frozen contract functions.
+    effective_config: Mapping[str, Any] | None
 
 
 @dataclass(frozen=True)
@@ -612,17 +617,63 @@ def _check_job_status_claim_consistency(graph: PersistedGraph) -> bool:
     return True
 
 
+def _strict_manifest(raw: bytes | None) -> Any | None:
+    """Strictly parse the manifest artifact bytes, or return ``None`` on ANY deviation.
+
+    Duplicate JSON keys are rejected, the bytes must equal their own canonical serialization
+    exactly, and the document must validate against the frozen ``extra="forbid"`` strict
+    :class:`ExecutionResultManifest` contract.
+    """
+    from pydantic import ValidationError
+
+    from minos_engine.experiments.execution_contract import ExecutionResultManifest
+
+    if raw is None:
+        return None
+
+    def _no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        seen: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in seen:
+                raise ValueError(f"duplicate JSON key {key!r}")
+            seen[key] = value
+        return seen
+
+    try:
+        document = json.loads(raw.decode("utf-8"), object_pairs_hook=_no_duplicates)
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(document, dict) or canonical_json_bytes(document) != raw:
+        return None
+    try:
+        return ExecutionResultManifest(**document)
+    except (ValidationError, TypeError):
+        return None
+
+
 def _check_execution_results(plan: Any, graph: PersistedGraph) -> bool:
     """Independently re-verify EVERY persisted F5 success result.
 
-    Recomputes the CONFIG binding, the input binding, the logical argv hash, both artifact
-    byte digests and sizes, and the frozen ``result_hash`` from the manifest's own scientific
-    fields — never trusting the stored values. Purely read-only.
+    Nothing stored is trusted. The manifest bytes are strictly parsed, a strict
+    ``ExecutionInput`` is reconstructed from them, and ``input_identity_hash``,
+    ``logical_argv_hash`` and the frozen ``result_hash`` are all RECOMPUTED through the frozen
+    contract functions and required to equal both the manifest and the database row. Both
+    artifacts' byte digests, sizes, URIs and fixed media types are re-derived as well. Purely
+    read-only.
     """
     from minos_engine.experiments.execution_contract import (
         EXECUTION_RESULT_SCHEMA,
-        RESULT_HASH_DOMAIN,
+        GatkExecutionOutcome,
+        compute_input_identity_hash,
+        compute_result_hash,
+        execution_input_from_manifest,
     )
+    from minos_engine.experiments.execution_contract import ExecutionConfig as _ExecCfg
+    from minos_engine.storage.l2f_execution_contract import (
+        L2F_RESULT_MANIFEST_MEDIA_TYPE,
+        L2F_VCF_MEDIA_TYPE,
+    )
+    from minos_engine.storage.l2f_gatk_runner import build_logical_invocation
 
     members_by_id = {m.plan_member_id: m for m in graph.members}
     configs_by_id = {c.plan_config_id: c for c in graph.configs}
@@ -644,7 +695,11 @@ def _check_execution_results(plan: Any, graph: PersistedGraph) -> bool:
         if _norm(res.parameter_space_hash) != _norm(plan.parameter_space_hash):
             return False
 
-        # both artifacts: exact byte digests, sizes and media types.
+        # --- complete artifact metadata, fixed media types and exact byte digests -------------
+        if _norm(res.vcf_media_type) != _norm(L2F_VCF_MEDIA_TYPE):
+            return False
+        if _norm(res.manifest_media_type) != _norm(L2F_RESULT_MANIFEST_MEDIA_TYPE):
+            return False
         if res.vcf_file_sha256 != res.vcf_sha256 or res.manifest_file_sha256 != res.manifest_sha256:
             return False
         if res.vcf_size_bytes is None or res.vcf_file_size != int(res.vcf_size_bytes):
@@ -658,58 +713,82 @@ def _check_execution_results(plan: Any, graph: PersistedGraph) -> bool:
         if not res.manifest_uri.endswith(f"/{res.manifest_sha256}.result.json"):
             return False
 
-        doc = res.manifest_document
-        if doc is None or doc.get("schema_version") != EXECUTION_RESULT_SCHEMA:
+        # --- strict manifest parsing (duplicate keys / canonical bytes / extra=forbid) ---------
+        manifest = _strict_manifest(res.manifest_bytes)
+        if manifest is None or manifest.schema_version != EXECUTION_RESULT_SCHEMA:
             return False
-        # the manifest must agree with the stored row on every scientific field...
-        for key, stored in (
-            ("plan_hash", plan.plan_hash),
-            ("job_key", res.job_key),
-            ("config_hash", res.config_hash),
-            ("parameter_space_hash", res.parameter_space_hash),
-            ("input_identity_hash", res.input_identity_hash),
-            ("logical_argv_hash", res.logical_argv_hash),
-            ("gatk_executable_sha256", res.gatk_executable_sha256),
-            ("gatk_version", res.gatk_version),
-            ("vcf_sha256", res.vcf_sha256),
-            ("result_hash", res.result_hash),
-            ("dataset_id", member.dataset_id),
-            ("profile_id", member.profile_id),
-            ("content_hash", member.content_hash),
-            ("feature_values_hash", member.feature_values_hash),
+
+        # the manifest must agree with the stored row and the plan graph on every bound field...
+        for actual, stored in (
+            (manifest.plan_hash, plan.plan_hash),
+            (manifest.job_id, res.job_id),
+            (manifest.job_key, res.job_key),
+            (manifest.config_hash, res.config_hash),
+            (manifest.parameter_space_hash, res.parameter_space_hash),
+            (manifest.input_identity_hash, res.input_identity_hash),
+            (manifest.logical_argv_hash, res.logical_argv_hash),
+            (manifest.gatk_executable_sha256, res.gatk_executable_sha256),
+            (manifest.gatk_version, res.gatk_version),
+            (manifest.vcf_sha256, res.vcf_sha256),
+            (manifest.result_hash, res.result_hash),
+            (manifest.dataset_id, member.dataset_id),
+            (manifest.profile_id, member.profile_id),
+            (manifest.content_hash, member.content_hash),
+            (manifest.feature_values_hash, member.feature_values_hash),
         ):
-            if _norm(doc.get(key)) != _norm(stored):
+            if _norm(actual) != _norm(stored):
                 return False
-        # ...and the frozen result_hash must RECOMPUTE from those scientific fields.
-        recomputed = sha256_hex(
-            RESULT_HASH_DOMAIN.encode("utf-8")
-            + canonical_json_bytes(
-                {
-                    "schema_version": EXECUTION_RESULT_SCHEMA,
-                    "plan_hash": plan.plan_hash,
-                    "job_key": res.job_key,
-                    "dataset_id": doc["dataset_id"],
-                    "profile_id": doc["profile_id"],
-                    "content_hash": doc["content_hash"],
-                    "feature_values_hash": doc["feature_values_hash"],
-                    "config_hash": res.config_hash,
-                    "parameter_space_hash": res.parameter_space_hash,
-                    "bam_sha256": doc.get("bam_sha256"),
-                    "bai_sha256": doc.get("bai_sha256"),
-                    "reference_sha256": doc.get("reference_sha256"),
-                    "fai_sha256": doc.get("fai_sha256"),
-                    "region_hash": doc.get("region_hash"),
-                    "region_start0": doc.get("region_start0"),
-                    "region_end0_exclusive": doc.get("region_end0_exclusive"),
-                    "chromosome": doc.get("chromosome"),
-                    "logical_argv_hash": res.logical_argv_hash,
-                    "gatk_executable_sha256": res.gatk_executable_sha256,
-                    "gatk_version": res.gatk_version,
-                    "vcf_sha256": res.vcf_sha256,
-                    "vcf_size_bytes": doc.get("vcf_size_bytes"),
-                }
+        if res.vcf_size_bytes is None or manifest.vcf_size_bytes != int(res.vcf_size_bytes):
+            return False
+
+        # --- RECOMPUTE the input identity from a strict reconstructed ExecutionInput ----------
+        try:
+            inputs = execution_input_from_manifest(manifest)
+        except Exception:
+            return False
+        recomputed_input = compute_input_identity_hash(inputs)
+        if _norm(recomputed_input) != _norm(manifest.input_identity_hash):
+            return False
+        if _norm(recomputed_input) != _norm(res.input_identity_hash):
+            return False
+
+        # --- RECOMPUTE the logical argv from the bound CONFIG artifact ------------------------
+        if res.effective_config is None:
+            return False
+        try:
+            invocation = build_logical_invocation(
+                effective_config=dict(res.effective_config),
+                inputs=inputs,
+                gatk_executable_sha256=manifest.gatk_executable_sha256,
+                gatk_version=manifest.gatk_version,
             )
-        )
+        except Exception:
+            return False
+        if _norm(invocation.argv_hash()) != _norm(res.logical_argv_hash):
+            return False
+
+        # --- RECOMPUTE the frozen result_hash through the frozen contract function ------------
+        try:
+            recomputed = compute_result_hash(
+                plan_hash=plan.plan_hash,
+                job_key=res.job_key,
+                inputs=inputs,
+                config=_ExecCfg(
+                    config_hash=res.config_hash,
+                    parameter_space_hash=res.parameter_space_hash,
+                    config_index=config.config_index,
+                    effective_config=dict(res.effective_config),
+                ),
+                invocation=invocation,
+                outcome=GatkExecutionOutcome(
+                    exit_code=0,
+                    runtime_ms=manifest.runtime_ms,
+                    vcf_sha256=manifest.vcf_sha256,
+                    vcf_size_bytes=manifest.vcf_size_bytes,
+                ),
+            )
+        except Exception:
+            return False
         if recomputed != res.result_hash:
             return False
     return True
@@ -1145,10 +1224,14 @@ def _read_execution_results(conn: Connection, plan_id: str) -> tuple[PersistedEx
                 "       r.gatk_executable_sha256, r.gatk_version, r.result_hash, r.vcf_sha256, "
                 "       r.vcf_media_type, r.result_manifest_sha256, r.result_manifest_media_type, "
                 "       v.uri AS vcf_uri, v.size_bytes AS vcf_size, "
-                "       m.uri AS manifest_uri, m.size_bytes AS manifest_size "
+                "       m.uri AS manifest_uri, m.size_bytes AS manifest_size, "
+                "       ca.uri AS config_uri "
                 "  FROM experiments.l2f_execution_results r "
                 "  JOIN catalog.artifacts v ON v.id = r.vcf_artifact_id "
                 "  JOIN catalog.artifacts m ON m.id = r.result_manifest_artifact_id "
+                "  JOIN experiments.l2f_experiment_plan_configs pc ON pc.id = r.plan_config_id "
+                "  JOIN experiments.l2f_config_payloads cp ON cp.id = pc.config_payload_id "
+                "  JOIN catalog.artifacts ca ON ca.id = cp.artifact_id "
                 " WHERE r.plan_id = :p ORDER BY r.job_key"
             ),
             {"p": plan_id},
@@ -1160,11 +1243,21 @@ def _read_execution_results(conn: Connection, plan_id: str) -> tuple[PersistedEx
     for r in rows:
         vcf_sha, vcf_size = _digest_file(str(r["vcf_uri"]))
         man_sha, man_size = _digest_file(str(r["manifest_uri"]))
+        manifest_bytes: bytes | None = None
         document: Mapping[str, Any] | None = None
         try:
-            document = json.loads(_file_path_from_uri(str(r["manifest_uri"])).read_bytes())
+            manifest_bytes = _file_path_from_uri(str(r["manifest_uri"])).read_bytes()
+            document = json.loads(manifest_bytes)
         except (OSError, ValueError, MinosEngineError):
+            manifest_bytes = manifest_bytes if isinstance(manifest_bytes, bytes) else None
             document = None
+        effective: Mapping[str, Any] | None = None
+        try:
+            # the CONFIG artifact bytes ARE the canonical effective config object itself.
+            payload = json.loads(_file_path_from_uri(str(r["config_uri"])).read_bytes())
+            effective = payload if isinstance(payload, dict) else None
+        except (OSError, ValueError, MinosEngineError):
+            effective = None
         out.append(
             PersistedExecutionResult(
                 job_id=str(r["job_id"]),
@@ -1191,6 +1284,8 @@ def _read_execution_results(conn: Connection, plan_id: str) -> tuple[PersistedEx
                 manifest_file_sha256=man_sha,
                 manifest_file_size=man_size,
                 manifest_document=document,
+                manifest_bytes=manifest_bytes,
+                effective_config=effective,
             )
         )
     return tuple(out)

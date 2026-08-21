@@ -20,12 +20,14 @@ deliberately does not pretend to have one.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import re
 import signal
 import stat
 import subprocess  # noqa: S404 - shell=False, fixed argv, pinned executable (see module docstring)
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,6 +61,8 @@ __all__ = [
     "render_execution_argv",
     "region_token",
     "validate_vcf_bytes",
+    "VCF_FIXED_COLUMNS",
+    "VCF_SINGLE_SAMPLE_COLUMN_COUNT",
     "work_root_from_env",
 ]
 
@@ -72,6 +76,8 @@ ENV_WORK_ROOT = "MINOS_L2F_WORK_ROOT"
 MAX_CAPTURED_STREAM_BYTES = 1024 * 1024
 _CHUNK = 1024 * 1024
 _DEFAULT_TIMEOUT_SECONDS = 3600
+#: bounded wait for each drain thread to observe EOF after the child has exited or been killed.
+_DRAIN_JOIN_SECONDS = 30
 
 #: the ONLY environment variables a GATK child process inherits.
 _ENV_ALLOWLIST = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "JAVA_HOME", "TZ")
@@ -167,14 +173,101 @@ def _stream_sha256(path: Path) -> tuple[str, int]:
     return digest.hexdigest(), size
 
 
+#: the exact single-sample VCF column layout: 8 fixed + FORMAT + exactly one sample column.
+VCF_FIXED_COLUMNS: tuple[str, ...] = (
+    "#CHROM",
+    "POS",
+    "ID",
+    "REF",
+    "ALT",
+    "QUAL",
+    "FILTER",
+    "INFO",
+    "FORMAT",
+)
+VCF_SINGLE_SAMPLE_COLUMN_COUNT = len(VCF_FIXED_COLUMNS) + 1
+
+
+def _validate_vcf_structure(vcf_path: Path, inputs: ExecutionInput) -> None:
+    """Validate the produced VCF's structure and every record, strictly from its bytes.
+
+    Requires exactly one ``#CHROM`` header laying out a SINGLE-SAMPLE VCF, and requires every
+    data record to carry that same column count, an integer ``POS``, the accepted chromosome and
+    a position inside the accepted half-open interval ``[region_start0, region_end0_exclusive)``
+    (1-based ``POS`` in ``[region_start0 + 1, region_end0_exclusive]``).
+    """
+    chrom_headers = 0
+    columns: int | None = None
+    low = inputs.region_start0 + 1
+    high = inputs.region_end0_exclusive
+    with vcf_path.open("rb") as fh:
+        for index, raw in enumerate(fh):
+            line = raw.rstrip(b"\r\n")
+            if index == 0:
+                if not _VCF_FILEFORMAT.match(line):
+                    raise GatkOutputError(
+                        f"produced VCF {vcf_path} does not begin with a ##fileformat=VCFv4.x header"
+                    )
+                continue
+            if line.startswith(b"#CHROM"):
+                chrom_headers += 1
+                fields = line.split(b"\t")
+                header = tuple(f.decode("utf-8", errors="replace") for f in fields)
+                if header[: len(VCF_FIXED_COLUMNS)] != VCF_FIXED_COLUMNS:
+                    raise GatkOutputError(
+                        f"produced VCF {vcf_path} has a malformed #CHROM header layout"
+                    )
+                if len(header) != VCF_SINGLE_SAMPLE_COLUMN_COUNT:
+                    raise GatkOutputError(
+                        f"produced VCF {vcf_path} is not single-sample: the #CHROM header declares "
+                        f"{len(header)} columns, expected {VCF_SINGLE_SAMPLE_COLUMN_COUNT}"
+                    )
+                columns = len(header)
+                continue
+            if line.startswith(b"#"):
+                continue
+            if columns is None:
+                raise GatkOutputError(
+                    f"produced VCF {vcf_path} contains a record before its #CHROM header"
+                )
+            fields = line.split(b"\t")
+            if len(fields) != columns:
+                raise GatkOutputError(
+                    f"produced VCF {vcf_path} record has {len(fields)} columns, expected {columns}"
+                )
+            chrom = fields[0].decode("utf-8", errors="replace")
+            if chrom != inputs.chromosome:
+                raise GatkOutputError(
+                    f"produced VCF {vcf_path} contains record chromosome {chrom!r}, expected "
+                    f"{inputs.chromosome!r}"
+                )
+            raw_pos = fields[1].decode("utf-8", errors="replace")
+            try:
+                pos = int(raw_pos)
+            except ValueError as exc:
+                raise GatkOutputError(
+                    f"produced VCF {vcf_path} record POS {raw_pos!r} is not an integer"
+                ) from exc
+            if not (low <= pos <= high):
+                raise GatkOutputError(
+                    f"produced VCF {vcf_path} record POS {pos} is outside the accepted interval "
+                    f"[{low}, {high}]"
+                )
+    if chrom_headers != 1:
+        raise GatkOutputError(
+            f"produced VCF {vcf_path} must contain exactly one #CHROM header, found {chrom_headers}"
+        )
+
+
 def validate_vcf_bytes(
     vcf_path: Path, *, work_dir: Path, inputs: ExecutionInput
 ) -> tuple[str, int]:
     """Validate the produced VCF directly from its BYTES and return ``(sha256, size)``.
 
-    Never trusts a runner-supplied hash: regular non-symlink file inside the job work directory,
-    nonempty, a valid ``##fileformat=VCFv4.x`` first line, exactly one ``#CHROM`` header line, and
-    a chromosome compatible with the accepted region.
+    Never trusts a runner-supplied hash. Requires a regular, non-symlink file inside the job work
+    directory, nonempty, a valid ``##fileformat=VCFv4.x`` first line, exactly one single-sample
+    ``#CHROM`` header, and records that are well-formed, on the accepted chromosome and inside the
+    accepted interval. A region with no variant records is legitimate.
     """
     if vcf_path.is_symlink():
         raise GatkOutputError(f"produced VCF {vcf_path} is a symlink")
@@ -188,37 +281,7 @@ def validate_vcf_bytes(
     sha, size = _stream_sha256(vcf_path)
     if size == 0:
         raise GatkOutputError(f"produced VCF {vcf_path} is empty")
-
-    chrom_headers = 0
-    first_line_ok = False
-    saw_accepted_chrom = False
-    with vcf_path.open("rb") as fh:
-        for index, raw in enumerate(fh):
-            line = raw.rstrip(b"\r\n")
-            if index == 0:
-                first_line_ok = bool(_VCF_FILEFORMAT.match(line))
-                if not first_line_ok:
-                    raise GatkOutputError(
-                        f"produced VCF {vcf_path} does not begin with a ##fileformat=VCFv4.x header"
-                    )
-                continue
-            if line.startswith(b"#CHROM"):
-                chrom_headers += 1
-                continue
-            if line.startswith(b"#"):
-                continue
-            chrom = line.split(b"\t", 1)[0].decode("utf-8", errors="replace")
-            if chrom != inputs.chromosome:
-                raise GatkOutputError(
-                    f"produced VCF {vcf_path} contains record chromosome {chrom!r}, expected "
-                    f"{inputs.chromosome!r}"
-                )
-            saw_accepted_chrom = True
-    if chrom_headers != 1:
-        raise GatkOutputError(
-            f"produced VCF {vcf_path} must contain exactly one #CHROM header, found {chrom_headers}"
-        )
-    del saw_accepted_chrom  # a variant-free region is legitimate; only wrong chromosomes fail
+    _validate_vcf_structure(vcf_path, inputs)
     return sha, size
 
 
@@ -289,6 +352,49 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+class _BoundedDrain(threading.Thread):
+    """Continuously drain one child pipe in CONSTANT memory, storing at most ``limit`` bytes.
+
+    Reading never stops before EOF (so the child can never block on a full pipe), but everything
+    past ``limit`` is discarded instead of buffered or written. ``digest`` is the SHA-256 of the
+    bytes actually captured on disk, so it always matches the retained file exactly.
+    """
+
+    def __init__(self, pipe: Any, path: Path, limit: int) -> None:
+        super().__init__(daemon=True)
+        self._pipe = pipe
+        self._path = path
+        self._limit = limit
+        self.captured_bytes = 0
+        self.total_bytes = 0
+        self.truncated = False
+        self.digest: str | None = None
+
+    def run(self) -> None:  # pragma: no cover - exercised through SubprocessGatkRunner.run
+        hasher = hashlib.sha256()
+        try:
+            with self._path.open("wb") as sink:
+                while True:
+                    chunk = self._pipe.read(_CHUNK)
+                    if not chunk:
+                        break
+                    self.total_bytes += len(chunk)
+                    room = self._limit - self.captured_bytes
+                    if room > 0:
+                        keep = chunk[:room]
+                        sink.write(keep)
+                        hasher.update(keep)
+                        self.captured_bytes += len(keep)
+                    if len(chunk) > max(room, 0):
+                        self.truncated = True
+        except (OSError, ValueError):
+            self.truncated = True
+        finally:
+            with contextlib.suppress(Exception):
+                self._pipe.close()
+            self.digest = hasher.hexdigest()
+
+
 @dataclass(frozen=True)
 class SubprocessGatkRunner:
     """Production runner: pinned absolute executable, ``shell=False``, bounded streams, timeout."""
@@ -297,6 +403,8 @@ class SubprocessGatkRunner:
     expected_sha256: str
     expected_version: str
     timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS
+    #: hard cap on bytes retained per captured stream (enforced DURING the run, not afterwards).
+    max_captured_stream_bytes: int = MAX_CAPTURED_STREAM_BYTES
 
     @staticmethod
     def from_env() -> SubprocessGatkRunner:
@@ -343,32 +451,44 @@ class SubprocessGatkRunner:
         env = {k: os.environ[k] for k in _ENV_ALLOWLIST if k in os.environ}
         stdout_path = work_dir / "gatk.stdout"
         stderr_path = work_dir / "gatk.stderr"
+        limit = self.max_captured_stream_bytes
         started = time.monotonic()
-        with (
-            stdout_path.open("wb") as out,
-            stderr_path.open("wb") as err,
-            open(os.devnull, "rb") as devnull,
-        ):
+        with open(os.devnull, "rb") as devnull:
             proc = subprocess.Popen(  # noqa: S603 - fixed argv, shell=False, pinned executable
                 [str(self.executable), *argv],
                 cwd=str(work_dir),
                 env=env,
                 stdin=devnull,
-                stdout=out,
-                stderr=err,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 shell=False,
                 start_new_session=True,  # its own process group, so a timeout kills all children
             )
+            # Drain BOTH pipes continuously in constant memory while the process runs: at most
+            # ``limit`` bytes ever reach disk and at most one chunk is ever held in memory, so a
+            # process that emits gigabytes cannot exhaust memory OR disk, and cannot deadlock on
+            # a full pipe either. Truncating after exit would bound neither.
+            assert proc.stdout is not None and proc.stderr is not None  # noqa: S101 - PIPE above
+            drains = [
+                _BoundedDrain(proc.stdout, stdout_path, limit),
+                _BoundedDrain(proc.stderr, stderr_path, limit),
+            ]
+            for drain in drains:
+                drain.start()
             try:
                 exit_code = proc.wait(timeout=self.timeout_seconds)
             except subprocess.TimeoutExpired as exc:
                 self._terminate_group(proc)
+                for drain in drains:
+                    drain.join(_DRAIN_JOIN_SECONDS)
                 raise GatkTimeoutError(
                     f"GATK exceeded {self.timeout_seconds}s and its process group was terminated"
                 ) from exc
+            finally:
+                for drain in drains:
+                    drain.join(_DRAIN_JOIN_SECONDS)
         runtime_ms = int((time.monotonic() - started) * 1000)
-        self._truncate(stdout_path)
-        stderr_sha = self._truncate(stderr_path)
+        stderr_sha = drains[1].digest
         if exit_code != 0:
             raise GatkExecutionError(f"GATK exited with code {exit_code}")
         if not vcf_path.exists():
@@ -395,17 +515,6 @@ class SubprocessGatkRunner:
                 return
             except subprocess.TimeoutExpired:  # pragma: no cover - escalate to SIGKILL
                 continue
-
-    @staticmethod
-    def _truncate(path: Path) -> str | None:
-        """Bound a captured stream on disk and return its digest (never its bytes)."""
-        if not path.exists():
-            return None
-        size = path.stat().st_size
-        if size > MAX_CAPTURED_STREAM_BYTES:
-            with path.open("rb+") as fh:
-                fh.truncate(MAX_CAPTURED_STREAM_BYTES)
-        return _sha256_file(path)
 
 
 def work_root_from_env() -> Path:

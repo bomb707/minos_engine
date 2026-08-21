@@ -22,6 +22,8 @@ __all__ = [
     "L2F_VCF_MEDIA_TYPE",
     "L2F_RESULT_MANIFEST_MEDIA_TYPE",
     "L2F_EXECUTION_FUNCTIONS",
+    "L2F_JOB_IDENTITY_UNIQUE_TARGETS",
+    "L2F_RESULT_JOB_IDENTITY_FKS",
     "L2F_EXECUTION_SQLSTATES",
     "ACCEPTED_PRIOR_MIGRATION_SHAS",
     "compute_execution_migration_sha256",
@@ -58,6 +60,22 @@ L2F_EXECUTION_FUNCTIONS: tuple[str, ...] = (
         "text, text, text, uuid, text, uuid, text, text, bigint)"
     ),
     "experiments.minos_l2f_fail_job(text, uuid, text, text, integer, text)",
+)
+
+#: the additive composite-UNIQUE targets 0008 adds to ``experiments.l2f_experiment_jobs`` so a
+#: success result can FK the EXACT job identity (job + plan + job_key + member + config).
+L2F_JOB_IDENTITY_UNIQUE_TARGETS: tuple[str, ...] = (
+    "uq_l2f_jobs_id_plan",
+    "uq_l2f_jobs_id_job_key",
+    "uq_l2f_jobs_id_member_config",
+)
+
+#: the named foreign keys binding one success result to that exact job identity. A result naming
+#: another member or config - even one of the SAME plan - fails through the third of these.
+L2F_RESULT_JOB_IDENTITY_FKS: tuple[str, ...] = (
+    "fk_l2f_exec_results_job_plan",
+    "fk_l2f_exec_results_job_key",
+    "fk_l2f_exec_results_job_member_config",
 )
 
 #: stable SQLSTATEs raised by the 0008 functions/triggers.
@@ -102,6 +120,8 @@ def compute_execution_contract_hash() -> str:
         "vcf_media_type": L2F_VCF_MEDIA_TYPE,
         "result_manifest_media_type": L2F_RESULT_MANIFEST_MEDIA_TYPE,
         "functions": list(L2F_EXECUTION_FUNCTIONS),
+        "job_identity_unique_targets": list(L2F_JOB_IDENTITY_UNIQUE_TARGETS),
+        "result_job_identity_fks": list(L2F_RESULT_JOB_IDENTITY_FKS),
         "sqlstates": L2F_EXECUTION_SQLSTATES,
         "prior_migration_shas": ACCEPTED_PRIOR_MIGRATION_SHAS,
     }

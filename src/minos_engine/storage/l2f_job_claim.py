@@ -291,17 +291,22 @@ def _transition_in_transaction(
 
 
 def _run_in_new_transaction[T](
-    engine: Engine, *, verify_identity: bool, action: Callable[[Connection], T]
+    engine: Engine,
+    *,
+    verify_identity: bool,
+    action: Callable[[Connection], T],
+    revision_check: Callable[[Connection], None] | None = None,
 ) -> T:
     conn = engine.connect()
     trans = conn.begin()
     committed = False
     try:
         if verify_identity:
-            # identity + revision are the FIRST accesses on this exact connection, before the
-            # accepted plan is constructed and before any stage query.
+            # identity + revision are the FIRST accesses on THIS EXACT connection, before the
+            # accepted plan is constructed and before any stage query. A successful check on some
+            # other connection never authorizes this one.
             verify_operational_database_identity(conn)
-            _require_f4_revision(conn)
+            (revision_check or _require_f4_revision)(conn)
         result = action(conn)
         _commit_or_ambiguous(trans)
         committed = True
@@ -382,35 +387,58 @@ def release_accepted_job(*, job_id: UUID, worker_id: str) -> JobStateResult:
 # PRIVATE explicit-trust boundaries (scratch / non-75 tests ONLY; never exported)
 # --------------------------------------------------------------------------- #
 def _claim_next_job_with_trust(
-    engine: Engine, plan: ExperimentPlan, *, worker_id: str
+    engine: Engine,
+    plan: ExperimentPlan,
+    *,
+    worker_id: str,
+    require_operational_identity: bool = False,
+    revision_check: Callable[[Connection], None] | None = None,
 ) -> ClaimedJob | None:
+    """Scratch/non-75 claim boundary. ``require_operational_identity=True`` makes THIS connection
+    verify the canonical operational identity + revision before its first query (the accepted F5
+    production path passes True; explicit-trust tests pass False)."""
     validate_worker_id(worker_id)
     return _run_in_new_transaction(
         engine,
-        verify_identity=False,
+        verify_identity=require_operational_identity,
+        revision_check=revision_check,
         action=lambda conn: _claim_in_transaction(conn, plan, worker_id),
     )
 
 
 def _start_job_with_trust(
-    engine: Engine, plan: ExperimentPlan, *, job_id: UUID, worker_id: str
+    engine: Engine,
+    plan: ExperimentPlan,
+    *,
+    job_id: UUID,
+    worker_id: str,
+    require_operational_identity: bool = False,
+    revision_check: Callable[[Connection], None] | None = None,
 ) -> JobStateResult:
     validate_worker_id(worker_id)
     jid = _coerce_job_id(job_id)
     return _run_in_new_transaction(
         engine,
-        verify_identity=False,
+        verify_identity=require_operational_identity,
+        revision_check=revision_check,
         action=lambda conn: _transition_in_transaction(conn, _START_FN, plan, jid, worker_id),
     )
 
 
 def _release_job_with_trust(
-    engine: Engine, plan: ExperimentPlan, *, job_id: UUID, worker_id: str
+    engine: Engine,
+    plan: ExperimentPlan,
+    *,
+    job_id: UUID,
+    worker_id: str,
+    require_operational_identity: bool = False,
+    revision_check: Callable[[Connection], None] | None = None,
 ) -> JobStateResult:
     validate_worker_id(worker_id)
     jid = _coerce_job_id(job_id)
     return _run_in_new_transaction(
         engine,
-        verify_identity=False,
+        verify_identity=require_operational_identity,
+        revision_check=revision_check,
         action=lambda conn: _transition_in_transaction(conn, _RELEASE_FN, plan, jid, worker_id),
     )

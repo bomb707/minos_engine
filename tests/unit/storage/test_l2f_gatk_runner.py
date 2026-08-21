@@ -241,7 +241,9 @@ def test_wrong_chromosome_record_is_rejected(tmp_path: Path) -> None:
 def test_variant_free_region_is_accepted(tmp_path: Path) -> None:
     """A header-only VCF is legitimate: a region may contain no variants."""
     work = _work(tmp_path)
-    payload = b"##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+    payload = (
+        b"##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE\n"
+    )
     outcome = FakeGatkRunner(override_bytes=payload).run(
         argv=(), work_dir=work, vcf_path=work / "o.vcf", inputs=_inputs()
     )
