@@ -1,5 +1,5 @@
 {
-  "contract_sha256": "77524945015b2f12894b91e16064e52d106b1e870619f37145fbe6339358d4fe",
+  "contract_sha256": "cb08322bdb9a8011327398bb235215ebbf230151b3661eaf7af4eb9a56d4ef71",
   "counts": {
     "d2_tables_created": 37,
     "logical_tables": 38,
@@ -470,7 +470,126 @@
       "summary": "D1 described V2 shadow tables coexisting with untouched V1 tables, but the logical target reuses schema-qualified names that V1 already occupies. Creating them side by side in one database is impossible."
     }
   },
+  "qualification_period_semantics": {
+    "canonical_schemas_mean": "V2. During qualification, catalog/profiling/experiments/evaluation/models/runtime/audit resolve to the migrated V2 objects.",
+    "dbv2_names_after_forward_cutover": "absent. The dbv2_* schemas were renamed to canonical, so those names no longer exist.",
+    "dbv2_names_after_rollback": "present again, recreated by renaming the canonical V2 schemas back to dbv2_*.",
+    "deletions_of_v2": "none. No V2 object is deleted during the qualification period.",
+    "duration": "14 days (see the migration plan)",
+    "v1_retired_holds": "the rollback source - the untouched V1 objects under v1_retired_* names",
+    "writes_to_retired_v1": "none. No retired V1 object is written during qualification."
+  },
+  "recovery_set_protocol": {
+    "ordering_invariants": [
+      "R1 strictly precedes revision 0009.",
+      "R2 strictly follows revision 0009 and strictly precedes any data transformation.",
+      "No recovery row is ever written to a V1 relation.",
+      "No transformation or cutover may begin while completeness != 'complete'."
+    ],
+    "phases": [
+      {
+        "artifact_path": "reports/database/recovery/R1_RECOVERY_MANIFEST.json",
+        "bound_fields": [
+          "database_identity",
+          "source_alembic_revision",
+          "database_backup_kind",
+          "database_backup_sha256",
+          "database_size_bytes",
+          "wal_start_lsn",
+          "wal_end_lsn",
+          "artifact_count",
+          "artifact_total_bytes",
+          "artifact_snapshot_sha256",
+          "created_at",
+          "tool_versions"
+        ],
+        "completeness_rule": "A database dump WITHOUT the matching artifact snapshot is incomplete and may not be used to authorize a migration.",
+        "immutable": true,
+        "name": "external recovery manifest",
+        "occurs_after_revision": null,
+        "occurs_before_revision": "0009_dbv2_shadow_schema",
+        "phase": "R1",
+        "rationale": "dbv2_catalog.backup_sets does not exist yet, and V1 has no catalog.backup_sets at all. The manifest is a FILE, not a database row, and must not be described as one.",
+        "storage": "external file, outside PostgreSQL",
+        "verification": [
+          "the database backup is restorable into a scratch cluster",
+          "every artifact payload digests to its recorded content_sha256",
+          "artifact_count and artifact_total_bytes match the enumerated snapshot"
+        ]
+      },
+      {
+        "forbidden_target": "catalog.backup_sets",
+        "forbidden_target_reason": "V1 has no catalog.backup_sets relation; writing there is impossible, and the canonical name belongs to V2 only after cutover.",
+        "name": "register the R1 manifest in the shadow schema",
+        "occurs_after_revision": "0009_dbv2_shadow_schema",
+        "occurs_before_step": "deterministic data transformation",
+        "phase": "R2",
+        "retention_of_external_manifest": "The R1 file is kept for the life of the backup set it describes, under reports/database/recovery/. Downgrading 0009 destroys the database row but not the file, which is exactly why the file is the authoritative pre-migration record.",
+        "rules": [
+          "Insert exactly the R1 manifest's scientific fields; invent nothing.",
+          "Re-read the inserted row and require field-for-field equality with the verified R1 manifest file.",
+          "Require completeness = 'complete' before any transformation or cutover.",
+          "The R1 file is retained unchanged as recovery evidence after registration; it is the only recovery record that survives a rollback of 0009."
+        ],
+        "storage": "dbv2_catalog.backup_sets"
+      }
+    ],
+    "summary": "A recovery set must exist BEFORE any migration, but the table that records it (dbv2_catalog.backup_sets) is created BY that migration. D1 required a catalog.backup_sets row at step 1, which is unexecutable: no such relation exists in V1 and the V2 one does not exist yet. The protocol is therefore two-phase."
+  },
   "report": "MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT",
+  "retirement": {
+    "authorized_in": "a later stage, only after qualification passes; never in D1.2 or D2",
+    "eligible_targets": {
+      "archived_source_objects": [
+        "v1_retired_profiling.profile_ingest_attempts (archived copy)"
+      ],
+      "tables": [
+        "v1_retired_profiling.profiles",
+        "v1_retired_experiments.jobs",
+        "v1_retired_experiments.results",
+        "v1_retired_catalog.datasets",
+        "v1_retired_catalog.gatk_configs"
+      ],
+      "views": [
+        "v1_retired_catalog.training_dataset_allocations",
+        "v1_retired_catalog.training_epoch_allocations",
+        "v1_retired_evaluation.locked_allocations",
+        "v1_retired_evaluation.sealed_test_epoch_allocations",
+        "v1_retired_evaluation.sealed_test_profile_members",
+        "v1_retired_evaluation.validation_epoch_allocations",
+        "v1_retired_evaluation.validation_matrix",
+        "v1_retired_evaluation.validation_profile_members",
+        "v1_retired_profiling.training_matrix",
+        "v1_retired_profiling.training_profile_members"
+      ]
+    },
+    "forbidden_targets_prefixes": [
+      "catalog",
+      "profiling",
+      "experiments",
+      "evaluation",
+      "models",
+      "runtime",
+      "audit"
+    ],
+    "must_survive_retirement": [
+      "catalog.*",
+      "profiling.*",
+      "experiments.*",
+      "evaluation.*",
+      "models.*",
+      "runtime.*",
+      "audit.*"
+    ],
+    "namespace_rule": "Retirement may affect ONLY the v1_retired_* namespace. No canonical schema or table is ever a retirement target, because after cutover the canonical names are the live V2 system.",
+    "per_object_checks_before_removal": [
+      "no remaining foreign key, view, function or trigger depends on the object",
+      "row count matches the value recorded at cutover, or is zero where zero was expected",
+      "every identity the object carried is provably present in its V2 successor",
+      "the object has not been written since cutover"
+    ],
+    "schema_drop_rule": "Prefer dropping a complete v1_retired_* schema, and only after every object it contains has individually passed its retirement check."
+  },
   "revision_path": {
     "authorized_in_d1_1": false,
     "development_lifecycle_note": "Scratch PostgreSQL only: up, down, up again, proving 0009 is reversible without touching any operational store.",
@@ -498,6 +617,61 @@
     "planned_d2_revision": "0009_dbv2_shadow_schema",
     "source_revision": "0005_l2e_feature_view"
   },
+  "rollback_boundaries": [
+    {
+      "applicable_actions": [
+        "restore_from_r1"
+      ],
+      "boundary": "B1",
+      "db_state": "operational database at 0005..0008; no DB-V2 object exists",
+      "drops_v2": false,
+      "name": "before 0009",
+      "procedure": [
+        "Nothing DB-V2 needs undoing: no dbv2_* schema, table, function or grant exists.",
+        "If recovery is required for an unrelated reason, restore from the verified R1 recovery set (database backup AND artifact snapshot)."
+      ],
+      "touches_v1": false
+    },
+    {
+      "applicable_actions": [
+        "alembic_downgrade_0009_to_0008"
+      ],
+      "boundary": "B2",
+      "db_state": "dbv2_* shadow schema exists; canonical schemas are still V1",
+      "drops_v2": true,
+      "drops_v2_note": "Dropping the shadow schema is correct HERE and only here: the canonical names still belong to V1, so nothing live is lost.",
+      "name": "after 0009, before cutover",
+      "procedure": [
+        "alembic downgrade 0009 -> 0008.",
+        "The downgrade removes ONLY dbv2_* objects.",
+        "It must not alter, rename, delete or write any V1 object.",
+        "public.alembic_version changes only through Alembic's own bookkeeping."
+      ],
+      "touches_v1": false
+    },
+    {
+      "applicable_actions": [
+        "quiesce",
+        "rename_canonical_back_to_shadow",
+        "rename_retired_back_to_canonical",
+        "revalidate"
+      ],
+      "boundary": "B3",
+      "db_state": "canonical schemas are V2; v1_retired_* holds the rollback source",
+      "drops_v2": false,
+      "drops_v2_note": "The returned dbv2_* schema is NOT dropped inside the rollback transaction. It is the evidence of what was rolled back. Retiring V2 is a separately authorized cleanup, only after recovery is proven.",
+      "name": "after cutover, during qualification",
+      "procedure": [
+        "Quiesce writes and drain active transactions.",
+        "Rename each canonical V2 schema back to its dbv2_* name.",
+        "Rename each v1_retired_* schema back to its canonical name.",
+        "Re-create or revalidate functions, SET search_path clauses, textual regclass references, grants and application schema resolution.",
+        "Commit only if every rollback validation passes."
+      ],
+      "touches_v1": true,
+      "touches_v1_note": "V1 is renamed back to canonical - it is never altered, deleted or written."
+    }
+  ],
   "rollback_mapping": {
     "inverse_of_cutover": true,
     "note": "The rollback is the exact inverse permutation of the cutover: applying cutover then rollback returns every schema to its starting name.",
@@ -569,7 +743,7 @@
   },
   "schema_version": "minos-db-v2-physical-deployment-v1",
   "shared_table": "public.alembic_version",
-  "stage": "DB-V2 D1.1 (design only; migration 0009 does not exist)",
+  "stage": "DB-V2 D1.2 (design only; migration 0009 does not exist)",
   "v1_objects_d2_must_preserve": {
     "relation_count": 33,
     "relations": [
@@ -608,5 +782,22 @@
       "runtime.decisions"
     ],
     "rule": "D2 and D3 create only dbv2_* objects. They never rename, alter, delete or write any V1 object, and they never write to public.alembic_version except through Alembic's own revision bookkeeping."
-  }
+  },
+  "withdrawn_statements": [
+    {
+      "replaced_by": "rollback boundary B3 - the inverse schema rename.",
+      "statement": "post-cutover rollback is performed by pointing repositories at V1 and dropping the shadow tables",
+      "why_wrong": "After cutover the shadow tables ARE the live system under canonical names. Dropping them would delete the migrated database, and 'V1 repositories' no longer resolve to V1 because canonical names belong to V2."
+    },
+    {
+      "replaced_by": "the two-phase R1/R2 recovery-set protocol.",
+      "statement": "record a catalog.backup_sets row as migration step 1",
+      "why_wrong": "V1 has no catalog.backup_sets relation and the V2 one is created by the migration that step 1 precedes."
+    },
+    {
+      "replaced_by": "retirement targets in the v1_retired_* namespace only.",
+      "statement": "final retirement drops canonical objects such as catalog.datasets and profiling.profiles",
+      "why_wrong": "After cutover those canonical names are LIVE V2 tables. catalog.datasets is simultaneously a declared logical V2 table, so the instruction would drop the migrated system."
+    }
+  ]
 }

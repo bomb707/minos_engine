@@ -745,3 +745,279 @@ def test_the_validator_detects_a_missing_physical_report(tmp_path: Path) -> None
     (reports / "MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json").unlink()
     problems = audit.validate(reports)
     assert any("MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT" in p for p in problems), problems
+
+
+# --------------------------------------------------------------------------- #
+# DB-V2 D1.2 — recovery-set ordering, rollback boundaries, retirement targets
+# --------------------------------------------------------------------------- #
+def _phases() -> dict[str, Any]:
+    return {p["phase"]: p for p in _physical()["recovery_set_protocol"]["phases"]}
+
+
+def _boundaries() -> dict[str, Any]:
+    return {b["boundary"]: b for b in _physical()["rollback_boundaries"]}
+
+
+def test_r1_occurs_before_migration_0009() -> None:
+    """G1: the pre-migration record cannot live in a table the migration creates."""
+    r1 = _phases()["R1"]
+    assert r1["occurs_before_revision"] == "0009_dbv2_shadow_schema"
+    assert r1["occurs_after_revision"] is None
+    assert r1["storage"] == "external file, outside PostgreSQL"
+    assert r1["artifact_path"].endswith(".json")
+    assert r1["immutable"] is True
+    # it must NOT be described as a database row
+    assert "not a database row" in r1["rationale"].lower()
+
+
+def test_r1_binds_every_required_identity_field() -> None:
+    bound = set(_phases()["R1"]["bound_fields"])
+    for field in (
+        "database_identity",
+        "source_alembic_revision",
+        "database_backup_sha256",
+        "wal_start_lsn",
+        "wal_end_lsn",
+        "artifact_count",
+        "artifact_total_bytes",
+        "artifact_snapshot_sha256",
+        "created_at",
+        "tool_versions",
+    ):
+        assert field in bound, field
+    assert "incomplete" in _phases()["R1"]["completeness_rule"].lower()
+
+
+def test_r2_occurs_after_shadow_creation_and_before_transformation() -> None:
+    """G2."""
+    r2 = _phases()["R2"]
+    assert r2["occurs_after_revision"] == "0009_dbv2_shadow_schema"
+    assert "transformation" in r2["occurs_before_step"]
+    assert r2["storage"] == "dbv2_catalog.backup_sets"
+
+
+def test_r2_never_writes_the_v1_relation_that_does_not_exist() -> None:
+    r2 = _phases()["R2"]
+    assert r2["forbidden_target"] == "catalog.backup_sets"
+    inventory = audit.load_strict(REPORTS / "MINOS_DATABASE_V1_INVENTORY.json")
+    v1 = {f"{t['schema']}.{t['name']}" for t in inventory["live"]["tables"]}
+    assert "catalog.backup_sets" not in v1, "the defect: V1 has no such relation"
+
+
+def test_r2_requires_equality_and_completeness_before_transformation() -> None:
+    rules = " ".join(_phases()["R2"]["rules"]).lower()
+    assert "equality" in rules
+    assert "completeness = 'complete'" in rules
+    assert _phases()["R2"]["retention_of_external_manifest"]
+
+
+def test_the_external_manifest_survives_a_downgrade_of_0009() -> None:
+    """Why the file, not the row, is the authoritative pre-migration record."""
+    retention = _phases()["R2"]["retention_of_external_manifest"].lower()
+    assert "downgrading 0009" in retention
+    assert "not the file" in retention
+
+
+def test_every_rollback_boundary_has_exactly_one_applicable_procedure() -> None:
+    """G3."""
+    boundaries = _boundaries()
+    assert sorted(boundaries) == ["B1", "B2", "B3"]
+    for name, boundary in boundaries.items():
+        assert boundary["procedure"], name
+        assert boundary["applicable_actions"], name
+    # the boundaries are disjoint: no action set is shared between two boundaries
+    action_sets = [frozenset(b["applicable_actions"]) for b in boundaries.values()]
+    assert len(set(action_sets)) == 3
+
+
+def test_b2_removes_only_shadow_objects_and_never_touches_v1() -> None:
+    b2 = _boundaries()["B2"]
+    assert b2["touches_v1"] is False
+    assert b2["drops_v2"] is True
+    procedure = " ".join(b2["procedure"]).lower()
+    assert "only dbv2_" in procedure
+    assert "must not alter, rename, delete or write any v1 object" in procedure
+    assert "alembic" in procedure
+
+
+def test_post_cutover_rollback_never_drops_v2() -> None:
+    """G5: after cutover the V2 tables ARE the live system."""
+    b3 = _boundaries()["B3"]
+    assert b3["drops_v2"] is False
+    assert not any("drop" in action for action in b3["applicable_actions"])
+    assert "not dropped" in b3["drops_v2_note"].lower()
+    procedure = " ".join(b3["procedure"]).lower()
+    assert "quiesce" in procedure
+    assert "rename each canonical v2 schema back" in procedure
+    assert "rename each v1_retired_" in procedure
+
+
+def test_the_contradictory_rollback_statement_is_recorded_as_withdrawn() -> None:
+    """G8: the stale text is not merely deleted — it is recorded as wrong, with a reason."""
+    withdrawn = _physical()["withdrawn_statements"]
+    dropping = next(w for w in withdrawn if "dropping the shadow tables" in w["statement"])
+    assert "delete the migrated database" in dropping["why_wrong"].lower()
+    assert dropping["replaced_by"]
+    assert len(withdrawn) == 3
+
+
+def test_forward_cutover_followed_by_rollback_is_the_identity_permutation() -> None:
+    """G4: composing the two mappings returns every schema to its starting name."""
+    doc = _physical()
+    forward: dict[str, str] = {}
+    for step in doc["cutover_mapping"]["steps"]:
+        forward.update(step.get("mapping") or {})
+    backward: dict[str, str] = {}
+    for step in doc["rollback_mapping"]["steps"]:
+        backward.update(step.get("mapping") or {})
+    composed = {src: backward[dst] for src, dst in forward.items()}
+    assert composed == {src: src for src in forward}
+    assert set(forward) == set(CANONICAL_SCHEMAS) | {f"dbv2_{s}" for s in CANONICAL_SCHEMAS}
+
+
+def test_retirement_targets_only_the_retired_namespace() -> None:
+    """G6."""
+    eligible = _physical()["retirement"]["eligible_targets"]
+    targets = [*eligible["tables"], *eligible["views"], *eligible["archived_source_objects"]]
+    assert targets
+    for target in targets:
+        assert target.startswith("v1_retired_"), target
+
+
+def test_canonical_v2_objects_can_never_be_retirement_targets() -> None:
+    """G7: the machine check that stops the runbook destroying the migrated system."""
+    doc = _physical()
+    eligible = doc["retirement"]["eligible_targets"]
+    targets = [*eligible["tables"], *eligible["views"], *eligible["archived_source_objects"]]
+    logical = set(doc["logical_tables"])
+    for target in targets:
+        schema = target.split(".", 1)[0]
+        assert schema not in CANONICAL_SCHEMAS, target
+        assert target not in logical, target
+    for schema in CANONICAL_SCHEMAS:
+        assert f"{schema}.*" in doc["retirement"]["must_survive_retirement"]
+
+
+def test_the_exact_defect_catalog_datasets_is_both_a_v2_table_and_was_a_retirement_target() -> None:
+    """The sharpest instance of the D1 defect, now impossible."""
+    doc = _physical()
+    assert "catalog.datasets" in doc["logical_tables"], "it IS a live V2 table after cutover"
+    eligible = doc["retirement"]["eligible_targets"]
+    assert "catalog.datasets" not in eligible["tables"]
+    assert "v1_retired_catalog.datasets" in eligible["tables"]
+
+
+def test_the_named_retired_targets_are_all_present() -> None:
+    tables = _physical()["retirement"]["eligible_targets"]["tables"]
+    for expected in (
+        "v1_retired_profiling.profiles",
+        "v1_retired_experiments.jobs",
+        "v1_retired_experiments.results",
+        "v1_retired_catalog.datasets",
+        "v1_retired_catalog.gatk_configs",
+    ):
+        assert expected in tables, expected
+    views = _physical()["retirement"]["eligible_targets"]["views"]
+    assert len(views) == 10, "the ten V1 views"
+
+
+def test_retirement_requires_per_object_verification() -> None:
+    checks = " ".join(_physical()["retirement"]["per_object_checks_before_removal"]).lower()
+    assert "foreign key" in checks
+    assert "row count" in checks
+    assert "identity" in checks
+    assert "written since cutover" in checks
+    assert "individually passed" in _physical()["retirement"]["schema_drop_rule"].lower()
+
+
+def test_qualification_period_semantics_are_unambiguous() -> None:
+    """F: what each namespace means while V2 is on trial."""
+    semantics = _physical()["qualification_period_semantics"]
+    assert semantics["canonical_schemas_mean"].startswith("V2")
+    assert "rollback source" in semantics["v1_retired_holds"]
+    assert semantics["dbv2_names_after_forward_cutover"].startswith("absent")
+    assert semantics["dbv2_names_after_rollback"].startswith("present")
+    assert semantics["writes_to_retired_v1"].lower().startswith("none")
+    assert semantics["deletions_of_v2"].lower().startswith("none")
+
+
+def test_no_stale_contradictory_execution_text_remains() -> None:
+    """G8: the three withdrawn instructions are gone from the runbook."""
+    plan = (REPO_ROOT / "docs" / "database" / "MINOS_DATABASE_V2_MIGRATION_PLAN.md").read_text(
+        encoding="utf-8"
+    )
+    assert "Record a `catalog.backup_sets` row" not in plan
+    assert "drop the shadow tables" not in plan
+    # Every row of the eligible-targets table must name a v1_retired_* object. The surrounding
+    # prose may quote a canonical name while EXPLAINING the defect; an instruction may not.
+    import re
+
+    retirement = plan[plan.index("### 3.4 Final retirement") :]
+    rows = re.findall(r"^\| `([a-z0-9_.]+)` \|", retirement, re.M)
+    assert rows, "no eligible-target rows found"
+    for target in rows:
+        assert target.startswith("v1_retired_"), target
+    # and the surviving canonical namespaces are stated explicitly
+    assert "must **survive** retirement" in retirement
+    for schema in CANONICAL_SCHEMAS:
+        assert f"`{schema}.*`" in retirement, schema
+
+
+def test_the_physical_contract_hash_still_recomputes_after_d1_2() -> None:
+    """G10."""
+    doc = _physical()
+    assert doc[audit.CONTRACT_HASH_FIELD] == audit.contract_hash(doc)
+
+
+def test_the_validator_detects_a_canonical_retirement_target(tmp_path: Path) -> None:
+    """The guard must actually fire."""
+    reports = _copy_reports(tmp_path)
+
+    def _break(d: dict[str, Any]) -> None:
+        d["retirement"]["eligible_targets"]["tables"].append("catalog.datasets")
+        d[audit.CONTRACT_HASH_FIELD] = audit.contract_hash(d)
+
+    _rewrite(reports / "MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json", _break)
+    problems = audit.validate(reports)
+    assert any("canonical ACTIVE schema" in p for p in problems), problems
+
+
+def test_the_validator_detects_a_b3_that_drops_v2(tmp_path: Path) -> None:
+    reports = _copy_reports(tmp_path)
+
+    def _break(d: dict[str, Any]) -> None:
+        b3 = next(b for b in d["rollback_boundaries"] if b["boundary"] == "B3")
+        b3["drops_v2"] = True
+        b3["applicable_actions"].append("drop_shadow_schema")
+        d[audit.CONTRACT_HASH_FIELD] = audit.contract_hash(d)
+
+    _rewrite(reports / "MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json", _break)
+    problems = audit.validate(reports)
+    assert any("B3 must never drop" in p for p in problems), problems
+    assert any("must not contain a drop action" in p for p in problems), problems
+
+
+def test_the_validator_detects_r2_targeting_the_v1_relation(tmp_path: Path) -> None:
+    reports = _copy_reports(tmp_path)
+
+    def _break(d: dict[str, Any]) -> None:
+        r2 = next(p for p in d["recovery_set_protocol"]["phases"] if p["phase"] == "R2")
+        r2["storage"] = "catalog.backup_sets"
+        d[audit.CONTRACT_HASH_FIELD] = audit.contract_hash(d)
+
+    _rewrite(reports / "MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json", _break)
+    problems = audit.validate(reports)
+    assert any("dbv2_catalog.backup_sets" in p for p in problems), problems
+
+
+def test_the_validator_detects_r1_stored_in_the_database(tmp_path: Path) -> None:
+    reports = _copy_reports(tmp_path)
+
+    def _break(d: dict[str, Any]) -> None:
+        r1 = next(p for p in d["recovery_set_protocol"]["phases"] if p["phase"] == "R1")
+        r1["storage"] = "dbv2_catalog.backup_sets"
+        d[audit.CONTRACT_HASH_FIELD] = audit.contract_hash(d)
+
+    _rewrite(reports / "MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json", _break)
+    problems = audit.validate(reports)
+    assert any("outside the database" in p for p in problems), problems

@@ -50,6 +50,18 @@ disk. Bloat is checked weekly with `pgstattuple` on those tables only.
 
 ## 3. Backups and recovery
 
+### 3.0 Before and after the migration (D1.2)
+
+Until `0009` runs there is nowhere in the database to record a recovery set: V1 has no
+`catalog.backup_sets` and the V2 table does not exist yet. So the pre-migration record is an
+immutable **file**, `reports/database/recovery/R1_RECOVERY_MANIFEST.json` (phase **R1**), and it
+is registered into `dbv2_catalog.backup_sets` only after `0009` and before any transformation
+(phase **R2**), where it must re-read equal and carry `completeness = 'complete'`. The R1 file is
+retained afterwards: downgrading `0009` destroys the row but not the file.
+
+Once DB-V2 is live under canonical names, the ordinary schedule below applies to
+`catalog.backup_sets`.
+
 ### 3.1 A recovery set is two things
 
 | Component | What it is | Recorded in |
@@ -80,6 +92,8 @@ artifact restore + verification).
 A drill is only a pass if it exercises the whole set:
 
 1. Restore the database backup into a **scratch** cluster — never over `minos_engine_db`.
+   Before `0009`, the set being drilled is described by the R1 manifest file rather than a
+   database row.
 2. Restore the artifact snapshot to a scratch backend root.
 3. Register the scratch backend and repoint locations to it.
 4. Verify all artifact payloads against `catalog.artifacts`.

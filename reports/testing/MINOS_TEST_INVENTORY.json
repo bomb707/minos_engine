@@ -4300,9 +4300,10 @@
         "json",
         "pathlib",
         "pytest",
+        "re",
         "typing"
       ],
-      "line_count": 748,
+      "line_count": 1024,
       "path": "tests/unit/tools/test_dbv2_audit.py",
       "reason": "Retained specifically for DB-V2: guards the design-report validator and contract hash.",
       "recommended_tier": "manual_privileged",
@@ -4313,7 +4314,7 @@
       "requires_postgres": false,
       "requires_privileged": true,
       "source_modules_covered": [],
-      "test_count": 60
+      "test_count": 83
     },
     {
       "category": "unit",
@@ -4580,7 +4581,7 @@
     }
   ],
   "redundancy": {
-    "exact_duplicate_functions": 4,
+    "exact_duplicate_functions": 6,
     "exact_duplicate_groups": [
       {
         "body_digest": "267290e6d56a42bd",
@@ -4603,6 +4604,18 @@
         "members": [
           "tests/unit/experiments/test_accepted_plan.py::test_malformed_e4_report_fails_via_typed_error",
           "tests/unit/experiments/test_accepted_plan.py::test_noncanonical_or_wrong_schema_key_is_rejected"
+        ],
+        "occurrences": 2
+      },
+      {
+        "body_digest": "10ecbe19bada1307",
+        "distinct_names": [
+          "test_the_physical_contract_hash_recomputes",
+          "test_the_physical_contract_hash_still_recomputes_after_d1_2"
+        ],
+        "members": [
+          "tests/unit/tools/test_dbv2_audit.py::test_the_physical_contract_hash_recomputes",
+          "tests/unit/tools/test_dbv2_audit.py::test_the_physical_contract_hash_still_recomputes_after_d1_2"
         ],
         "occurrences": 2
       }
@@ -4639,7 +4652,7 @@
     },
     "manual_privileged": {
       "files": 4,
-      "tests": 114
+      "tests": 137
     },
     "retire_after_dbv2": {
       "files": 0,
@@ -4650,7 +4663,7 @@
     "conftest_files": 6,
     "fixtures": 25,
     "test_files": 173,
-    "test_functions": 1752,
-    "test_lines": 34669
+    "test_functions": 1775,
+    "test_lines": 34945
   }
 }

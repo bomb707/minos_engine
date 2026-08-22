@@ -144,38 +144,76 @@ in-place conversion, or an undocumented table-name suffix.
 
 ## 3. Execution sequence
 
-Ten steps. Each is separately reversible until step 8.
+Each step is separately reversible until step 8. The rollback that applies depends on **where you
+are**, which is why §3.1 enumerates three distinct boundaries rather than one procedure.
 
-**1. Complete backup.** `pg_dump -Fc` of `minos_engine_db` plus the WAL position. Record a
-`catalog.backup_sets` row.
+### 3.0 The recovery set is two-phase
 
-**2. Artifact snapshot.** Enumerate all 227 active artifacts, verify each payload's SHA-256, and
-record the snapshot digest, count and total bytes into the same `backup_sets` row.
-`completeness = 'complete'` requires both halves; a dump alone is `'database_only'` and is **not**
-a valid MINOS recovery set.
+D1 said "record a `catalog.backup_sets` row" as step 1. That is unexecutable: V1 has **no**
+`catalog.backup_sets` relation, and the V2 one is created by the very migration step 1 precedes.
+The recovery set is therefore captured in two phases.
 
-**3. Create the V2 shadow schema.** Forward migration `0009` creating the **37 shadow tables**
-in the `dbv2_*` namespace, with their constraints, indexes, functions and role grants.
+**R1 — before any operational migration.** Take the `pg_dump -Fc`, record the WAL position, and
+enumerate and verify the artifact snapshot. Write a strict, immutable **file** —
+`reports/database/recovery/R1_RECOVERY_MANIFEST.json` — binding database identity, source Alembic
+revision, backup digest, WAL start/end LSN, artifact count, artifact total bytes, aggregate
+artifact digest, creation time and tool versions. This is a file, **not** a database row, and must
+not be described as one. A dump without its matching artifact snapshot is **incomplete** and may
+not authorize a migration.
+
+**R2 — after `0009` creates the shadow schema, before any transformation.** Register the exact R1
+manifest into `dbv2_catalog.backup_sets`, re-read the row and require field-for-field equality
+with the verified R1 file, and require `completeness = 'complete'` before any transformation or
+cutover. The row is **never** written to `catalog.backup_sets`. The R1 file is retained unchanged
+as recovery evidence — it is the only recovery record that survives a downgrade of `0009`.
+
+### 3.1 The ten steps
+
+**1. R1 — complete backup.** `pg_dump -Fc` plus the WAL position. Verify it restores into a
+scratch cluster.
+
+**2. R1 — artifact snapshot.** Enumerate all active artifacts, verify each payload's SHA-256, and
+write the R1 manifest file with the snapshot digest, count and total bytes. `completeness` is
+`'complete'` only when both halves exist and verify; a dump alone is `'database_only'` and is
+**not** a valid MINOS recovery set.
+
+**3. Create the V2 shadow schema.** Forward migration `0009` creating the **37 shadow tables** in
+the `dbv2_*` namespace, with their constraints, indexes, functions and role grants.
 `public.alembic_version` is shared, not duplicated. **No V1 object is touched** — not renamed, not
 altered, not deleted, not written.
 
-**4. Deterministic transformation.** Copy and transform V1 → V2 inside one transaction per source
-table, driven by the mapping report. Re-runnable: every insert is keyed and idempotent.
+**4. R2 — register the recovery set.** Insert the R1 manifest into `dbv2_catalog.backup_sets`,
+re-read it, and require equality with the R1 file. Transformation may not begin until this passes
+and `completeness = 'complete'`.
 
-**5. Row-count and identity verification.** Run every `validation_query` in the mapping report.
-Beyond counts: each of the 75 `dataset_registry.identity_tuple_hash` values must appear exactly
-once as `datasets.identity_hash`; each of the four dataset digests must equal the
-`content_sha256` of the artifact its new FK points at; each `bam_profiles.profile_sha256` must
-equal the `content_sha256` of its `profile_artifact_id`; and each of the 227 locations must
-reconstruct its original V1 URI byte-for-byte.
+**5. Deterministic transformation.** Copy and transform V1 → the `dbv2_*` shadow tables, one
+transaction per source table, driven by the mapping report. Re-runnable: every insert is keyed and
+idempotent. V1 remains read-only throughout.
 
-**6. Artifact verification.** Re-verify all 227 payloads against `catalog.artifacts` and set
-`verification_state = 'verified'`. Any `missing` or `corrupt` row blocks cutover.
+**6. Row-count and identity verification.** Run every `validation_query` in the mapping report,
+plus the identity checks: each of the 75 `dataset_registry.identity_tuple_hash` values appears
+exactly once as `dbv2_catalog.datasets.identity_hash`; each of the four dataset digests equals the
+`content_sha256` of the artifact its new FK points at; each `bam_profiles.profile_sha256` equals
+the `content_sha256` of its `profile_artifact_id`; and each of the 227 locations reconstructs its
+original V1 URI byte-for-byte.
 
-**7. Application cutover — a schema rename, not a switch.** With writes stopped and transactions
-drained, inside one transaction: rename each canonical V1 schema to `v1_retired_*`, then rename
-each `dbv2_*` schema to its canonical name, then revalidate, then commit only if every validation
-passes.
+**7. Artifact verification.** Re-verify all 227 payloads and set `verification_state = 'verified'`.
+Any `missing` or `corrupt` row blocks cutover.
+
+**8. Cutover — a schema rename, not a switch.** See §3.2.
+
+**9. Read-only qualification period — 14 days.** V2 serves production under the canonical names.
+`v1_retired_*` holds the rollback source and is never written. No V2 object is deleted. Daily
+reconciliation and a restore drill must both pass.
+
+**10. Final retirement.** Only after qualification passes, and only within `v1_retired_*`. See
+§3.4.
+
+### 3.2 Cutover
+
+With writes stopped and transactions drained, inside one transaction: rename each canonical V1
+schema to `v1_retired_*`, then rename each `dbv2_*` schema to its canonical name, then revalidate,
+then commit only if every validation passes.
 
 **PostgreSQL does not make this free.** Foreign keys, indexes, sequences and parse-tree-stored
 view and default definitions track their objects by OID and follow a schema rename automatically.
@@ -191,24 +229,55 @@ These do **not**:
 
 So every `SECURITY DEFINER` function, every `SET search_path` and every textual object reference
 must be re-created or re-verified **inside the cutover transaction**. A rename alone is not a
-cutover. The revalidation targets are enumerated in the physical-deployment contract.
+cutover.
 
-**Rollback** is the exact inverse permutation, applied transactionally after writes are quiesced:
-canonical → `dbv2_*`, `v1_retired_*` → canonical, then the same revalidation.
+### 3.3 Three rollback boundaries
 
-**8. Read-only qualification period — 14 days.** V2 serves production; V1 objects remain in place,
-untouched and unread. Daily reconciliation (Q13) and a restore drill must both pass.
+There is no single "the rollback". Which procedure applies depends on where the deployment is.
 
-**9. Rollback procedure.** Before step 8 completes: point the application back at the V1
-repositories and drop the shadow tables — V1 data was never modified. After step 10: restore from
-the step-1/2 recovery set. The rollback path is exercised in a scratch cluster during D2, not
-first attempted in production.
+| Boundary | State | Procedure | Drops V2? | Touches V1? |
+|---|---|---|---|---|
+| **B1** before `0009` | no DB-V2 object exists | nothing to undo; if recovery is needed, restore from the verified R1 set | n/a | no |
+| **B2** after `0009`, before cutover | `dbv2_*` exists; canonical is still V1 | `alembic downgrade 0009 → 0008`, removing **only** `dbv2_*` objects | yes — correct here, nothing live is lost | **no** |
+| **B3** after cutover, in qualification | canonical is V2; `v1_retired_*` is the rollback source | quiesce → rename canonical V2 back to `dbv2_*` → rename `v1_retired_*` back to canonical → revalidate → commit only if all pass | **never** | renamed back only; never altered, deleted or written |
 
-**10. Final retirement.** After qualification passes, drop `profiling.profiles`,
-`experiments.jobs`, `experiments.results`, `catalog.datasets`, `catalog.gatk_configs`, the 10
-views and the archived source table, each guarded by its `validation_query` returning 0 rows.
+At **B2**, `public.alembic_version` changes only through Alembic's own bookkeeping — never by hand.
 
----
+At **B3**, the returned `dbv2_*` schema is **not dropped** inside the rollback transaction: it is
+the evidence of what was rolled back. Retiring V2 is a separately authorized cleanup, only after
+recovery is proven.
+
+**Withdrawn:** the earlier statement that post-cutover rollback is done by "pointing the
+application back at the V1 repositories and dropping the shadow tables". After cutover the shadow
+tables *are* the live system under canonical names; dropping them would delete the migrated
+database, and "V1 repositories" no longer resolve to V1.
+
+### 3.4 Final retirement
+
+**Retirement may affect only the `v1_retired_*` namespace.** After cutover, every canonical name
+is a live V2 object — `catalog.datasets` is simultaneously a declared logical V2 table, so an
+instruction to "drop `catalog.datasets`" would destroy the migrated system.
+
+These must **survive** retirement: `catalog.*`, `profiling.*`, `experiments.*`, `evaluation.*`,
+`models.*`, `runtime.*`, `audit.*`.
+
+Eligible targets, all in the retired namespace:
+
+| Target | Why |
+|---|---|
+| `v1_retired_profiling.profiles` | superseded by `profiling.bam_profiles`; 0 rows |
+| `v1_retired_experiments.jobs` | legacy job model; 0 rows |
+| `v1_retired_experiments.results` | legacy result model; 0 rows |
+| `v1_retired_catalog.datasets` | the unused 4-column duplicate |
+| `v1_retired_catalog.gatk_configs` | superseded by `experiments.candidate_configs`; 0 rows |
+| the 10 retired V1 views | replaced by one indexed predicate |
+| archived source objects | `v1_retired_profiling.profile_ingest_attempts` |
+
+Immediately before each removal, verify: no remaining foreign key, view, function or trigger
+depends on the object; its row count matches what was recorded at cutover (or is zero where zero
+was expected); every identity it carried is provably present in its V2 successor; and it has not
+been written since cutover. Prefer dropping a complete `v1_retired_*` schema, and only once every
+object it contains has individually passed.
 
 ## 4. Acceptance gates
 
@@ -222,8 +291,10 @@ views and the archived source table, each guarded by its `validation_query` retu
 | G6 — performance | Every target in `performance_targets` met at stated scale |
 | G7 — security | 0 `SET ROLE` occurrences; `minos_owner` cannot log in; each role holds only its declared grants |
 | G8 — recovery | A restore drill reproduces the database **and** its artifact snapshot, and passes G4 |
+| G8a — recovery order | R1 precedes `0009`; R2 follows `0009` and precedes transformation |
+| G8b — rollback | each of B1/B2/B3 has exactly one applicable procedure, and B3 drops no V2 object |
 | G9 — qualification | 14 days with no reconciliation failure and no stranded job |
-| G10 — retirement | Every dropped object verified empty immediately before the drop |
+| G10 — retirement | Every target is in `v1_retired_*`, and each is dependency- and identity-verified immediately before the drop |
 
 ---
 

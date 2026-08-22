@@ -1,6 +1,6 @@
 # MINOS Database V2 — Canonical Architecture
 
-**Stage:** DB-V2 **D1.1** — design only. No migration exists; `0009` has not been created. No
+**Stage:** DB-V2 **D1.2** — design only. No migration exists; `0009` has not been created. No
 production source has changed.
 **Designed against:** `feature/L2-F` at `695d9227ed83c595e3ed03375a935fbe801aadbd`.
 **Operational database:** `minos_engine_db`, live at `0005_l2e_feature_view`, **untouched by this
@@ -11,7 +11,7 @@ excluding its own `contract_sha256` field).
 
 **Physical deployment contract:**
 [`MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json`](../../reports/database/MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json),
-hash `77524945015b2f12894b91e16064e52d106b1e870619f37145fbe6339358d4fe`.
+hash `cb08322bdb9a8011327398bb235215ebbf230151b3661eaf7af4eb9a56d4ef71`.
 
 Companion documents: [ERD](MINOS_DATABASE_V2_ERD.md) ·
 [Migration plan](MINOS_DATABASE_V2_MIGRATION_PLAN.md) ·
@@ -304,6 +304,35 @@ a measured threshold is crossed — 50M rows or 50 GB on `job_events`, `executio
 monthly range partitions.
 
 ---
+
+## 6a. Recovery, rollback and retirement (D1.2)
+
+Three sequencing defects in the D1 runbook are corrected; each was an execution defect, not a
+wording preference.
+
+**The recovery set is two-phase.** D1 required a `catalog.backup_sets` row as step 1, but V1 has
+no such relation and the V2 one is created by the migration step 1 precedes. **R1** writes an
+immutable manifest *file* before any migration; **R2** registers that exact manifest into
+`dbv2_catalog.backup_sets` after `0009` and before any transformation, requiring
+`completeness = 'complete'`. The R1 file is retained — it is the only recovery record that
+survives a downgrade of `0009`.
+
+**There are three rollback boundaries, not one.** Before `0009` there is nothing to undo. After
+`0009` but before cutover, `alembic downgrade 0009 → 0008` removes only `dbv2_*` objects and never
+touches V1. After cutover, rollback is the **inverse schema rename** — and it never drops V2,
+because after cutover the V2 tables *are* the live system. The earlier claim that post-cutover
+rollback means "point at V1 and drop the shadow tables" is withdrawn: it would delete the migrated
+database.
+
+**Retirement targets only `v1_retired_*`.** After cutover every canonical name is a live V2
+object; `catalog.datasets` is simultaneously a declared logical V2 table, so a canonical
+retirement target would destroy the migrated system. `catalog.*`, `profiling.*`, `experiments.*`,
+`evaluation.*`, `models.*`, `runtime.*` and `audit.*` must survive retirement. A machine check in
+the validator refuses any retirement target that begins with a canonical active schema name.
+
+Details, including the qualification-period naming semantics, are in
+[the migration plan](MINOS_DATABASE_V2_MIGRATION_PLAN.md#30-the-recovery-set-is-two-phase) and the
+physical deployment contract.
 
 ## 7. What this stage did not do
 

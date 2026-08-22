@@ -45,6 +45,18 @@ RETIRED_SCHEMA_PREFIX = "v1_retired_"
 SHARED_ALEMBIC_TABLE = "public.alembic_version"
 
 #: the exact operational preparation path. No stamp, no skipped revision, no permanent multi-head.
+#: the canonical (post-cutover) schemas. Nothing beginning with one of these may ever be a
+#: retirement target: after cutover those names are the live V2 system.
+CANONICAL_SCHEMAS = (
+    "catalog",
+    "profiling",
+    "experiments",
+    "evaluation",
+    "models",
+    "runtime",
+    "audit",
+)
+
 EXPECTED_REVISION_PATH = (
     "0005_l2e_feature_view",
     "0006_l2f_experiment_plan",
@@ -489,6 +501,102 @@ def validate(reports: Path) -> list[str]:
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
+def _validate_recovery_and_retirement(doc: dict[str, Any]) -> list[str]:
+    """DB-V2 D1.2: recovery-set ordering, rollback boundaries and retirement targets."""
+    problems: list[str] = []
+
+    # --- R1/R2 ordering ------------------------------------------------------------------
+    protocol = doc.get("recovery_set_protocol", {})
+    phases = {p.get("phase"): p for p in protocol.get("phases", [])}
+    if set(phases) != {"R1", "R2"}:
+        problems.append(f"recovery protocol must define exactly R1 and R2, got {sorted(phases)}")
+    else:
+        r1, r2 = phases["R1"], phases["R2"]
+        if r1.get("occurs_before_revision") != EXPECTED_REVISION_PATH[-1]:
+            problems.append("R1 must occur before the planned D2 revision")
+        if r1.get("storage", "").startswith("dbv2_") or "." in r1.get("storage", ""):
+            problems.append(f"R1 must be stored outside the database, got {r1.get('storage')!r}")
+        if not r1.get("artifact_path", "").endswith(".json"):
+            problems.append("R1 must name an external manifest file")
+        if r2.get("occurs_after_revision") != EXPECTED_REVISION_PATH[-1]:
+            problems.append("R2 must occur after the planned D2 revision")
+        if r2.get("storage") != "dbv2_catalog.backup_sets":
+            problems.append(
+                f"R2 must register into dbv2_catalog.backup_sets, got {r2.get('storage')!r}"
+            )
+        if r2.get("forbidden_target") != "catalog.backup_sets":
+            problems.append("R2 must explicitly forbid writing to catalog.backup_sets")
+        if not r2.get("retention_of_external_manifest"):
+            problems.append("R2 must state how the external R1 manifest is retained")
+    invariants = " ".join(protocol.get("ordering_invariants", [])).lower()
+    if "strictly precedes revision 0009" not in invariants:
+        problems.append("ordering invariants must state R1 strictly precedes 0009")
+    if "strictly precedes any data transformation" not in invariants:
+        problems.append("ordering invariants must state R2 precedes transformation")
+
+    # --- rollback boundaries -------------------------------------------------------------
+    boundaries = {b.get("boundary"): b for b in doc.get("rollback_boundaries", [])}
+    if set(boundaries) != {"B1", "B2", "B3"}:
+        problems.append(f"exactly three rollback boundaries required, got {sorted(boundaries)}")
+    else:
+        for name, boundary in sorted(boundaries.items()):
+            if not boundary.get("procedure"):
+                problems.append(f"{name}: no procedure declared")
+            if len(boundary.get("applicable_actions", [])) < 1:
+                problems.append(f"{name}: no applicable action declared")
+        if boundaries["B2"].get("touches_v1") is not False:
+            problems.append("B2 must not touch any V1 object")
+        if boundaries["B2"].get("drops_v2") is not True:
+            problems.append("B2 is the only boundary where dropping the shadow schema is correct")
+        if boundaries["B3"].get("drops_v2") is not False:
+            problems.append("B3 must never drop a V2 object")
+        b3_actions = boundaries["B3"].get("applicable_actions", [])
+        for required in ("rename_canonical_back_to_shadow", "rename_retired_back_to_canonical"):
+            if required not in b3_actions:
+                problems.append(f"B3 must include {required}")
+        if any("drop" in a for a in b3_actions):
+            problems.append("B3 must not contain a drop action")
+
+    # the withdrawn statements must be recorded, not silently deleted
+    withdrawn = " ".join(w.get("statement", "") for w in doc.get("withdrawn_statements", []))
+    for fragment in ("dropping the shadow tables", "catalog.backup_sets", "canonical objects"):
+        if fragment not in withdrawn:
+            problems.append(f"withdrawn_statements must record {fragment!r}")
+
+    # --- retirement ----------------------------------------------------------------------
+    retirement = doc.get("retirement", {})
+    eligible = retirement.get("eligible_targets", {})
+    targets = [
+        *eligible.get("tables", []),
+        *eligible.get("views", []),
+        *eligible.get("archived_source_objects", []),
+    ]
+    if not targets:
+        problems.append("retirement declares no eligible target")
+    for target in targets:
+        schema = target.split(".", 1)[0]
+        if not schema.startswith(RETIRED_SCHEMA_PREFIX):
+            problems.append(f"retirement target is not in the retired namespace: {target}")
+        if schema in CANONICAL_SCHEMAS:
+            problems.append(f"retirement target names a canonical ACTIVE schema: {target}")
+    survivors = retirement.get("must_survive_retirement", [])
+    for schema in CANONICAL_SCHEMAS:
+        if f"{schema}.*" not in survivors:
+            problems.append(f"{schema}.* must be declared as surviving retirement")
+    if not retirement.get("per_object_checks_before_removal"):
+        problems.append("retirement must require per-object verification before removal")
+
+    # --- qualification-period semantics ---------------------------------------------------
+    semantics = doc.get("qualification_period_semantics", {})
+    if not semantics.get("canonical_schemas_mean", "").startswith("V2"):
+        problems.append("qualification semantics must state canonical schemas mean V2")
+    if not semantics.get("writes_to_retired_v1", "").lower().startswith("none"):
+        problems.append("qualification semantics must forbid writing retired V1 objects")
+    if not semantics.get("deletions_of_v2", "").lower().startswith("none"):
+        problems.append("qualification semantics must forbid deleting V2 objects")
+    return problems
+
+
 def _validate_physical_deployment(
     reports: Path, inventory: Any, target_tables: set[str]
 ) -> list[str]:
@@ -617,6 +725,8 @@ def _validate_physical_deployment(
                 problems.append(f"rollback is not the inverse of cutover for {src}: -> {result}")
         if set(backward) != set(forward.values()):
             problems.append("rollback does not cover exactly the schemas cutover renames")
+
+    problems.extend(_validate_recovery_and_retirement(doc))
 
     # no forbidden shortcut may be described as part of the plan
     forbidden = doc.get("forbidden_migration_shortcuts", [])
