@@ -1,0 +1,612 @@
+{
+  "contract_sha256": "77524945015b2f12894b91e16064e52d106b1e870619f37145fbe6339358d4fe",
+  "counts": {
+    "d2_tables_created": 37,
+    "logical_tables": 38,
+    "physical_shadow_tables": 37,
+    "shared_tables": 1
+  },
+  "cutover_mapping": {
+    "executed_in": "a later stage, not D1.1 and not D2",
+    "postgresql_dependency_analysis": {
+      "consequence": "Every SECURITY DEFINER function, every SET search_path and every textual object reference must be re-created or re-verified as part of the cutover transaction, not assumed correct. This is why step 5 exists and why a rename alone is not a cutover.",
+      "renames_that_do_NOT_follow_automatically": [
+        "A function body is stored as TEXT and is re-parsed at execution time: a schema-qualified reference inside a SECURITY DEFINER body keeps naming the OLD schema after a rename and will silently resolve to the retired V1 object.",
+        "SET search_path attached to a function, a role or the database names schemas as strings and does not follow a rename.",
+        "regclass and regprocedure values stored as TEXT rather than as the regclass type.",
+        "Any schema name embedded in application SQL or configuration."
+      ],
+      "renames_that_follow_automatically": [
+        "Foreign keys, indexes, sequences, primary keys and check constraints track their table by OID, so a schema rename does not break them.",
+        "Views and column defaults parsed into stored parse trees track referenced objects by OID as well."
+      ]
+    },
+    "preconditions": [
+      "Application writes stopped and active transactions drained.",
+      "A complete recovery set verified: the database backup AND its artifact snapshot.",
+      "Every D3 validation query green."
+    ],
+    "revalidation_targets": [
+      "foreign keys resolve to the renamed schemas",
+      "function bodies and their SET search_path clauses",
+      "trigger definitions and the functions they call",
+      "grants on every renamed object",
+      "database, role and session search_path configuration",
+      "regclass / regprocedure literals stored in catalogs or column defaults",
+      "SQL text embedded in views, defaults, check constraints and function bodies",
+      "repository-side schema resolution in the application"
+    ],
+    "steps": [
+      {
+        "action": "quiesce",
+        "detail": "stop writes; drain active transactions",
+        "order": 1
+      },
+      {
+        "action": "verify_recovery_set",
+        "detail": "database backup plus artifact snapshot, both verified",
+        "order": 2
+      },
+      {
+        "action": "rename_v1_to_retired",
+        "mapping": {
+          "audit": "v1_retired_audit",
+          "catalog": "v1_retired_catalog",
+          "evaluation": "v1_retired_evaluation",
+          "experiments": "v1_retired_experiments",
+          "models": "v1_retired_models",
+          "profiling": "v1_retired_profiling",
+          "runtime": "v1_retired_runtime"
+        },
+        "order": 3
+      },
+      {
+        "action": "rename_shadow_to_canonical",
+        "mapping": {
+          "dbv2_audit": "audit",
+          "dbv2_catalog": "catalog",
+          "dbv2_evaluation": "evaluation",
+          "dbv2_experiments": "experiments",
+          "dbv2_models": "models",
+          "dbv2_profiling": "profiling",
+          "dbv2_runtime": "runtime"
+        },
+        "order": 4
+      },
+      {
+        "action": "revalidate",
+        "detail": "see revalidation_targets",
+        "order": 5
+      },
+      {
+        "action": "commit_or_rollback",
+        "detail": "commit only if every revalidation target passes",
+        "order": 6
+      }
+    ]
+  },
+  "deployment_mapping": [
+    {
+      "collides_with_v1": false,
+      "d2_physical_table": "dbv2_catalog.storage_backends",
+      "disposition": "shadow",
+      "logical_table": "catalog.storage_backends",
+      "post_cutover_table": "catalog.storage_backends"
+    },
+    {
+      "collides_with_v1": true,
+      "d2_physical_table": "dbv2_catalog.artifacts",
+      "disposition": "shadow",
+      "logical_table": "catalog.artifacts",
+      "post_cutover_table": "catalog.artifacts"
+    },
+    {
+      "collides_with_v1": false,
+      "d2_physical_table": "dbv2_catalog.artifact_locations",
+      "disposition": "shadow",
+      "logical_table": "catalog.artifact_locations",
+      "post_cutover_table": "catalog.artifact_locations"
+    },
+    {
+      "collides_with_v1": true,
+      "d2_physical_table": "dbv2_catalog.datasets",
+      "disposition": "shadow",
+      "logical_table": "catalog.datasets",
+      "post_cutover_table": "catalog.datasets"
+    },
+    {
+      "collides_with_v1": false,
+      "d2_physical_table": "dbv2_catalog.releases",
+      "disposition": "shadow",
+      "logical_table": "catalog.releases",
+      "post_cutover_table": "catalog.releases"
+    },
+    {
+      "collides_with_v1": false,
+      "d2_physical_table": "dbv2_catalog.backup_sets",
+      "disposition": "shadow",
+      "logical_table": "catalog.backup_sets",
+      "post_cutover_table": "catalog.backup_sets"
+    },
+    {
+      "collides_with_v1": true,
+      "d2_physical_table": "dbv2_profiling.bam_profiles",
+      "disposition": "shadow",
+      "logical_table": "profiling.bam_profiles",
+      "post_cutover_table": "profiling.bam_profiles"
+    },
+    {
+      "collides_with_v1": true,
+      "d2_physical_table": "dbv2_profiling.profile_snapshots",
+      "disposition": "shadow",
+      "logical_table": "profiling.profile_snapshots",
+      "post_cutover_table": "profiling.profile_snapshots"
+    },
+    {
+      "collides_with_v1": true,
+      "d2_physical_table": "dbv2_profiling.profile_snapshot_members",
+      "disposition": "shadow",
+      "logical_table": "profiling.profile_snapshot_members",
+      "post_cutover_table": "profiling.profile_snapshot_members"
+    },
+    {
+      "collides_with_v1": true,
+      "d2_physical_table": "dbv2_profiling.feature_sets",
+      "disposition": "shadow",
+      "logical_table": "profiling.feature_sets",
+      "post_cutover_table": "profiling.feature_sets"
+    },
+    {
+      "collides_with_v1": true,
+      "d2_physical_table": "dbv2_profiling.feature_matrices",
+      "disposition": "shadow",
+      "logical_table": "profiling.feature_matrices",
+      "post_cutover_table": "profiling.feature_matrices"
+    },
+    {
+      "collides_with_v1": true,
+      "d2_physical_table": "dbv2_profiling.feature_matrix_members",
+      "disposition": "shadow",
+      "logical_table": "profiling.feature_matrix_members",
+      "post_cutover_table": "profiling.feature_matrix_members"
+    },
+    {
+      "collides_with_v1": false,
+      "d2_physical_table": "dbv2_experiments.parameter_spaces",
+      "disposition": "shadow",
+      "logical_table": "experiments.parameter_spaces",
+      "post_cutover_table": "experiments.parameter_spaces"
+    },
+    {
+      "collides_with_v1": false,
+      "d2_physical_table": "dbv2_experiments.candidate_configs",
+      "disposition": "shadow",
+      "logical_table": "experiments.candidate_configs",
+      "post_cutover_table": "experiments.candidate_configs"
+    },
+    {
+      "collides_with_v1": false,
+      "d2_physical_table": "dbv2_experiments.candidate_sets",
+      "disposition": "shadow",
+      "logical_table": "experiments.candidate_sets",
+      "post_cutover_table": "experiments.candidate_sets"
+    },
+    {
+      "collides_with_v1": false,
+      "d2_physical_table": "dbv2_experiments.candidate_set_configs",
+      "disposition": "shadow",
+      "logical_table": "experiments.candidate_set_configs",
+      "post_cutover_table": "experiments.candidate_set_configs"
+    },
+    {
+      "collides_with_v1": false,
+      "d2_physical_table": "dbv2_experiments.experiment_plans",
+      "disposition": "shadow",
+      "logical_table": "experiments.experiment_plans",
+      "post_cutover_table": "experiments.experiment_plans"
+    },
+    {
+      "collides_with_v1": false,
+      "d2_physical_table": "dbv2_experiments.experiment_plan_members",
+      "disposition": "shadow",
+      "logical_table": "experiments.experiment_plan_members",
+      "post_cutover_table": "experiments.experiment_plan_members"
+    },
+    {
+      "collides_with_v1": false,
+      "d2_physical_table": "dbv2_experiments.experiment_plan_configs",
+      "disposition": "shadow",
+      "logical_table": "experiments.experiment_plan_configs",
+      "post_cutover_table": "experiments.experiment_plan_configs"
+    },
+    {
+      "collides_with_v1": false,
+      "d2_physical_table": "dbv2_experiments.experiment_jobs",
+      "disposition": "shadow",
+      "logical_table": "experiments.experiment_jobs",
+      "post_cutover_table": "experiments.experiment_jobs"
+    },
+    {
+      "collides_with_v1": false,
+      "d2_physical_table": "dbv2_experiments.execution_attempts",
+      "disposition": "shadow",
+      "logical_table": "experiments.execution_attempts",
+      "post_cutover_table": "experiments.execution_attempts"
+    },
+    {
+      "collides_with_v1": false,
+      "d2_physical_table": "dbv2_experiments.execution_results",
+      "disposition": "shadow",
+      "logical_table": "experiments.execution_results",
+      "post_cutover_table": "experiments.execution_results"
+    },
+    {
+      "collides_with_v1": false,
+      "d2_physical_table": "dbv2_experiments.execution_failures",
+      "disposition": "shadow",
+      "logical_table": "experiments.execution_failures",
+      "post_cutover_table": "experiments.execution_failures"
+    },
+    {
+      "collides_with_v1": false,
+      "d2_physical_table": "dbv2_experiments.job_events",
+      "disposition": "shadow",
+      "logical_table": "experiments.job_events",
+      "post_cutover_table": "experiments.job_events"
+    },
+    {
+      "collides_with_v1": false,
+      "d2_physical_table": "dbv2_evaluation.truth_bindings",
+      "disposition": "shadow",
+      "logical_table": "evaluation.truth_bindings",
+      "post_cutover_table": "evaluation.truth_bindings"
+    },
+    {
+      "collides_with_v1": false,
+      "d2_physical_table": "dbv2_evaluation.evaluation_runs",
+      "disposition": "shadow",
+      "logical_table": "evaluation.evaluation_runs",
+      "post_cutover_table": "evaluation.evaluation_runs"
+    },
+    {
+      "collides_with_v1": false,
+      "d2_physical_table": "dbv2_evaluation.evaluation_metrics",
+      "disposition": "shadow",
+      "logical_table": "evaluation.evaluation_metrics",
+      "post_cutover_table": "evaluation.evaluation_metrics"
+    },
+    {
+      "collides_with_v1": false,
+      "d2_physical_table": "dbv2_evaluation.evaluation_scores",
+      "disposition": "shadow",
+      "logical_table": "evaluation.evaluation_scores",
+      "post_cutover_table": "evaluation.evaluation_scores"
+    },
+    {
+      "collides_with_v1": false,
+      "d2_physical_table": "dbv2_models.model_definitions",
+      "disposition": "shadow",
+      "logical_table": "models.model_definitions",
+      "post_cutover_table": "models.model_definitions"
+    },
+    {
+      "collides_with_v1": false,
+      "d2_physical_table": "dbv2_models.training_runs",
+      "disposition": "shadow",
+      "logical_table": "models.training_runs",
+      "post_cutover_table": "models.training_runs"
+    },
+    {
+      "collides_with_v1": false,
+      "d2_physical_table": "dbv2_models.model_versions",
+      "disposition": "shadow",
+      "logical_table": "models.model_versions",
+      "post_cutover_table": "models.model_versions"
+    },
+    {
+      "collides_with_v1": false,
+      "d2_physical_table": "dbv2_models.model_activations",
+      "disposition": "shadow",
+      "logical_table": "models.model_activations",
+      "post_cutover_table": "models.model_activations"
+    },
+    {
+      "collides_with_v1": false,
+      "d2_physical_table": "dbv2_runtime.service_instances",
+      "disposition": "shadow",
+      "logical_table": "runtime.service_instances",
+      "post_cutover_table": "runtime.service_instances"
+    },
+    {
+      "collides_with_v1": false,
+      "d2_physical_table": "dbv2_runtime.leases",
+      "disposition": "shadow",
+      "logical_table": "runtime.leases",
+      "post_cutover_table": "runtime.leases"
+    },
+    {
+      "collides_with_v1": false,
+      "d2_physical_table": "dbv2_runtime.active_selections",
+      "disposition": "shadow",
+      "logical_table": "runtime.active_selections",
+      "post_cutover_table": "runtime.active_selections"
+    },
+    {
+      "collides_with_v1": true,
+      "d2_physical_table": "dbv2_audit.events",
+      "disposition": "shadow",
+      "logical_table": "audit.events",
+      "post_cutover_table": "audit.events"
+    },
+    {
+      "collides_with_v1": false,
+      "d2_physical_table": "dbv2_audit.admin_operations",
+      "disposition": "shadow",
+      "logical_table": "audit.admin_operations",
+      "post_cutover_table": "audit.admin_operations"
+    },
+    {
+      "d2_physical_table": "public.alembic_version",
+      "disposition": "shared",
+      "logical_table": "public.alembic_version",
+      "note": "Alembic's own revision marker. One row, one table, shared by V1 and the shadow deployment; it is never duplicated into a dbv2_* schema.",
+      "post_cutover_table": "public.alembic_version"
+    }
+  ],
+  "designed_against": {
+    "branch": "feature/L2-F",
+    "commit": "832ed1579f0b3075c0167e31b9ecb8836a9428bb",
+    "logical_contract": "MINOS_DATABASE_V2_CONTRACT.json"
+  },
+  "forbidden_migration_shortcuts": [
+    "alembic stamp to fake a revision the database never executed",
+    "skipping 0006, 0007 or 0008",
+    "rewriting migrations 0001-0008, whose byte hashes are cited in accepted evidence",
+    "manual UPDATE or INSERT against public.alembic_version",
+    "a permanent multiple-head revision graph",
+    "destructive in-place conversion of a V1 table",
+    "undocumented table-name suffixes such as _v2 or _new to dodge a collision"
+  ],
+  "logical_tables": [
+    "audit.admin_operations",
+    "audit.events",
+    "catalog.artifact_locations",
+    "catalog.artifacts",
+    "catalog.backup_sets",
+    "catalog.datasets",
+    "catalog.releases",
+    "catalog.storage_backends",
+    "evaluation.evaluation_metrics",
+    "evaluation.evaluation_runs",
+    "evaluation.evaluation_scores",
+    "evaluation.truth_bindings",
+    "experiments.candidate_configs",
+    "experiments.candidate_set_configs",
+    "experiments.candidate_sets",
+    "experiments.execution_attempts",
+    "experiments.execution_failures",
+    "experiments.execution_results",
+    "experiments.experiment_jobs",
+    "experiments.experiment_plan_configs",
+    "experiments.experiment_plan_members",
+    "experiments.experiment_plans",
+    "experiments.job_events",
+    "experiments.parameter_spaces",
+    "models.model_activations",
+    "models.model_definitions",
+    "models.model_versions",
+    "models.training_runs",
+    "profiling.bam_profiles",
+    "profiling.feature_matrices",
+    "profiling.feature_matrix_members",
+    "profiling.feature_sets",
+    "profiling.profile_snapshot_members",
+    "profiling.profile_snapshots",
+    "public.alembic_version",
+    "runtime.active_selections",
+    "runtime.leases",
+    "runtime.service_instances"
+  ],
+  "operational_database": "minos_engine_db",
+  "physical_shadow_tables": [
+    "dbv2_audit.admin_operations",
+    "dbv2_audit.events",
+    "dbv2_catalog.artifact_locations",
+    "dbv2_catalog.artifacts",
+    "dbv2_catalog.backup_sets",
+    "dbv2_catalog.datasets",
+    "dbv2_catalog.releases",
+    "dbv2_catalog.storage_backends",
+    "dbv2_evaluation.evaluation_metrics",
+    "dbv2_evaluation.evaluation_runs",
+    "dbv2_evaluation.evaluation_scores",
+    "dbv2_evaluation.truth_bindings",
+    "dbv2_experiments.candidate_configs",
+    "dbv2_experiments.candidate_set_configs",
+    "dbv2_experiments.candidate_sets",
+    "dbv2_experiments.execution_attempts",
+    "dbv2_experiments.execution_failures",
+    "dbv2_experiments.execution_results",
+    "dbv2_experiments.experiment_jobs",
+    "dbv2_experiments.experiment_plan_configs",
+    "dbv2_experiments.experiment_plan_members",
+    "dbv2_experiments.experiment_plans",
+    "dbv2_experiments.job_events",
+    "dbv2_experiments.parameter_spaces",
+    "dbv2_models.model_activations",
+    "dbv2_models.model_definitions",
+    "dbv2_models.model_versions",
+    "dbv2_models.training_runs",
+    "dbv2_profiling.bam_profiles",
+    "dbv2_profiling.feature_matrices",
+    "dbv2_profiling.feature_matrix_members",
+    "dbv2_profiling.feature_sets",
+    "dbv2_profiling.profile_snapshot_members",
+    "dbv2_profiling.profile_snapshots",
+    "dbv2_runtime.active_selections",
+    "dbv2_runtime.leases",
+    "dbv2_runtime.service_instances"
+  ],
+  "problem_statement": {
+    "alembic_lineage": {
+      "operational_revision_today": "0005_l2e_feature_view",
+      "resolution": "A controlled operational preparation that walks the real lineage 0005 -> 0006 -> 0007 -> 0008 -> 0009, verifying zero L2-F business rows after each intermediate revision.",
+      "summary": "A future 0009 with down_revision=0008 cannot be applied to an operational database at 0005: Alembic must execute 0006, 0007 and 0008 first. D1 implied 0006-0008 would stay unapplied after DB-V2 deployment, which is not reachable."
+    },
+    "physical_collision": {
+      "colliding_identities": [
+        "audit.events",
+        "catalog.artifacts",
+        "catalog.datasets",
+        "profiling.bam_profiles",
+        "profiling.feature_matrices",
+        "profiling.feature_matrix_members",
+        "profiling.feature_sets",
+        "profiling.profile_snapshot_members",
+        "profiling.profile_snapshots"
+      ],
+      "collision_count": 9,
+      "resolution": "A frozen temporary physical schema namespace (dbv2_*). The logical contract is unchanged; only the deployment-time schema differs.",
+      "summary": "D1 described V2 shadow tables coexisting with untouched V1 tables, but the logical target reuses schema-qualified names that V1 already occupies. Creating them side by side in one database is impossible."
+    }
+  },
+  "report": "MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT",
+  "revision_path": {
+    "authorized_in_d1_1": false,
+    "development_lifecycle_note": "Scratch PostgreSQL only: up, down, up again, proving 0009 is reversible without touching any operational store.",
+    "development_lifecycle_path": [
+      "0008_l2f_execution_results",
+      "0009_dbv2_shadow_schema",
+      "0008_l2f_execution_results",
+      "0009_dbv2_shadow_schema"
+    ],
+    "intermediate_revision_invariants": [
+      "0006, 0007 and 0008 remain byte-identical and are never rewritten.",
+      "They are unapplied operationally TODAY, and will execute as structural predecessors during the future controlled preparation.",
+      "After each intermediate revision, every L2-F table must hold zero business rows.",
+      "No artifact publication, job enqueue or execution may occur during the intermediate revisions.",
+      "No application path runs Alembic automatically; migration is an explicit operator action."
+    ],
+    "operational_preparation_path": [
+      "0005_l2e_feature_view",
+      "0006_l2f_experiment_plan",
+      "0007_l2f_job_claiming",
+      "0008_l2f_execution_results",
+      "0009_dbv2_shadow_schema"
+    ],
+    "planned_d2_down_revision": "0008_l2f_execution_results",
+    "planned_d2_revision": "0009_dbv2_shadow_schema",
+    "source_revision": "0005_l2e_feature_view"
+  },
+  "rollback_mapping": {
+    "inverse_of_cutover": true,
+    "note": "The rollback is the exact inverse permutation of the cutover: applying cutover then rollback returns every schema to its starting name.",
+    "precondition": "writes quiesced, exactly as for the forward cutover",
+    "steps": [
+      {
+        "action": "quiesce",
+        "detail": "stop writes; drain active transactions",
+        "order": 1
+      },
+      {
+        "action": "rename_canonical_back_to_shadow",
+        "mapping": {
+          "audit": "dbv2_audit",
+          "catalog": "dbv2_catalog",
+          "evaluation": "dbv2_evaluation",
+          "experiments": "dbv2_experiments",
+          "models": "dbv2_models",
+          "profiling": "dbv2_profiling",
+          "runtime": "dbv2_runtime"
+        },
+        "order": 2
+      },
+      {
+        "action": "rename_retired_back_to_canonical",
+        "mapping": {
+          "v1_retired_audit": "audit",
+          "v1_retired_catalog": "catalog",
+          "v1_retired_evaluation": "evaluation",
+          "v1_retired_experiments": "experiments",
+          "v1_retired_models": "models",
+          "v1_retired_profiling": "profiling",
+          "v1_retired_runtime": "runtime"
+        },
+        "order": 3
+      },
+      {
+        "action": "revalidate",
+        "detail": "the same revalidation targets",
+        "order": 4
+      }
+    ],
+    "transactional": true,
+    "trigger": "any revalidation target fails, or a qualification defect is found while the shadow schema is serving"
+  },
+  "schema_mapping": {
+    "canonical_to_retired": {
+      "audit": "v1_retired_audit",
+      "catalog": "v1_retired_catalog",
+      "evaluation": "v1_retired_evaluation",
+      "experiments": "v1_retired_experiments",
+      "models": "v1_retired_models",
+      "profiling": "v1_retired_profiling",
+      "runtime": "v1_retired_runtime"
+    },
+    "canonical_to_shadow": {
+      "audit": "dbv2_audit",
+      "catalog": "dbv2_catalog",
+      "evaluation": "dbv2_evaluation",
+      "experiments": "dbv2_experiments",
+      "models": "dbv2_models",
+      "profiling": "dbv2_profiling",
+      "runtime": "dbv2_runtime"
+    },
+    "note": "dbv2_* are DEPLOYMENT names, not the final application contract. After cutover every schema carries its canonical name again and application code never references a dbv2_* identifier.",
+    "shared_untouched": [
+      "public.alembic_version"
+    ]
+  },
+  "schema_version": "minos-db-v2-physical-deployment-v1",
+  "shared_table": "public.alembic_version",
+  "stage": "DB-V2 D1.1 (design only; migration 0009 does not exist)",
+  "v1_objects_d2_must_preserve": {
+    "relation_count": 33,
+    "relations": [
+      "audit.events",
+      "catalog.artifacts",
+      "catalog.dataset_registry",
+      "catalog.datasets",
+      "catalog.gatk_configs",
+      "catalog.split_allocations",
+      "catalog.split_epoch_allocations",
+      "catalog.split_snapshots",
+      "catalog.training_dataset_allocations",
+      "catalog.training_epoch_allocations",
+      "evaluation.dataset_evaluation_identity",
+      "evaluation.evaluations",
+      "evaluation.locked_allocations",
+      "evaluation.sealed_test_epoch_allocations",
+      "evaluation.sealed_test_profile_members",
+      "evaluation.validation_epoch_allocations",
+      "evaluation.validation_matrix",
+      "evaluation.validation_profile_members",
+      "experiments.jobs",
+      "experiments.results",
+      "models.model_bundles",
+      "profiling.bam_profiles",
+      "profiling.feature_matrices",
+      "profiling.feature_matrix_members",
+      "profiling.feature_sets",
+      "profiling.profile_ingest_attempts",
+      "profiling.profile_snapshot_members",
+      "profiling.profile_snapshots",
+      "profiling.profiles",
+      "profiling.training_matrix",
+      "profiling.training_profile_members",
+      "public.alembic_version",
+      "runtime.decisions"
+    ],
+    "rule": "D2 and D3 create only dbv2_* objects. They never rename, alter, delete or write any V1 object, and they never write to public.alembic_version except through Alembic's own revision bookkeeping."
+  }
+}

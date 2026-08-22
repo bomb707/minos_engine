@@ -4,8 +4,14 @@ Companion to [the architecture](MINOS_DATABASE_V2_ARCHITECTURE.md). Every table 
 [`MINOS_DATABASE_V2_CONTRACT.json`](../../reports/database/MINOS_DATABASE_V2_CONTRACT.json)
 appears here with its primary key and its important foreign keys.
 
+Every table below is drawn under its **canonical** name — the final application contract. During
+D2 the same tables are physically created in the temporary `dbv2_*` schema namespace (37 shadow
+tables plus the shared `public.alembic_version`), because 9 canonical identities are already
+occupied by live V1 relations. A later cutover renames the schemas so these names become real.
+See [`MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json`](../../reports/database/MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json).
+
 38 tables · 8 schemas · contract hash
-`40910accde3ff3eda77e45b3ed3217c6ace8fce0cde7e70079d2ed413754803c`.
+`db135128d5abc9c9695b770c50f66fd635efc1bb0cc18640f9c363e7ca40b395`.
 
 ---
 

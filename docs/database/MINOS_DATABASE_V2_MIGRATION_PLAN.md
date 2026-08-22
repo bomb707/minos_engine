@@ -4,7 +4,9 @@ Companion to [the architecture](MINOS_DATABASE_V2_ARCHITECTURE.md) and
 [the ERD](MINOS_DATABASE_V2_ERD.md). The complete object-by-object mapping is in
 [`MINOS_DATABASE_V2_CURRENT_TO_TARGET.json`](../../reports/database/MINOS_DATABASE_V2_CURRENT_TO_TARGET.json).
 
-**Nothing in this document has been executed.** D1 is design only.
+**Nothing in this document has been executed.** D1.1 is design only; migration `0009` does not
+exist. The physical deployment names and the revision path are frozen in
+[`MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json`](../../reports/database/MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json).
 
 ---
 
@@ -69,11 +71,27 @@ the time-bounded qualification window in §3.
 
 **Selected: strategy 2 — shadow tables in `minos_engine_db`, followed by verified cutover.**
 
+### 2.0 What D1 got wrong, and how D1.1 fixes it
+
+D1 described "shadow DB-V2 tables in the same database" as if the canonical names were free. They
+are not: **9 of the 38 logical identities are already occupied by live V1 relations**
+(`catalog.artifacts`, `catalog.datasets`, `profiling.bam_profiles`, `profiling.feature_matrices`,
+`profiling.feature_matrix_members`, `profiling.feature_sets`, `profiling.profile_snapshots`,
+`profiling.profile_snapshot_members`, `audit.events`), and `public.alembic_version` is shared.
+Two tables cannot hold the same schema-qualified name.
+
+D1.1 freezes a temporary physical schema namespace — `catalog` → `dbv2_catalog`, and so on for
+all seven canonical schemas — so D2 creates **37 shadow tables** with no collision, and the 38th
+logical table is the existing shared `public.alembic_version`. The logical contract is unchanged.
+`dbv2_*` are deployment names; a later cutover renames the schemas so the canonical names are
+real again.
+
 The reasoning is specific to this system's current state, not a generic preference:
 
-- The operational database is at `0005` and **migrations 0006–0008 were never applied**, so there
-  is no L2-F production data to preserve. The entire transformable dataset is 13 tables and 668
-  rows.
+- The operational database is at `0005` and migrations 0006–0008 **have not been applied yet**, so
+  there is no L2-F production data to preserve. The entire transformable dataset is 13 tables and
+  668 rows. They are *structural predecessors that will be executed* during the controlled
+  operational preparation described in §2.2 — not revisions that stay unapplied forever.
 - Transformation is a pure function of existing rows, so it can be re-run until it is right. In
   strategy 1 the first attempt is also the last.
 - V1 objects stay byte-identical throughout the qualification period, so rollback is switching a
@@ -90,10 +108,37 @@ qualification tests recompute them. Rewriting any of them would invalidate that 
 gate that references it.
 
 Instead, DB-V2 is expressed as **new forward migrations** (`0009` onward, not created in this
-stage) that create the V2 schema alongside V1 and later retire V1. 0006–0008 remain in the lineage
-as accepted, CI-verified history that was deliberately never applied to the operational database.
-Their tables are therefore mapped as `(planned)` sources: superseded on paper, with no operational
-data to move and no bytes to change.
+stage) that create the V2 shadow schema alongside V1 and later retire V1. 0006–0008 remain in the
+lineage as accepted, CI-verified history whose bytes never change.
+
+### 2.2 The Alembic deployment sequence, stated truthfully
+
+A `0009` with `down_revision = 0008_l2f_execution_results` **cannot be applied to a database at
+`0005`**. Alembic will execute `0006`, `0007` and `0008` first — that is not optional, and it is
+not something to work around. D1 implied those revisions would remain unapplied after DB-V2
+deployment; that state is unreachable and the claim is withdrawn.
+
+The frozen sequence:
+
+| Context | Path |
+|---|---|
+| Development / lifecycle testing (**scratch PostgreSQL only**) | `0008 → 0009 → 0008 → 0009` |
+| Operational state **today** | `0005` |
+| Future **controlled** operational preparation | `0005 → 0006 → 0007 → 0008 → 0009` |
+
+Invariants for the intermediate revisions:
+
+1. `0006`, `0007` and `0008` remain **byte-identical** — `1eb3a12b…`, `bc247e0a…`, `95614d67…`.
+2. They are unapplied operationally **today**, and will execute as structural predecessors during
+   the controlled preparation.
+3. After **each** intermediate revision, every L2-F table must hold **zero business rows**.
+4. No artifact publication, job enqueue or execution may occur during the intermediate revisions.
+5. No application path runs Alembic automatically; migration is an explicit operator action.
+6. **No operational migration is authorized in D1.1.**
+
+None of the following is used, now or later: `alembic stamp`, a skipped revision, a rewrite of
+`0001`–`0008`, a manual edit of `alembic_version`, a permanent multiple-head graph, a destructive
+in-place conversion, or an undocumented table-name suffix.
 
 ---
 
@@ -109,8 +154,10 @@ record the snapshot digest, count and total bytes into the same `backup_sets` ro
 `completeness = 'complete'` requires both halves; a dump alone is `'database_only'` and is **not**
 a valid MINOS recovery set.
 
-**3. Create the V2 schema.** Forward migration creating all 38 tables, constraints, indexes,
-functions and role grants. No V1 object is touched.
+**3. Create the V2 shadow schema.** Forward migration `0009` creating the **37 shadow tables**
+in the `dbv2_*` namespace, with their constraints, indexes, functions and role grants.
+`public.alembic_version` is shared, not duplicated. **No V1 object is touched** — not renamed, not
+altered, not deleted, not written.
 
 **4. Deterministic transformation.** Copy and transform V1 → V2 inside one transaction per source
 table, driven by the mapping report. Re-runnable: every insert is keyed and idempotent.
@@ -125,8 +172,29 @@ reconstruct its original V1 URI byte-for-byte.
 **6. Artifact verification.** Re-verify all 227 payloads against `catalog.artifacts` and set
 `verification_state = 'verified'`. Any `missing` or `corrupt` row blocks cutover.
 
-**7. Application cutover.** Switch connection roles and repository implementations to V2. This is
-the only step with downtime, measured in minutes.
+**7. Application cutover — a schema rename, not a switch.** With writes stopped and transactions
+drained, inside one transaction: rename each canonical V1 schema to `v1_retired_*`, then rename
+each `dbv2_*` schema to its canonical name, then revalidate, then commit only if every validation
+passes.
+
+**PostgreSQL does not make this free.** Foreign keys, indexes, sequences and parse-tree-stored
+view and default definitions track their objects by OID and follow a schema rename automatically.
+These do **not**:
+
+- a **function body**, stored as text and re-parsed at execution time — a schema-qualified
+  reference inside a `SECURITY DEFINER` body keeps naming the *old* schema and would silently
+  resolve to the retired V1 object;
+- `SET search_path` attached to a function, a role or the database, which names schemas as
+  strings;
+- `regclass` / `regprocedure` values stored as text rather than as the typed value;
+- any schema name embedded in application SQL or configuration.
+
+So every `SECURITY DEFINER` function, every `SET search_path` and every textual object reference
+must be re-created or re-verified **inside the cutover transaction**. A rename alone is not a
+cutover. The revalidation targets are enumerated in the physical-deployment contract.
+
+**Rollback** is the exact inverse permutation, applied transactionally after writes are quiesced:
+canonical → `dbv2_*`, `v1_retired_*` → canonical, then the same revalidation.
 
 **8. Read-only qualification period — 14 days.** V2 serves production; V1 objects remain in place,
 untouched and unread. Daily reconciliation (Q13) and a restore drill must both pass.

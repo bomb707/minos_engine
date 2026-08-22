@@ -96,7 +96,7 @@
     "statement_timeout_ms": 30000,
     "verification_sessions": "default_transaction_read_only = on"
   },
-  "contract_sha256": "40910accde3ff3eda77e45b3ed3217c6ace8fce0cde7e70079d2ed413754803c",
+  "contract_sha256": "db135128d5abc9c9695b770c50f66fd635efc1bb0cc18640f9c363e7ca40b395",
   "critical_queries": [
     {
       "async_allowed": false,
@@ -409,6 +409,29 @@
       "target": "0 bytes of payload; metadata only, <= 2 KB per artifact row"
     }
   ],
+  "physical_deployment": {
+    "canonical_to_shadow": {
+      "audit": "dbv2_audit",
+      "catalog": "dbv2_catalog",
+      "evaluation": "dbv2_evaluation",
+      "experiments": "dbv2_experiments",
+      "models": "dbv2_models",
+      "profiling": "dbv2_profiling",
+      "runtime": "dbv2_runtime"
+    },
+    "operational_preparation_path": [
+      "0005_l2e_feature_view",
+      "0006_l2f_experiment_plan",
+      "0007_l2f_job_claiming",
+      "0008_l2f_execution_results",
+      "0009_dbv2_shadow_schema"
+    ],
+    "report": "MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json",
+    "shared_untouched": [
+      "public.alembic_version"
+    ],
+    "summary": "The 38 logical tables in this contract are the FINAL application contract. They cannot all be created alongside V1 under their canonical names, because 9 of them collide with live V1 relations. D2 therefore creates 37 of them in a temporary dbv2_* schema namespace; the 38th, public.alembic_version, is shared. A later cutover renames the schemas so every table carries its canonical name again."
+  },
   "principles": [
     "One authoritative operational database; ephemeral clusters for tests only.",
     "Large immutable payloads live outside PostgreSQL, fully managed by artifact records.",
@@ -5360,7 +5383,7 @@
       ]
     }
   ],
-  "stage": "DB-V2 D1 (design only; no migration exists yet)",
+  "stage": "DB-V2 D1.1 (design only; migration 0009 does not exist)",
   "table_counts": {
     "audit": 2,
     "catalog": 6,

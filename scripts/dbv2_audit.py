@@ -29,7 +29,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -37,6 +37,21 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_HASH_DOMAIN = b"minos:db-v2-contract:v1\n"
 #: the field the hash is written into; it is excluded from its own preimage.
 CONTRACT_HASH_FIELD = "contract_sha256"
+
+#: the frozen temporary physical schema namespace (DB-V2 D1.1). Deployment names, never the
+#: final application contract.
+SHADOW_SCHEMA_PREFIX = "dbv2_"
+RETIRED_SCHEMA_PREFIX = "v1_retired_"
+SHARED_ALEMBIC_TABLE = "public.alembic_version"
+
+#: the exact operational preparation path. No stamp, no skipped revision, no permanent multi-head.
+EXPECTED_REVISION_PATH = (
+    "0005_l2e_feature_view",
+    "0006_l2f_experiment_plan",
+    "0007_l2f_job_claiming",
+    "0008_l2f_execution_results",
+    "0009_dbv2_shadow_schema",
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -451,10 +466,15 @@ def validate(reports: Path) -> list[str]:
             if index not in declared_indexes and index != "(sequential scan acceptable)":
                 problems.append(f"query {query['id']}: unknown index {index!r}")
 
-    # 9) no secret-shaped material anywhere in the reports
-    blob = "\n".join(
-        path.read_text(encoding="utf-8") for path in (inventory_path, contract_path, mapping_path)
-    )
+    # 9) the physical-deployment contract: shadow namespace, counts, revision path, inverses
+    problems.extend(_validate_physical_deployment(reports, inventory, target_tables))
+
+    # 10) no secret-shaped material anywhere in the reports
+    report_paths = [inventory_path, contract_path, mapping_path]
+    physical_path = reports / "MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json"
+    if physical_path.is_file():
+        report_paths.append(physical_path)
+    blob = "\n".join(path.read_text(encoding="utf-8") for path in report_paths)
     for pattern, label in (
         (r"postgresql(\+\w+)?://[^\s\"]*:[^\s\"@]*@", "DSN with credentials"),
         (r"(?i)\bpassword\b\s*[:=]\s*\S", "password literal"),
@@ -469,6 +489,143 @@ def validate(reports: Path) -> list[str]:
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
+def _validate_physical_deployment(
+    reports: Path, inventory: Any, target_tables: set[str]
+) -> list[str]:
+    """Validate the D1.1 physical-deployment contract against the logical contract and V1."""
+    problems: list[str] = []
+    path = reports / "MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json"
+    if not path.is_file():
+        return [f"missing report: {path.name}"]
+    try:
+        doc = load_strict(path)
+    except ValueError as exc:
+        return [f"{path.name}: {exc}"]
+
+    # its own hash must recompute
+    recomputed = contract_hash(doc)
+    if doc.get(CONTRACT_HASH_FIELD) != recomputed:
+        problems.append(
+            f"physical-deployment hash mismatch: stored {doc.get(CONTRACT_HASH_FIELD)!r} "
+            f"!= recomputed {recomputed!r}"
+        )
+
+    mapping = doc.get("deployment_mapping", [])
+    logical_seen: dict[str, int] = {}
+    physical_seen: dict[str, int] = {}
+    for entry in mapping:
+        logical_seen[entry["logical_table"]] = logical_seen.get(entry["logical_table"], 0) + 1
+        physical_seen[entry["d2_physical_table"]] = (
+            physical_seen.get(entry["d2_physical_table"], 0) + 1
+        )
+
+    # every logical table has exactly one deployment mapping, and vice versa
+    for ident in sorted(target_tables):
+        if logical_seen.get(ident, 0) != 1:
+            problems.append(f"logical table mapped {logical_seen.get(ident, 0)} times: {ident}")
+    for ident in sorted(set(logical_seen) - target_tables):
+        problems.append(f"deployment maps a table the contract does not declare: {ident}")
+
+    # no two logical tables share a physical table
+    for ident, count in sorted(physical_seen.items()):
+        if count != 1:
+            problems.append(f"physical table claimed by {count} logical tables: {ident}")
+
+    # no shadow table collides with the frozen V1 inventory
+    v1 = {
+        f"{t['schema']}.{t['name']}" for t in inventory["live"]["tables"] if t["kind"] in {"r", "v"}
+    }
+    for ident in doc.get("physical_shadow_tables", []):
+        if ident in v1:
+            problems.append(f"shadow table collides with a V1 relation: {ident}")
+        schema = ident.split(".", 1)[0]
+        if not schema.startswith(SHADOW_SCHEMA_PREFIX):
+            problems.append(f"shadow table is not in the dbv2_ namespace: {ident}")
+
+    # the shared Alembic table is shared, never shadowed
+    shared = doc.get("shared_table")
+    if shared != SHARED_ALEMBIC_TABLE:
+        problems.append(f"shared table must be {SHARED_ALEMBIC_TABLE}, got {shared!r}")
+    if shared in doc.get("physical_shadow_tables", []):
+        problems.append("the shared Alembic table must not be duplicated into a shadow schema")
+
+    # counts are internally consistent
+    counts: dict[str, Any] = doc.get("counts", {})
+    actual = {
+        "logical_tables": len(doc.get("logical_tables", [])),
+        "physical_shadow_tables": len(doc.get("physical_shadow_tables", [])),
+        "shared_tables": 1,
+        "d2_tables_created": len(doc.get("physical_shadow_tables", [])),
+    }
+    if counts != actual:
+        problems.append(f"counts {counts} != actual {actual}")
+    if actual["logical_tables"] != actual["physical_shadow_tables"] + 1:
+        problems.append(
+            f"{actual['logical_tables']} logical tables must be "
+            f"{actual['physical_shadow_tables']} shadow + 1 shared"
+        )
+
+    # every foreign-key target translates consistently through the same schema map
+    schema_map: dict[str, str] = doc.get("schema_mapping", {}).get("canonical_to_shadow", {})
+    physical_by_logical = {e["logical_table"]: e["d2_physical_table"] for e in mapping}
+    for entry in mapping:
+        logical, physical = entry["logical_table"], entry["d2_physical_table"]
+        if entry.get("disposition") == "shared":
+            continue
+        canon_schema, table = logical.split(".", 1)
+        expected = f"{schema_map.get(canon_schema)}.{table}"
+        if physical != expected:
+            problems.append(f"{logical}: physical target {physical} != mapped {expected}")
+        if entry.get("post_cutover_table") != logical:
+            problems.append(
+                f"{logical}: post-cutover target {entry.get('post_cutover_table')!r} must equal "
+                "the logical identity"
+            )
+    del physical_by_logical
+
+    # the revision path is exactly the frozen one
+    revision: dict[str, Any] = doc.get("revision_path", {})
+    actual_path = tuple(revision.get("operational_preparation_path", []))
+    if actual_path != EXPECTED_REVISION_PATH:
+        problems.append(f"revision path {actual_path} != {EXPECTED_REVISION_PATH}")
+    if revision.get("source_revision") != EXPECTED_REVISION_PATH[0]:
+        problems.append("source_revision must be the current operational revision")
+    if revision.get("planned_d2_down_revision") != EXPECTED_REVISION_PATH[-2]:
+        problems.append("the planned D2 revision must descend from 0008")
+    if revision.get("authorized_in_d1_1") is not False:
+        problems.append("no operational migration may be authorized in D1.1")
+
+    # cutover and rollback are exact inverses
+    cutover: dict[str, Any] = {
+        s["action"]: s.get("mapping") for s in doc.get("cutover_mapping", {}).get("steps", [])
+    }
+    rollback: dict[str, Any] = {
+        s["action"]: s.get("mapping") for s in doc.get("rollback_mapping", {}).get("steps", [])
+    }
+    forward: dict[str, str] = {}
+    for name in ("rename_v1_to_retired", "rename_shadow_to_canonical"):
+        forward.update(cutover.get(name) or {})
+    backward: dict[str, str] = {}
+    for name in ("rename_canonical_back_to_shadow", "rename_retired_back_to_canonical"):
+        backward.update(rollback.get(name) or {})
+    if not forward or not backward:
+        problems.append("cutover or rollback declares no schema rename mapping")
+    else:
+        composed = {src: backward.get(dst) for src, dst in forward.items()}
+        for src, result in sorted(composed.items()):
+            if result != src:
+                problems.append(f"rollback is not the inverse of cutover for {src}: -> {result}")
+        if set(backward) != set(forward.values()):
+            problems.append("rollback does not cover exactly the schemas cutover renames")
+
+    # no forbidden shortcut may be described as part of the plan
+    forbidden = doc.get("forbidden_migration_shortcuts", [])
+    for required in ("stamp", "skipping", "rewriting", "multiple-head"):
+        if not any(required in item.lower() for item in forbidden):
+            problems.append(f"forbidden_migration_shortcuts does not name {required!r}")
+    return problems
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="DB-V2 D1 audit and report validator")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -499,7 +656,7 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False).encode("utf-8")
             + b"\n"
         )
-        live = payload["live"]
+        live = cast("dict[str, Any]", payload["live"])
         print(
             f"inventory: {len(live['tables'])} relations, {len(live['columns'])} columns, "
             f"{len(live['constraints'])} constraints, {len(live['indexes'])} indexes, "

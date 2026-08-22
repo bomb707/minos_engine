@@ -126,6 +126,18 @@ stored that should be an artifact.
 
 ---
 
+## 5a. The deployment namespace and revision path
+
+D2 creates its tables in the temporary `dbv2_*` schema namespace (37 shadow tables; the 38th
+logical table is the shared `public.alembic_version`), because 9 canonical identities are already
+occupied by live V1 relations. A later cutover renames the schemas so the canonical names become
+real. `dbv2_*` never appears in application code.
+
+The operational revision path is `0005 → 0006 → 0007 → 0008 → 0009`. Migrations `0006`–`0008` are
+unapplied **today** and will execute as structural predecessors during a controlled preparation
+window; after each of them, every L2-F table must hold zero business rows, and no artifact
+publication, enqueue or execution may occur. No operational migration is authorized in D1.1.
+
 ## 6. Migration windows
 
 Migrations run only through `minos_migrate`, never from a service process. Each migration must:

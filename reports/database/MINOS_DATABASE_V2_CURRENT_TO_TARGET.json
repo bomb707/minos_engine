@@ -29,7 +29,10 @@
         "size_bytes": "size_bytes (integer -> bigint)",
         "uri": "-> catalog.artifact_locations.object_key (root stripped) + storage_backends.logical_root"
       },
+      "d2_physical_target": "dbv2_catalog.artifacts",
       "data_loss_risk": "none: every V1 column is carried; the URI is decomposed, not discarded",
+      "logical_target": "catalog.artifacts",
+      "post_cutover_target": "catalog.artifacts",
       "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
       "source": "catalog.artifacts",
       "target": "catalog.artifacts",
@@ -69,7 +72,10 @@
         "split_algorithm_version": "-> profiling.profile_snapshots.split_algorithm_version",
         "split_salt": "-> profiling.profile_snapshots (not a dataset property)"
       },
+      "d2_physical_target": "dbv2_catalog.datasets",
       "data_loss_risk": "medium: four hash columns move tables. Every value is preserved somewhere and the move is verified by the identity query below before the V1 table is retired.",
+      "logical_target": "catalog.datasets",
+      "post_cutover_target": "catalog.datasets",
       "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
       "source": "catalog.dataset_registry",
       "target": "catalog.datasets",
@@ -87,8 +93,11 @@
         "dataset_id": "(unused)",
         "id": "(unused)"
       },
+      "d2_physical_target": "dbv2_catalog.datasets",
       "data_loss_risk": "none: 0 rows",
+      "logical_target": "catalog.datasets",
       "note": "Confirms defect D04: two tables modelled the same entity and the 4-column one was never used.",
+      "post_cutover_target": "catalog.datasets",
       "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
       "source": "catalog.datasets",
       "target": "catalog.datasets",
@@ -108,7 +117,10 @@
         "id": "id",
         "parameter_space_hash": "parameter_space_hash"
       },
+      "d2_physical_target": "dbv2_experiments.candidate_configs",
       "data_loss_risk": "none: 0 rows",
+      "logical_target": "experiments.candidate_configs",
+      "post_cutover_target": "experiments.candidate_configs",
       "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
       "source": "catalog.gatk_configs",
       "target": "experiments.candidate_configs",
@@ -127,7 +139,10 @@
         "manifest_hash": "(dropped; artifact)",
         "registry_snapshot_hash": "snapshot_hash"
       },
+      "d2_physical_target": "dbv2_profiling.profile_snapshots",
       "data_loss_risk": "low: 1 row",
+      "logical_target": "profiling.profile_snapshots",
+      "post_cutover_target": "profiling.profile_snapshots",
       "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
       "source": "catalog.split_snapshots",
       "target": "profiling.profile_snapshots",
@@ -145,7 +160,10 @@
         "id": "id",
         "manifest_hash": "(dropped)"
       },
+      "d2_physical_target": "dbv2_profiling.profile_snapshot_members",
       "data_loss_risk": "low: 75 rows, 1:1",
+      "logical_target": "profiling.profile_snapshot_members",
+      "post_cutover_target": "profiling.profile_snapshot_members",
       "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
       "source": "catalog.split_allocations",
       "target": "profiling.profile_snapshot_members",
@@ -162,7 +180,10 @@
         "epoch": "-> profile_snapshots.epoch",
         "id": "id"
       },
+      "d2_physical_target": "dbv2_profiling.profile_snapshot_members",
       "data_loss_risk": "low: 75 rows",
+      "logical_target": "profiling.profile_snapshot_members",
+      "post_cutover_target": "profiling.profile_snapshot_members",
       "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
       "source": "catalog.split_epoch_allocations",
       "target": "profiling.profile_snapshot_members",
@@ -197,7 +218,10 @@
         "windows_artifact_id": "windows_artifact_id",
         "windows_row_count": "windows_row_count"
       },
+      "d2_physical_target": "dbv2_profiling.bam_profiles",
       "data_loss_risk": "medium: the jsonb document moves out of the row. It is written as an artifact with the same content_sha256 the V1 row already recorded, so identity is provable both before and after.",
+      "logical_target": "profiling.bam_profiles",
+      "post_cutover_target": "profiling.bam_profiles",
       "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
       "source": "profiling.bam_profiles",
       "target": "profiling.bam_profiles",
@@ -213,8 +237,11 @@
       "column_mapping": {
         "(all)": "none"
       },
+      "d2_physical_target": null,
       "data_loss_risk": "none: 0 rows",
+      "logical_target": null,
       "note": "Confirms defect D05.",
+      "post_cutover_target": null,
       "rollback": "the V1 table is retained untouched until the qualification period ends",
       "source": "profiling.profiles",
       "target": null,
@@ -232,7 +259,10 @@
         "snapshot_hash": "snapshot_hash",
         "split_manifest_hash": "(dropped; artifact)"
       },
+      "d2_physical_target": "dbv2_profiling.profile_snapshots",
       "data_loss_risk": "low: 1 row",
+      "logical_target": "profiling.profile_snapshots",
+      "post_cutover_target": "profiling.profile_snapshots",
       "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
       "source": "profiling.profile_snapshots",
       "target": "profiling.profile_snapshots",
@@ -250,7 +280,10 @@
         "feature_values_hash": "DROPPED: reachable via bam_profiles",
         "id": "id"
       },
+      "d2_physical_target": "dbv2_profiling.profile_snapshot_members",
       "data_loss_risk": "low: 75 rows",
+      "logical_target": "profiling.profile_snapshot_members",
+      "post_cutover_target": "profiling.profile_snapshot_members",
       "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
       "source": "profiling.profile_snapshot_members",
       "target": "profiling.profile_snapshot_members",
@@ -268,7 +301,10 @@
         "id": "id",
         "registry_hash": "(dropped; duplicate)"
       },
+      "d2_physical_target": "dbv2_profiling.feature_sets",
       "data_loss_risk": "low: 1 row",
+      "logical_target": "profiling.feature_sets",
+      "post_cutover_target": "profiling.feature_sets",
       "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
       "source": "profiling.feature_sets",
       "target": "profiling.feature_sets",
@@ -287,7 +323,10 @@
         "matrix_hash": "matrix_hash",
         "registry_hash": "(dropped; duplicate)"
       },
+      "d2_physical_target": "dbv2_profiling.feature_matrices",
       "data_loss_risk": "low: 2 rows",
+      "logical_target": "profiling.feature_matrices",
+      "post_cutover_target": "profiling.feature_matrices",
       "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
       "source": "profiling.feature_matrices",
       "target": "profiling.feature_matrices",
@@ -306,7 +345,10 @@
         "matrix_id": "matrix_id",
         "vector_hash": "vector_hash"
       },
+      "d2_physical_target": "dbv2_profiling.feature_matrix_members",
       "data_loss_risk": "low: 60 rows",
+      "logical_target": "profiling.feature_matrix_members",
+      "post_cutover_target": "profiling.feature_matrix_members",
       "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
       "source": "profiling.feature_matrix_members",
       "target": "profiling.feature_matrix_members",
@@ -321,7 +363,10 @@
       "column_mapping": {
         "(all)": "retained as-is in an archive schema"
       },
+      "d2_physical_target": null,
       "data_loss_risk": "none: rows are copied, not transformed",
+      "logical_target": null,
+      "post_cutover_target": null,
       "rollback": "the archive copy is dropped; the V1 table is untouched",
       "source": "profiling.profile_ingest_attempts",
       "target": null,
@@ -337,8 +382,11 @@
       "column_mapping": {
         "(all)": "none"
       },
+      "d2_physical_target": null,
       "data_loss_risk": "none: 0 rows",
+      "logical_target": null,
       "note": "Confirms defect D06.",
+      "post_cutover_target": null,
       "rollback": "the V1 table is retained untouched until the qualification period ends",
       "source": "experiments.jobs",
       "target": null,
@@ -353,7 +401,10 @@
       "column_mapping": {
         "(all)": "none"
       },
+      "d2_physical_target": null,
       "data_loss_risk": "none: 0 rows",
+      "logical_target": null,
+      "post_cutover_target": null,
       "rollback": "the V1 table is retained untouched until the qualification period ends",
       "source": "experiments.results",
       "target": null,
@@ -374,7 +425,10 @@
         "truth_tbi_sha256": "-> truth_index_artifact_id (FK)",
         "truth_vcf_sha256": "-> truth_vcf_artifact_id (FK)"
       },
+      "d2_physical_target": "dbv2_evaluation.truth_bindings",
       "data_loss_risk": "none: 0 rows",
+      "logical_target": "evaluation.truth_bindings",
+      "post_cutover_target": "evaluation.truth_bindings",
       "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
       "source": "evaluation.dataset_evaluation_identity",
       "target": "evaluation.truth_bindings",
@@ -393,7 +447,10 @@
         "experiment_result_id": "execution_result_id",
         "id": "id"
       },
+      "d2_physical_target": "dbv2_evaluation.evaluation_runs",
       "data_loss_risk": "none: 0 rows",
+      "logical_target": "evaluation.evaluation_runs",
+      "post_cutover_target": "evaluation.evaluation_runs",
       "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
       "source": "evaluation.evaluations",
       "target": "evaluation.evaluation_runs",
@@ -415,7 +472,10 @@
         "split_manifest_hash": "-> models.training_runs.train_matrix_id (FK)",
         "training_provenance_hash": "-> models.training_runs.training_identity_hash"
       },
+      "d2_physical_target": "dbv2_models.model_versions",
       "data_loss_risk": "none: 0 rows",
+      "logical_target": "models.model_versions",
+      "post_cutover_target": "models.model_versions",
       "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
       "source": "models.model_bundles",
       "target": "models.model_versions",
@@ -438,7 +498,10 @@
         "profile_id": "(dropped; not part of a selection)",
         "round_id": "(dropped; a decision is not per-round in V2)"
       },
+      "d2_physical_target": "dbv2_runtime.active_selections",
       "data_loss_risk": "none: 0 rows",
+      "logical_target": "runtime.active_selections",
+      "post_cutover_target": "runtime.active_selections",
       "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
       "source": "runtime.decisions",
       "target": "runtime.active_selections",
@@ -460,7 +523,10 @@
         "object_kind": "-> object_schema + object_table",
         "payload_hash": "payload_hash"
       },
+      "d2_physical_target": "dbv2_audit.events",
       "data_loss_risk": "none: 0 rows",
+      "logical_target": "audit.events",
+      "post_cutover_target": "audit.events",
       "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
       "source": "audit.events",
       "target": "audit.events",
@@ -476,7 +542,10 @@
       "column_mapping": {
         "version_num": "version_num"
       },
+      "d2_physical_target": "public.alembic_version",
       "data_loss_risk": "none",
+      "logical_target": "public.alembic_version",
+      "post_cutover_target": "public.alembic_version",
       "rollback": "the revision is reset to the pre-cutover value on rollback",
       "source": "public.alembic_version",
       "target": "public.alembic_version",
@@ -493,7 +562,10 @@
       "column_mapping": {
         "(view columns)": "resolved by an indexed query over the target table"
       },
+      "d2_physical_target": "dbv2_profiling.profile_snapshot_members",
       "data_loss_risk": "none: views hold no data",
+      "logical_target": "profiling.profile_snapshot_members",
+      "post_cutover_target": "profiling.profile_snapshot_members",
       "rollback": "read-only view over V1 data; nothing to roll back",
       "source": "catalog.training_dataset_allocations",
       "target": "profiling.profile_snapshot_members",
@@ -510,7 +582,10 @@
       "column_mapping": {
         "(view columns)": "resolved by an indexed query over the target table"
       },
+      "d2_physical_target": "dbv2_profiling.profile_snapshot_members",
       "data_loss_risk": "none: views hold no data",
+      "logical_target": "profiling.profile_snapshot_members",
+      "post_cutover_target": "profiling.profile_snapshot_members",
       "rollback": "read-only view over V1 data; nothing to roll back",
       "source": "catalog.training_epoch_allocations",
       "target": "profiling.profile_snapshot_members",
@@ -527,7 +602,10 @@
       "column_mapping": {
         "(view columns)": "resolved by an indexed query over the target table"
       },
+      "d2_physical_target": "dbv2_profiling.profile_snapshot_members",
       "data_loss_risk": "none: views hold no data",
+      "logical_target": "profiling.profile_snapshot_members",
+      "post_cutover_target": "profiling.profile_snapshot_members",
       "rollback": "read-only view over V1 data; nothing to roll back",
       "source": "evaluation.locked_allocations",
       "target": "profiling.profile_snapshot_members",
@@ -544,7 +622,10 @@
       "column_mapping": {
         "(view columns)": "resolved by an indexed query over the target table"
       },
+      "d2_physical_target": "dbv2_profiling.profile_snapshot_members",
       "data_loss_risk": "none: views hold no data",
+      "logical_target": "profiling.profile_snapshot_members",
+      "post_cutover_target": "profiling.profile_snapshot_members",
       "rollback": "read-only view over V1 data; nothing to roll back",
       "source": "evaluation.sealed_test_epoch_allocations",
       "target": "profiling.profile_snapshot_members",
@@ -561,7 +642,10 @@
       "column_mapping": {
         "(view columns)": "resolved by an indexed query over the target table"
       },
+      "d2_physical_target": "dbv2_profiling.profile_snapshot_members",
       "data_loss_risk": "none: views hold no data",
+      "logical_target": "profiling.profile_snapshot_members",
+      "post_cutover_target": "profiling.profile_snapshot_members",
       "rollback": "read-only view over V1 data; nothing to roll back",
       "source": "evaluation.sealed_test_profile_members",
       "target": "profiling.profile_snapshot_members",
@@ -578,7 +662,10 @@
       "column_mapping": {
         "(view columns)": "resolved by an indexed query over the target table"
       },
+      "d2_physical_target": "dbv2_profiling.profile_snapshot_members",
       "data_loss_risk": "none: views hold no data",
+      "logical_target": "profiling.profile_snapshot_members",
+      "post_cutover_target": "profiling.profile_snapshot_members",
       "rollback": "read-only view over V1 data; nothing to roll back",
       "source": "evaluation.validation_epoch_allocations",
       "target": "profiling.profile_snapshot_members",
@@ -595,7 +682,10 @@
       "column_mapping": {
         "(view columns)": "resolved by an indexed query over the target table"
       },
+      "d2_physical_target": "dbv2_profiling.profile_snapshot_members",
       "data_loss_risk": "none: views hold no data",
+      "logical_target": "profiling.profile_snapshot_members",
+      "post_cutover_target": "profiling.profile_snapshot_members",
       "rollback": "read-only view over V1 data; nothing to roll back",
       "source": "evaluation.validation_profile_members",
       "target": "profiling.profile_snapshot_members",
@@ -612,7 +702,10 @@
       "column_mapping": {
         "(view columns)": "resolved by an indexed query over the target table"
       },
+      "d2_physical_target": "dbv2_profiling.profile_snapshot_members",
       "data_loss_risk": "none: views hold no data",
+      "logical_target": "profiling.profile_snapshot_members",
+      "post_cutover_target": "profiling.profile_snapshot_members",
       "rollback": "read-only view over V1 data; nothing to roll back",
       "source": "profiling.training_profile_members",
       "target": "profiling.profile_snapshot_members",
@@ -629,7 +722,10 @@
       "column_mapping": {
         "(view columns)": "resolved by an indexed query over the target table"
       },
+      "d2_physical_target": "dbv2_profiling.feature_matrices",
       "data_loss_risk": "none: views hold no data",
+      "logical_target": "profiling.feature_matrices",
+      "post_cutover_target": "profiling.feature_matrices",
       "rollback": "read-only view over V1 data; nothing to roll back",
       "source": "evaluation.validation_matrix",
       "target": "profiling.feature_matrices",
@@ -646,7 +742,10 @@
       "column_mapping": {
         "(view columns)": "resolved by an indexed query over the target table"
       },
+      "d2_physical_target": "dbv2_profiling.feature_matrices",
       "data_loss_risk": "none: views hold no data",
+      "logical_target": "profiling.feature_matrices",
+      "post_cutover_target": "profiling.feature_matrices",
       "rollback": "read-only view over V1 data; nothing to roll back",
       "source": "profiling.training_matrix",
       "target": "profiling.feature_matrices",
@@ -664,8 +763,11 @@
       "column_mapping": {
         "(source migration)": "defined by 0006-0008; NEVER applied to minos_engine_db"
       },
+      "d2_physical_target": "dbv2_experiments.experiment_plans",
       "data_loss_risk": "none: the source object has never existed operationally",
+      "logical_target": "experiments.experiment_plans",
       "note": "0006-0008 are accepted, CI-verified source migrations that were deliberately never applied to the operational database, so DB-V2 can supersede them without rewriting their frozen bytes or invalidating their evidence.",
+      "post_cutover_target": "experiments.experiment_plans",
       "rollback": "migrations 0006-0008 remain byte-identical and simply stay unapplied",
       "source": "(planned) experiments.l2f_experiment_plans",
       "target": "experiments.experiment_plans",
@@ -683,8 +785,11 @@
       "column_mapping": {
         "(source migration)": "defined by 0006-0008; NEVER applied to minos_engine_db"
       },
+      "d2_physical_target": "dbv2_experiments.experiment_plan_members",
       "data_loss_risk": "none: the source object has never existed operationally",
+      "logical_target": "experiments.experiment_plan_members",
       "note": "0006-0008 are accepted, CI-verified source migrations that were deliberately never applied to the operational database, so DB-V2 can supersede them without rewriting their frozen bytes or invalidating their evidence.",
+      "post_cutover_target": "experiments.experiment_plan_members",
       "rollback": "migrations 0006-0008 remain byte-identical and simply stay unapplied",
       "source": "(planned) experiments.l2f_experiment_plan_members",
       "target": "experiments.experiment_plan_members",
@@ -702,8 +807,11 @@
       "column_mapping": {
         "(source migration)": "defined by 0006-0008; NEVER applied to minos_engine_db"
       },
+      "d2_physical_target": "dbv2_experiments.experiment_plan_configs",
       "data_loss_risk": "none: the source object has never existed operationally",
+      "logical_target": "experiments.experiment_plan_configs",
       "note": "0006-0008 are accepted, CI-verified source migrations that were deliberately never applied to the operational database, so DB-V2 can supersede them without rewriting their frozen bytes or invalidating their evidence.",
+      "post_cutover_target": "experiments.experiment_plan_configs",
       "rollback": "migrations 0006-0008 remain byte-identical and simply stay unapplied",
       "source": "(planned) experiments.l2f_experiment_plan_configs",
       "target": "experiments.experiment_plan_configs",
@@ -721,8 +829,11 @@
       "column_mapping": {
         "(source migration)": "defined by 0006-0008; NEVER applied to minos_engine_db"
       },
+      "d2_physical_target": "dbv2_experiments.candidate_configs",
       "data_loss_risk": "none: the source object has never existed operationally",
+      "logical_target": "experiments.candidate_configs",
       "note": "0006-0008 are accepted, CI-verified source migrations that were deliberately never applied to the operational database, so DB-V2 can supersede them without rewriting their frozen bytes or invalidating their evidence.",
+      "post_cutover_target": "experiments.candidate_configs",
       "rollback": "migrations 0006-0008 remain byte-identical and simply stay unapplied",
       "source": "(planned) experiments.l2f_config_payloads",
       "target": "experiments.candidate_configs",
@@ -740,8 +851,11 @@
       "column_mapping": {
         "(source migration)": "defined by 0006-0008; NEVER applied to minos_engine_db"
       },
+      "d2_physical_target": "dbv2_experiments.experiment_jobs",
       "data_loss_risk": "none: the source object has never existed operationally",
+      "logical_target": "experiments.experiment_jobs",
       "note": "0006-0008 are accepted, CI-verified source migrations that were deliberately never applied to the operational database, so DB-V2 can supersede them without rewriting their frozen bytes or invalidating their evidence.",
+      "post_cutover_target": "experiments.experiment_jobs",
       "rollback": "migrations 0006-0008 remain byte-identical and simply stay unapplied",
       "source": "(planned) experiments.l2f_experiment_jobs",
       "target": "experiments.experiment_jobs",
@@ -759,8 +873,11 @@
       "column_mapping": {
         "(source migration)": "defined by 0006-0008; NEVER applied to minos_engine_db"
       },
+      "d2_physical_target": "dbv2_experiments.execution_results",
       "data_loss_risk": "none: the source object has never existed operationally",
+      "logical_target": "experiments.execution_results",
       "note": "0006-0008 are accepted, CI-verified source migrations that were deliberately never applied to the operational database, so DB-V2 can supersede them without rewriting their frozen bytes or invalidating their evidence.",
+      "post_cutover_target": "experiments.execution_results",
       "rollback": "migrations 0006-0008 remain byte-identical and simply stay unapplied",
       "source": "(planned) experiments.l2f_execution_results",
       "target": "experiments.execution_results",
@@ -778,8 +895,11 @@
       "column_mapping": {
         "(source migration)": "defined by 0006-0008; NEVER applied to minos_engine_db"
       },
+      "d2_physical_target": "dbv2_experiments.execution_failures",
       "data_loss_risk": "none: the source object has never existed operationally",
+      "logical_target": "experiments.execution_failures",
       "note": "0006-0008 are accepted, CI-verified source migrations that were deliberately never applied to the operational database, so DB-V2 can supersede them without rewriting their frozen bytes or invalidating their evidence.",
+      "post_cutover_target": "experiments.execution_failures",
       "rollback": "migrations 0006-0008 remain byte-identical and simply stay unapplied",
       "source": "(planned) experiments.l2f_execution_failures",
       "target": "experiments.execution_failures",
@@ -789,5 +909,11 @@
   ],
   "operational_database": "minos_engine_db",
   "report": "MINOS_DATABASE_V2_CURRENT_TO_TARGET",
-  "schema_version": "minos-db-v2-mapping-v1"
+  "schema_version": "minos-db-v2-mapping-v1",
+  "target_resolution": {
+    "d2_physical_target": "where D2 actually creates the table (a dbv2_* schema, or the shared public.alembic_version)",
+    "logical_target": "the canonical identity in MINOS_DATABASE_V2_CONTRACT.json",
+    "note": "V1 objects are never renamed, altered, deleted or written by D2 or D3.",
+    "post_cutover_target": "the identity after the later schema rename — always equal to the logical target"
+  }
 }

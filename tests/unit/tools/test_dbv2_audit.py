@@ -113,6 +113,7 @@ def _copy_reports(tmp_path: Path) -> Path:
         "MINOS_DATABASE_V1_INVENTORY.json",
         "MINOS_DATABASE_V2_CONTRACT.json",
         "MINOS_DATABASE_V2_CURRENT_TO_TARGET.json",
+        "MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json",
     ):
         (out / name).write_bytes((REPORTS / name).read_bytes())
     return out
@@ -411,3 +412,336 @@ def test_a_missing_inventory_is_detected(tmp_path: Path) -> None:
 def test_no_provenance_only_field_is_excluded_from_equality() -> None:
     """Every committed field participates in equality: there is no timestamp to exempt."""
     assert frozenset() == inventory.PROVENANCE_ONLY_FIELDS
+
+
+# --------------------------------------------------------------------------- #
+# DB-V2 D1.1 — the physical shadow namespace and the Alembic deployment sequence
+# --------------------------------------------------------------------------- #
+PHYSICAL_REPORT = REPORTS / "MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json"
+
+CANONICAL_SCHEMAS = (
+    "catalog",
+    "profiling",
+    "experiments",
+    "evaluation",
+    "models",
+    "runtime",
+    "audit",
+)
+
+
+def _physical() -> dict[str, Any]:
+    return audit.load_strict(PHYSICAL_REPORT)
+
+
+def _v1_relations() -> set[str]:
+    inventory = audit.load_strict(REPORTS / "MINOS_DATABASE_V1_INVENTORY.json")
+    return {
+        f"{t['schema']}.{t['name']}" for t in inventory["live"]["tables"] if t["kind"] in {"r", "v"}
+    }
+
+
+def test_exactly_38_logical_tables() -> None:
+    """G1."""
+    contract = audit.load_strict(REPORTS / "MINOS_DATABASE_V2_CONTRACT.json")
+    logical = [f"{s['schema']}.{t['table']}" for s in contract["schemas"] for t in s["tables"]]
+    assert len(logical) == 38
+    assert len(set(logical)) == 38
+    assert sorted(_physical()["logical_tables"]) == sorted(logical)
+
+
+def test_exactly_37_shadow_tables_plus_one_shared_alembic_table() -> None:
+    """G2."""
+    doc = _physical()
+    assert len(doc["physical_shadow_tables"]) == 37
+    assert doc["shared_table"] == "public.alembic_version"
+    assert doc["counts"]["logical_tables"] == 38
+    assert doc["counts"]["physical_shadow_tables"] == 37
+    assert doc["counts"]["shared_tables"] == 1
+    assert doc["counts"]["d2_tables_created"] == 37
+
+
+def test_every_logical_table_has_exactly_one_deployment_mapping() -> None:
+    """G3."""
+    doc = _physical()
+    seen: dict[str, int] = {}
+    for entry in doc["deployment_mapping"]:
+        seen[entry["logical_table"]] = seen.get(entry["logical_table"], 0) + 1
+    assert sorted(seen) == sorted(doc["logical_tables"])
+    assert all(count == 1 for count in seen.values())
+
+
+def test_no_two_logical_tables_map_to_the_same_physical_table() -> None:
+    """G4."""
+    physical = [e["d2_physical_table"] for e in _physical()["deployment_mapping"]]
+    assert len(physical) == len(set(physical)) == 38
+
+
+def test_no_shadow_table_collides_with_the_frozen_v1_inventory() -> None:
+    """G5: the whole point of the dbv2_* namespace."""
+    doc = _physical()
+    v1 = _v1_relations()
+    for ident in doc["physical_shadow_tables"]:
+        assert ident not in v1, ident
+        assert ident.split(".", 1)[0].startswith("dbv2_"), ident
+
+
+def test_the_collision_that_motivated_the_namespace_is_recorded() -> None:
+    """The canonical names really are taken — including the two named in the brief."""
+    doc = _physical()
+    collisions = doc["problem_statement"]["physical_collision"]["colliding_identities"]
+    v1 = _v1_relations()
+    assert "catalog.artifacts" in collisions
+    assert "profiling.bam_profiles" in collisions
+    assert len(collisions) == doc["problem_statement"]["physical_collision"]["collision_count"]
+    for ident in collisions:
+        assert ident in v1, ident
+
+
+def test_the_shared_alembic_table_is_never_duplicated() -> None:
+    doc = _physical()
+    assert "public.alembic_version" not in doc["physical_shadow_tables"]
+    shared = next(
+        e for e in doc["deployment_mapping"] if e["logical_table"] == "public.alembic_version"
+    )
+    assert shared["disposition"] == "shared"
+    assert shared["d2_physical_table"] == "public.alembic_version"
+    assert shared["post_cutover_table"] == "public.alembic_version"
+
+
+def test_every_foreign_key_target_translates_consistently() -> None:
+    """G6: every FK in the logical contract resolves inside the shadow namespace."""
+    contract = audit.load_strict(REPORTS / "MINOS_DATABASE_V2_CONTRACT.json")
+    doc = _physical()
+    physical_by_logical = {
+        e["logical_table"]: e["d2_physical_table"] for e in doc["deployment_mapping"]
+    }
+    schema_map = doc["schema_mapping"]["canonical_to_shadow"]
+    checked = 0
+    for schema in contract["schemas"]:
+        for table in schema["tables"]:
+            for fk in table.get("foreign_keys", []):
+                referenced = fk["references"]
+                assert referenced in physical_by_logical, referenced
+                canon_schema, name = referenced.split(".", 1)
+                assert physical_by_logical[referenced] == f"{schema_map[canon_schema]}.{name}"
+                checked += 1
+    assert checked > 0
+
+
+def test_the_schema_map_covers_every_canonical_schema() -> None:
+    mapping = _physical()["schema_mapping"]["canonical_to_shadow"]
+    assert set(mapping) == set(CANONICAL_SCHEMAS)
+    assert all(v == f"dbv2_{k}" for k, v in mapping.items())
+    assert "public" not in mapping
+
+
+def test_cutover_and_rollback_are_complete_inverses() -> None:
+    """G7: applying cutover then rollback returns every schema to its starting name."""
+    doc = _physical()
+    forward: dict[str, str] = {}
+    for step in doc["cutover_mapping"]["steps"]:
+        forward.update(step.get("mapping") or {})
+    backward: dict[str, str] = {}
+    for step in doc["rollback_mapping"]["steps"]:
+        backward.update(step.get("mapping") or {})
+
+    assert forward and backward
+    assert set(backward) == set(forward.values())
+    for src, dst in forward.items():
+        assert backward[dst] == src, (src, dst)
+    # and the permutation is total over the canonical schemas
+    assert set(CANONICAL_SCHEMAS) <= set(forward)
+    assert doc["rollback_mapping"]["transactional"] is True
+    assert doc["rollback_mapping"]["inverse_of_cutover"] is True
+
+
+def test_the_revision_path_is_exactly_0005_to_0009() -> None:
+    """G8."""
+    revision = _physical()["revision_path"]
+    assert revision["operational_preparation_path"] == [
+        "0005_l2e_feature_view",
+        "0006_l2f_experiment_plan",
+        "0007_l2f_job_claiming",
+        "0008_l2f_execution_results",
+        "0009_dbv2_shadow_schema",
+    ]
+    assert revision["source_revision"] == "0005_l2e_feature_view"
+    assert revision["planned_d2_down_revision"] == "0008_l2f_execution_results"
+    assert revision["development_lifecycle_path"] == [
+        "0008_l2f_execution_results",
+        "0009_dbv2_shadow_schema",
+        "0008_l2f_execution_results",
+        "0009_dbv2_shadow_schema",
+    ]
+    assert revision["authorized_in_d1_1"] is False
+
+
+def test_no_stamp_skip_or_multiple_head_strategy_is_present() -> None:
+    """G9: the shortcuts are named as forbidden, and never used as the plan."""
+    doc = _physical()
+    forbidden = " ".join(doc["forbidden_migration_shortcuts"]).lower()
+    for shortcut in ("stamp", "skipping", "rewriting", "multiple-head", "in-place", "suffix"):
+        assert shortcut in forbidden, shortcut
+    plan = json.dumps(
+        {k: v for k, v in doc.items() if k != "forbidden_migration_shortcuts"}
+    ).lower()
+    assert "alembic stamp" not in plan
+    assert "multiple heads" not in plan
+
+
+def test_intermediate_revision_invariants_are_stated() -> None:
+    invariants = " ".join(_physical()["revision_path"]["intermediate_revision_invariants"]).lower()
+    assert "byte-identical" in invariants
+    assert "zero business rows" in invariants
+    assert "no artifact publication" in invariants
+    assert "automatically" in invariants
+
+
+def test_d2_must_preserve_every_v1_relation() -> None:
+    doc = _physical()
+    preserved = set(doc["v1_objects_d2_must_preserve"]["relations"])
+    assert preserved == _v1_relations()
+    assert doc["v1_objects_d2_must_preserve"]["relation_count"] == len(preserved)
+    rule = doc["v1_objects_d2_must_preserve"]["rule"].lower()
+    for verb in ("rename", "alter", "delete", "write"):
+        assert verb in rule
+
+
+def test_the_schema_rename_dependency_analysis_is_explicit() -> None:
+    """A rename alone is not a cutover: function bodies and search_path do not follow."""
+    analysis = _physical()["cutover_mapping"]["postgresql_dependency_analysis"]
+    does_not = " ".join(analysis["renames_that_do_NOT_follow_automatically"]).lower()
+    assert "function body" in does_not
+    assert "search_path" in does_not
+    assert "regclass" in does_not
+    assert analysis["renames_that_follow_automatically"]
+
+
+def test_the_physical_contract_hash_recomputes() -> None:
+    doc = _physical()
+    assert doc[audit.CONTRACT_HASH_FIELD] == audit.contract_hash(doc)
+
+
+def test_strict_parsing_rejects_a_duplicate_key_in_the_physical_report(tmp_path: Path) -> None:
+    """G10."""
+    target = tmp_path / "phys.json"
+    raw = PHYSICAL_REPORT.read_text(encoding="utf-8")
+    target.write_text(raw.replace('"report":', '"report": "SHADOWED",\n  "report":', 1))
+    with pytest.raises(ValueError, match="duplicate JSON key"):
+        audit.load_strict(target)
+
+
+def test_the_current_to_target_mapping_distinguishes_all_three_targets() -> None:
+    mapping = audit.load_strict(REPORTS / "MINOS_DATABASE_V2_CURRENT_TO_TARGET.json")
+    doc = _physical()
+    physical_by_logical = {
+        e["logical_table"]: e["d2_physical_table"] for e in doc["deployment_mapping"]
+    }
+    for entry in mapping["mappings"]:
+        assert "logical_target" in entry
+        assert "d2_physical_target" in entry
+        assert "post_cutover_target" in entry
+        assert entry["logical_target"] == entry["target"]
+        if entry["target"] is None:
+            assert entry["d2_physical_target"] is None
+            continue
+        assert entry["post_cutover_target"] == entry["target"]
+        assert entry["d2_physical_target"] == physical_by_logical[entry["target"]]
+
+
+def test_the_logical_contract_records_the_physical_deployment() -> None:
+    contract = audit.load_strict(REPORTS / "MINOS_DATABASE_V2_CONTRACT.json")
+    physical = contract["physical_deployment"]
+    assert physical["canonical_to_shadow"] == _physical()["schema_mapping"]["canonical_to_shadow"]
+    assert physical["shared_untouched"] == ["public.alembic_version"]
+    assert (
+        physical["operational_preparation_path"]
+        == (_physical()["revision_path"]["operational_preparation_path"])
+    )
+
+
+def test_migration_0009_does_not_exist() -> None:
+    """G13: D1.1 is design only."""
+    versions = REPO_ROOT / "migrations" / "versions"
+    assert not list(versions.glob("0009*.py"))
+    planned = _physical()["revision_path"]["planned_d2_revision"]
+    assert not (versions / f"{planned}.py").exists()
+
+
+def test_migrations_0006_to_0008_remain_byte_identical() -> None:
+    """G14-adjacent: the accepted lineage bytes never change."""
+    import hashlib
+
+    expected = {
+        "0006_l2f_experiment_plan": (
+            "1eb3a12b502a5f247a2dc662642fd71931dcada815923e95d18504220445c3c6"
+        ),
+        "0007_l2f_job_claiming": (
+            "bc247e0a68f82ad6e52868e115db3f1e237b637def98567c596e3cc0a4e42625"
+        ),
+        "0008_l2f_execution_results": (
+            "95614d67fbfbafb735a0651275dd06f1949ae513b43b96b3776a5a90c436f3ff"
+        ),
+    }
+    for name, digest in expected.items():
+        path = REPO_ROOT / "migrations" / "versions" / f"{name}.py"
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == digest, name
+
+
+def test_the_validator_detects_a_shadow_collision(tmp_path: Path) -> None:
+    """The collision guard must actually fire."""
+    reports = _copy_reports(tmp_path)
+    (reports / "MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json").write_bytes(
+        PHYSICAL_REPORT.read_bytes()
+    )
+
+    def _break(d: dict[str, Any]) -> None:
+        d["physical_shadow_tables"][0] = "catalog.artifacts"
+        d[audit.CONTRACT_HASH_FIELD] = audit.contract_hash(d)
+
+    _rewrite(reports / "MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json", _break)
+    problems = audit.validate(reports)
+    assert any("collides with a V1 relation" in p for p in problems), problems
+
+
+def test_the_validator_detects_a_broken_inverse(tmp_path: Path) -> None:
+    reports = _copy_reports(tmp_path)
+    (reports / "MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json").write_bytes(
+        PHYSICAL_REPORT.read_bytes()
+    )
+
+    def _break(d: dict[str, Any]) -> None:
+        for step in d["rollback_mapping"]["steps"]:
+            if step["action"] == "rename_retired_back_to_canonical":
+                step["mapping"]["v1_retired_catalog"] = "wrong_name"
+        d[audit.CONTRACT_HASH_FIELD] = audit.contract_hash(d)
+
+    _rewrite(reports / "MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json", _break)
+    problems = audit.validate(reports)
+    assert any("not the inverse" in p for p in problems), problems
+
+
+def test_the_validator_detects_a_wrong_revision_path(tmp_path: Path) -> None:
+    reports = _copy_reports(tmp_path)
+    (reports / "MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json").write_bytes(
+        PHYSICAL_REPORT.read_bytes()
+    )
+
+    def _break(d: dict[str, Any]) -> None:
+        d["revision_path"]["operational_preparation_path"] = [
+            "0005_l2e_feature_view",
+            "0009_dbv2_shadow_schema",
+        ]
+        d[audit.CONTRACT_HASH_FIELD] = audit.contract_hash(d)
+
+    _rewrite(reports / "MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json", _break)
+    problems = audit.validate(reports)
+    assert any("revision path" in p for p in problems), problems
+
+
+def test_the_validator_detects_a_missing_physical_report(tmp_path: Path) -> None:
+    reports = _copy_reports(tmp_path)
+    (reports / "MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json").unlink()
+    problems = audit.validate(reports)
+    assert any("MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT" in p for p in problems), problems

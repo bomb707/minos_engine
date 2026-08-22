@@ -1,12 +1,17 @@
 # MINOS Database V2 — Canonical Architecture
 
-**Stage:** DB-V2 D1 — design only. No migration exists. No production source has changed.
+**Stage:** DB-V2 **D1.1** — design only. No migration exists; `0009` has not been created. No
+production source has changed.
 **Designed against:** `feature/L2-F` at `695d9227ed83c595e3ed03375a935fbe801aadbd`.
 **Operational database:** `minos_engine_db`, live at `0005_l2e_feature_view`, **untouched by this
 stage**.
-**Contract hash:** `40910accde3ff3eda77e45b3ed3217c6ace8fce0cde7e70079d2ed413754803c`
+**Contract hash:** `db135128d5abc9c9695b770c50f66fd635efc1bb0cc18640f9c363e7ca40b395`
 (over [`MINOS_DATABASE_V2_CONTRACT.json`](../../reports/database/MINOS_DATABASE_V2_CONTRACT.json),
 excluding its own `contract_sha256` field).
+
+**Physical deployment contract:**
+[`MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json`](../../reports/database/MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json),
+hash `77524945015b2f12894b91e16064e52d106b1e870619f37145fbe6339358d4fe`.
 
 Companion documents: [ERD](MINOS_DATABASE_V2_ERD.md) ·
 [Migration plan](MINOS_DATABASE_V2_MIGRATION_PLAN.md) ·
@@ -122,7 +127,10 @@ Current state is never reconstructed from the event log.
 
 ### 2.1 Target inventory
 
-38 tables across 8 schemas:
+38 tables across 8 schemas. These are the **final application contract** — the names the code
+will use after cutover. They are *not* the names D2 creates; see §2.2.
+
+
 
 | Schema | Tables | Names |
 |---|---:|---|
@@ -138,6 +146,35 @@ Current state is never reconstructed from the event log.
 Ten V1 views disappear. They exist because partition and snapshot identity were spread across
 several tables and had to be re-joined; in V2 a single indexed predicate on
 `profile_snapshot_members (snapshot_id, partition)` answers all of them.
+
+### 2.2 The physical shadow namespace (D1.1)
+
+D1 said the V2 tables would be created alongside untouched V1 tables. That is not directly
+possible: **9 of the 38 logical identities are already occupied by live V1 relations** —
+`catalog.artifacts`, `catalog.datasets`, `profiling.bam_profiles`, `profiling.feature_matrices`,
+`profiling.feature_matrix_members`, `profiling.feature_sets`, `profiling.profile_snapshots`,
+`profiling.profile_snapshot_members` and `audit.events`. A tenth identity,
+`public.alembic_version`, is shared rather than colliding.
+
+D1.1 resolves this with a frozen **temporary physical schema namespace**:
+
+| Canonical (final) | D2 physical (temporary) | After cutover |
+|---|---|---|
+| `catalog` | `dbv2_catalog` | `catalog` |
+| `profiling` | `dbv2_profiling` | `profiling` |
+| `experiments` | `dbv2_experiments` | `experiments` |
+| `evaluation` | `dbv2_evaluation` | `evaluation` |
+| `models` | `dbv2_models` | `models` |
+| `runtime` | `dbv2_runtime` | `runtime` |
+| `audit` | `dbv2_audit` | `audit` |
+| `public.alembic_version` | *shared, not duplicated* | unchanged |
+
+So **D2 creates exactly 37 shadow tables**; the 38th logical table is the existing shared
+`public.alembic_version`. Every logical table maps to exactly one physical table, no shadow object
+collides with V1, and every DB-V2 foreign key resolves inside the shadow namespace.
+
+`dbv2_*` are **deployment names, not the application contract**. No application code ever
+references one. D2 and D3 never rename, alter, delete or write any V1 object.
 
 ---
 
