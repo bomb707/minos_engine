@@ -44,7 +44,7 @@ def pg_base_url() -> Iterator[str]:
 @pytest.fixture(scope="session")
 def l2c_main_url(pg_base_url: str) -> Iterator[str]:
     with scratch_database(pg_base_url, "minos_l2c_main") as url:
-        alembic_upgrade(url, "head")
+        alembic_upgrade(url, "0008_l2f_execution_results")
         from minos_engine.storage.dataset_split import persist_manifest
         from tests.layer2c_synth import synthetic_manifest
 

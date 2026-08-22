@@ -135,7 +135,7 @@ def test_full_lifecycle_0004_0005_0004_0005(lifecycle_url: str) -> None:
     assert _artifact_select(url, "minos_live") is True
     assert _artifact_select(url, "minos_runner") is True
 
-    alembic_upgrade(url, "head")
+    alembic_upgrade(url, "0008_l2f_execution_results")
     assert all(_has_table(url, t) for t in _TABLES)
     assert _artifact_select(url, "minos_trainer") is False
 

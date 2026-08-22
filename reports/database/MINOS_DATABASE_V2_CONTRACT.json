@@ -144,7 +144,7 @@
     "statement_timeout_ms": 30000,
     "verification_sessions": "default_transaction_read_only = on"
   },
-  "contract_sha256": "ea4e6aa0e752ea9f739c5d0c8f238355636c69559bb2dcbac1d629620e2f3d60",
+  "contract_sha256": "fc980a5a878cddff1b9a8a2a4b25ba4690abb85e8e28add84ac7f4bee75616ca",
   "critical_queries": [
     {
       "async_allowed": false,
@@ -353,7 +353,8 @@
     }
   ],
   "database_api": {
-    "contract_sha256": "0e4fd9bc68434e933c959e5882c507f3bc43a3cc9c32cb3839059dd3f1b776f4",
+    "contract_sha256": "1e67735f2dcd4e6bec6f688755e3fc2456b71cebfb72cf0898c700591a9e45cf",
+    "d2_physical_acl_records": 780,
     "functions": 34,
     "note": "The executable half of the contract: every function, trigger, state transition and grant migration 0009 must create. Frozen in DB-V2 D1.4.",
     "report": "MINOS_DATABASE_V2_DATABASE_API.json",
@@ -474,7 +475,7 @@
       "profiling": "dbv2_profiling",
       "runtime": "dbv2_runtime"
     },
-    "contract_sha256": "08b6c14eedce6be8024289fc083bab6fad52d6af128526cedda6832ba60e9244",
+    "contract_sha256": "c4711bfa3282acc44f9a9ff47c0d8a15aed29f0d67063e9116baf272ae5f3ff5",
     "operational_preparation_path": [
       "0005_l2e_feature_view",
       "0006_l2f_experiment_plan",
@@ -5724,7 +5725,7 @@
       ]
     }
   ],
-  "stage": "DB-V2 D1.4",
+  "stage": "DB-V2 D2",
   "table_counts": {
     "audit": 2,
     "catalog": 6,

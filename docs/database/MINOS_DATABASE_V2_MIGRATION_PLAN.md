@@ -4,8 +4,10 @@ Companion to [the architecture](MINOS_DATABASE_V2_ARCHITECTURE.md) and
 [the ERD](MINOS_DATABASE_V2_ERD.md). The complete object-by-object mapping is in
 [`MINOS_DATABASE_V2_CURRENT_TO_TARGET.json`](../../reports/database/MINOS_DATABASE_V2_CURRENT_TO_TARGET.json).
 
-**Nothing in this document has been executed.** D1.4 is design only; migration `0009` does not
-exist. The physical deployment names and the revision path are frozen in
+**Migration `0009` now exists** and has been exercised on scratch PostgreSQL only. Nothing in this
+document has been executed against the operational database, which remains at
+`0005_l2e_feature_view`. Steps 5 onwards — transformation, verification, cutover, retirement —
+remain unexecuted and unauthorized. The physical deployment names and the revision path are frozen in
 [`MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json`](../../reports/database/MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json).
 
 ---
@@ -134,7 +136,7 @@ Invariants for the intermediate revisions:
 3. After **each** intermediate revision, every L2-F table must hold **zero business rows**.
 4. No artifact publication, job enqueue or execution may occur during the intermediate revisions.
 5. No application path runs Alembic automatically; migration is an explicit operator action.
-6. **No operational migration is authorized in D1.4.**
+6. **No operational migration is authorized in D2.** `0009` runs on scratch clusters only.
 
 None of the following is used, now or later: `alembic stamp`, a skipped revision, a rewrite of
 `0001`–`0008`, a manual edit of `alembic_version`, a permanent multiple-head graph, a destructive
@@ -206,7 +208,8 @@ write the R1 manifest file with the snapshot digest, count and total bytes. `com
 `'complete'` only when both halves exist and verify; a dump alone is `'database_only'` and is
 **not** a valid MINOS recovery set.
 
-**3. Create the V2 shadow schema.** Forward migration `0009` creating the **37 shadow tables** in
+**3. Create the V2 shadow schema.** *(Implemented in D2, exercised on scratch PostgreSQL.)*
+Forward migration `0009` creating the **37 shadow tables** in
 the `dbv2_*` namespace, with their constraints, indexes, **34 functions, 89 triggers** and the
 800-record ACL matrix. `public.alembic_version` is shared, not duplicated. **No V1 object is
 touched** — not renamed, not altered, not deleted, not written.

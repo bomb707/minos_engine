@@ -93,7 +93,7 @@ def test_stepwise_downgrade_and_reupgrade_chain(pg_base_url: str) -> None:
     """Walk the whole chain, asserting presence AND absence at every stop."""
     with scratch_database(pg_base_url, "minos_stepwise_chain") as url:
         # ---- head: every stage present -------------------------------------------------
-        alembic_upgrade(url, "head")
+        alembic_upgrade(url, "0008_l2f_execution_results")
         assert _revision(url) == _HEAD
         assert _count_tables(url, _L2F) == 3, "L2-F tables missing at head"
         assert _count_tables(url, _L2E) == 3, "L2-E tables missing at head"
@@ -132,7 +132,7 @@ def test_stepwise_downgrade_and_reupgrade_chain(pg_base_url: str) -> None:
         assert _count_stage_schemas(url) == 0, "stage schemas not removed at base"
 
         # ---- re-upgrade: the chain is reversible ---------------------------------------
-        alembic_upgrade(url, "head")
+        alembic_upgrade(url, "0008_l2f_execution_results")
         assert _revision(url) == _HEAD
         assert _count_tables(url, _L2F) == 3, "L2-F objects missing after re-upgrade"
         assert _count_tables(url, _L2E) == 3, "L2-E objects missing after re-upgrade"

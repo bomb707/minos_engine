@@ -455,7 +455,7 @@ def seed_snapshot(
 @pytest.fixture(scope="session")
 def l2e_db_url(pg_base_url: str) -> Any:  # noqa: F811 - fixture name shadows import
     with scratch_database(pg_base_url, "minos_l2e_features") as url:
-        alembic_upgrade(url, "head")
+        alembic_upgrade(url, "0008_l2f_execution_results")
         yield url
 
 

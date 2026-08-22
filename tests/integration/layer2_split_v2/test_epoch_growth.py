@@ -100,7 +100,7 @@ def growth_engine(pg_base_url: str) -> Iterator[Engine]:
     from tests.layer2c_synth import synthetic_manifest
 
     with scratch_database(pg_base_url, "minos_l2c_v2_growth") as url:
-        alembic_upgrade(url, "head")
+        alembic_upgrade(url, "0008_l2f_execution_results")
         eng = create_engine(normalize_database_url(url))
         try:
             new = _new_samples(5)

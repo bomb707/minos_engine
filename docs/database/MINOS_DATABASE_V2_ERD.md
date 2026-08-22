@@ -11,7 +11,7 @@ occupied by live V1 relations. A later cutover renames the schemas so these name
 See [`MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json`](../../reports/database/MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json).
 
 38 tables · 8 schemas · contract hash
-`ea4e6aa0e752ea9f739c5d0c8f238355636c69559bb2dcbac1d629620e2f3d60`.
+`fc980a5a878cddff1b9a8a2a4b25ba4690abb85e8e28add84ac7f4bee75616ca`.
 
 ---
 
@@ -210,9 +210,11 @@ absent together (`ck_backup_sets_shape`):
 
 ### 2.2 Enforcement objects
 
+*(D2: all of these exist in the `dbv2_*` namespace on scratch PostgreSQL.)*
+
 Relational constraints do not appear in an ERD but decide what the diagram means. See
 [`MINOS_DATABASE_V2_DATABASE_API.json`](../../reports/database/MINOS_DATABASE_V2_DATABASE_API.json)
-(hash `0e4fd9bc68434e933c959e5882c507f3bc43a3cc9c32cb3839059dd3f1b776f4`) for the 34 functions,
+(hash `1e67735f2dcd4e6bec6f688755e3fc2456b71cebfb72cf0898c700591a9e45cf`) for the 34 functions,
 89 triggers, 16 state machines and the 800-record ACL matrix that enforce this schema.
 
 ---

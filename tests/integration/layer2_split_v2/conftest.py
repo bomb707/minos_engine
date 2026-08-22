@@ -41,7 +41,7 @@ def synthetic_epoch1_manifest() -> dict:
 @pytest.fixture(scope="session")
 def l2c_v2_url(pg_base_url: str) -> Iterator[str]:  # noqa: F811
     with scratch_database(pg_base_url, "minos_l2c_v2_main") as url:
-        alembic_upgrade(url, "head")
+        alembic_upgrade(url, "0008_l2f_execution_results")
         from minos_engine.storage.dataset_split import persist_manifest
         from minos_engine.storage.dataset_split_v2 import persist_epoch
         from tests.layer2c_synth import synthetic_manifest

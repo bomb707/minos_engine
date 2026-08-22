@@ -21,7 +21,7 @@ def _seed_jobs(engine, n: int) -> None:
 
 def test_single_claim_and_skip_locked(pg_base_url: str):
     with scratch_database(pg_base_url, "minos_l2b_claim1") as url:
-        alembic_upgrade(url, "head")
+        alembic_upgrade(url, "0008_l2f_execution_results")
         engine = create_db_engine(url)
         try:
             _seed_jobs(engine, 1)
@@ -46,7 +46,7 @@ def test_single_claim_and_skip_locked(pg_base_url: str):
 
 def test_two_workers_claim_distinct_jobs(pg_base_url: str):
     with scratch_database(pg_base_url, "minos_l2b_claim2") as url:
-        alembic_upgrade(url, "head")
+        alembic_upgrade(url, "0008_l2f_execution_results")
         engine = create_db_engine(url)
         try:
             _seed_jobs(engine, 2)
@@ -68,7 +68,7 @@ def test_two_workers_claim_distinct_jobs(pg_base_url: str):
 
 def test_rollback_releases_claim(pg_base_url: str):
     with scratch_database(pg_base_url, "minos_l2b_claim3") as url:
-        alembic_upgrade(url, "head")
+        alembic_upgrade(url, "0008_l2f_execution_results")
         engine = create_db_engine(url)
         try:
             _seed_jobs(engine, 1)

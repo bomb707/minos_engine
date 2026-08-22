@@ -57,12 +57,14 @@ def _scalar(engine: Engine, sql: str, **p: Any) -> Any:
 # --------------------------------------------------------------------------- #
 # revision lineage + byte identity
 # --------------------------------------------------------------------------- #
-def test_single_head_is_0008_descending_0007() -> None:
+def test_single_head_is_0009_descending_0008_descending_0007() -> None:
+    """DB-V2 D2 advanced the head to 0009; 0008 remains exactly where it was, below it."""
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert script.get_heads() == [_F5]
+    assert script.get_heads() == ["0009_dbv2_shadow_schema"]
+    assert {r.down_revision for r in script.get_revisions("0009_dbv2_shadow_schema")} == {_F5}
     assert {r.down_revision for r in script.get_revisions(_F5)} == {_F4}
 
 

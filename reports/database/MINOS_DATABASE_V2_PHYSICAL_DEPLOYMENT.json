@@ -37,7 +37,7 @@
     "table": "catalog.artifacts",
     "where": "lifecycle_state = 'active' AND backup_scope = 'operational'"
   },
-  "contract_sha256": "08b6c14eedce6be8024289fc083bab6fad52d6af128526cedda6832ba60e9244",
+  "contract_sha256": "c4711bfa3282acc44f9a9ff47c0d8a15aed29f0d67063e9116baf272ae5f3ff5",
   "counts": {
     "d2_tables_created": 37,
     "logical_tables": 38,
@@ -128,8 +128,24 @@
       }
     ]
   },
+  "d2_status": {
+    "applied_to_operational_database": false,
+    "data_transformed": false,
+    "exercised_on": "scratch PostgreSQL clusters only",
+    "lifecycle_verified": "0008 -> 0009 -> 0008 -> 0009, and 0005 -> 0006 -> 0007 -> 0008 -> 0009",
+    "migration": "migrations/versions/0009_dbv2_shadow_schema.py",
+    "note": "The shadow schema is created EMPTY: no artifact published, no job enqueued, no job executed, no V1 row read or written. D3 does not exist, recovery publication is unimplemented and cutover is unauthorized.",
+    "operational_revision": "0005_l2e_feature_view",
+    "shadow_objects": {
+      "functions": 34,
+      "schemas": 7,
+      "tables": 37,
+      "triggers": 89
+    }
+  },
   "database_api": {
-    "contract_sha256": "0e4fd9bc68434e933c959e5882c507f3bc43a3cc9c32cb3839059dd3f1b776f4",
+    "contract_sha256": "1e67735f2dcd4e6bec6f688755e3fc2456b71cebfb72cf0898c700591a9e45cf",
+    "d2_physical_acl_records": 780,
     "functions": 34,
     "note": "The executable half of the contract: every function, trigger, state transition and grant migration 0009 must create. Frozen in DB-V2 D1.4.",
     "report": "MINOS_DATABASE_V2_DATABASE_API.json",
@@ -1246,7 +1262,7 @@
   },
   "schema_version": "minos-db-v2-physical-deployment-v1",
   "shared_table": "public.alembic_version",
-  "stage": "DB-V2 D1.4",
+  "stage": "DB-V2 D2",
   "trigger_deployment": {
     "count": 89,
     "note": "Triggers are attached to the dbv2_* shadow tables and track them by OID, so the schema rename does not detach them. Their FUNCTION reference is by OID as well; what does NOT follow the rename is the schema-qualified text INSIDE each function body, which is why every function is re-created in the cutover transaction.",

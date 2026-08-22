@@ -28,7 +28,7 @@ from tests.integration.layer2_ingest.conftest import (
 @pytest.fixture()
 def fresh_env(pg_base_url: str, l2d_artifacts: dict[str, Any]):
     with scratch_database(pg_base_url, "minos_l2d_conc") as url:
-        alembic_upgrade(url, "head")
+        alembic_upgrade(url, "0008_l2f_execution_results")
         seed_registry_and_epoch(url, l2d_artifacts)
         yield {"url": url, **build_attestations(l2d_artifacts), **l2d_artifacts}
 

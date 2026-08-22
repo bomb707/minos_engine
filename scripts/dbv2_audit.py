@@ -214,6 +214,32 @@ ACL_PRIVILEGE_KEYS = (
 DDL_TABLE_PRIVILEGES = ("TRUNCATE", "REFERENCES", "TRIGGER")
 TRUTH_BINDINGS = "evaluation.truth_bindings"
 
+#: the migration elevates transaction-scoped, and only after every preflight check has passed.
+ELEVATION_STATEMENT = "SET LOCAL ROLE minos_owner"
+PREFLIGHT_CHECKS_BEFORE_ELEVATION = (
+    "record session_user and current_user",
+    "verify every required role exists in pg_roles",
+    "verify every required role has its declared LOGIN/NOLOGIN",
+    "verify the migration identity has membership",
+    "verify no required role has SUPERUSER, CREATEROLE or CREATEDB",
+    "verify the definer principal may create schemas in this database",
+)
+PREFLIGHT_REQUIRED_STEPS = (
+    *PREFLIGHT_CHECKS_BEFORE_ELEVATION,
+    ELEVATION_STATEMENT,
+    "re-check current_user",
+    "only then: CREATE SCHEMA",
+)
+
+#: D2 applies the physical ACL only: the logical final matrix restricted to the dbv2_* namespace.
+D2_ACL_RECORDS = 780
+D2_ACL_OBJECTS = 78
+D2_FORBIDDEN_ACL_TARGETS = (
+    "ON DATABASE minos_engine_db",
+    "ON SCHEMA public",
+    "public.alembic_version",
+)
+
 
 # --------------------------------------------------------------------------- #
 # strict JSON
@@ -664,6 +690,7 @@ def validate(reports: Path, root: Path = REPO_ROOT) -> list[str]:
             problems.extend(_validate_backup_set_shapes(contract))
             problems.extend(_validate_database_api(contract, physical, api))
             problems.extend(_validate_acl(contract, api))
+            problems.extend(_validate_d2_acl(contract, physical, api))
             problems.extend(_validate_role_provisioning(api))
             for document, label in ((contract, "logical contract"), (physical, "physical report")):
                 declared = document.get("database_api", {}).get(CONTRACT_HASH_FIELD)
@@ -1052,15 +1079,25 @@ def _validate_docs_and_migrations(root: Path) -> list[str]:
             if not (doc.parent / relative).resolve().exists():
                 problems.append(f"{doc.name}: broken link {target!r}")
 
-    # G16: migration 0009 must remain absent. A missing versions directory is itself a
-    # failure - the check must never pass by silently finding nothing to look at.
+    # DB-V2 D2: migration 0009 now EXISTS, and there is exactly one of it. A missing versions
+    # directory is itself a failure - the check must never pass by finding nothing to look at.
     versions = root / "migrations" / "versions"
     if not versions.is_dir():
         problems.append(f"no migrations directory at {versions}")
-    else:
-        stray = sorted(p.name for p in versions.glob("0009*"))
-        if stray:
-            problems.append(f"migration 0009 must not exist yet: {stray}")
+        return problems
+    found = sorted(p.name for p in versions.glob("0009*.py"))
+    if found != [f"{EXPECTED_REVISION_PATH[-1]}.py"]:
+        problems.append(
+            f"migration 0009 must be exactly {EXPECTED_REVISION_PATH[-1]}.py, got {found}"
+        )
+        return problems
+    source = (versions / found[0]).read_text(encoding="utf-8")
+    for needed in (
+        f'revision: str = "{EXPECTED_REVISION_PATH[-1]}"',
+        f'down_revision: str | None = "{EXPECTED_REVISION_PATH[-2]}"',
+    ):
+        if needed not in source:
+            problems.append(f"migration 0009 does not declare {needed}")
     return problems
 
 
@@ -1607,6 +1644,123 @@ def _validate_acl(contract: dict[str, Any], api: dict[str, Any]) -> list[str]:
     return problems
 
 
+def _validate_d2_acl(
+    contract: dict[str, Any], physical: dict[str, Any], api: dict[str, Any]
+) -> list[str]:
+    """D2 B2: migration 0009 applies the shadow-scoped ACL only, and touches nothing shared."""
+    problems: list[str] = []
+    d2 = api.get("d2_physical_acl")
+    logical = api.get("acl", {})
+    if not isinstance(d2, dict):
+        return ["the database API declares no D2 physical ACL"]
+
+    if logical.get("applies_at") != "after cutover":
+        problems.append("the logical ACL must declare that it applies after cutover, not in D2")
+    if d2.get("applies_at") != "migration 0009":
+        problems.append("the D2 physical ACL must declare that it applies in migration 0009")
+
+    shadow = physical.get("schema_mapping", {}).get("canonical_to_shadow", {})
+    inverse = {v: k for k, v in shadow.items()}
+    records = d2.get("records", [])
+    principals = list(d2.get("principals", []))
+    counts = d2.get("counts", {})
+    if len(records) != D2_ACL_RECORDS:
+        problems.append(f"the D2 ACL has {len(records)} records, not {D2_ACL_RECORDS}")
+    if counts.get("records") != len(records):
+        problems.append("the declared D2 record count does not equal the number of records")
+    if counts.get("objects") != D2_ACL_OBJECTS:
+        problems.append(f"the D2 ACL must cover exactly {D2_ACL_OBJECTS} objects")
+    if len(principals) != 10:
+        problems.append(f"the D2 ACL must cover 10 principals, got {len(principals)}")
+    if counts.get("schemas") != len(shadow):
+        problems.append(f"the D2 ACL must cover the {len(shadow)} new shadow schemas")
+
+    # every D2 object is a NEW dbv2_* object, and nothing shared or V1 appears
+    logical_records = {
+        (r["object_type"], r["object"], r["principal"]): r for r in logical.get("records", [])
+    }
+    seen: dict[tuple[str, str, str], int] = {}
+    for record in records:
+        object_type, ident = record.get("object_type", ""), record.get("object", "")
+        key = (object_type, ident, record.get("principal", ""))
+        seen[key] = seen.get(key, 0) + 1
+        if ident == "public" or ident.startswith("public."):
+            problems.append(f"the D2 ACL names a shared object: {ident}")
+            continue
+        schema_name = ident.split(".", 1)[0]
+        if not schema_name.startswith(SHADOW_SCHEMA_PREFIX):
+            problems.append(f"the D2 ACL names an object outside the shadow namespace: {ident}")
+            continue
+        canonical_schema = inverse.get(schema_name)
+        if canonical_schema is None:
+            problems.append(f"{ident}: {schema_name} is not a declared shadow schema")
+            continue
+        canonical = (
+            canonical_schema
+            if object_type == "schema"
+            else f"{canonical_schema}.{ident.split('.', 1)[1]}"
+        )
+        source = logical_records.get((object_type, canonical, key[2]))
+        if source is None:
+            problems.append(f"{ident}: no logical ACL record for {canonical}")
+        elif source["privileges"] != record.get("privileges"):
+            problems.append(f"{ident}/{key[2]}: D2 privileges differ from the logical final ACL")
+        elif source["grant_option"] != record.get("grant_option"):
+            problems.append(f"{ident}/{key[2]}: D2 grant option differs from the logical final ACL")
+    for key, count in sorted(seen.items()):
+        if count != 1:
+            problems.append(f"{key}: {count} D2 privilege records - the matrix is ambiguous")
+
+    objects = d2.get("objects", {})
+    expected_pairs = {
+        (kind, ident, principal)
+        for kind, key in (("schema", "schemas"), ("table", "tables"), ("function", "functions"))
+        for ident in objects.get(key, [])
+        for principal in principals
+    }
+    for key in sorted(expected_pairs - set(seen)):
+        problems.append(f"{key}: no D2 privilege record - the matrix is not exhaustive")
+
+    # the two shared objects are named as excluded, on purpose
+    excluded = " | ".join(d2.get("excluded_objects", {}).get("objects", []))
+    for shared in ("public (schema)", "public.alembic_version"):
+        if shared not in excluded:
+            problems.append(f"the D2 ACL must record {shared!r} as deliberately excluded")
+    forbidden = " | ".join(d2.get("forbidden_statements", []))
+    for statement in D2_FORBIDDEN_ACL_TARGETS:
+        if statement not in forbidden:
+            problems.append(f"the D2 ACL must forbid statements {statement!r}")
+    if "ALTER DEFAULT PRIVILEGES" not in forbidden:
+        problems.append("the D2 ACL must forbid ALTER DEFAULT PRIVILEGES on canonical schemas")
+
+    # PUBLIC holds nothing, and the revoke is scoped to newly created objects
+    for record in records:
+        if record.get("principal") != "PUBLIC":
+            continue
+        granted = sorted(p for p, held in record.get("privileges", {}).items() if held)
+        if granted:
+            problems.append(f"PUBLIC holds {granted} on the new object {record['object']}")
+    revocation = d2.get("public_revocation", "")
+    if "dbv2_" not in revocation or "0009 created" not in revocation:
+        problems.append("the D2 PUBLIC revoke must be scoped to objects 0009 itself created")
+    if "ON SCHEMA public FROM PUBLIC" in revocation:
+        problems.append("D2 must not revoke on the shared public schema")
+    if "IN SCHEMA <each new dbv2_* schema>" not in d2.get("default_privileges", ""):
+        problems.append("D2 default privileges must be scoped to the new shadow schemas")
+
+    # runtime roles hold no DDL privilege on any new object either
+    for role in RUNTIME_ROLES:
+        if role in d2.get("create_privilege", {}).get("granted_to", []):
+            problems.append(f"{role} holds CREATE on a new shadow schema")
+    for record in records:
+        if record.get("object_type") != "table" or record.get("principal") not in RUNTIME_ROLES:
+            continue
+        for privilege in DDL_TABLE_PRIVILEGES:
+            if record["privileges"].get(privilege):
+                problems.append(f"{record['principal']} holds {privilege} on {record['object']}")
+    return problems
+
+
 def _validate_role_provisioning(api: dict[str, Any]) -> list[str]:
     """K17-K18: roles are preflighted, never created by 0009, never dropped by a downgrade."""
     problems: list[str] = []
@@ -1619,16 +1773,53 @@ def _validate_role_provisioning(api: dict[str, Any]) -> list[str]:
     if set(required) != set(REQUIRED_ROLES):
         problems.append(f"required roles {sorted(required)} != {sorted(REQUIRED_ROLES)}")
     order = provisioning.get("preflight_order", [])
-    for phrase in ("verify every required role exists", "only then: CREATE SCHEMA"):
+    for phrase in PREFLIGHT_REQUIRED_STEPS:
         if not any(phrase in step for step in order):
             problems.append(f"the preflight order omits {phrase!r}")
     if order and "only then" in order[0]:
         problems.append("object creation must not be the first preflight step")
-    for index, step in enumerate(order):
-        if step.startswith("only then: CREATE SCHEMA") and index == 0:
-            problems.append("schemas may not be created before the role preflight")
-    if "raises BEFORE creating any DB-V2 object" not in provisioning.get("failure_mode", ""):
-        problems.append("0009 must fail before creating any object when a role is missing")
+
+    def _index(fragment: str) -> int:
+        return next((i for i, step in enumerate(order) if fragment in step), -1)
+
+    elevate = _index(ELEVATION_STATEMENT)
+    create = _index("only then: CREATE SCHEMA")
+    for fragment in PREFLIGHT_CHECKS_BEFORE_ELEVATION:
+        position = _index(fragment)
+        if 0 <= elevate < position:
+            problems.append(f"the elevation precedes the check {fragment!r}")
+    if elevate < 0:
+        problems.append(f"the preflight must elevate with {ELEVATION_STATEMENT!r}")
+    elif 0 <= create <= elevate:
+        problems.append("objects may not be created before the elevation")
+    if any("SET ROLE" in step and "SET LOCAL ROLE" not in step for step in order):
+        problems.append(
+            "the migration must elevate with SET LOCAL ROLE, which the transaction undoes, "
+            "never with SET ROLE, which outlives it"
+        )
+    elevation = provisioning.get("elevation", {})
+    if elevation.get("statement") != ELEVATION_STATEMENT:
+        problems.append(f"the declared elevation must be {ELEVATION_STATEMENT!r}")
+    for field in ("leaks_after_commit", "leaks_after_rollback", "manual_reset_issued"):
+        if elevation.get(field) is not False:
+            problems.append(f"the elevation contract must declare {field} false")
+    if "raises BEFORE the first CREATE, ALTER or GRANT" not in provisioning.get("failure_mode", ""):
+        problems.append("0009 must fail before its first DDL or GRANT when a role is incompatible")
+    if provisioning.get("roles_altered_by_0009") != []:
+        problems.append("migration 0009 must alter no cluster role")
+    if provisioning.get("roles_dropped_by_0009") != []:
+        problems.append("migration 0009 must drop no cluster role")
+    attributes = provisioning.get("role_attribute_contract", {})
+    if set(attributes) != set(REQUIRED_ROLES):
+        problems.append("the role attribute contract does not cover exactly the required roles")
+    for role, declared in sorted(attributes.items()):
+        for attribute in ("superuser", "createrole", "createdb"):
+            if declared.get(attribute) is not False:
+                problems.append(f"{role} must not hold {attribute.upper()}")
+    if attributes.get(DEFINER_PRINCIPAL, {}).get("login") is not False:
+        problems.append(f"{DEFINER_PRINCIPAL} must be NOLOGIN")
+    if DEFINER_PRINCIPAL not in attributes.get(MIGRATION_ROLE, {}).get("member_of", []):
+        problems.append(f"{MIGRATION_ROLE} must be a member of {DEFINER_PRINCIPAL}")
     downgrade = provisioning.get("downgrade_rule", "")
     if "NEVER drops" not in downgrade:
         problems.append("a downgrade must never drop a cluster role")

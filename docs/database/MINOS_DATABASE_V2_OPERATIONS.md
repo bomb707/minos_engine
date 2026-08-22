@@ -122,7 +122,8 @@ A backup set that has never passed a drill is treated as unproven.
 
 ## 3a. Roles
 
-The nine cluster roles are **not** created by migration `0009`. Provision them (or verify them)
+*(D2: the preflight below is implemented and exercised.)* The nine cluster roles are **not**
+created, altered or dropped by migration `0009`. Provision them (or verify them)
 outside the migration, before it runs; `0009` preflights and aborts before creating any object if a
 role is absent or incompatible. No password or credential belongs in a migration, a report or a
 test — authentication is a cluster concern.
@@ -184,7 +185,7 @@ real. `dbv2_*` never appears in application code.
 The operational revision path is `0005 → 0006 → 0007 → 0008 → 0009`. Migrations `0006`–`0008` are
 unapplied **today** and will execute as structural predecessors during a controlled preparation
 window; after each of them, every L2-F table must hold zero business rows, and no artifact
-publication, enqueue or execution may occur. No operational migration is authorized in D1.4.
+publication, enqueue or execution may occur. No operational migration is authorized in D2: `0009` exists but runs on scratch clusters only.
 
 ## 6. Migration windows
 

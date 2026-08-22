@@ -663,12 +663,14 @@ def test_the_logical_contract_records_the_physical_deployment() -> None:
     )
 
 
-def test_migration_0009_does_not_exist() -> None:
-    """G13: D1.1 is design only."""
+def test_migration_0009_exists_with_the_declared_identity() -> None:
+    """DB-V2 D2 created it. Exactly one file, with the exact revision identity."""
     versions = REPO_ROOT / "migrations" / "versions"
-    assert not list(versions.glob("0009*.py"))
-    planned = _physical()["revision_path"]["planned_d2_revision"]
-    assert not (versions / f"{planned}.py").exists()
+    found = sorted(p.name for p in versions.glob("0009*.py"))
+    assert found == ["0009_dbv2_shadow_schema.py"]
+    source = (versions / found[0]).read_text(encoding="utf-8")
+    assert 'revision: str = "0009_dbv2_shadow_schema"' in source
+    assert 'down_revision: str | None = "0008_l2f_execution_results"' in source
 
 
 def test_migrations_0006_to_0008_remain_byte_identical() -> None:
@@ -1066,6 +1068,8 @@ def _copy_root(tmp_path: Path) -> Path:
     versions = root / "migrations" / "versions"
     versions.mkdir(parents=True)
     (versions / "0008_l2f_execution_results.py").write_text("", encoding="utf-8")
+    real = REPO_ROOT / "migrations" / "versions" / "0009_dbv2_shadow_schema.py"
+    (versions / real.name).write_bytes(real.read_bytes())
     return root
 
 
@@ -1440,12 +1444,12 @@ def test_no_canonical_v2_object_is_a_retirement_target_after_d1_3() -> None:
 
 
 # --- G16/G17/G18/G19: migration absence, strict parsing, hashes, links ---------------------- #
-def test_migration_0009_is_still_absent() -> None:
-    """16: the versions directory exists, holds 0008, and holds nothing named 0009."""
+def test_the_migration_chain_is_intact_through_0009() -> None:
+    """16, updated for D2: 0008 is still there, and 0009 now sits on top of it."""
     versions = REPO_ROOT / "migrations" / "versions"
     assert versions.is_dir()
     assert sorted(p.stem for p in versions.glob("0008*.py")) == ["0008_l2f_execution_results"]
-    assert sorted(versions.glob("0009*")) == []
+    assert sorted(p.stem for p in versions.glob("0009*.py")) == ["0009_dbv2_shadow_schema"]
 
 
 def test_the_validator_detects_a_missing_versions_directory(tmp_path: Path) -> None:
@@ -1458,13 +1462,26 @@ def test_the_validator_detects_a_missing_versions_directory(tmp_path: Path) -> N
     assert any("no migrations directory" in p for p in problems), problems
 
 
-def test_the_validator_detects_a_created_migration_0009(tmp_path: Path) -> None:
+def test_the_validator_detects_a_missing_migration_0009(tmp_path: Path) -> None:
+    """D2: the guard now fires when 0009 is absent, or when its identity is wrong."""
     root = _copy_root(tmp_path)
-    (root / "migrations" / "versions" / "0009_dbv2_shadow_schema.py").write_text(
-        "", encoding="utf-8"
+    versions = root / "migrations" / "versions"
+    (versions / "0009_dbv2_shadow_schema.py").unlink()
+    assert any("must be exactly 0009_dbv2_shadow_schema.py" in p for p in _validate_root(root))
+
+
+def test_the_validator_detects_a_wrong_down_revision_on_0009(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+    path = root / "migrations" / "versions" / "0009_dbv2_shadow_schema.py"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            'down_revision: str | None = "0008_l2f_execution_results"',
+            'down_revision: str | None = "0007_l2f_job_claiming"',
+        ),
+        encoding="utf-8",
     )
     problems = _validate_root(root)
-    assert any("0009 must not exist" in p for p in problems), problems
+    assert any("does not declare down_revision" in p for p in problems), problems
 
 
 def test_every_committed_json_report_parses_strictly_and_rehashes() -> None:
@@ -2156,19 +2173,47 @@ def test_the_validator_detects_a_truth_binding_leak(tmp_path: Path) -> None:
 
 # --- K17/K18: role provisioning ---------------------------------------------------------------- #
 def test_migration_0009_preflights_roles_and_creates_none() -> None:
-    """17: cluster roles are not database-local objects."""
+    """17, and D2 B1: every check runs before a transaction-scoped elevation."""
     provisioning = _api()["role_provisioning"]
     assert provisioning["roles_created_by_0009"] == []
+    assert provisioning["roles_altered_by_0009"] == []
+    assert provisioning["roles_dropped_by_0009"] == []
     assert set(provisioning["required_roles"]) == set(audit.REQUIRED_ROLES)
-    assert "raises BEFORE creating any DB-V2 object" in provisioning["failure_mode"]
+    assert "raises BEFORE the first CREATE, ALTER or GRANT" in provisioning["failure_mode"]
     assert provisioning["scratch_test_rule"]
     assert provisioning["operational_provisioning"]
     order = provisioning["preflight_order"]
-    assert order.index("SET ROLE minos_owner") == 0
-    assert any(s.startswith("only then: CREATE SCHEMA") for s in order)
-    assert order.index("verify every required role exists in pg_roles") < next(
-        i for i, s in enumerate(order) if s.startswith("only then: CREATE SCHEMA")
-    )
+    elevate = next(i for i, step in enumerate(order) if audit.ELEVATION_STATEMENT in step)
+    create = next(i for i, step in enumerate(order) if step.startswith("only then: CREATE SCHEMA"))
+    for fragment in audit.PREFLIGHT_CHECKS_BEFORE_ELEVATION:
+        assert next(i for i, step in enumerate(order) if fragment in step) < elevate, fragment
+    assert elevate < create
+    assert not any("SET ROLE" in step and "SET LOCAL ROLE" not in step for step in order)
+    elevation = provisioning["elevation"]
+    assert elevation["statement"] == "SET LOCAL ROLE minos_owner"
+    assert elevation["leaks_after_commit"] is False
+    assert elevation["leaks_after_rollback"] is False
+    assert elevation["manual_reset_issued"] is False
+
+
+def test_the_d2_physical_acl_is_scoped_to_new_objects_only() -> None:
+    """D2 B2: 780 records over 78 shadow objects; nothing shared, V1 or database-level."""
+    api = _api()
+    d2 = api["d2_physical_acl"]
+    assert d2["counts"] == {
+        "functions": 34,
+        "objects": 78,
+        "principals": 10,
+        "records": 780,
+        "schemas": 7,
+        "tables": 37,
+    }
+    assert api["acl"]["applies_at"] == "after cutover"
+    for record in d2["records"]:
+        assert record["object"].startswith("dbv2_"), record["object"]
+    forbidden = " | ".join(d2["forbidden_statements"])
+    for statement in audit.D2_FORBIDDEN_ACL_TARGETS:
+        assert statement in forbidden, statement
 
 
 def test_a_downgrade_never_drops_a_cluster_role() -> None:

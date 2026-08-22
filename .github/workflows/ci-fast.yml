@@ -91,5 +91,8 @@ jobs:
       - name: DB-V2 design reports — strict parse, contract hash, cross-reference
         run: python scripts/dbv2_audit.py validate
 
+      - name: DB-V2 migration 0009 — no drift from the frozen contracts
+        run: python scripts/gen_dbv2_migration.py verify
+
       - name: Test inventory — no drift from the committed report
         run: python scripts/test_inventory.py verify

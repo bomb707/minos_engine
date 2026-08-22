@@ -1338,7 +1338,7 @@
         "typing",
         "uuid"
       ],
-      "line_count": 449,
+      "line_count": 451,
       "path": "tests/integration/layer2_db/test_l2f_execution_migration.py",
       "reason": "",
       "recommended_tier": "full",
@@ -1555,7 +1555,7 @@
         "pytest",
         "sqlalchemy"
       ],
-      "line_count": 181,
+      "line_count": 185,
       "path": "tests/integration/layer2_db/test_l2f_migration_lifecycle.py",
       "reason": "",
       "recommended_tier": "full",
@@ -1947,6 +1947,115 @@
         "minos_engine.storage.repositories"
       ],
       "test_count": 3
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "collections",
+        "conftest",
+        "hashlib",
+        "json",
+        "pytest",
+        "sqlalchemy",
+        "typing",
+        "uuid"
+      ],
+      "line_count": 762,
+      "path": "tests/integration/layer2_dbv2/test_d2_behavior.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage",
+        "minos_engine.storage.database"
+      ],
+      "test_count": 19
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "conftest",
+        "pytest",
+        "typing"
+      ],
+      "line_count": 192,
+      "path": "tests/integration/layer2_dbv2/test_d2_lifecycle.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage"
+      ],
+      "test_count": 5
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "conftest",
+        "pytest"
+      ],
+      "line_count": 279,
+      "path": "tests/integration/layer2_dbv2/test_d2_schema.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage"
+      ],
+      "test_count": 11
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "conftest",
+        "hashlib",
+        "json",
+        "pathlib",
+        "pytest",
+        "re",
+        "sqlalchemy",
+        "subprocess",
+        "sys",
+        "typing"
+      ],
+      "line_count": 501,
+      "path": "tests/integration/layer2_dbv2/test_d2_security.py",
+      "reason": "",
+      "recommended_tier": "manual_privileged",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": true,
+      "source_modules_covered": [
+        "minos_engine.storage",
+        "minos_engine.storage.database"
+      ],
+      "test_count": 18
     },
     {
       "category": "integration",
@@ -4303,7 +4412,7 @@
         "re",
         "typing"
       ],
-      "line_count": 2256,
+      "line_count": 2301,
       "path": "tests/unit/tools/test_dbv2_audit.py",
       "reason": "Retained specifically for DB-V2: guards the design-report validator and contract hash.",
       "recommended_tier": "manual_privileged",
@@ -4314,7 +4423,7 @@
       "requires_postgres": false,
       "requires_privileged": true,
       "source_modules_covered": [],
-      "test_count": 173
+      "test_count": 175
     },
     {
       "category": "unit",
@@ -4647,12 +4756,12 @@
       "tests": 853
     },
     "full": {
-      "files": 90,
-      "tests": 785
+      "files": 93,
+      "tests": 820
     },
     "manual_privileged": {
-      "files": 4,
-      "tests": 227
+      "files": 5,
+      "tests": 247
     },
     "retire_after_dbv2": {
       "files": 0,
@@ -4660,10 +4769,10 @@
     }
   },
   "totals": {
-    "conftest_files": 6,
-    "fixtures": 25,
-    "test_files": 173,
-    "test_functions": 1865,
-    "test_lines": 36177
+    "conftest_files": 7,
+    "fixtures": 28,
+    "test_files": 177,
+    "test_functions": 1920,
+    "test_lines": 37962
   }
 }
