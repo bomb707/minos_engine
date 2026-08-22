@@ -4,7 +4,7 @@ Companion to [the architecture](MINOS_DATABASE_V2_ARCHITECTURE.md) and
 [the ERD](MINOS_DATABASE_V2_ERD.md). The complete object-by-object mapping is in
 [`MINOS_DATABASE_V2_CURRENT_TO_TARGET.json`](../../reports/database/MINOS_DATABASE_V2_CURRENT_TO_TARGET.json).
 
-**Nothing in this document has been executed.** D1.3 is design only; migration `0009` does not
+**Nothing in this document has been executed.** D1.4 is design only; migration `0009` does not
 exist. The physical deployment names and the revision path are frozen in
 [`MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json`](../../reports/database/MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json).
 
@@ -134,7 +134,7 @@ Invariants for the intermediate revisions:
 3. After **each** intermediate revision, every L2-F table must hold **zero business rows**.
 4. No artifact publication, job enqueue or execution may occur during the intermediate revisions.
 5. No application path runs Alembic automatically; migration is an explicit operator action.
-6. **No operational migration is authorized in D1.3.**
+6. **No operational migration is authorized in D1.4.**
 
 None of the following is used, now or later: `alembic stamp`, a skipped revision, a rewrite of
 `0001`–`0008`, a manual edit of `alembic_version`, a permanent multiple-head graph, a destructive
@@ -153,8 +153,17 @@ D1 said "record a `catalog.backup_sets` row" as step 1. That is unexecutable: V1
 `catalog.backup_sets` relation, and the V2 one is created by the very migration step 1 precedes.
 The recovery set is therefore captured in two phases.
 
-**R1 — before any operational migration.** Take the `pg_dump -Fc`, record the WAL position, and
-enumerate and verify the artifact snapshot. Write a strict, immutable **file** beneath the
+**R1 — before any operational migration, inside one write quiesce.** The seven steps are:
+stop application writes and artifact publication; drain active write transactions and record
+`quiesce_started_at`; take the `pg_dump -Fc` and the WAL position inside the quiesced window;
+enumerate and verify the operational artifact snapshot using the exact predicate
+`lifecycle_state = 'active' AND backup_scope = 'operational'`; publish the backup, the snapshot
+manifest and the recovery manifest beneath `MINOS_DB_RECOVERY_ROOT`; re-read and verify every
+published byte; record `quiesce_ended_at` and resume writes only once the complete set is durable.
+An independently timed `pg_dump` and filesystem scan do **not** form one recovery point — an
+artifact published between them lands in one half only — so the quiesce window is what makes the two
+halves one state, and it is recorded in the manifest so the claim is auditable. If any step fails,
+`0009` is not authorized. Write a strict, immutable **file** beneath the
 externally provisioned recovery root, at
 `<MINOS_DB_RECOVERY_ROOT>/recovery/<recovery_manifest_sha256>.recovery.json`, binding all sixteen
 R1 fields: schema version, `recovery_set_id`, database name, source Alembic revision, backup kind,
@@ -198,14 +207,20 @@ write the R1 manifest file with the snapshot digest, count and total bytes. `com
 **not** a valid MINOS recovery set.
 
 **3. Create the V2 shadow schema.** Forward migration `0009` creating the **37 shadow tables** in
-the `dbv2_*` namespace, with their constraints, indexes, functions and role grants.
-`public.alembic_version` is shared, not duplicated. **No V1 object is touched** — not renamed, not
-altered, not deleted, not written.
+the `dbv2_*` namespace, with their constraints, indexes, **34 functions, 89 triggers** and the
+800-record ACL matrix. `public.alembic_version` is shared, not duplicated. **No V1 object is
+touched** — not renamed, not altered, not deleted, not written.
 
-**4. R2 — register the recovery set.** Publish and register the three artifacts, insert
-`dbv2_catalog.backup_sets` bound to them, re-read the row and the artifacts, and require equality
-with the R1 file. Transformation may not begin until this passes and
-`completeness = 'complete'`.
+`0009` begins with a **role preflight**: `SET ROLE minos_owner`, then verify every required cluster
+role exists, that `minos_owner` is NOLOGIN and `minos_migrate` is a member of it, and that no
+required role is a superuser. Only then is any object created, and only then are grants applied.
+Roles are cluster objects: `0009` creates none, and a downgrade drops none.
+
+**4. R2 — register the recovery set.** Publish the recovery artifacts with
+`backup_scope = 'recovery'`, insert `dbv2_catalog.backup_sets` bound to them, and let the CONSTRAINT
+trigger `trg_backup_sets_shape` verify all fifteen cross-table conditions in the same transaction.
+Transformation may not begin until this passes and `completeness = 'complete'`; a `database_only`
+row explicitly may not authorize it.
 
 **5. Deterministic transformation.** Copy and transform V1 → the `dbv2_*` shadow tables, one
 transaction per source table, driven by the mapping report. Re-runnable: every insert is keyed and
@@ -272,6 +287,15 @@ recovery is proven.
 application back at the V1 repositories and dropping the shadow tables". After cutover the shadow
 tables *are* the live system under canonical names; dropping them would delete the migrated
 database, and "V1 repositories" no longer resolve to V1.
+
+### 3.3b Function bodies are re-created inside the cutover transaction
+
+A plpgsql body is stored as TEXT and re-parsed at execution, so a schema-qualified reference does
+**not** follow a schema rename. All 34 DB-V2 functions are therefore `CREATE OR REPLACE`d inside the
+cutover transaction itself, immediately after the renames and before revalidation, with their bodies
+qualified against the canonical names; the rollback transaction restores the `dbv2_*`-qualified
+bodies at the same point. Triggers track their table and function by OID and survive the rename
+untouched — it is only the text inside the bodies that has to be rewritten.
 
 ### 3.4 Final retirement
 

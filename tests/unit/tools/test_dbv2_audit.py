@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import re
 from pathlib import Path
 from typing import Any, cast
 
@@ -864,7 +865,9 @@ def test_the_contradictory_rollback_statement_is_recorded_as_withdrawn() -> None
     statements = " | ".join(w["statement"] for w in withdrawn)
     assert "reports/database/recovery/R1_RECOVERY_MANIFEST.json" in statements
     assert "Point the application back" in statements
-    assert len(withdrawn) == 5
+    assert "one recovery point" in statements
+    assert "covers every active artifact" in statements
+    assert len(withdrawn) == 7
 
 
 def test_forward_cutover_followed_by_rollback_is_the_identity_permutation() -> None:
@@ -1050,6 +1053,7 @@ def _copy_root(tmp_path: Path) -> Path:
         "MINOS_DATABASE_V2_CONTRACT.json",
         "MINOS_DATABASE_V2_CURRENT_TO_TARGET.json",
         "MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json",
+        "MINOS_DATABASE_V2_DATABASE_API.json",
     ):
         (reports / name).write_bytes((REPORTS / name).read_bytes())
     testing = root / "reports" / "testing"
@@ -1095,7 +1099,7 @@ def _table(document: dict[str, Any], schema: str, table: str) -> dict[str, Any]:
 
 
 def test_the_committed_design_validates_as_a_whole(tmp_path: Path) -> None:
-    """The unmodified D1.3 design must pass every guard — the baseline every negative needs."""
+    """The unmodified design must pass every guard — the baseline every negative needs."""
     assert _validate_root(_copy_root(tmp_path)) == []
 
 
@@ -1505,4 +1509,747 @@ def test_the_logical_and_physical_hashes_changed_in_d1_3() -> None:
     )
     assert _physical()[audit.CONTRACT_HASH_FIELD] != (
         "cb08322bdb9a8011327398bb235215ebbf230151b3661eaf7af4eb9a56d4ef71"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# DB-V2 D1.4 — snapshot eligibility, row shapes, the database API, the ACL matrix
+# --------------------------------------------------------------------------- #
+API_REPORT = REPORTS / "MINOS_DATABASE_V2_DATABASE_API.json"
+
+
+def _api() -> dict[str, Any]:
+    return cast("dict[str, Any]", audit.load_strict(API_REPORT))
+
+
+def _break_api(root: Path, mutate: Any) -> None:
+    path = root / "reports" / "database" / "MINOS_DATABASE_V2_DATABASE_API.json"
+
+    def _apply(document: dict[str, Any]) -> None:
+        mutate(document)
+        document[audit.CONTRACT_HASH_FIELD] = audit.contract_hash(document)
+
+    _rewrite(path, _apply)
+    # both contracts pin the API hash, so re-pin it or every negative fires the wrong guard
+    api = audit.load_strict(path)
+    for name in ("MINOS_DATABASE_V2_CONTRACT.json", "MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json"):
+        other = root / "reports" / "database" / name
+
+        def _repin(document: dict[str, Any]) -> None:
+            document["database_api"][audit.CONTRACT_HASH_FIELD] = api[audit.CONTRACT_HASH_FIELD]
+            document[audit.CONTRACT_HASH_FIELD] = audit.contract_hash(document)
+
+        _rewrite(other, _repin)
+
+
+def _acl_record(api: dict[str, Any], object_type: str, obj: str, principal: str) -> dict[str, Any]:
+    return next(
+        r
+        for r in api["acl"]["records"]
+        if (r["object_type"], r["object"], r["principal"]) == (object_type, obj, principal)
+    )
+
+
+# --- K1/K2: recovery artifacts can never enter the snapshot they describe ------------------- #
+def test_the_snapshot_predicate_excludes_recovery_artifacts() -> None:
+    """1: the exact predicate, not 'all active artifacts'."""
+    predicate = _contract()["artifact_snapshot_predicate"]
+    assert predicate["where"] == "lifecycle_state = 'active' AND backup_scope = 'operational'"
+    assert predicate["excluded_by_construction"] == "backup_scope = 'recovery'"
+    assert predicate["table"] == "catalog.artifacts"
+
+
+def test_registering_a_recovery_set_does_not_change_the_snapshot_it_hashes() -> None:
+    """1: the fixed-point property the D1.3 contract did not have. Modelled, then asserted."""
+    operational = [
+        {
+            "content_sha256": "a" * 64,
+            "size_bytes": 3,
+            "artifact_kind": "vcf",
+            "lifecycle_state": "active",
+            "backup_scope": "operational",
+        },
+        {
+            "content_sha256": "b" * 64,
+            "size_bytes": 5,
+            "artifact_kind": "bam",
+            "lifecycle_state": "active",
+            "backup_scope": "operational",
+        },
+    ]
+    recovery = [
+        {
+            "content_sha256": c * 64,
+            "size_bytes": 9,
+            "artifact_kind": kind,
+            "lifecycle_state": "active",
+            "backup_scope": "recovery",
+        }
+        for c, kind in (("c", "recovery_manifest"), ("d", "backup"), ("e", "snapshot"))
+    ]
+
+    def snapshot(rows: list[dict[str, Any]]) -> list[tuple[str, int, str]]:
+        selected = [
+            r
+            for r in rows
+            if r["lifecycle_state"] == "active" and r["backup_scope"] == "operational"
+        ]
+        return sorted((r["content_sha256"], r["size_bytes"], r["artifact_kind"]) for r in selected)
+
+    before = snapshot(operational)
+    after = snapshot(operational + recovery)  # R2 published three more ACTIVE artifacts
+    assert before == after, "R2 must not change the inventory R1 hashed"
+    assert len(before) == 2
+
+
+def test_backup_scope_is_immutable_and_two_valued() -> None:
+    """2: an artifact's scope is fixed at publication; it can never be reclassified."""
+    artifacts = _table(_contract(), "catalog", "artifacts")
+    column = next(c for c in artifacts["columns"] if c["name"] == "backup_scope")
+    assert column["nullable"] is False
+    assert column["mutability"] == "immutable"
+    checks = {c["name"]: c["expression"] for c in artifacts["check_constraints"]}
+    assert checks["ck_artifacts_backup_scope"] == "backup_scope IN ('operational','recovery')"
+    assert "backup_scope" in _api()["immutable_column_inventory"]["catalog.artifacts"]
+
+
+def test_an_artifact_changes_lifecycle_without_changing_backup_scope() -> None:
+    """12 of section C: the documented independence of the two columns."""
+    text = _table(_contract(), "catalog", "artifacts")["lifecycle_and_backup_scope"]
+    assert "orthogonal" in text
+    assert "backup_scope is\nimmutable".replace("\n", " ") in text.replace("\n", " ")
+
+
+def test_the_validator_detects_an_unqualified_snapshot_predicate(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+    _break_contract(
+        root,
+        lambda d: d["artifact_snapshot_predicate"].__setitem__(
+            "where", "lifecycle_state = 'active'"
+        ),
+    )
+    problems = _validate_root(root)
+    assert any("snapshot predicate WHERE" in p for p in problems), problems
+
+
+def test_the_validator_detects_a_mutable_backup_scope(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        artifacts = _table(document, "catalog", "artifacts")
+        next(c for c in artifacts["columns"] if c["name"] == "backup_scope")["mutability"] = (
+            "mutable"
+        )
+
+    _break_contract(root, _break)
+    problems = _validate_root(root)
+    assert any("backup_scope must be immutable" in p for p in problems), problems
+
+
+def test_the_validator_detects_a_missing_snapshot_index(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        artifacts = _table(document, "catalog", "artifacts")
+        artifacts["indexes"] = [
+            i for i in artifacts["indexes"] if i["name"] != "ix_artifacts_operational_snapshot"
+        ]
+
+    _break_contract(root, _break)
+    problems = _validate_root(root)
+    assert any("no index named" in p for p in problems), problems
+
+
+# --- K3: the digest formula is exact and independently reproducible ------------------------- #
+def test_the_snapshot_digest_is_domain_separated_and_order_dependent() -> None:
+    """3: computed here, not asserted from prose."""
+    digest = _contract()["artifact_snapshot_digest"]
+    assert digest["domain"] == "minos:db-v2-artifact-snapshot:v1\n"
+    assert digest["entry_fields"] == ["content_sha256", "size_bytes", "artifact_kind"]
+    domain = digest["domain"].encode("utf-8")
+    entries = [
+        {"artifact_kind": "vcf", "content_sha256": "a" * 64, "size_bytes": 3},
+        {"artifact_kind": "bam", "content_sha256": "b" * 64, "size_bytes": 5},
+    ]
+    manifest = {
+        "artifact_count": 2,
+        "artifact_total_bytes": 8,
+        "entries": entries,
+        "predicate": "p",
+        "recovery_set_id": "r",
+        "schema_version": "v1",
+    }
+    value = hashlib.sha256(domain + audit.canonical_bytes(manifest)).hexdigest()
+    assert value != hashlib.sha256(audit.canonical_bytes(manifest)).hexdigest()
+    swapped = dict(manifest, entries=list(reversed(entries)))
+    assert value != hashlib.sha256(domain + audit.canonical_bytes(swapped)).hexdigest()
+    assert digest["domain"] != audit.CONTRACT_HASH_DOMAIN.decode("utf-8")
+
+
+def test_the_validator_detects_a_digest_without_domain_separation(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+    _break_contract(
+        root,
+        lambda d: d["artifact_snapshot_digest"].__setitem__(
+            "formula", "artifact_snapshot_sha256 = sha256(canonical_json_bytes(manifest))"
+        ),
+    )
+    problems = _validate_root(root)
+    assert any("must be domain-separated" in p for p in problems), problems
+
+
+# --- K4/K5: the two row shapes, and immutable completeness ---------------------------------- #
+def test_the_two_row_shapes_are_mutually_exclusive_and_exhaustive() -> None:
+    """4: parsed from the CHECK, not from the prose beside it."""
+    table = _table(_contract(), "catalog", "backup_sets")
+    checks = {c["name"]: c["expression"] for c in table["check_constraints"]}
+    shapes = audit._shape_disjuncts(checks["ck_backup_sets_shape"])
+    assert len(shapes) == 2
+    assert {s["completeness"] for s in shapes} == {"complete", "database_only"}
+    by_state = {s["completeness"]: s["nullness"] for s in shapes}
+    for column in audit.SNAPSHOT_SHAPE_COLUMNS:
+        assert by_state["complete"][column] is False, column
+        assert by_state["database_only"][column] is True, column
+
+
+def test_the_database_only_shape_is_structurally_possible() -> None:
+    """6 of section B, corrected: every snapshot column is nullable and has no default."""
+    columns = {c["name"]: c for c in _table(_contract(), "catalog", "backup_sets")["columns"]}
+    for column in audit.SNAPSHOT_SHAPE_COLUMNS:
+        assert columns[column]["nullable"] is True, column
+        assert "default" not in columns[column], column
+
+
+def test_completeness_is_immutable_and_never_upgraded_in_place() -> None:
+    """5: no mutable database_only -> complete transition exists anywhere."""
+    table = _table(_contract(), "catalog", "backup_sets")
+    columns = {c["name"]: c for c in table["columns"]}
+    assert columns["completeness"]["mutability"] == "immutable"
+    assert table["mutable_columns"] == ["restore_tested_at"]
+    machine = _api()["state_machines"]["backup_set_immutability"]
+    assert machine["transitions"] == []
+    assert ["database_only", "complete"] in machine["forbidden"]
+    assert _api()["mutable_column_rules"]["catalog.backup_sets"] == {
+        "restore_tested_at": ("the ONLY permitted UPDATE target on this table; forward-only")
+    }
+
+
+def test_the_validator_detects_a_not_null_snapshot_column(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        table = _table(document, "catalog", "backup_sets")
+        next(c for c in table["columns"] if c["name"] == "artifact_count")["nullable"] = False
+
+    _break_contract(root, _break)
+    problems = _validate_root(root)
+    assert any("structurally impossible" in p for p in problems), problems
+
+
+def test_the_validator_detects_a_mutable_completeness(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        table = _table(document, "catalog", "backup_sets")
+        next(c for c in table["columns"] if c["name"] == "completeness")["mutability"] = "mutable"
+
+    _break_contract(root, _break)
+    problems = _validate_root(root)
+    assert any("completeness must be immutable" in p for p in problems), problems
+
+
+def test_the_validator_detects_a_half_populated_shape(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        table = _table(document, "catalog", "backup_sets")
+        check = next(c for c in table["check_constraints"] if c["name"] == "ck_backup_sets_shape")
+        check["expression"] = check["expression"].replace(
+            "AND artifact_count IS NULL AND artifact_total_bytes IS NULL",
+            "AND artifact_total_bytes IS NULL",
+        )
+
+    _break_contract(root, _break)
+    problems = _validate_root(root)
+    assert any("says nothing about artifact_count" in p for p in problems), problems
+
+
+# --- K6: cross-table completeness enforcement ------------------------------------------------ #
+def test_the_completeness_gate_is_a_constraint_trigger_checking_all_fifteen_conditions() -> None:
+    """6: a CHECK cannot reference another table, so the gate must exist and be exact."""
+    api = _api()
+    gate = next(f for f in api["functions"] if f["name"] == "catalog.enforce_backup_set_shape")
+    assert gate["security_mode"] == "DEFINER"
+    assert "catalog.artifacts" in gate["tables_read"]
+    assert "catalog.artifact_locations" in gate["tables_read"]
+    assert len(gate["sqlstates"]) == 15
+    declared = " | ".join(gate["sqlstates"])
+    for phrase in audit.GATE_REQUIRED_CHECKS:
+        assert phrase in declared, phrase
+    trigger = next(t for t in api["triggers"] if t["function"] == gate["name"])
+    assert trigger["constraint_trigger"] is True
+    assert trigger["deferrability"] == "DEFERRABLE INITIALLY IMMEDIATE"
+    assert "INSERT" in trigger["event"]
+
+
+def test_the_validator_detects_a_gate_that_skips_a_condition(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        gate = next(
+            f for f in document["functions"] if f["name"] == "catalog.enforce_backup_set_shape"
+        )
+        gate["sqlstates"] = [
+            s for s in gate["sqlstates"] if "a recovery artifact appears in the snapshot" not in s
+        ]
+
+    _break_api(root, _break)
+    problems = _validate_root(root)
+    assert any("does not reject: a recovery artifact appears" in p for p in problems), problems
+
+
+def test_the_validator_detects_a_non_constraint_gate(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        trigger = next(t for t in document["triggers"] if t["name"] == "trg_backup_sets_shape")
+        trigger["constraint_trigger"] = False
+
+    _break_api(root, _break)
+    problems = _validate_root(root)
+    assert any("must be a CONSTRAINT trigger" in p for p in problems), problems
+
+
+# --- K7/K12: every immutable column and every protected table has its trigger ---------------- #
+def test_every_immutable_column_is_covered_by_a_declared_trigger() -> None:
+    """7: 286 annotations, every one of them enforced."""
+    api, contract = _api(), _contract()
+    by_table: dict[str, list[dict[str, Any]]] = {}
+    for trigger in api["triggers"]:
+        by_table.setdefault(trigger["table"], []).append(trigger)
+    covered = 0
+    for schema in contract["schemas"]:
+        for table in schema["tables"]:
+            ident = f"{schema['schema']}.{table['table']}"
+            if ident == "public.alembic_version":
+                continue
+            immutable = [c["name"] for c in table["columns"] if c["mutability"] == "immutable"]
+            assert api["immutable_column_inventory"][ident] == immutable, ident
+            functions = {t["function"] for t in by_table[ident]}
+            assert functions & audit.IMMUTABILITY_FUNCTIONS, ident
+            covered += len(immutable)
+    assert covered == api["counts"]["immutable_columns"] == 286
+
+
+def test_every_table_refuses_delete() -> None:
+    """12: no DB-V2 table accepts DELETE from any role."""
+    api = _api()
+    deleting = {t["table"] for t in api["triggers"] if t["event"] == "DELETE"}
+    assert deleting == set(api["no_delete_tables"]["tables"])
+    assert len(deleting) == 37
+
+
+def test_the_validator_detects_an_unprotected_immutable_column(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        document["immutable_column_inventory"]["catalog.datasets"].pop()
+
+    _break_api(root, _break)
+    problems = _validate_root(root)
+    assert any("immutable column inventory does not match" in p for p in problems), problems
+
+
+def test_the_validator_detects_a_missing_delete_guard(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        document["triggers"] = [
+            t for t in document["triggers"] if t["name"] != "trg_events_no_delete"
+        ]
+
+    _break_api(root, _break)
+    problems = _validate_root(root)
+    assert any("no DELETE protection trigger" in p for p in problems), problems
+
+
+def test_the_validator_detects_a_generic_guard_with_wrong_arguments(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        trigger = next(
+            t for t in document["triggers"] if t["name"] == "trg_artifacts_immutable_columns"
+        )
+        trigger["arguments"] = trigger["arguments"][:-1]
+
+    _break_api(root, _break)
+    problems = _validate_root(root)
+    assert any("do not equal the immutable columns" in p for p in problems), problems
+
+
+# --- K8/K9: transitions -------------------------------------------------------------------- #
+def test_every_declared_transition_uses_a_real_state() -> None:
+    """8: every state named by a machine is in its table's CHECK domain and is reachable."""
+    api, contract = _api(), _contract()
+    checked = 0
+    for key, machine in api["state_machines"].items():
+        if machine["column"].startswith("("):
+            continue
+        schema_name, table_name = machine["table"].split(".", 1)
+        table = _table(contract, schema_name, table_name)
+        domain = audit._check_domain(table, machine["column"]) | {"(null)"}
+        if not domain - {"(null)"}:
+            continue
+        for source, target in machine["transitions"]:
+            assert source in domain, (key, source)
+            assert target in domain, (key, target)
+        checked += 1
+    assert checked >= 10
+
+
+def test_no_transition_is_both_allowed_and_forbidden() -> None:
+    """9: the two lists are disjoint, and every machine forbids something."""
+    for key, machine in _api()["state_machines"].items():
+        allowed = {tuple(t) for t in machine["transitions"]}
+        forbidden = {tuple(t) for t in machine["forbidden"]}
+        assert forbidden, key
+        assert not allowed & forbidden, key
+
+
+def test_the_validator_detects_a_transition_to_an_undeclared_state(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        document["state_machines"]["job_state"]["transitions"].append(["RUNNING", "PAUSED"])
+
+    _break_api(root, _break)
+    problems = _validate_root(root)
+    assert any("is not in the CHECK domain" in p for p in problems), problems
+
+
+def test_the_validator_detects_a_contradictory_transition(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        machine = document["state_machines"]["job_state"]
+        machine["forbidden"].append(machine["transitions"][0])
+
+    _break_api(root, _break)
+    problems = _validate_root(root)
+    assert any("both allowed and forbidden" in p for p in problems), problems
+
+
+def test_the_validator_detects_an_unreachable_declared_state(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        machine = document["state_machines"]["job_state"]
+        machine["transitions"] = [t for t in machine["transitions"] if t != ["CLAIMED", "RUNNING"]]
+
+    _break_api(root, _break)
+    problems = _validate_root(root)
+    assert any("unreachable through any allowed transition" in p for p in problems), problems
+
+
+# --- K10/K11/K19: function contracts ---------------------------------------------------------- #
+def test_every_function_has_an_exact_signature_and_security_contract() -> None:
+    """10: 34 functions, each with a pinned search_path and PUBLIC revoked."""
+    functions = _api()["functions"]
+    assert len(functions) == 34
+    assert len({f["name"] for f in functions}) == 34
+    for function in functions:
+        assert function["signature"].startswith(function["name"] + "("), function["name"]
+        assert function["security_mode"] in {"INVOKER", "DEFINER"}
+        assert function["configured_search_path"] == "pg_catalog"
+        assert "PUBLIC" in function["revoked_roles"]
+        assert function["sqlstates"], function["name"]
+        assert not set(function["executable_roles"]) & set(function["revoked_roles"])
+
+
+def test_every_trigger_references_a_declared_function() -> None:
+    """11: 89 triggers, no dangling function reference, no duplicate name."""
+    api = _api()
+    names = {f["name"] for f in api["functions"]}
+    triggers = api["triggers"]
+    assert len(triggers) == 89
+    assert len({t["name"] for t in triggers}) == 89
+    for trigger in triggers:
+        assert trigger["function"] in names, trigger["name"]
+
+
+def test_every_function_is_recreated_in_the_cutover_transaction() -> None:
+    """19: a plpgsql body is text, so a schema rename does not follow it."""
+    api, physical = _api(), _physical()
+    mapping = {m["canonical_function"]: m for m in physical["function_deployment_mapping"]}
+    assert set(mapping) == {f["name"] for f in api["functions"]}
+    for function in api["functions"]:
+        assert function["cutover_recreation_required"] is True, function["name"]
+    for key in ("cutover_mapping", "rollback_mapping"):
+        actions = [s["action"] for s in physical[key]["steps"]]
+        assert "recreate_function_bodies" in actions
+        assert actions.index("recreate_function_bodies") < actions.index("revalidate")
+
+
+def test_the_validator_detects_an_unpinned_search_path(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        document["functions"][0]["configured_search_path"] = "public, pg_catalog"
+
+    _break_api(root, _break)
+    problems = _validate_root(root)
+    assert any("search_path must be pinned" in p for p in problems), problems
+
+
+def test_the_validator_detects_a_dangling_trigger_function(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        document["triggers"][0]["function"] = "catalog.does_not_exist"
+
+    _break_api(root, _break)
+    problems = _validate_root(root)
+    assert any("names undeclared function" in p for p in problems), problems
+
+
+def test_the_validator_detects_a_function_not_recreated_at_cutover(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        document["functions"][0]["cutover_recreation_required"] = False
+
+    _break_api(root, _break)
+    problems = _validate_root(root)
+    assert any("must be re-created in the cutover transaction" in p for p in problems), problems
+
+
+# --- K13/K14/K15/K16: the ACL matrix ---------------------------------------------------------- #
+def test_the_acl_matrix_is_complete_and_unambiguous() -> None:
+    """13, 14: 80 objects x 10 principals, exactly one record each."""
+    api, contract = _api(), _contract()
+    acl = api["acl"]
+    schemas = {s["schema"] for s in contract["schemas"]}
+    tables = {f"{s['schema']}.{t['table']}" for s in contract["schemas"] for t in s["tables"]}
+    functions = {f["name"] for f in api["functions"]}
+    assert set(acl["objects"]["schemas"]) == schemas
+    assert set(acl["objects"]["tables"]) == tables
+    assert set(acl["objects"]["functions"]) == functions
+    pairs = [(r["object_type"], r["object"], r["principal"]) for r in acl["records"]]
+    assert len(pairs) == len(set(pairs)) == 800
+    assert len(acl["principals"]) == 10
+    assert (len(schemas) + len(tables) + len(functions)) * 10 == 800
+
+
+def test_public_holds_no_application_privilege() -> None:
+    """15: every PUBLIC record is empty, and the default grant is revoked."""
+    api = _api()
+    public = [r for r in api["acl"]["records"] if r["principal"] == "PUBLIC"]
+    assert len(public) == 80
+    for record in public:
+        assert not any(record["privileges"].values()), record["object"]
+        assert record["grant_option"] is False
+    assert "REVOKE ALL ON SCHEMA public FROM PUBLIC" in api["acl"]["public_revocation"]
+
+
+def test_no_runtime_role_holds_a_ddl_privilege() -> None:
+    """16: no CREATE, no TRUNCATE, no REFERENCES, no TRIGGER, anywhere."""
+    api = _api()
+    assert set(api["acl"]["create_privilege"]["granted_to"]) == {"minos_migrate", "minos_owner"}
+    for record in api["acl"]["records"]:
+        if record["object_type"] != "table" or record["principal"] not in audit.RUNTIME_ROLES:
+            continue
+        for privilege in ("TRUNCATE", "REFERENCES", "TRIGGER"):
+            assert record["privileges"][privilege] is False, (record["object"], privilege)
+
+
+def test_the_frozen_role_rules_hold_exactly() -> None:
+    """H6, H7, H8: the runner, the truth bindings and the verifier."""
+    api = _api()
+    jobs = _acl_record(api, "table", "experiments.experiment_jobs", "minos_runner")
+    assert jobs["privileges"]["SELECT"] is True
+    for privilege in ("INSERT", "UPDATE", "DELETE"):
+        assert jobs["privileges"][privilege] is False
+    readers = {
+        r["principal"]
+        for r in api["acl"]["records"]
+        if r["object_type"] == "table"
+        and r["object"] == "evaluation.truth_bindings"
+        and r["privileges"]["SELECT"]
+    }
+    assert readers == {"minos_evaluator", "minos_owner"}
+    for record in api["acl"]["records"]:
+        if record["object_type"] == "table" and record["principal"] == "minos_verifier":
+            assert not any(
+                record["privileges"][p] for p in ("INSERT", "UPDATE", "DELETE", "TRUNCATE")
+            ), record["object"]
+
+
+def test_the_validator_detects_a_privilege_granted_to_public(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        record = next(
+            r
+            for r in document["acl"]["records"]
+            if r["principal"] == "PUBLIC" and r["object_type"] == "table"
+        )
+        record["privileges"]["SELECT"] = True
+
+    _break_api(root, _break)
+    problems = _validate_root(root)
+    assert any("PUBLIC holds ['SELECT']" in p for p in problems), problems
+
+
+def test_the_validator_detects_a_ddl_privilege_on_a_runtime_role(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        record = next(
+            r
+            for r in document["acl"]["records"]
+            if r["principal"] == "minos_runner" and r["object_type"] == "table"
+        )
+        record["privileges"]["TRUNCATE"] = True
+
+    _break_api(root, _break)
+    problems = _validate_root(root)
+    assert any("that is a DDL privilege" in p for p in problems), problems
+
+
+def test_the_validator_detects_a_duplicate_privilege_record(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        document["acl"]["records"].append(dict(document["acl"]["records"][0]))
+
+    _break_api(root, _break)
+    problems = _validate_root(root)
+    assert any("privilege records - the matrix is ambiguous" in p for p in problems), problems
+
+
+def test_the_validator_detects_an_acl_object_that_does_not_resolve(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        document["acl"]["objects"]["tables"].append("catalog.no_such_table")
+
+    _break_api(root, _break)
+    problems = _validate_root(root)
+    assert any("ACL names an undeclared table" in p for p in problems), problems
+
+
+def test_the_validator_detects_a_truth_binding_leak(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        record = next(
+            r
+            for r in document["acl"]["records"]
+            if r["object"] == "evaluation.truth_bindings" and r["principal"] == "minos_verifier"
+        )
+        record["privileges"]["SELECT"] = True
+
+    _break_api(root, _break)
+    problems = _validate_root(root)
+    assert any("may not read evaluation.truth_bindings" in p for p in problems), problems
+
+
+# --- K17/K18: role provisioning ---------------------------------------------------------------- #
+def test_migration_0009_preflights_roles_and_creates_none() -> None:
+    """17: cluster roles are not database-local objects."""
+    provisioning = _api()["role_provisioning"]
+    assert provisioning["roles_created_by_0009"] == []
+    assert set(provisioning["required_roles"]) == set(audit.REQUIRED_ROLES)
+    assert "raises BEFORE creating any DB-V2 object" in provisioning["failure_mode"]
+    assert provisioning["scratch_test_rule"]
+    assert provisioning["operational_provisioning"]
+    order = provisioning["preflight_order"]
+    assert order.index("SET ROLE minos_owner") == 0
+    assert any(s.startswith("only then: CREATE SCHEMA") for s in order)
+    assert order.index("verify every required role exists in pg_roles") < next(
+        i for i, s in enumerate(order) if s.startswith("only then: CREATE SCHEMA")
+    )
+
+
+def test_a_downgrade_never_drops_a_cluster_role() -> None:
+    """18."""
+    assert "NEVER drops" in _api()["role_provisioning"]["downgrade_rule"]
+
+
+def test_no_credential_appears_anywhere_in_the_api_contract() -> None:
+    """I6: the report carries role names, never authentication material."""
+    text = API_REPORT.read_text(encoding="utf-8")
+    for pattern in (r"postgresql(\+\w+)?://[^\s\"]*:[^\s\"@]*@", r"(?i)\bpassword\b\s*[:=]\s*\S"):
+        assert re.search(pattern, text) is None, pattern
+
+
+def test_the_validator_detects_a_role_created_by_0009(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        document["role_provisioning"]["roles_created_by_0009"] = ["minos_runner"]
+
+    _break_api(root, _break)
+    problems = _validate_root(root)
+    assert any("must create no cluster role" in p for p in problems), problems
+
+
+def test_the_validator_detects_a_downgrade_that_drops_roles(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        document["role_provisioning"]["downgrade_rule"] = "the downgrade drops the cluster roles"
+
+    _break_api(root, _break)
+    problems = _validate_root(root)
+    assert any("never drop a cluster role" in p for p in problems), problems
+
+
+# --- K20/K21/K22/K23 ------------------------------------------------------------------------- #
+def test_the_database_api_hash_recomputes_and_is_pinned_by_both_contracts() -> None:
+    """22: the API document is the leaf of a one-way hash graph."""
+    api, contract, physical = _api(), _contract(), _physical()
+    assert api[audit.CONTRACT_HASH_FIELD] == audit.contract_hash(api)
+    assert contract["database_api"][audit.CONTRACT_HASH_FIELD] == api[audit.CONTRACT_HASH_FIELD]
+    assert physical["database_api"][audit.CONTRACT_HASH_FIELD] == api[audit.CONTRACT_HASH_FIELD]
+    assert audit.CONTRACT_HASH_FIELD not in json.dumps(api["designed_against"])
+
+
+def test_the_validator_detects_a_stale_pinned_api_hash(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+    path = root / "reports" / "database" / "MINOS_DATABASE_V2_CONTRACT.json"
+
+    def _break(document: dict[str, Any]) -> None:
+        document["database_api"][audit.CONTRACT_HASH_FIELD] = "0" * 64
+        document[audit.CONTRACT_HASH_FIELD] = audit.contract_hash(document)
+
+    _rewrite(path, _break)
+    problems = _validate_root(root)
+    assert any("pins a stale database API hash" in p for p in problems), problems
+
+
+def test_the_validator_detects_a_missing_database_api_report(tmp_path: Path) -> None:
+    """21, 22 depend on the report being present at all."""
+    root = _copy_root(tmp_path)
+    (root / "reports" / "database" / "MINOS_DATABASE_V2_DATABASE_API.json").unlink()
+    problems = _validate_root(root)
+    assert any("MINOS_DATABASE_V2_DATABASE_API" in p for p in problems), problems
+
+
+def test_the_validator_detects_a_duplicate_key_in_the_api_report(tmp_path: Path) -> None:
+    """21."""
+    root = _copy_root(tmp_path)
+    path = root / "reports" / "database" / "MINOS_DATABASE_V2_DATABASE_API.json"
+    path.write_text('{"functions": [], "functions": []}', encoding="utf-8")
+    problems = _validate_root(root)
+    assert any("duplicate" in p for p in problems), problems
+
+
+def test_the_d1_4_hashes_differ_from_the_d1_3_hashes() -> None:
+    """The contract really changed: neither frozen D1.3 hash survives."""
+    assert _contract()[audit.CONTRACT_HASH_FIELD] != (
+        "20f8b6eaa19622c2fff7bcc67c9e58b1f4667dc90795c9c2f4fa18efcb6020ba"
+    )
+    assert _physical()[audit.CONTRACT_HASH_FIELD] != (
+        "9611245a6bd9a4fd2bad7f73c44e6ec2cdc4b62974b6faa3f8ff40620854d61b"
     )

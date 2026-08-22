@@ -1,4 +1,42 @@
 {
+  "artifact_snapshot_digest": {
+    "ambiguity_rule": "Two entries sharing a content_sha256, or any entry whose content_sha256 does not resolve to exactly one active operational artifact, is a corrupt inventory and fails closed. catalog.artifacts declares UNIQUE (content_sha256), so a duplicate can only come from a hand-edited or truncated manifest.",
+    "count_rule": "artifact_count and artifact_total_bytes are the row count and the SUM(size_bytes) of exactly the rows the predicate selects - no other row contributes to either.",
+    "domain": "minos:db-v2-artifact-snapshot:v1\n",
+    "entry_fields": [
+      "content_sha256",
+      "size_bytes",
+      "artifact_kind"
+    ],
+    "formula": "artifact_snapshot_sha256 = sha256(DOMAIN_bytes + canonical_json_bytes(manifest))",
+    "manifest_fields": [
+      "schema_version",
+      "recovery_set_id",
+      "predicate",
+      "entries",
+      "artifact_count",
+      "artifact_total_bytes"
+    ],
+    "note": "Domain separation makes an artifact-snapshot digest unusable as a recovery-manifest digest even if the two documents ever serialize identically."
+  },
+  "artifact_snapshot_predicate": {
+    "columns_selected": [
+      "content_sha256",
+      "size_bytes",
+      "artifact_kind"
+    ],
+    "excluded_by_construction": "backup_scope = 'recovery'",
+    "note": "The three artifacts a recovery set is made of carry backup_scope = 'recovery', so they can never appear in the operational snapshot they describe. The snapshot is therefore a fixed point: registering a recovery set does not change the inventory that recovery set hashes.",
+    "sort_order": [
+      "content_sha256",
+      "size_bytes",
+      "artifact_kind"
+    ],
+    "sql": "SELECT content_sha256, size_bytes, artifact_kind FROM catalog.artifacts WHERE lifecycle_state = 'active' AND backup_scope = 'operational' ORDER BY content_sha256, size_bytes, artifact_kind",
+    "supporting_index": "ix_artifacts_operational_snapshot",
+    "table": "catalog.artifacts",
+    "where": "lifecycle_state = 'active' AND backup_scope = 'operational'"
+  },
   "artifacts_unique_targets_required_by_backup_sets": {
     "already_declared": true,
     "columns": [
@@ -106,7 +144,7 @@
     "statement_timeout_ms": 30000,
     "verification_sessions": "default_transaction_read_only = on"
   },
-  "contract_sha256": "20f8b6eaa19622c2fff7bcc67c9e58b1f4667dc90795c9c2f4fa18efcb6020ba",
+  "contract_sha256": "ea4e6aa0e752ea9f739c5d0c8f238355636c69559bb2dcbac1d629620e2f3d60",
   "critical_queries": [
     {
       "async_allowed": false,
@@ -314,6 +352,13 @@
       "sql": "Aggregate job status counts, open attempts, unverified artifacts, latest backup set and service heartbeats"
     }
   ],
+  "database_api": {
+    "contract_sha256": "0e4fd9bc68434e933c959e5882c507f3bc43a3cc9c32cb3839059dd3f1b776f4",
+    "functions": 34,
+    "note": "The executable half of the contract: every function, trigger, state transition and grant migration 0009 must create. Frozen in DB-V2 D1.4.",
+    "report": "MINOS_DATABASE_V2_DATABASE_API.json",
+    "triggers": 89
+  },
   "designed_against": {
     "branch": "feature/L2-F",
     "commit": "695d9227ed83c595e3ed03375a935fbe801aadbd",
@@ -429,6 +474,7 @@
       "profiling": "dbv2_profiling",
       "runtime": "dbv2_runtime"
     },
+    "contract_sha256": "08b6c14eedce6be8024289fc083bab6fad52d6af128526cedda6832ba60e9244",
     "operational_preparation_path": [
       "0005_l2e_feature_view",
       "0006_l2f_experiment_plan",
@@ -482,8 +528,10 @@
     "recovery_manifest": "application/vnd.minos.db-recovery-manifest+json"
   },
   "report": "MINOS_DATABASE_V2_CONTRACT",
+  "role_privilege_authority": "Prose privilege summaries are NOT the contract. The authoritative, object-level ACL matrix lives in MINOS_DATABASE_V2_DATABASE_API.json and carries exactly one record for every (object, principal) pair, suitable for direct migration generation and live-schema comparison.",
   "roles": [
     {
+      "exact_privileges": "See MINOS_DATABASE_V2_DATABASE_API.json -> acl.records; the prose here is a summary and the matrix is authoritative.",
       "may_login": true,
       "notes": "Used exclusively by the migration entry point; never by a service process.",
       "purpose": "Alembic only. Owns DDL.",
@@ -491,6 +539,7 @@
       "schema_privileges": "DDL on all MINOS schemas"
     },
     {
+      "exact_privileges": "See MINOS_DATABASE_V2_DATABASE_API.json -> acl.records; the prose here is a summary and the matrix is authoritative.",
       "may_login": false,
       "notes": "Replaces V1 minos_admin as the definer principal. No runtime credential can reach it, and no runtime path issues SET ROLE.",
       "purpose": "Object owner. NOT a login role.",
@@ -498,6 +547,7 @@
       "schema_privileges": "owns every MINOS object and SECURITY DEFINER function"
     },
     {
+      "exact_privileges": "See MINOS_DATABASE_V2_DATABASE_API.json -> acl.records; the prose here is a summary and the matrix is authoritative.",
       "may_login": true,
       "notes": "No direct write on experiments.experiment_jobs.",
       "purpose": "Plan and config persistence.",
@@ -505,6 +555,7 @@
       "schema_privileges": "SELECT on catalog/profiling/experiments; EXECUTE on plan functions"
     },
     {
+      "exact_privileges": "See MINOS_DATABASE_V2_DATABASE_API.json -> acl.records; the prose here is a summary and the matrix is authoritative.",
       "may_login": true,
       "notes": "Cannot claim, transition or delete.",
       "purpose": "Bounded job enqueue.",
@@ -512,6 +563,7 @@
       "schema_privileges": "EXECUTE on the enqueue function only"
     },
     {
+      "exact_privileges": "See MINOS_DATABASE_V2_DATABASE_API.json -> acl.records; the prose here is a summary and the matrix is authoritative.",
       "may_login": true,
       "notes": "No direct INSERT/UPDATE/DELETE on any experiments table. No access to evaluation.truth_bindings.",
       "purpose": "Claim, transition and record outcomes.",
@@ -519,6 +571,7 @@
       "schema_privileges": "SELECT on plan/config/dataset reads; EXECUTE on the execution functions"
     },
     {
+      "exact_privileges": "See MINOS_DATABASE_V2_DATABASE_API.json -> acl.records; the prose here is a summary and the matrix is authoritative.",
       "may_login": true,
       "notes": "default_transaction_read_only = on; cannot mutate anything.",
       "purpose": "Read-only verification.",
@@ -526,6 +579,7 @@
       "schema_privileges": "SELECT only, on a read-only session"
     },
     {
+      "exact_privileges": "See MINOS_DATABASE_V2_DATABASE_API.json -> acl.records; the prose here is a summary and the matrix is authoritative.",
       "may_login": true,
       "notes": "No access to experiments job state.",
       "purpose": "Training.",
@@ -533,6 +587,7 @@
       "schema_privileges": "SELECT on profiling/evaluation; INSERT on models"
     },
     {
+      "exact_privileges": "See MINOS_DATABASE_V2_DATABASE_API.json -> acl.records; the prose here is a summary and the matrix is authoritative.",
       "may_login": true,
       "notes": "The ONLY role permitted to read truth bindings.",
       "purpose": "Scoring.",
@@ -540,6 +595,7 @@
       "schema_privileges": "SELECT on experiments.execution_results and evaluation.truth_bindings; INSERT on evaluation"
     },
     {
+      "exact_privileges": "See MINOS_DATABASE_V2_DATABASE_API.json -> acl.records; the prose here is a summary and the matrix is authoritative.",
       "may_login": true,
       "notes": "No experiments or evaluation access.",
       "purpose": "Live serving.",
@@ -695,6 +751,10 @@
             {
               "expression": "length(artifact_kind) > 0",
               "name": "ck_artifacts_kind"
+            },
+            {
+              "expression": "backup_scope IN ('operational','recovery')",
+              "name": "ck_artifacts_backup_scope"
             }
           ],
           "columns": [
@@ -764,6 +824,14 @@
               "type": "text"
             },
             {
+              "default": "'operational'",
+              "mutability": "immutable",
+              "name": "backup_scope",
+              "note": "Classifies the artifact for recovery purposes. 'operational' is an engine payload and is eligible for an R1 artifact snapshot; 'recovery' is one of the three artifacts a recovery set is MADE of and is never snapshotted. Immutable: an artifact's scope is decided when it is published and can never be reclassified, so a snapshot taken at any time is stable.",
+              "nullable": false,
+              "type": "text"
+            },
+            {
               "mutability": "immutable",
               "name": "provenance",
               "note": "bounded producer description; never free-form logs",
@@ -818,8 +886,20 @@
               "method": "btree",
               "name": "ix_artifacts_needs_verification",
               "where": "lifecycle_state = 'active'"
+            },
+            {
+              "columns": [
+                "content_sha256",
+                "size_bytes",
+                "artifact_kind"
+              ],
+              "method": "btree",
+              "name": "ix_artifacts_operational_snapshot",
+              "note": "supports the exact R1 snapshot predicate and its deterministic sort order",
+              "where": "lifecycle_state = 'active' AND backup_scope = 'operational'"
             }
           ],
+          "lifecycle_and_backup_scope": "lifecycle_state and backup_scope are orthogonal. An artifact moves active -> archived -> deleted, or active -> quarantined, WITHOUT ever changing backup_scope; backup_scope is immutable and enforced by trg_artifacts_immutable_columns. An operational artifact that leaves 'active' simply stops matching the snapshot predicate from that moment on - it is not reclassified, and earlier snapshots that contain it remain valid descriptions of the state they were taken from. A recovery artifact never matches the predicate in any lifecycle state.",
           "primary_key": {
             "columns": [
               "id"
@@ -1295,48 +1375,53 @@
           "cardinality": "100s",
           "check_constraints": [
             {
-              "expression": "database_backup_sha256 ~ '^[0-9a-f]{64}$'",
-              "name": "ck_backup_sets_db_hex"
-            },
-            {
-              "expression": "artifact_snapshot_sha256 ~ '^[0-9a-f]{64}$'",
+              "expression": "artifact_snapshot_sha256 IS NULL OR artifact_snapshot_sha256 ~ '^[0-9a-f]{64}$'",
               "name": "ck_backup_sets_artifact_hex"
-            },
-            {
-              "expression": "recovery_manifest_sha256 ~ '^[0-9a-f]{64}$'",
-              "name": "ck_backup_sets_manifest_hex"
             },
             {
               "expression": "completeness IN ('complete','database_only')",
               "name": "ck_backup_sets_completeness"
             },
             {
-              "expression": "database_backup_kind IN ('pg_dump','basebackup')",
-              "name": "ck_backup_sets_kind"
-            },
-            {
-              "expression": "recovery_manifest_media_type = 'application/vnd.minos.db-recovery-manifest+json'",
-              "name": "ck_backup_sets_manifest_media"
+              "expression": "database_backup_sha256 ~ '^[0-9a-f]{64}$'",
+              "name": "ck_backup_sets_db_hex"
             },
             {
               "expression": "database_backup_media_type = 'application/vnd.postgresql.dump'",
               "name": "ck_backup_sets_db_media"
             },
             {
-              "expression": "artifact_snapshot_manifest_media_type = 'application/vnd.minos.artifact-snapshot+json'",
-              "name": "ck_backup_sets_snapshot_media"
-            },
-            {
-              "expression": "recovery_manifest_artifact_id <> database_backup_artifact_id AND recovery_manifest_artifact_id <> artifact_snapshot_manifest_artifact_id AND database_backup_artifact_id <> artifact_snapshot_manifest_artifact_id",
+              "expression": "recovery_manifest_artifact_id <> database_backup_artifact_id AND (artifact_snapshot_manifest_artifact_id IS NULL OR (recovery_manifest_artifact_id <> artifact_snapshot_manifest_artifact_id AND database_backup_artifact_id <> artifact_snapshot_manifest_artifact_id))",
               "name": "ck_backup_sets_distinct_artifacts"
-            },
-            {
-              "expression": "artifact_count >= 0 AND artifact_total_bytes >= 0",
-              "name": "ck_backup_sets_counts"
             },
             {
               "expression": "length(manifest_schema_version) > 0 AND length(database_name) > 0",
               "name": "ck_backup_sets_identity_nonempty"
+            },
+            {
+              "expression": "database_backup_kind IN ('pg_dump','basebackup')",
+              "name": "ck_backup_sets_kind"
+            },
+            {
+              "expression": "recovery_manifest_sha256 ~ '^[0-9a-f]{64}$'",
+              "name": "ck_backup_sets_manifest_hex"
+            },
+            {
+              "expression": "recovery_manifest_media_type = 'application/vnd.minos.db-recovery-manifest+json'",
+              "name": "ck_backup_sets_manifest_media"
+            },
+            {
+              "expression": "quiesce_ended_at >= quiesce_started_at",
+              "name": "ck_backup_sets_quiesce_window"
+            },
+            {
+              "expression": "(completeness = 'complete' AND artifact_snapshot_manifest_artifact_id IS NOT NULL AND artifact_snapshot_sha256 IS NOT NULL AND artifact_snapshot_manifest_media_type IS NOT NULL AND artifact_count IS NOT NULL AND artifact_count >= 0 AND artifact_total_bytes IS NOT NULL AND artifact_total_bytes >= 0) OR (completeness = 'database_only' AND artifact_snapshot_manifest_artifact_id IS NULL AND artifact_snapshot_sha256 IS NULL AND artifact_snapshot_manifest_media_type IS NULL AND artifact_count IS NULL AND artifact_total_bytes IS NULL)",
+              "name": "ck_backup_sets_shape",
+              "note": "The two shapes are mutually exclusive and, because ck_backup_sets_completeness admits only these two values, exhaustive. All-or-none: no half-populated snapshot triple exists."
+            },
+            {
+              "expression": "artifact_snapshot_manifest_media_type IS NULL OR artifact_snapshot_manifest_media_type = 'application/vnd.minos.artifact-snapshot+json'",
+              "name": "ck_backup_sets_snapshot_media"
             }
           ],
           "columns": [
@@ -1365,6 +1450,20 @@
               "name": "alembic_revision",
               "nullable": false,
               "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "quiesce_started_at",
+              "note": "start of the write quiesce the R1 set was captured inside; carried from the manifest",
+              "nullable": false,
+              "type": "timestamptz"
+            },
+            {
+              "mutability": "immutable",
+              "name": "quiesce_ended_at",
+              "note": "end of the write quiesce; writes resumed only after the full R1 set was durable",
+              "nullable": false,
+              "type": "timestamptz"
             },
             {
               "mutability": "immutable",
@@ -1448,33 +1547,36 @@
             {
               "mutability": "immutable",
               "name": "artifact_snapshot_manifest_artifact_id",
-              "nullable": false,
+              "note": "NULL exactly when completeness = 'database_only'; NOT NULL exactly when completeness = 'complete'. Enforced all-or-none by ck_backup_sets_shape.",
+              "nullable": true,
               "type": "uuid"
             },
             {
               "mutability": "immutable",
               "name": "artifact_snapshot_sha256",
-              "note": "digest over the sorted (content_sha256,size) manifest of active artifacts",
-              "nullable": false,
+              "note": "NULL exactly when completeness = 'database_only'; NOT NULL exactly when completeness = 'complete'. Enforced all-or-none by ck_backup_sets_shape.",
+              "nullable": true,
               "type": "char(64)"
             },
             {
-              "default": "'application/vnd.minos.artifact-snapshot+json'",
               "mutability": "immutable",
               "name": "artifact_snapshot_manifest_media_type",
-              "nullable": false,
+              "note": "NULL exactly when completeness = 'database_only'; NOT NULL exactly when completeness = 'complete'. Enforced all-or-none by ck_backup_sets_shape.",
+              "nullable": true,
               "type": "text"
             },
             {
               "mutability": "immutable",
               "name": "artifact_count",
-              "nullable": false,
+              "note": "NULL exactly when completeness = 'database_only'; NOT NULL exactly when completeness = 'complete'. Enforced all-or-none by ck_backup_sets_shape.",
+              "nullable": true,
               "type": "bigint"
             },
             {
               "mutability": "immutable",
               "name": "artifact_total_bytes",
-              "nullable": false,
+              "note": "NULL exactly when completeness = 'database_only'; NOT NULL exactly when completeness = 'complete'. Enforced all-or-none by ck_backup_sets_shape.",
+              "nullable": true,
               "type": "bigint"
             },
             {
@@ -1496,8 +1598,9 @@
               "type": "text"
             },
             {
-              "mutability": "mutable",
+              "mutability": "immutable",
               "name": "completeness",
+              "note": "Immutable. A database_only row is NEVER upgraded in place: a later complete capture is a NEW recovery set with a new recovery_set_id and backup_key.",
               "nullable": false,
               "type": "text"
             },
@@ -1515,7 +1618,7 @@
               "type": "timestamptz"
             }
           ],
-          "completeness_rule": "completeness may become 'complete' only after all THREE referenced artifacts carry verification_state = 'verified' and lifecycle_state = 'active'. Until then the row is 'database_only' and may not authorize a transformation or a cutover.",
+          "completeness_rule": "completeness is set once, at INSERT, and is immutable thereafter. 'complete' is admitted only when catalog.enforce_backup_set_shape() verifies, in the SAME transaction, that all THREE referenced artifacts exist, bind by id/digest/media type, carry verification_state = 'verified', lifecycle_state = 'active' and backup_scope = 'recovery', each have at least one artifact_locations row in state 'present', and that the snapshot manifest bytes recompute to artifact_snapshot_sha256 with entry count and total size equal to artifact_count and artifact_total_bytes. 'database_only' carries the two-artifact shape and may NOT authorize a migration, a transformation or a cutover.",
           "critical_queries": [
             "Q16"
           ],
@@ -1567,6 +1670,7 @@
             }
           ],
           "idempotency_rule": "R2 is get-or-verify: re-running it with the same recovery_set_id and the same immutable data is a no-op. The same recovery_set_id or backup_key with ANY differing immutable value fails closed on a unique constraint or a typed conflict; it never overwrites.",
+          "immutability": "Every column except restore_tested_at is immutable, enforced by trg_backup_sets_immutable_columns. restore_tested_at is the only permitted UPDATE target.",
           "indexes": [
             {
               "columns": [
@@ -1576,13 +1680,16 @@
               "name": "ix_backup_sets_created"
             }
           ],
+          "mutable_columns": [
+            "restore_tested_at"
+          ],
           "primary_key": {
             "columns": [
               "id"
             ],
             "name": "pk_backup_sets"
           },
-          "purpose": "A recovery set identity: one PostgreSQL backup, its artifact snapshot, and the exact R1 recovery manifest that describes both. All three are bound as artifacts by composite foreign key, so the row cannot name a digest that belongs to a different artifact. A dump without its artifact snapshot is not a valid MINOS recovery set.",
+          "purpose": "An immutable recovery-set identity: one PostgreSQL backup, the exact R1 recovery manifest that describes it, and - for a complete set - the operational artifact snapshot taken with it. All present artifacts are bound as artifacts by composite foreign key, so the row cannot name a digest that belongs to a different artifact. A dump without its artifact snapshot is a 'database_only' set and is not a valid MINOS recovery point.",
           "r1_field_to_column": {
             "artifact_count": "artifact_count",
             "artifact_snapshot_sha256": "artifact_snapshot_sha256",
@@ -1595,15 +1702,40 @@
             "database_backup_size_bytes": "database_backup_size_bytes",
             "database_name": "database_name",
             "postgresql_version": "postgresql_version",
+            "quiesce_ended_at": "quiesce_ended_at",
+            "quiesce_started_at": "quiesce_started_at",
             "recovery_set_id": "recovery_set_id",
             "schema_version": "manifest_schema_version",
             "source_alembic_revision": "alembic_revision",
             "wal_end_lsn": "wal_end_lsn",
             "wal_start_lsn": "wal_start_lsn"
           },
-          "r1_field_to_column_note": "Every immutable R1 manifest field maps to exactly one column, so the registered row represents the manifest completely. recovery_manifest_sha256 additionally binds the whole manifest's canonical bytes, so no mapped value can drift from the file.",
+          "r1_field_to_column_note": "Every immutable R1 manifest field maps to exactly one column, so the registered row represents the manifest completely. recovery_manifest_sha256 additionally binds the whole manifest's canonical bytes, so no mapped value can drift from the file. Three of the mapped fields (artifact_snapshot_sha256, artifact_count, artifact_total_bytes) are present only in a complete manifest and are NULL in both the manifest and the row for a database_only set.",
           "read_responsibility": "operations",
           "retention": "per backup policy",
+          "row_shapes": {
+            "complete": {
+              "artifact_count": "NOT NULL, >= 0",
+              "artifact_snapshot_triple": "required",
+              "artifact_total_bytes": "NOT NULL, >= 0",
+              "database_backup_triple": "required",
+              "may_authorize_migration": true,
+              "meaning": "a database backup with a verified operational artifact snapshot",
+              "recovery_manifest_triple": "required"
+            },
+            "database_only": {
+              "artifact_count": "NULL",
+              "artifact_snapshot_triple": "NULL",
+              "artifact_total_bytes": "NULL",
+              "database_backup_triple": "required",
+              "may_authorize_migration": false,
+              "meaning": "a database dump without a valid operational artifact snapshot",
+              "recovery_manifest_triple": "required"
+            },
+            "exhaustive": true,
+            "mutually_exclusive": true,
+            "no_in_place_upgrade": "completeness is immutable. A database_only row is never upgraded to complete; a later complete capture is a NEW row with a new recovery_set_id and a new backup_key."
+          },
           "table": "backup_sets",
           "unique_constraints": [
             {
@@ -5592,7 +5724,7 @@
       ]
     }
   ],
-  "stage": "DB-V2 D1.3",
+  "stage": "DB-V2 D1.4",
   "table_counts": {
     "audit": 2,
     "catalog": 6,

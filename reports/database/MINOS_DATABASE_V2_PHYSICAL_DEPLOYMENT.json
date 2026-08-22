@@ -1,5 +1,43 @@
 {
-  "contract_sha256": "9611245a6bd9a4fd2bad7f73c44e6ec2cdc4b62974b6faa3f8ff40620854d61b",
+  "artifact_snapshot_digest": {
+    "ambiguity_rule": "Two entries sharing a content_sha256, or any entry whose content_sha256 does not resolve to exactly one active operational artifact, is a corrupt inventory and fails closed. catalog.artifacts declares UNIQUE (content_sha256), so a duplicate can only come from a hand-edited or truncated manifest.",
+    "count_rule": "artifact_count and artifact_total_bytes are the row count and the SUM(size_bytes) of exactly the rows the predicate selects - no other row contributes to either.",
+    "domain": "minos:db-v2-artifact-snapshot:v1\n",
+    "entry_fields": [
+      "content_sha256",
+      "size_bytes",
+      "artifact_kind"
+    ],
+    "formula": "artifact_snapshot_sha256 = sha256(DOMAIN_bytes + canonical_json_bytes(manifest))",
+    "manifest_fields": [
+      "schema_version",
+      "recovery_set_id",
+      "predicate",
+      "entries",
+      "artifact_count",
+      "artifact_total_bytes"
+    ],
+    "note": "Domain separation makes an artifact-snapshot digest unusable as a recovery-manifest digest even if the two documents ever serialize identically."
+  },
+  "artifact_snapshot_predicate": {
+    "columns_selected": [
+      "content_sha256",
+      "size_bytes",
+      "artifact_kind"
+    ],
+    "excluded_by_construction": "backup_scope = 'recovery'",
+    "note": "The three artifacts a recovery set is made of carry backup_scope = 'recovery', so they can never appear in the operational snapshot they describe. The snapshot is therefore a fixed point: registering a recovery set does not change the inventory that recovery set hashes.",
+    "sort_order": [
+      "content_sha256",
+      "size_bytes",
+      "artifact_kind"
+    ],
+    "sql": "SELECT content_sha256, size_bytes, artifact_kind FROM catalog.artifacts WHERE lifecycle_state = 'active' AND backup_scope = 'operational' ORDER BY content_sha256, size_bytes, artifact_kind",
+    "supporting_index": "ix_artifacts_operational_snapshot",
+    "table": "catalog.artifacts",
+    "where": "lifecycle_state = 'active' AND backup_scope = 'operational'"
+  },
+  "contract_sha256": "08b6c14eedce6be8024289fc083bab6fad52d6af128526cedda6832ba60e9244",
   "counts": {
     "d2_tables_created": 37,
     "logical_tables": 38,
@@ -74,16 +112,28 @@
         "order": 4
       },
       {
+        "action": "recreate_function_bodies",
+        "detail": "In the SAME transaction as the renames, CREATE OR REPLACE every one of the 34 DB-V2 functions with its body qualified against the CANONICAL schema names, then re-verify every trigger still names its function and every grant in the ACL matrix still resolves.",
+        "order": 5
+      },
+      {
         "action": "revalidate",
         "detail": "see revalidation_targets",
-        "order": 5
+        "order": 6
       },
       {
         "action": "commit_or_rollback",
         "detail": "commit only if every revalidation target passes",
-        "order": 6
+        "order": 7
       }
     ]
+  },
+  "database_api": {
+    "contract_sha256": "0e4fd9bc68434e933c959e5882c507f3bc43a3cc9c32cb3839059dd3f1b776f4",
+    "functions": 34,
+    "note": "The executable half of the contract: every function, trigger, state transition and grant migration 0009 must create. Frozen in DB-V2 D1.4.",
+    "report": "MINOS_DATABASE_V2_DATABASE_API.json",
+    "triggers": 89
   },
   "deployment_mapping": [
     {
@@ -355,8 +405,9 @@
   ],
   "designed_against": {
     "branch": "feature/L2-F",
-    "commit": "832ed1579f0b3075c0167e31b9ecb8836a9428bb",
-    "logical_contract": "MINOS_DATABASE_V2_CONTRACT.json"
+    "commit": "a17f9719fa483609d905275fbf9a9645d087bfe0",
+    "logical_contract": "MINOS_DATABASE_V2_CONTRACT.json",
+    "stage": "DB-V2 D1.4"
   },
   "forbidden_migration_shortcuts": [
     "alembic stamp to fake a revision the database never executed",
@@ -366,6 +417,246 @@
     "a permanent multiple-head revision graph",
     "destructive in-place conversion of a V1 table",
     "undocumented table-name suffixes such as _v2 or _new to dodge a collision"
+  ],
+  "function_deployment_mapping": [
+    {
+      "canonical_function": "audit.reject_delete",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_audit.reject_delete",
+      "kind": "trigger_function",
+      "post_cutover_function": "audit.reject_delete"
+    },
+    {
+      "canonical_function": "audit.reject_immutable_column_update",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_audit.reject_immutable_column_update",
+      "kind": "trigger_function",
+      "post_cutover_function": "audit.reject_immutable_column_update"
+    },
+    {
+      "canonical_function": "audit.reject_update",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_audit.reject_update",
+      "kind": "trigger_function",
+      "post_cutover_function": "audit.reject_update"
+    },
+    {
+      "canonical_function": "catalog.enforce_artifact_lifecycle",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_catalog.enforce_artifact_lifecycle",
+      "kind": "trigger_function",
+      "post_cutover_function": "catalog.enforce_artifact_lifecycle"
+    },
+    {
+      "canonical_function": "catalog.enforce_artifact_location_state",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_catalog.enforce_artifact_location_state",
+      "kind": "trigger_function",
+      "post_cutover_function": "catalog.enforce_artifact_location_state"
+    },
+    {
+      "canonical_function": "catalog.enforce_backup_set_immutability",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_catalog.enforce_backup_set_immutability",
+      "kind": "trigger_function",
+      "post_cutover_function": "catalog.enforce_backup_set_immutability"
+    },
+    {
+      "canonical_function": "catalog.enforce_backup_set_shape",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_catalog.enforce_backup_set_shape",
+      "kind": "trigger_function",
+      "post_cutover_function": "catalog.enforce_backup_set_shape"
+    },
+    {
+      "canonical_function": "catalog.enforce_release_state",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_catalog.enforce_release_state",
+      "kind": "trigger_function",
+      "post_cutover_function": "catalog.enforce_release_state"
+    },
+    {
+      "canonical_function": "catalog.get_or_verify_artifact",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_catalog.get_or_verify_artifact",
+      "kind": "api_function",
+      "post_cutover_function": "catalog.get_or_verify_artifact"
+    },
+    {
+      "canonical_function": "catalog.register_backup_set",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_catalog.register_backup_set",
+      "kind": "api_function",
+      "post_cutover_function": "catalog.register_backup_set"
+    },
+    {
+      "canonical_function": "evaluation.enforce_evaluation_run_state",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_evaluation.enforce_evaluation_run_state",
+      "kind": "trigger_function",
+      "post_cutover_function": "evaluation.enforce_evaluation_run_state"
+    },
+    {
+      "canonical_function": "evaluation.record_evaluation_scores",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_evaluation.record_evaluation_scores",
+      "kind": "api_function",
+      "post_cutover_function": "evaluation.record_evaluation_scores"
+    },
+    {
+      "canonical_function": "experiments.claim_next_job",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_experiments.claim_next_job",
+      "kind": "api_function",
+      "post_cutover_function": "experiments.claim_next_job"
+    },
+    {
+      "canonical_function": "experiments.enforce_attempt_exclusivity",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_experiments.enforce_attempt_exclusivity",
+      "kind": "trigger_function",
+      "post_cutover_function": "experiments.enforce_attempt_exclusivity"
+    },
+    {
+      "canonical_function": "experiments.enforce_attempt_outcome",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_experiments.enforce_attempt_outcome",
+      "kind": "trigger_function",
+      "post_cutover_function": "experiments.enforce_attempt_outcome"
+    },
+    {
+      "canonical_function": "experiments.enforce_job_state",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_experiments.enforce_job_state",
+      "kind": "trigger_function",
+      "post_cutover_function": "experiments.enforce_job_state"
+    },
+    {
+      "canonical_function": "experiments.enqueue_plan_jobs",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_experiments.enqueue_plan_jobs",
+      "kind": "api_function",
+      "post_cutover_function": "experiments.enqueue_plan_jobs"
+    },
+    {
+      "canonical_function": "experiments.extend_attempt_lease",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_experiments.extend_attempt_lease",
+      "kind": "api_function",
+      "post_cutover_function": "experiments.extend_attempt_lease"
+    },
+    {
+      "canonical_function": "experiments.persist_experiment_plan",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_experiments.persist_experiment_plan",
+      "kind": "api_function",
+      "post_cutover_function": "experiments.persist_experiment_plan"
+    },
+    {
+      "canonical_function": "experiments.record_attempt_failure",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_experiments.record_attempt_failure",
+      "kind": "api_function",
+      "post_cutover_function": "experiments.record_attempt_failure"
+    },
+    {
+      "canonical_function": "experiments.record_attempt_result",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_experiments.record_attempt_result",
+      "kind": "api_function",
+      "post_cutover_function": "experiments.record_attempt_result"
+    },
+    {
+      "canonical_function": "experiments.start_attempt",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_experiments.start_attempt",
+      "kind": "api_function",
+      "post_cutover_function": "experiments.start_attempt"
+    },
+    {
+      "canonical_function": "models.activate_model_version",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_models.activate_model_version",
+      "kind": "api_function",
+      "post_cutover_function": "models.activate_model_version"
+    },
+    {
+      "canonical_function": "models.enforce_model_activation",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_models.enforce_model_activation",
+      "kind": "trigger_function",
+      "post_cutover_function": "models.enforce_model_activation"
+    },
+    {
+      "canonical_function": "models.enforce_training_run_state",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_models.enforce_training_run_state",
+      "kind": "trigger_function",
+      "post_cutover_function": "models.enforce_training_run_state"
+    },
+    {
+      "canonical_function": "profiling.enforce_profile_snapshot_state",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_profiling.enforce_profile_snapshot_state",
+      "kind": "trigger_function",
+      "post_cutover_function": "profiling.enforce_profile_snapshot_state"
+    },
+    {
+      "canonical_function": "runtime.acquire_lease",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_runtime.acquire_lease",
+      "kind": "api_function",
+      "post_cutover_function": "runtime.acquire_lease"
+    },
+    {
+      "canonical_function": "runtime.enforce_active_selection_window",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_runtime.enforce_active_selection_window",
+      "kind": "trigger_function",
+      "post_cutover_function": "runtime.enforce_active_selection_window"
+    },
+    {
+      "canonical_function": "runtime.enforce_lease_transition",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_runtime.enforce_lease_transition",
+      "kind": "trigger_function",
+      "post_cutover_function": "runtime.enforce_lease_transition"
+    },
+    {
+      "canonical_function": "runtime.enforce_service_instance_state",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_runtime.enforce_service_instance_state",
+      "kind": "trigger_function",
+      "post_cutover_function": "runtime.enforce_service_instance_state"
+    },
+    {
+      "canonical_function": "runtime.register_service_instance",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_runtime.register_service_instance",
+      "kind": "api_function",
+      "post_cutover_function": "runtime.register_service_instance"
+    },
+    {
+      "canonical_function": "runtime.release_lease",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_runtime.release_lease",
+      "kind": "api_function",
+      "post_cutover_function": "runtime.release_lease"
+    },
+    {
+      "canonical_function": "runtime.renew_lease",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_runtime.renew_lease",
+      "kind": "api_function",
+      "post_cutover_function": "runtime.renew_lease"
+    },
+    {
+      "canonical_function": "runtime.set_active_selection",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_runtime.set_active_selection",
+      "kind": "api_function",
+      "post_cutover_function": "runtime.set_active_selection"
+    }
   ],
   "logical_tables": [
     "audit.admin_operations",
@@ -479,11 +770,21 @@
     "v1_retired_holds": "the rollback source - the untouched V1 objects under v1_retired_* names",
     "writes_to_retired_v1": "none. No retired V1 object is written during qualification."
   },
+  "r1_manifest_conditional_fields": {
+    "fields": [
+      "artifact_snapshot_sha256",
+      "artifact_count",
+      "artifact_total_bytes"
+    ],
+    "rule": "Present and non-null exactly when the recovery set is 'complete'. A 'database_only' manifest carries these three as null, and the registered row carries them as NULL."
+  },
   "r1_manifest_fields": [
     "schema_version",
     "recovery_set_id",
     "database_name",
     "source_alembic_revision",
+    "quiesce_started_at",
+    "quiesce_ended_at",
     "database_backup_kind",
     "database_backup_sha256",
     "database_backup_size_bytes",
@@ -518,6 +819,8 @@
           "recovery_set_id",
           "database_name",
           "source_alembic_revision",
+          "quiesce_started_at",
+          "quiesce_ended_at",
           "database_backup_kind",
           "database_backup_sha256",
           "database_backup_size_bytes",
@@ -533,6 +836,46 @@
         ],
         "canonical_bytes_rule": "The manifest is serialized with the repository's canonical JSON encoder (sorted keys, tight separators, UTF-8, newline-terminated). recovery_manifest_sha256 = sha256(canonical_json_bytes(the complete R1 manifest)). The digest is over the WHOLE manifest, so no field can be altered without changing it.",
         "completeness_rule": "A database dump WITHOUT the matching artifact snapshot is incomplete and may not be used to authorize a migration.",
+        "coordinated_capture": {
+          "failure_rule": "If ANY step fails, the R1 set is incomplete: migration 0009 is not authorized, no transformation begins, and the partial recovery files are left in place for inspection rather than deleted.",
+          "recorded_in_manifest": [
+            "quiesce_started_at",
+            "quiesce_ended_at",
+            "source_alembic_revision"
+          ],
+          "steps": [
+            {
+              "n": 1,
+              "step": "Stop application writes and artifact publication. Every writing service is drained or stopped; no new artifact bytes are published."
+            },
+            {
+              "n": 2,
+              "step": "Drain active write transactions. Wait until no non-read-only backend holds an open transaction against the database; record quiesce_started_at once the drain completes."
+            },
+            {
+              "n": 3,
+              "step": "Capture the database backup and the WAL position inside the quiesced window (pg_dump -Fc plus pg_current_wal_lsn())."
+            },
+            {
+              "n": 4,
+              "step": "Enumerate and verify the operational artifact snapshot using the EXACT predicate lifecycle_state = 'active' AND backup_scope = 'operational', digesting every payload."
+            },
+            {
+              "n": 5,
+              "step": "Publish the database backup, the snapshot manifest and the recovery manifest beneath MINOS_DB_RECOVERY_ROOT using the atomic publication protocol."
+            },
+            {
+              "n": 6,
+              "step": "Re-read every published file and verify its bytes against its recorded digest."
+            },
+            {
+              "n": 7,
+              "step": "Record quiesce_ended_at and resume writes ONLY after the complete R1 set is durable on disk."
+            }
+          ],
+          "why": "An independently timed pg_dump and filesystem scan do NOT form one recovery point: artifacts published between the two would appear in the snapshot but not the dump, or the reverse, and the recovery set would describe a state the system was never in. The quiesce is what makes the database backup and the artifact snapshot one consistent operational state, and quiesce_started_at/quiesce_ended_at are recorded so that claim is auditable rather than asserted.",
+          "withdrawn_claim": "that an independently timed pg_dump and filesystem scan together form one recovery point"
+        },
         "immutable": true,
         "media_type": "application/vnd.minos.db-recovery-manifest+json",
         "name": "external recovery manifest",
@@ -540,12 +883,15 @@
         "occurs_before_revision": "0009_dbv2_shadow_schema",
         "phase": "R1",
         "rationale": "dbv2_catalog.backup_sets does not exist yet, and V1 has no catalog.backup_sets at all. The manifest is a FILE on durable storage outside the repository and outside the database, not a database row, and must not be described as one.",
+        "snapshot_predicate": "SELECT content_sha256, size_bytes, artifact_kind FROM catalog.artifacts WHERE lifecycle_state = 'active' AND backup_scope = 'operational' ORDER BY content_sha256, size_bytes, artifact_kind",
         "storage": "external file beneath MINOS_DB_RECOVERY_ROOT, outside PostgreSQL",
         "storage_contract": "recovery_storage_contract",
         "verification": [
           "the database backup is restorable into a scratch cluster",
-          "every artifact payload digests to its recorded content_sha256",
-          "artifact_count and artifact_total_bytes match the enumerated snapshot"
+          "every artifact payload selected by the snapshot predicate digests to its recorded content_sha256",
+          "artifact_count and artifact_total_bytes match the enumerated snapshot exactly",
+          "no artifact with backup_scope = 'recovery' appears in the snapshot",
+          "every published recovery file re-reads to its recorded digest"
         ]
       },
       {
@@ -567,6 +913,7 @@
           }
         },
         "downgrade_rule": "Downgrading 0009 removes the dbv2_catalog.backup_sets rows but MUST NOT delete any R1 recovery file. The files under MINOS_DB_RECOVERY_ROOT are the authoritative pre-migration record and outlive every database object.",
+        "enforcement_function": "catalog.enforce_backup_set_shape()",
         "forbidden_target": "catalog.backup_sets",
         "forbidden_target_reason": "V1 has no catalog.backup_sets relation; writing there is impossible, and the canonical name belongs to V2 only after cutover.",
         "idempotency": "A re-run with the same recovery_set_id and the same immutable data is a no-op. The same recovery_set_id or backup_key with ANY differing immutable value fails closed; it never overwrites.",
@@ -586,6 +933,8 @@
           "database_backup_size_bytes": "database_backup_size_bytes",
           "database_name": "database_name",
           "postgresql_version": "postgresql_version",
+          "quiesce_ended_at": "quiesce_ended_at",
+          "quiesce_started_at": "quiesce_started_at",
           "recovery_set_id": "recovery_set_id",
           "schema_version": "manifest_schema_version",
           "source_alembic_revision": "alembic_revision",
@@ -596,17 +945,20 @@
           "Read the R1 manifest bytes from the recovery root.",
           "Strictly parse them with duplicate-key rejection.",
           "Recompute recovery_manifest_sha256 over the canonical bytes and require it to equal the published name and the recorded value.",
-          "Publish/register all THREE artifacts with get-or-verify behaviour: the recovery manifest, the database backup and the artifact-snapshot manifest.",
+          "For a complete set, recompute artifact_snapshot_sha256 over the snapshot manifest's canonical bytes with its domain prefix, and require the entry count and total size to equal artifact_count and artifact_total_bytes.",
+          "Publish/register the recovery artifacts with get-or-verify behaviour, each with backup_scope = 'recovery': the recovery manifest and the database backup always, the artifact-snapshot manifest only for a complete set.",
           "Insert dbv2_catalog.backup_sets using their exact artifact ids, digests and media types.",
-          "Re-read the inserted row AND the three referenced catalog.artifacts rows.",
-          "Require exact equality with the R1 manifest, field for field.",
-          "Set completeness = 'complete' only after all three artifacts are verification_state = 'verified'."
+          "catalog.enforce_backup_set_shape() runs as a CONSTRAINT trigger in the same transaction and performs the full cross-table verification; a failure aborts the insert.",
+          "Re-read the inserted row AND the referenced catalog.artifacts rows.",
+          "Require exact equality with the R1 manifest, field for field."
         ],
         "representable_r1_fields": [
           "schema_version",
           "recovery_set_id",
           "database_name",
           "source_alembic_revision",
+          "quiesce_started_at",
+          "quiesce_ended_at",
           "database_backup_kind",
           "database_backup_sha256",
           "database_backup_size_bytes",
@@ -627,6 +979,7 @@
           "Require completeness = 'complete' before any transformation or cutover.",
           "The R1 files are retained unchanged as recovery evidence after registration."
         ],
+        "shape_rule": "A 'complete' insert registers three artifacts; a 'database_only' insert registers two and carries the snapshot triple and both counts as NULL. The two shapes are enforced all-or-none by ck_backup_sets_shape and cross-table by catalog.enforce_backup_set_shape().",
         "storage": "dbv2_catalog.backup_sets"
       }
     ],
@@ -854,9 +1207,14 @@
         "order": 3
       },
       {
+        "action": "recreate_function_bodies",
+        "detail": "In the SAME transaction as the renames, CREATE OR REPLACE every one of the 34 DB-V2 functions with its body qualified against the dbv2_* shadow schema names, then re-verify every trigger still names its function and every grant in the ACL matrix still resolves.",
+        "order": 4
+      },
+      {
         "action": "revalidate",
         "detail": "the same revalidation targets",
-        "order": 4
+        "order": 5
       }
     ],
     "transactional": true,
@@ -888,7 +1246,12 @@
   },
   "schema_version": "minos-db-v2-physical-deployment-v1",
   "shared_table": "public.alembic_version",
-  "stage": "DB-V2 D1.3",
+  "stage": "DB-V2 D1.4",
+  "trigger_deployment": {
+    "count": 89,
+    "note": "Triggers are attached to the dbv2_* shadow tables and track them by OID, so the schema rename does not detach them. Their FUNCTION reference is by OID as well; what does NOT follow the rename is the schema-qualified text INSIDE each function body, which is why every function is re-created in the cutover transaction.",
+    "shadow_tables_carrying_triggers": 37
+  },
   "v1_objects_d2_must_preserve": {
     "relation_count": 33,
     "relations": [
@@ -953,6 +1316,16 @@
       "replaced_by": "boundary-aware wording: pre-cutover downgrade 0009->0008; post-cutover transactional inverse schema rename.",
       "statement": "the strategy table's rollback entry 'Point the application back; drop the shadow.'",
       "why_wrong": "It contradicts the required post-cutover inverse schema rename and would delete the migrated system."
+    },
+    {
+      "replaced_by": "the coordinated R1 quiesce protocol in recovery_set_protocol.phases[R1]",
+      "statement": "that an independently timed pg_dump and filesystem artifact scan together form one recovery point",
+      "why_wrong": "Artifacts published between the two would appear in one half and not the other, so the recovery set would describe a state the system was never in."
+    },
+    {
+      "replaced_by": "the exact predicate lifecycle_state = 'active' AND backup_scope = 'operational'",
+      "statement": "that the R1 artifact snapshot covers every active artifact",
+      "why_wrong": "R2 makes three more artifacts active and verified, so re-running an unqualified 'all active artifacts' predicate after R2 yields a different digest than the one R1 recorded. The snapshot would never be reproducible."
     }
   ]
 }

@@ -4303,7 +4303,7 @@
         "re",
         "typing"
       ],
-      "line_count": 1509,
+      "line_count": 2256,
       "path": "tests/unit/tools/test_dbv2_audit.py",
       "reason": "Retained specifically for DB-V2: guards the design-report validator and contract hash.",
       "recommended_tier": "manual_privileged",
@@ -4314,7 +4314,7 @@
       "requires_postgres": false,
       "requires_privileged": true,
       "source_modules_covered": [],
-      "test_count": 120
+      "test_count": 173
     },
     {
       "category": "unit",
@@ -4652,7 +4652,7 @@
     },
     "manual_privileged": {
       "files": 4,
-      "tests": 174
+      "tests": 227
     },
     "retire_after_dbv2": {
       "files": 0,
@@ -4663,7 +4663,7 @@
     "conftest_files": 6,
     "fixtures": 25,
     "test_files": 173,
-    "test_functions": 1812,
-    "test_lines": 35430
+    "test_functions": 1865,
+    "test_lines": 36177
   }
 }

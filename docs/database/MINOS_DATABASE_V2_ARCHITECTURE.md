@@ -1,17 +1,23 @@
 # MINOS Database V2 — Canonical Architecture
 
-**Stage:** DB-V2 **D1.3** — design only. No migration exists; `0009` has not been created. No
+**Stage:** DB-V2 **D1.4** — design only. No migration exists; `0009` has not been created. No
 production source has changed.
-**Designed against:** `feature/L2-F` at `695d9227ed83c595e3ed03375a935fbe801aadbd`.
+**Designed against:** `feature/L2-F` at `a17f9719fa483609d905275fbf9a9645d087bfe0`.
 **Operational database:** `minos_engine_db`, live at `0005_l2e_feature_view`, **untouched by this
 stage**.
-**Contract hash:** `20f8b6eaa19622c2fff7bcc67c9e58b1f4667dc90795c9c2f4fa18efcb6020ba`
+**Contract hash:** `ea4e6aa0e752ea9f739c5d0c8f238355636c69559bb2dcbac1d629620e2f3d60`
 (over [`MINOS_DATABASE_V2_CONTRACT.json`](../../reports/database/MINOS_DATABASE_V2_CONTRACT.json),
 excluding its own `contract_sha256` field).
 
 **Physical deployment contract:**
 [`MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json`](../../reports/database/MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json),
-hash `9611245a6bd9a4fd2bad7f73c44e6ec2cdc4b62974b6faa3f8ff40620854d61b`.
+hash `08b6c14eedce6be8024289fc083bab6fad52d6af128526cedda6832ba60e9244`.
+
+**Database API contract:**
+[`MINOS_DATABASE_V2_DATABASE_API.json`](../../reports/database/MINOS_DATABASE_V2_DATABASE_API.json),
+hash `0e4fd9bc68434e933c959e5882c507f3bc43a3cc9c32cb3839059dd3f1b776f4` — 34 functions, 89 triggers,
+16 state machines and an 800-record ACL matrix. Both contracts above pin this hash; this document
+pins neither of theirs, so the three hashes form a one-way graph.
 
 Companion documents: [ERD](MINOS_DATABASE_V2_ERD.md) ·
 [Migration plan](MINOS_DATABASE_V2_MIGRATION_PLAN.md) ·
@@ -207,6 +213,40 @@ generic `entity_type`/`entity_id` association table anywhere in the design.
 
 ---
 
+### 3.1 Recovery scope, and why the snapshot is a fixed point
+
+`catalog.artifacts.backup_scope` is a NOT NULL, **immutable** classification with exactly two
+values. `'operational'` is an engine payload; `'recovery'` is one of the three artifacts a recovery
+set is *made of*. The R1 artifact snapshot is exactly
+
+```sql
+SELECT content_sha256, size_bytes, artifact_kind FROM catalog.artifacts
+WHERE lifecycle_state = 'active' AND backup_scope = 'operational'
+ORDER BY content_sha256, size_bytes, artifact_kind
+```
+
+The `backup_scope` half is what makes this reproducible. R2 publishes three more artifacts and
+requires them to be `active` and `verified`, so an unqualified "every active artifact" predicate
+would return a **different** set after R2 than the one R1 hashed — the snapshot could never be
+re-derived, and the recovery set would describe a state that stopped existing the moment it was
+registered. With the scope predicate, registering a recovery set does not change the inventory that
+recovery set hashes.
+
+`lifecycle_state` and `backup_scope` are orthogonal: an artifact moves `active → archived →
+deleted` without ever being reclassified. It simply stops matching the predicate from that moment
+on, and snapshots taken earlier remain valid descriptions of the state they were taken from.
+
+The aggregate digest is domain-separated:
+
+```
+artifact_snapshot_sha256 = sha256(b"minos:db-v2-artifact-snapshot:v1\n" + canonical_json_bytes(manifest))
+```
+
+Entries are sorted by `(content_sha256, size_bytes, artifact_kind)`; `artifact_count` and
+`artifact_total_bytes` count only the rows the predicate selects. `catalog.artifacts` is UNIQUE on
+`content_sha256`, so a duplicate entry can only come from a corrupted manifest — and it fails
+closed.
+
 ## 4. Job and execution model
 
 Five concerns, five tables:
@@ -273,6 +313,34 @@ Connection discipline: pool of 8 per process, `statement_timeout` 30 s, `lock_ti
 `SERIALIZABLE`). GATK never runs inside a transaction.
 
 ---
+
+### 5.1 The ACL matrix is the contract
+
+Prose privilege summaries are not enforceable. The authoritative grant set is the ACL matrix in the
+database API contract: **800 records**, one for every (object, principal) pair over 8 schemas, 38
+tables and 34 functions × 9 roles plus `PUBLIC`. Every privilege not recorded true is denied, and
+`ALTER DEFAULT PRIVILEGES` closes anything added later.
+
+The rules the matrix is checked against:
+
+- `PUBLIC` holds nothing anywhere, and `0009` revokes PostgreSQL's default grant on schema `public`.
+- No runtime role holds `CREATE` on any schema, or `TRUNCATE`/`REFERENCES`/`TRIGGER` on any table —
+  runtime roles have no DDL privilege at all.
+- `minos_migrate` is the only DDL-capable **login**; `minos_owner` is NOLOGIN, owns every object and
+  is the definer of every `SECURITY DEFINER` function.
+- `minos_runner` holds `SELECT` and nothing else on `experiments.experiment_jobs`: every job
+  mutation goes through a definer function.
+- `evaluation.truth_bindings` is readable by `minos_evaluator` alone. The verifier, which otherwise
+  reads every table, is deliberately excluded.
+- Every function pins `search_path = pg_catalog`.
+
+### 5.2 Roles are cluster objects, not database objects
+
+Migration `0009` **creates no login role and no password.** It preflights: `SET ROLE minos_owner`,
+verify every required role exists, verify `minos_owner` is NOLOGIN and `minos_migrate` is a member
+of it, verify no required role is a superuser — and only then creates any DB-V2 object. A missing or
+incompatible role aborts the transaction before a single object exists. A downgrade drops DB-V2
+objects and **never** a cluster role. No credential appears in any migration, report or test.
 
 ## 6. Performance
 
@@ -342,6 +410,55 @@ the validator refuses any retirement target that begins with a canonical active 
 Details, including the qualification-period naming semantics, are in
 [the migration plan](MINOS_DATABASE_V2_MIGRATION_PLAN.md#30-the-recovery-set-is-two-phase) and the
 physical deployment contract.
+
+## 6b. Enforcement: what makes the contract executable (D1.4)
+
+286 immutable-column annotations are documentation until something rejects the UPDATE. The database
+API contract freezes **34 functions and 89 triggers** that do:
+
+- three reusable generic guards — `audit.reject_immutable_column_update()` (the immutable column
+  names arrive as trigger arguments), `audit.reject_update()` for the 23 fully immutable tables, and
+  `audit.reject_delete()`, which every one of the 37 tables carries;
+- 15 state-machine functions, one per unrelated state machine. They are deliberately **not** merged:
+  an evaluation run and a training run have the same transition shape and different meanings, and
+  collapsing them would make one change silently alter the other;
+- `catalog.enforce_backup_set_shape()`, a `DEFERRABLE INITIALLY IMMEDIATE` **CONSTRAINT** trigger.
+  A `CHECK` cannot reference another table, so "complete requires three verified, active, present
+  recovery artifacts whose bytes recompute" cannot be a `CHECK`. The gate verifies all fifteen
+  conditions in the same transaction as the insert, under `FOR UPDATE` on the artifacts it checks;
+- 16 API functions, all `SECURITY DEFINER`, owned by `minos_owner`, with `search_path` pinned to
+  `pg_catalog` and `EXECUTE` revoked from `PUBLIC`.
+
+**Every function is re-created inside the cutover transaction.** A plpgsql body is stored as *text*
+and re-parsed at execution, so a schema-qualified reference does not follow a schema rename. `0009`
+creates each function with a `dbv2_*`-qualified body; the cutover replaces every body with the
+canonical-qualified form in the same transaction as the renames, and the rollback restores the
+shadow-qualified form. Neither direction leaves a body naming a retired schema.
+
+### 6b.1 Two recovery-set shapes, both representable
+
+`catalog.backup_sets` rows are immutable identities, and `completeness` is immutable with them:
+
+| | recovery manifest | database backup | artifact snapshot | `artifact_count` / `artifact_total_bytes` | authorizes a migration |
+|---|---|---|---|---|---|
+| `complete` | required | required | required | NOT NULL, `>= 0` | yes |
+| `database_only` | required | required | **NULL** | **NULL** | no |
+
+The two shapes are all-or-none, mutually exclusive and — because `completeness` admits only these
+two values — exhaustive. A `database_only` row is **never upgraded in place**; a later complete
+capture is a new row with a new `recovery_set_id` and `backup_key`. Before D1.4 the snapshot columns
+were `NOT NULL`, which made the declared `database_only` state structurally impossible to insert.
+
+### 6b.2 R1 is captured inside one write quiesce
+
+An independently timed `pg_dump` and filesystem scan do **not** form one recovery point: an artifact
+published between the two appears in one half and not the other, and the recovery set then describes
+a state the system was never in. R1 therefore runs inside a quiesce — stop writes and artifact
+publication, drain write transactions, capture the backup and WAL position, enumerate and verify the
+snapshot, publish all three files, verify every published byte, and resume writes only once the
+complete set is durable. `quiesce_started_at` and `quiesce_ended_at` are recorded in the manifest and
+in the registered row, so the consistency claim is auditable rather than asserted. If any step fails,
+`0009` is not authorized.
 
 ## 7. What this stage did not do
 

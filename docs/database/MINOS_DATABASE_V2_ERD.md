@@ -11,7 +11,7 @@ occupied by live V1 relations. A later cutover renames the schemas so these name
 See [`MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json`](../../reports/database/MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json).
 
 38 tables · 8 schemas · contract hash
-`20f8b6eaa19622c2fff7bcc67c9e58b1f4667dc90795c9c2f4fa18efcb6020ba`.
+`ea4e6aa0e752ea9f739c5d0c8f238355636c69559bb2dcbac1d629620e2f3d60`.
 
 ---
 
@@ -174,6 +174,13 @@ erDiagram
 `(backend_id, object_key)` and `(artifact_id, backend_id)` are both unique. `object_key` is
 constrained to be relative and free of `..`.
 
+### 2.0 Artifacts carry a recovery scope
+
+`catalog.artifacts.backup_scope` (`text NOT NULL`, immutable, `IN ('operational','recovery')`)
+decides snapshot eligibility. `ix_artifacts_operational_snapshot` is the partial index over
+`(content_sha256, size_bytes, artifact_kind) WHERE lifecycle_state = 'active' AND backup_scope =
+'operational'` — the exact R1 snapshot predicate and its exact sort order.
+
 ### 2.1 Recovery sets bind three artifacts
 
 `catalog.backup_sets` references `catalog.artifacts` three times, each by **composite** foreign
@@ -186,8 +193,27 @@ never name a different artifact than its id column:
 | `fk_backup_sets_database_backup` | `database_backup_artifact_id`, `database_backup_sha256`, `database_backup_media_type` | `application/vnd.postgresql.dump` |
 | `fk_backup_sets_artifact_snapshot_manifest` | `artifact_snapshot_manifest_artifact_id`, `artifact_snapshot_sha256`, `artifact_snapshot_manifest_media_type` | `application/vnd.minos.artifact-snapshot+json` |
 
-`recovery_manifest_sha256 = sha256(canonical_json_bytes(R1 manifest))`, and `completeness` may
-become `'complete'` only once all three artifacts are `verified`.
+`recovery_manifest_sha256 = sha256(canonical_json_bytes(R1 manifest))`.
+
+The artifact-snapshot triple and both counts are **nullable**, and all five are present together or
+absent together (`ck_backup_sets_shape`):
+
+| `completeness` | recovery manifest | database backup | artifact snapshot | counts |
+|---|---|---|---|---|
+| `complete` | required | required | required | NOT NULL, `>= 0` |
+| `database_only` | required | required | NULL | NULL |
+
+`completeness` is immutable, so the two shapes are decided at INSERT and never converted. Reaching
+`'complete'` additionally requires the CONSTRAINT trigger `trg_backup_sets_shape` —
+`catalog.enforce_backup_set_shape()` — to verify all three artifacts are `verified`, `active`,
+`backup_scope = 'recovery'` and physically present, in the same transaction.
+
+### 2.2 Enforcement objects
+
+Relational constraints do not appear in an ERD but decide what the diagram means. See
+[`MINOS_DATABASE_V2_DATABASE_API.json`](../../reports/database/MINOS_DATABASE_V2_DATABASE_API.json)
+(hash `0e4fd9bc68434e933c959e5882c507f3bc43a3cc9c32cb3839059dd3f1b776f4`) for the 34 functions,
+89 triggers, 16 state machines and the 800-record ACL matrix that enforce this schema.
 
 ---
 

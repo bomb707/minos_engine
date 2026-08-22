@@ -59,6 +59,14 @@ immutable **file** beneath `MINOS_DB_RECOVERY_ROOT` (phase **R1**), and it is re
 it must re-read equal and carry `completeness = 'complete'`. The R1 file is retained afterwards:
 downgrading `0009` destroys the row but never the file.
 
+R1 runs inside a **write quiesce**: stop writes and artifact publication, drain write transactions
+(record `quiesce_started_at`), take the backup and WAL position, enumerate and verify the
+operational artifact snapshot, publish all three files, verify every published byte, then record
+`quiesce_ended_at` and resume writes. Both timestamps are stored in the manifest and in the
+registered row. Two shapes exist: a `complete` set carries the artifact snapshot and its counts and
+may authorize a migration; a `database_only` set carries neither and may not. `completeness` is
+immutable — a `database_only` set is never upgraded, only replaced by a new capture.
+
 **`MINOS_DB_RECOVERY_ROOT`** has no default and no repository-relative fallback; if it is unset,
 recovery publication fails closed. It must already exist as an absolute, non-symlink directory the
 application never creates or repairs, mode `0o2750`, files `0o640`, on durable storage **separate
@@ -112,6 +120,24 @@ A backup set that has never passed a drill is treated as unproven.
 
 ---
 
+## 3a. Roles
+
+The nine cluster roles are **not** created by migration `0009`. Provision them (or verify them)
+outside the migration, before it runs; `0009` preflights and aborts before creating any object if a
+role is absent or incompatible. No password or credential belongs in a migration, a report or a
+test — authentication is a cluster concern.
+
+`minos_migrate` is the only DDL-capable login and must be a member of the NOLOGIN definer principal
+`minos_owner`; the migration session issues `SET ROLE minos_owner` as its first statement so every
+created object is owned by the definer. No runtime path ever issues `SET ROLE`.
+
+The exact grants are the 800-record ACL matrix in
+[`MINOS_DATABASE_V2_DATABASE_API.json`](../../reports/database/MINOS_DATABASE_V2_DATABASE_API.json),
+not the prose in the role table. `PUBLIC` holds nothing; no runtime role holds any DDL privilege;
+`evaluation.truth_bindings` is readable by `minos_evaluator` alone.
+
+A downgrade drops DB-V2 objects and never a cluster role.
+
 ## 4. Recurring operational jobs
 
 | Job | Cadence | Action |
@@ -158,7 +184,7 @@ real. `dbv2_*` never appears in application code.
 The operational revision path is `0005 → 0006 → 0007 → 0008 → 0009`. Migrations `0006`–`0008` are
 unapplied **today** and will execute as structural predecessors during a controlled preparation
 window; after each of them, every L2-F table must hold zero business rows, and no artifact
-publication, enqueue or execution may occur. No operational migration is authorized in D1.3.
+publication, enqueue or execution may occur. No operational migration is authorized in D1.4.
 
 ## 6. Migration windows
 

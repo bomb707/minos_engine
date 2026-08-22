@@ -85,6 +85,8 @@ REQUIRED_R1_FIELDS = (
     "database_backup_kind",
     "database_backup_sha256",
     "database_backup_size_bytes",
+    "quiesce_started_at",
+    "quiesce_ended_at",
     "wal_start_lsn",
     "wal_end_lsn",
     "artifact_snapshot_sha256",
@@ -106,6 +108,111 @@ WITHDRAWAL_MARKERS = ("withdrawn", "not dropped", "never drop", "must not", "wou
 
 #: markdown link targets that are not repository paths.
 EXTERNAL_LINK_RE = re.compile(r"^(https?:|mailto:|#)")
+
+# --------------------------------------------------------------------------- #
+# DB-V2 D1.4: the enforceable contract
+# --------------------------------------------------------------------------- #
+#: an artifact is either an engine payload or one of the three artifacts a recovery set is MADE of.
+BACKUP_SCOPES = frozenset({"operational", "recovery"})
+
+#: the EXACT R1 artifact-snapshot predicate. Unqualified "all active artifacts" is not a fixed
+#: point: R2 makes three more artifacts active, so the digest would change after every R2.
+SNAPSHOT_WHERE = "lifecycle_state = 'active' AND backup_scope = 'operational'"
+SNAPSHOT_SORT = ("content_sha256", "size_bytes", "artifact_kind")
+SNAPSHOT_DIGEST_DOMAIN = "minos:db-v2-artifact-snapshot:v1\n"
+
+#: the five columns that are present together or absent together.
+SNAPSHOT_SHAPE_COLUMNS = (
+    "artifact_snapshot_manifest_artifact_id",
+    "artifact_snapshot_sha256",
+    "artifact_snapshot_manifest_media_type",
+    "artifact_count",
+    "artifact_total_bytes",
+)
+COMPLETENESS_STATES = frozenset({"complete", "database_only"})
+
+#: the pseudo-state a nullable state column starts in.
+NULL_STATE = "(null)"
+
+#: the cross-table gate. A CHECK cannot reference another table, so completeness is enforced here.
+BACKUP_SET_GATE = "catalog.enforce_backup_set_shape"
+GATE_REQUIRED_CHECKS = (
+    "a referenced artifact does not exist",
+    "does not bind one artifact",
+    "verification_state = 'verified'",
+    "lifecycle_state = 'active'",
+    "backup_scope = 'recovery'",
+    "no artifact_locations row in state 'present'",
+    "snapshot manifest bytes do not recompute",
+    "snapshot entry count <> artifact_count",
+    "snapshot entry total size <> artifact_total_bytes",
+    "does not resolve to exactly one active operational artifact",
+    "a recovery artifact appears in the snapshot",
+    "recovery manifest bytes do not recompute",
+    "an R1 field does not equal its mapped column",
+    "conflicting recovery_set_id, backup_key or recovery_manifest_sha256",
+    "completeness changed",
+)
+
+#: every function pins its search_path: an unpinned SECURITY DEFINER function is a privilege bug.
+SAFE_SEARCH_PATH = "pg_catalog"
+FUNCTION_REQUIRED_FIELDS = (
+    "accepted_source_states",
+    "concurrency",
+    "configured_search_path",
+    "cutover_recreation_required",
+    "downgrade_behavior",
+    "executable_roles",
+    "idempotency",
+    "language",
+    "resulting_states",
+    "return_type",
+    "revoked_roles",
+    "rows_locked",
+    "security_mode",
+    "signature",
+    "sqlstates",
+    "tables_mutated",
+    "tables_read",
+    "volatility",
+)
+
+GENERIC_IMMUTABILITY_FUNCTION = "audit.reject_immutable_column_update"
+GENERIC_NO_UPDATE_FUNCTION = "audit.reject_update"
+IMMUTABILITY_FUNCTIONS = frozenset(
+    {
+        GENERIC_IMMUTABILITY_FUNCTION,
+        GENERIC_NO_UPDATE_FUNCTION,
+        "catalog.enforce_backup_set_immutability",
+    }
+)
+
+#: PostgreSQL roles are cluster objects; 0009 preflights them and never creates them.
+DEFINER_PRINCIPAL = "minos_owner"
+MIGRATION_ROLE = "minos_migrate"
+RUNTIME_ROLES = (
+    "minos_planner",
+    "minos_enqueue",
+    "minos_runner",
+    "minos_verifier",
+    "minos_trainer",
+    "minos_evaluator",
+    "minos_live",
+)
+REQUIRED_ROLES = (MIGRATION_ROLE, DEFINER_PRINCIPAL, *RUNTIME_ROLES)
+ACL_PRIVILEGE_KEYS = (
+    "USAGE",
+    "SELECT",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "TRUNCATE",
+    "REFERENCES",
+    "TRIGGER",
+    "EXECUTE",
+)
+DDL_TABLE_PRIVILEGES = ("TRUNCATE", "REFERENCES", "TRIGGER")
+TRUTH_BINDINGS = "evaluation.truth_bindings"
 
 
 # --------------------------------------------------------------------------- #
@@ -542,6 +649,27 @@ def validate(reports: Path, root: Path = REPO_ROOT) -> list[str]:
             problems.extend(_validate_recovery_storage(physical))
             problems.extend(_validate_recovery_bindings(contract, physical))
 
+    # 9c) DB-V2 D1.4: snapshot eligibility, row shapes, the database API and the ACL matrix
+    api_path = reports / "MINOS_DATABASE_V2_DATABASE_API.json"
+    if not api_path.is_file():
+        problems.append(f"missing report: {api_path.name}")
+    elif physical_path.is_file():
+        try:
+            api = load_strict(api_path)
+            physical = load_strict(physical_path)
+        except ValueError as exc:
+            problems.append(f"{api_path.name}: {exc}")
+        else:
+            problems.extend(_validate_artifact_snapshot(contract, physical))
+            problems.extend(_validate_backup_set_shapes(contract))
+            problems.extend(_validate_database_api(contract, physical, api))
+            problems.extend(_validate_acl(contract, api))
+            problems.extend(_validate_role_provisioning(api))
+            for document, label in ((contract, "logical contract"), (physical, "physical report")):
+                declared = document.get("database_api", {}).get(CONTRACT_HASH_FIELD)
+                if declared != api.get(CONTRACT_HASH_FIELD):
+                    problems.append(f"the {label} pins a stale database API hash")
+
     # 9b) stale rollback text, migration 0009 absence, documentation links, report integrity
     problems.extend(_validate_docs_and_migrations(root))
     problems.extend(_validate_report_integrity(root, reports))
@@ -773,8 +901,15 @@ def _validate_recovery_bindings(contract: dict[str, Any], physical: dict[str, An
             name = binding.get(key)
             if name not in columns:
                 problems.append(f"backup_sets has no {key} {name!r} for {role}")
-            elif columns[name].get("nullable") is not False:
+            elif (
+                role != "artifact_snapshot_manifest" and columns[name].get("nullable") is not False
+            ):
                 problems.append(f"backup_sets.{name} must be NOT NULL")
+            elif role == "artifact_snapshot_manifest" and columns[name].get("nullable") is not True:
+                problems.append(
+                    f"backup_sets.{name} must be nullable: a database_only recovery set has no "
+                    "artifact snapshot"
+                )
         if physical.get("recovery_media_types", {}).get(role) != media_type:
             problems.append(f"physical recovery_media_types[{role}] != {media_type!r}")
         if contract.get("recovery_media_types", {}).get(role) != media_type:
@@ -949,6 +1084,560 @@ def _validate_report_integrity(root: Path, reports: Path) -> list[str]:
                     f"{path.name}: stored {document[CONTRACT_HASH_FIELD]!r} != "
                     f"recomputed {recomputed!r}"
                 )
+    return problems
+
+
+# --------------------------------------------------------------------------- #
+# DB-V2 D1.4: snapshot eligibility, row shapes, the database API, the ACL matrix
+# --------------------------------------------------------------------------- #
+def _contract_table(contract: dict[str, Any], ident: str) -> dict[str, Any] | None:
+    schema_name, table_name = ident.split(".", 1)
+    for schema in contract.get("schemas", []):
+        if schema.get("schema") != schema_name:
+            continue
+        for table in schema.get("tables", []):
+            if table.get("table") == table_name:
+                return cast("dict[str, Any]", table)
+    return None
+
+
+def _check_domain(table: dict[str, Any], column: str) -> set[str]:
+    """The exact value set a ``col IN ('a','b')`` CHECK constrains ``column`` to."""
+    for check in table.get("check_constraints", []):
+        expression = check["expression"]
+        match = re.fullmatch(rf"{re.escape(column)} IN \(([^)]*)\)", expression.strip())
+        if match:
+            return {v.strip().strip("'") for v in match.group(1).split(",")}
+        match = re.fullmatch(
+            rf"{re.escape(column)} IS NULL OR {re.escape(column)} IN \(([^)]*)\)",
+            expression.strip(),
+        )
+        if match:
+            return {v.strip().strip("'") for v in match.group(1).split(",")} | {NULL_STATE}
+    return set()
+
+
+def _validate_artifact_snapshot(contract: dict[str, Any], physical: dict[str, Any]) -> list[str]:
+    """K1-K3: recovery artifacts can never enter the snapshot they describe."""
+    problems: list[str] = []
+    predicate = contract.get("artifact_snapshot_predicate")
+    digest = contract.get("artifact_snapshot_digest")
+    if not isinstance(predicate, dict) or not isinstance(digest, dict):
+        return ["the logical contract declares no artifact snapshot predicate or digest"]
+    if physical.get("artifact_snapshot_predicate") != predicate:
+        problems.append("the two contracts disagree on the artifact snapshot predicate")
+    if physical.get("artifact_snapshot_digest") != digest:
+        problems.append("the two contracts disagree on the artifact snapshot digest")
+
+    artifacts = _contract_table(contract, "catalog.artifacts")
+    if artifacts is None:
+        return [*problems, "contract declares no catalog.artifacts table"]
+    scope = next((c for c in artifacts["columns"] if c["name"] == "backup_scope"), None)
+    if scope is None:
+        problems.append("catalog.artifacts declares no backup_scope column")
+    else:
+        if scope.get("nullable") is not False:
+            problems.append("catalog.artifacts.backup_scope must be NOT NULL")
+        if scope.get("mutability") != "immutable":
+            problems.append(
+                "catalog.artifacts.backup_scope must be immutable: a reclassifiable scope would "
+                "let an artifact enter or leave a snapshot that was already taken"
+            )
+    domain = _check_domain(artifacts, "backup_scope")
+    if domain != BACKUP_SCOPES:
+        problems.append(f"backup_scope domain {sorted(domain)} != {sorted(BACKUP_SCOPES)}")
+
+    # K1: the predicate selects operational artifacts only, and says so in one exact form.
+    if predicate.get("table") != "catalog.artifacts":
+        problems.append("the snapshot predicate must select from catalog.artifacts")
+    where = predicate.get("where", "")
+    if where != SNAPSHOT_WHERE:
+        problems.append(f"snapshot predicate WHERE {where!r} != {SNAPSHOT_WHERE!r}")
+    if predicate.get("excluded_by_construction") != "backup_scope = 'recovery'":
+        problems.append("the predicate must state that recovery artifacts are excluded")
+    if tuple(predicate.get("sort_order", ())) != SNAPSHOT_SORT:
+        problems.append(f"snapshot sort order must be {list(SNAPSHOT_SORT)}")
+    if tuple(predicate.get("columns_selected", ())) != SNAPSHOT_SORT:
+        problems.append(f"snapshot columns must be {list(SNAPSHOT_SORT)}")
+    expected_sql = (
+        f"SELECT {', '.join(SNAPSHOT_SORT)} FROM catalog.artifacts "
+        f"WHERE {SNAPSHOT_WHERE} ORDER BY {', '.join(SNAPSHOT_SORT)}"
+    )
+    if predicate.get("sql") != expected_sql:
+        problems.append(f"snapshot SQL is not the exact predicate: {predicate.get('sql')!r}")
+
+    # K1: the supporting index must match the predicate exactly (K3's "exact" half).
+    index = next(
+        (i for i in artifacts.get("indexes", []) if i["name"] == predicate.get("supporting_index")),
+        None,
+    )
+    if index is None:
+        problems.append(
+            f"no index named {predicate.get('supporting_index')!r} on catalog.artifacts"
+        )
+    else:
+        if index.get("where") != SNAPSHOT_WHERE:
+            problems.append("the supporting index predicate does not equal the snapshot predicate")
+        if tuple(index.get("columns", ())) != SNAPSHOT_SORT:
+            problems.append("the supporting index does not cover the snapshot sort order")
+
+    # K3: the digest formula is domain-separated, total, and independently reproducible.
+    if digest.get("domain") != SNAPSHOT_DIGEST_DOMAIN:
+        problems.append(f"snapshot digest domain must be {SNAPSHOT_DIGEST_DOMAIN!r}")
+    if "canonical_json_bytes" not in digest.get("formula", "").replace(" ", ""):
+        problems.append("the snapshot digest formula must be over canonical JSON bytes")
+    if "DOMAIN_bytes" not in digest.get("formula", ""):
+        problems.append("the snapshot digest formula must be domain-separated")
+    if digest.get("domain") == CONTRACT_HASH_DOMAIN.decode("utf-8"):
+        problems.append("the snapshot digest domain collides with the contract hash domain")
+    if tuple(digest.get("entry_fields", ())) != SNAPSHOT_SORT:
+        problems.append(f"snapshot entry fields must be {list(SNAPSHOT_SORT)}")
+    for field in ("artifact_count", "artifact_total_bytes", "entries", "predicate"):
+        if field not in digest.get("manifest_fields", []):
+            problems.append(f"the snapshot manifest must carry {field!r}")
+    if "fails closed" not in digest.get("ambiguity_rule", ""):
+        problems.append("duplicate or unresolvable snapshot entries must fail closed")
+    domain_bytes = SNAPSHOT_DIGEST_DOMAIN.encode("utf-8")
+    entries = [
+        {"artifact_kind": "vcf", "content_sha256": "a" * 64, "size_bytes": 3},
+        {"artifact_kind": "vcf", "content_sha256": "b" * 64, "size_bytes": 5},
+    ]
+    manifest = {
+        "artifact_count": 2,
+        "artifact_total_bytes": 8,
+        "entries": entries,
+        "predicate": SNAPSHOT_WHERE,
+        "recovery_set_id": "r",
+        "schema_version": "v1",
+    }
+    first = hashlib.sha256(domain_bytes + canonical_bytes(manifest)).hexdigest()
+    if first == hashlib.sha256(canonical_bytes(manifest)).hexdigest():
+        problems.append("the snapshot digest is not actually domain-separated")
+    swapped = dict(manifest, entries=list(reversed(entries)))
+    if first == hashlib.sha256(domain_bytes + canonical_bytes(swapped)).hexdigest():
+        problems.append("the snapshot digest does not depend on the frozen entry order")
+    if not re.fullmatch(r"[0-9a-f]{64}", first):
+        problems.append("the snapshot digest is not a 64-character lowercase hex string")
+    return problems
+
+
+def _shape_disjuncts(expression: str) -> list[dict[str, Any]]:
+    """Parse ``(completeness = 'x' AND ... IS [NOT] NULL ...) OR (...)`` into per-shape facts."""
+    parts = re.findall(r"\(([^()]*)\)", expression)
+    shapes: list[dict[str, Any]] = []
+    for part in parts:
+        state = re.search(r"completeness = '([a-z_]+)'", part)
+        if not state:
+            continue
+        nullness: dict[str, bool] = {}
+        for column in SNAPSHOT_SHAPE_COLUMNS:
+            if re.search(rf"\b{re.escape(column)} IS NOT NULL\b", part):
+                nullness[column] = False
+            elif re.search(rf"\b{re.escape(column)} IS NULL\b", part):
+                nullness[column] = True
+        shapes.append({"completeness": state.group(1), "nullness": nullness, "text": part})
+    return shapes
+
+
+def _validate_backup_set_shapes(contract: dict[str, Any]) -> list[str]:
+    """K4-K5: the two row shapes are exclusive, exhaustive, and completeness is immutable."""
+    problems: list[str] = []
+    table = _contract_table(contract, "catalog.backup_sets")
+    if table is None:
+        return ["contract declares no catalog.backup_sets table"]
+    columns = {c["name"]: c for c in table["columns"]}
+    checks = {c["name"]: c["expression"] for c in table.get("check_constraints", [])}
+
+    domain = _check_domain(table, "completeness")
+    if domain != COMPLETENESS_STATES:
+        problems.append(f"completeness domain {sorted(domain)} != {sorted(COMPLETENESS_STATES)}")
+    if columns.get("completeness", {}).get("mutability") != "immutable":
+        problems.append("completeness must be immutable - no in-place database_only -> complete")
+
+    shape = checks.get("ck_backup_sets_shape")
+    if shape is None:
+        return [*problems, "backup_sets declares no ck_backup_sets_shape constraint"]
+    shapes = _shape_disjuncts(shape)
+    if len(shapes) != 2:
+        return [
+            *problems,
+            f"ck_backup_sets_shape must have exactly two disjuncts, got {len(shapes)}",
+        ]
+    states = {s["completeness"] for s in shapes}
+    if states != COMPLETENESS_STATES:
+        problems.append(f"the two shapes cover {sorted(states)}, not {sorted(COMPLETENESS_STATES)}")
+    by_state = {s["completeness"]: s for s in shapes}
+    for state, want_null in (("complete", False), ("database_only", True)):
+        found = by_state.get(state, {}).get("nullness", {})
+        for column in SNAPSHOT_SHAPE_COLUMNS:
+            if column not in found:
+                problems.append(f"{state}: ck_backup_sets_shape says nothing about {column}")
+            elif found[column] is not want_null:
+                problems.append(f"{state}: {column} must be {'NULL' if want_null else 'NOT NULL'}")
+    if len(shapes) == 2 and shapes[0]["completeness"] == shapes[1]["completeness"]:
+        problems.append("the two shapes are not mutually exclusive: same completeness value")
+    if "artifact_count >= 0" not in by_state.get("complete", {}).get("text", ""):
+        problems.append("a complete row must require artifact_count >= 0")
+    if "artifact_total_bytes >= 0" not in by_state.get("complete", {}).get("text", ""):
+        problems.append("a complete row must require artifact_total_bytes >= 0")
+
+    for column in SNAPSHOT_SHAPE_COLUMNS:
+        entry = columns.get(column)
+        if entry is None:
+            problems.append(f"backup_sets has no column {column}")
+        elif entry.get("nullable") is not True:
+            problems.append(
+                f"backup_sets.{column} must be nullable: a NOT NULL column makes the declared "
+                "database_only shape structurally impossible"
+            )
+        elif "default" in entry:
+            problems.append(
+                f"backup_sets.{column} must have no default: a default fills the "
+                "database_only shape silently"
+            )
+
+    row_shapes = table.get("row_shapes", {})
+    if row_shapes.get("mutually_exclusive") is not True:
+        problems.append("row_shapes must declare the two shapes mutually exclusive")
+    if row_shapes.get("exhaustive") is not True:
+        problems.append("row_shapes must declare the two shapes exhaustive")
+    if row_shapes.get("complete", {}).get("may_authorize_migration") is not True:
+        problems.append("a complete recovery set must be able to authorize a migration")
+    if row_shapes.get("database_only", {}).get("may_authorize_migration") is not False:
+        problems.append("a database_only recovery set must NOT authorize a migration")
+    if "never upgraded" not in row_shapes.get("no_in_place_upgrade", ""):
+        problems.append("row_shapes must forbid an in-place database_only -> complete upgrade")
+    return problems
+
+
+def _validate_database_api(
+    contract: dict[str, Any], physical: dict[str, Any], api: dict[str, Any]
+) -> list[str]:
+    """K6-K12, K19: functions, triggers, transitions and cutover recreation."""
+    problems: list[str] = []
+    functions = {f["name"]: f for f in api.get("functions", [])}
+    triggers = api.get("triggers", [])
+    if len(functions) != len(api.get("functions", [])):
+        problems.append("two declared functions share a name - every function name must be unique")
+    names = [t["name"] for t in triggers]
+    if len(set(names)) != len(names):
+        duplicates = sorted({n for n in names if names.count(n) > 1})
+        problems.append(f"duplicate trigger names: {duplicates}")
+
+    # K10: every function carries an exact signature and a complete security contract.
+    for name, function in sorted(functions.items()):
+        for field in FUNCTION_REQUIRED_FIELDS:
+            if field not in function:
+                problems.append(f"{name}: function record omits {field!r}")
+        if not str(function.get("signature", "")).startswith(f"{name}("):
+            problems.append(f"{name}: signature {function.get('signature')!r} does not name it")
+        if function.get("security_mode") not in {"INVOKER", "DEFINER"}:
+            problems.append(f"{name}: security_mode must be INVOKER or DEFINER")
+        if function.get("configured_search_path") != SAFE_SEARCH_PATH:
+            problems.append(f"{name}: search_path must be pinned to {SAFE_SEARCH_PATH!r}")
+        if "PUBLIC" not in function.get("revoked_roles", []):
+            problems.append(f"{name}: EXECUTE must be revoked from PUBLIC")
+        if not function.get("return_type"):
+            problems.append(f"{name}: no return type")
+        if not function.get("sqlstates"):
+            problems.append(f"{name}: declares no SQLSTATE")
+        if not function.get("downgrade_behavior"):
+            problems.append(f"{name}: declares no downgrade behaviour")
+        overlap = set(function.get("executable_roles", [])) & set(function.get("revoked_roles", []))
+        if overlap:
+            problems.append(f"{name}: {sorted(overlap)} both granted and revoked")
+        # K19: a plpgsql body is stored as text, so a schema rename does not follow it.
+        if function.get("cutover_recreation_required") is not True:
+            problems.append(f"{name}: must be re-created in the cutover transaction")
+        if not function.get("cutover_note"):
+            problems.append(f"{name}: no cutover note")
+
+    # K11: every trigger names a declared function.
+    for trigger in triggers:
+        if trigger.get("function") not in functions:
+            problems.append(
+                f"trigger {trigger.get('name')} names undeclared function "
+                f"{trigger.get('function')!r}"
+            )
+        if _contract_table(contract, trigger.get("table", "")) is None:
+            problems.append(
+                f"trigger {trigger.get('name')} names undeclared table {trigger.get('table')!r}"
+            )
+
+    by_table: dict[str, list[dict[str, Any]]] = {}
+    for trigger in triggers:
+        by_table.setdefault(trigger.get("table", ""), []).append(trigger)
+
+    # K6: cross-table completeness enforcement is declared, as a constraint trigger.
+    gate = functions.get(BACKUP_SET_GATE)
+    if gate is None:
+        problems.append(f"no cross-table completeness gate {BACKUP_SET_GATE}")
+    else:
+        if "catalog.artifacts" not in gate.get("tables_read", []):
+            problems.append(f"{BACKUP_SET_GATE} must read catalog.artifacts")
+        if "catalog.artifact_locations" not in gate.get("tables_read", []):
+            problems.append(f"{BACKUP_SET_GATE} must check artifact locations")
+        declared = " | ".join(gate.get("sqlstates", []))
+        for phrase in GATE_REQUIRED_CHECKS:
+            if phrase not in declared:
+                problems.append(f"{BACKUP_SET_GATE} does not reject: {phrase}")
+        if "no-op" not in gate.get("idempotency", ""):
+            problems.append(f"{BACKUP_SET_GATE} must declare an idempotent exact replay")
+        if "fails closed" not in gate.get("idempotency", ""):
+            problems.append(f"{BACKUP_SET_GATE} must reject conflicting immutable metadata")
+        if "FOR UPDATE" not in gate.get("concurrency", ""):
+            problems.append(f"{BACKUP_SET_GATE} must lock the artifacts it verifies")
+    gate_triggers = [
+        t for t in by_table.get("catalog.backup_sets", []) if t.get("function") == BACKUP_SET_GATE
+    ]
+    if not gate_triggers:
+        problems.append("catalog.backup_sets carries no completeness-gate trigger")
+    for trigger in gate_triggers:
+        if trigger.get("constraint_trigger") is not True:
+            problems.append(f"{trigger['name']} must be a CONSTRAINT trigger")
+        if "INSERT" not in trigger.get("event", ""):
+            problems.append(f"{trigger['name']} must fire on INSERT")
+
+    # K7 / K12: every immutable column and every protected table is covered by a trigger.
+    inventory = api.get("immutable_column_inventory", {})
+    mutable_rules = api.get("mutable_column_rules", {})
+    for schema in contract.get("schemas", []):
+        for table in schema.get("tables", []):
+            ident = f"{schema['schema']}.{table['table']}"
+            if ident == SHARED_ALEMBIC_TABLE:
+                continue
+            immutable = [c["name"] for c in table["columns"] if c.get("mutability") == "immutable"]
+            mutable = [c["name"] for c in table["columns"] if c.get("mutability") == "mutable"]
+            if inventory.get(ident) != immutable:
+                problems.append(f"{ident}: immutable column inventory does not match the contract")
+            attached = by_table.get(ident, [])
+            functions_used = {t.get("function") for t in attached}
+            if not any(t.get("event") == "DELETE" for t in attached):
+                problems.append(f"{ident}: no DELETE protection trigger")
+            if mutable:
+                if set(mutable_rules.get(ident, {})) != set(mutable):
+                    problems.append(f"{ident}: mutable column rules do not match the contract")
+                guards = functions_used & IMMUTABILITY_FUNCTIONS
+                if not guards:
+                    problems.append(
+                        f"{ident}: {len(immutable)} immutable columns, no guard trigger"
+                    )
+                for trigger in attached:
+                    if (
+                        trigger.get("function") == GENERIC_IMMUTABILITY_FUNCTION
+                        and trigger.get("arguments") != immutable
+                    ):
+                        problems.append(
+                            f"{trigger['name']}: arguments do not equal the immutable columns"
+                        )
+            else:
+                if ident in mutable_rules:
+                    problems.append(f"{ident}: has no mutable column but declares update rules")
+                if GENERIC_NO_UPDATE_FUNCTION not in functions_used:
+                    problems.append(f"{ident}: fully immutable but accepts UPDATE")
+
+    # K8 / K9: every declared transition is reachable, and forbidden ones are disjoint from it.
+    for key, machine in sorted(api.get("state_machines", {}).items()):
+        enforcer = machine.get("enforced_by", "")
+        for candidate in enforcer.split(" / "):
+            if candidate and candidate not in functions:
+                problems.append(f"state machine {key}: enforcer {candidate!r} is not declared")
+        allowed = {tuple(t) for t in machine.get("transitions", [])}
+        forbidden = {tuple(t) for t in machine.get("forbidden", [])}
+        if not forbidden:
+            problems.append(f"state machine {key}: declares no forbidden transition")
+        overlap = allowed & forbidden
+        if overlap:
+            problems.append(f"state machine {key}: {sorted(overlap)} both allowed and forbidden")
+        table_ident = machine.get("table", "")
+        column = machine.get("column", "")
+        table = _contract_table(contract, table_ident)
+        if table is None or not column.startswith("("):
+            if table is None:
+                continue
+            domain = _check_domain(table, column) | {NULL_STATE}
+            if not domain - {NULL_STATE}:
+                continue
+            for source, target in sorted(allowed):
+                for state in (source, target):
+                    if state not in domain:
+                        problems.append(
+                            f"state machine {key}: {state!r} is not in the CHECK domain of "
+                            f"{table_ident}.{column}"
+                        )
+            reachable = set(machine.get("initial", []))
+            for _ in range(len(allowed) + 1):
+                reachable |= {t for s, t in allowed if s in reachable}
+            for state in domain - {NULL_STATE}:
+                if state not in reachable:
+                    problems.append(
+                        f"state machine {key}: {state!r} is declared by a CHECK but unreachable "
+                        "through any allowed transition"
+                    )
+
+    # K19: the physical deployment maps every function, and both directions re-create bodies.
+    mapping = {m["canonical_function"]: m for m in physical.get("function_deployment_mapping", [])}
+    if set(mapping) != set(functions):
+        missing = sorted(set(functions) - set(mapping))
+        extra = sorted(set(mapping) - set(functions))
+        problems.append(f"function deployment mapping missing {missing}, unexpected {extra}")
+    shadow = physical.get("schema_mapping", {}).get("canonical_to_shadow", {})
+    for name, entry in sorted(mapping.items()):
+        schema_name, bare = name.split(".", 1)
+        expected = f"{shadow.get(schema_name)}.{bare}"
+        if entry.get("d2_physical_function") != expected:
+            problems.append(
+                f"{name}: shadow function {entry.get('d2_physical_function')!r} != {expected!r}"
+            )
+        if entry.get("post_cutover_function") != name:
+            problems.append(f"{name}: post-cutover identity must equal the canonical name")
+    for key in ("cutover_mapping", "rollback_mapping"):
+        actions = [s["action"] for s in physical.get(key, {}).get("steps", [])]
+        if "recreate_function_bodies" not in actions:
+            problems.append(f"{key} does not re-create function bodies")
+        elif "revalidate" in actions and actions.index("recreate_function_bodies") > actions.index(
+            "revalidate"
+        ):
+            problems.append(f"{key} re-validates before re-creating the function bodies")
+    return problems
+
+
+def _validate_acl(contract: dict[str, Any], api: dict[str, Any]) -> list[str]:
+    """K13-K16: the ACL matrix resolves, is unambiguous, closed, and DDL-free for runtime roles."""
+    problems: list[str] = []
+    acl = api.get("acl")
+    if not isinstance(acl, dict):
+        return ["the database API declares no ACL matrix"]
+    principals = list(acl.get("principals", []))
+    if "PUBLIC" not in principals:
+        problems.append("the ACL matrix must carry an explicit PUBLIC principal")
+    objects = acl.get("objects", {})
+    schemas = {s["schema"] for s in contract.get("schemas", [])}
+    tables = {
+        f"{s['schema']}.{t['table']}"
+        for s in contract.get("schemas", [])
+        for t in s.get("tables", [])
+    }
+    functions = {f["name"] for f in api.get("functions", [])}
+    universe = {
+        "schema": (set(objects.get("schemas", [])), schemas),
+        "table": (set(objects.get("tables", [])), tables),
+        "function": (set(objects.get("functions", [])), functions),
+    }
+    # K13: every ACL object resolves to a declared object, and none is missing.
+    for kind, (declared, actual) in sorted(universe.items()):
+        for ident in sorted(declared - actual):
+            problems.append(f"ACL names an undeclared {kind}: {ident}")
+        for ident in sorted(actual - declared):
+            problems.append(f"ACL omits the {kind} {ident}")
+
+    # K14: exactly one record per (object, principal) pair, and the matrix is complete.
+    seen: dict[tuple[str, str, str], int] = {}
+    for record in acl.get("records", []):
+        key = (record.get("object_type", ""), record.get("object", ""), record.get("principal", ""))
+        seen[key] = seen.get(key, 0) + 1
+        if set(record.get("privileges", {})) != set(ACL_PRIVILEGE_KEYS):
+            problems.append(f"{key}: privilege record does not carry every privilege key")
+        if "grant_option" not in record:
+            problems.append(f"{key}: no grant option recorded")
+    for key, count in sorted(seen.items()):
+        if count != 1:
+            problems.append(f"{key}: {count} privilege records - the matrix is ambiguous")
+    expected_pairs = {
+        (kind, ident, principal)
+        for kind, (declared, _) in universe.items()
+        for ident in declared
+        for principal in principals
+    }
+    for key in sorted(expected_pairs - set(seen)):
+        problems.append(f"{key}: no privilege record - the matrix is not exhaustive")
+    if acl.get("counts_note") is None and api.get("counts", {}).get("acl_records") != len(seen):
+        problems.append("the declared ACL record count does not equal the number of records")
+
+    records = {(r["object_type"], r["object"], r["principal"]): r for r in acl.get("records", [])}
+    # K15: PUBLIC holds nothing anywhere, and the default grant is revoked.
+    for key, record in sorted(records.items()):
+        if key[2] != "PUBLIC":
+            continue
+        granted = sorted(p for p, held in record["privileges"].items() if held)
+        if granted:
+            problems.append(f"PUBLIC holds {granted} on {key[1]}")
+        if record.get("grant_option"):
+            problems.append(f"PUBLIC holds a grant option on {key[1]}")
+    if "REVOKE ALL ON SCHEMA public FROM PUBLIC" not in acl.get("public_revocation", ""):
+        problems.append("the ACL must revoke PostgreSQL's default grant on schema public")
+
+    # K16: no runtime role holds any DDL privilege, anywhere.
+    ddl_holders = set(acl.get("create_privilege", {}).get("granted_to", []))
+    for role in RUNTIME_ROLES:
+        if role in ddl_holders:
+            problems.append(f"{role} holds CREATE - runtime roles have no DDL privilege")
+    for key, record in sorted(records.items()):
+        if key[0] != "table" or key[2] not in RUNTIME_ROLES:
+            continue
+        for privilege in DDL_TABLE_PRIVILEGES:
+            if record["privileges"].get(privilege):
+                problems.append(f"{key[2]} holds {privilege} on {key[1]} - that is a DDL privilege")
+    if set(ddl_holders) - {MIGRATION_ROLE, DEFINER_PRINCIPAL}:
+        problems.append(f"only {MIGRATION_ROLE} and {DEFINER_PRINCIPAL} may hold CREATE")
+
+    # the frozen role-specific rules
+    truth = records.get(("table", TRUTH_BINDINGS, "minos_evaluator"))
+    if truth is None or not truth["privileges"].get("SELECT"):
+        problems.append(f"minos_evaluator must be able to read {TRUTH_BINDINGS}")
+    for key, record in sorted(records.items()):
+        if (
+            key[0] == "table"
+            and key[1] == TRUTH_BINDINGS
+            and key[2] not in {"minos_evaluator", DEFINER_PRINCIPAL}
+            and record["privileges"].get("SELECT")
+        ):
+            problems.append(f"{key[2]} may not read {TRUTH_BINDINGS}")
+    runner_jobs = records.get(("table", "experiments.experiment_jobs", "minos_runner"))
+    if runner_jobs is not None:
+        for privilege in ("INSERT", "UPDATE", "DELETE"):
+            if runner_jobs["privileges"].get(privilege):
+                problems.append(f"minos_runner must have no direct {privilege} on experiment_jobs")
+    for key, record in sorted(records.items()):
+        if key[0] != "table" or key[2] != "minos_verifier":
+            continue
+        for privilege in ("INSERT", "UPDATE", "DELETE", "TRUNCATE"):
+            if record["privileges"].get(privilege):
+                problems.append(f"the verifier must be read-only: {privilege} on {key[1]}")
+    return problems
+
+
+def _validate_role_provisioning(api: dict[str, Any]) -> list[str]:
+    """K17-K18: roles are preflighted, never created by 0009, never dropped by a downgrade."""
+    problems: list[str] = []
+    provisioning = api.get("role_provisioning")
+    if not isinstance(provisioning, dict):
+        return ["the database API declares no role provisioning contract"]
+    if provisioning.get("roles_created_by_0009") != []:
+        problems.append("migration 0009 must create no cluster role")
+    required = provisioning.get("required_roles", [])
+    if set(required) != set(REQUIRED_ROLES):
+        problems.append(f"required roles {sorted(required)} != {sorted(REQUIRED_ROLES)}")
+    order = provisioning.get("preflight_order", [])
+    for phrase in ("verify every required role exists", "only then: CREATE SCHEMA"):
+        if not any(phrase in step for step in order):
+            problems.append(f"the preflight order omits {phrase!r}")
+    if order and "only then" in order[0]:
+        problems.append("object creation must not be the first preflight step")
+    for index, step in enumerate(order):
+        if step.startswith("only then: CREATE SCHEMA") and index == 0:
+            problems.append("schemas may not be created before the role preflight")
+    if "raises BEFORE creating any DB-V2 object" not in provisioning.get("failure_mode", ""):
+        problems.append("0009 must fail before creating any object when a role is missing")
+    downgrade = provisioning.get("downgrade_rule", "")
+    if "NEVER drops" not in downgrade:
+        problems.append("a downgrade must never drop a cluster role")
+    if not provisioning.get("scratch_test_rule"):
+        problems.append("scratch tests must provision the required roles before Alembic")
+    if not provisioning.get("operational_provisioning"):
+        problems.append("a separate operational provisioning step must be declared")
+    if "No password" not in provisioning.get("no_credentials", ""):
+        problems.append("the provisioning contract must forbid credentials in migrations")
     return problems
 
 
