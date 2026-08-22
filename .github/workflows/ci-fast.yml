@@ -1,21 +1,31 @@
 name: CI (fast)
 
-# Tier 1 of the two-tier CI. Runs on every branch push and pull request and is meant to give
-# feedback in a couple of minutes: static checks plus every test that does not need a database.
+# Tier 1 of the two-tier CI: static checks plus every test that needs no database, for feedback
+# in a couple of minutes.
 #
-# Deliberately NOT here: PostgreSQL integration, migration lifecycle, gate ancestry verification
-# and coverage. Those run once in ci-full.yml, which is required before merge, release or a
-# DB-V2 stage acceptance. Nothing in this file is repeated there beyond the static checks, which
-# cost seconds.
+# Deliberately NOT here: PostgreSQL integration, coverage, and the committed-gate verifiers.
+# Those run in .github/workflows/ci.yml, which is required before merge, release or a DB-V2
+# stage acceptance. A push to a feature branch runs THIS workflow only - it does not trigger
+# full qualification.
+#
+# Trigger matrix (see tests/unit/tools/test_workflow_policy.py, which evaluates the job
+# condition against synthetic event payloads rather than matching source text):
+#
+#   internal branch push, no open PR   -> runs (push event)
+#   internal branch push, open PR      -> runs ONCE (the push event; the pull_request is skipped)
+#   same-repository pull_request       -> skipped; its push run already covered the commit
+#   pull_request from a fork           -> runs (a fork push never reaches this repository)
+#   workflow_dispatch                  -> runs
 
 on:
   push:
   pull_request:
   workflow_dispatch:
 
-# A newer push on the same ref cancels an obsolete in-progress run.
+# Keyed on the effective branch: a fork PR's head label, otherwise the pushed ref. A newer push
+# on the same effective branch cancels an obsolete in-progress run.
 concurrency:
-  group: ci-fast-${{ github.ref }}
+  group: ci-fast-${{ github.event.pull_request.head.label || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -24,9 +34,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
+    # A same-repository pull_request is skipped because the push event for the identical commit
+    # already ran this job. A fork pull_request is the only pull_request that still runs, since
+    # a fork's push never reaches this repository.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name != github.repository
+
     steps:
-      # Shallow clone is sufficient: this tier verifies no git-bound gate ancestry.
+      # Full history is REQUIRED. tests/unit/storage/test_l2f_harness_verifier_attacks.py and
+      # test_l2f_job_enqueue_unit.py build the accepted plan, which runs the E5 prerequisite
+      # closure (e5_source_is_commit, head_descends_e5_evidence, ...). A shallow clone lacks
+      # those objects and the closure correctly fails closed - which is exactly how the first
+      # run of this workflow failed.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5

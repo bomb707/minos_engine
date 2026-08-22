@@ -1,11 +1,21 @@
 name: CI (full qualification)
 
 # Tier 2 of the two-tier CI. This is the gate for merging, releases and DB-V2 stage acceptance.
-# It runs the whole suite exactly ONCE, in a single invocation that produces both the JUnit XML
-# and the coverage report, then verifies each committed gate once.
+#
+# It runs ONE full-suite invocation (emitting both the JUnit XML and the coverage report) plus
+# ONE non-overlapping lifecycle preflight; every test executes at most once per workflow. The
+# preflight is kept separate on purpose: a broken migration chain then fails in seconds with its
+# own diagnostics instead of being buried inside a 5-minute suite run.
+#
+# This workflow does NOT run on an ordinary feature-branch push. It runs for pull requests
+# targeting main/master/integration, for version tags, on manual dispatch, and on the nightly
+# schedule - and a GitHub schedule event always runs the repository default branch (main), never
+# an arbitrary feature or integration branch. Before a DB-V2 stage acceptance it must therefore
+# be dispatched manually on the exact stage SHA, unless an applicable pull request already ran
+# it on that commit.
 #
 # What was removed from the previous monolithic workflow, and why:
-#   * a second full pytest run purely for coverage    -> one invocation now emits both (-325s)
+#   * a second full pytest run purely for coverage    -> the full-suite invocation emits both
 #   * `pytest tests/integration/layer2_db`            -> already inside the full suite (-182s)
 #   * `pytest tests/integration/layer2_split{,_v2}`   -> already inside the full suite
 #   * `pytest tests/integration/layer2_ingest`        -> already inside the full suite
@@ -22,7 +32,8 @@ on:
     branches: [main, master, integration]
   workflow_dispatch:
   schedule:
-    # nightly qualification of the active integration branch
+    # Nightly qualification. GitHub runs schedule events on the DEFAULT branch only, so this
+    # qualifies main - it does not qualify a feature or integration branch.
     - cron: "0 3 * * *"
   push:
     tags: ["v*"]
@@ -113,17 +124,19 @@ jobs:
       # -> downgrade 0003_l2c_split_v2_epochs -> downgrade 0002_l2c_dataset_split
       # -> downgrade 0001_l2b_initial -> downgrade base -> head, asserting at every stop both
       # that the stage's objects are gone and that the previous stage's objects survive.
-      # It runs here, before the full suite, so a broken chain fails fast; pytest deselects it
-      # from the run below so no test executes twice.
+      # It runs here, before the full suite, so a broken chain fails fast with its own
+      # diagnostics; the full-suite invocation below deselects this module, so every test in the
+      # workflow still executes at most once.
       - name: Alembic stepwise lifecycle (0008 -> 0005 -> 0004 -> 0003 -> 0002 -> 0001 -> base)
         run: >-
           pytest
           tests/integration/layer2_db/test_stepwise_migration_chain.py
           -q
 
-      # THE single full-suite invocation. It emits JUnit and coverage together; there is no
-      # second full pytest run anywhere in this workflow. The stepwise-chain module above is
-      # deselected here so it is executed exactly once per workflow.
+      # The full-suite invocation. It emits JUnit and coverage together, so coverage never costs
+      # a second pass over the suite. Together with the lifecycle preflight above this workflow
+      # performs one full-suite invocation plus one non-overlapping preflight; every test
+      # executes at most once per workflow.
       # The suite includes tests/integration/layer2_split_v2 and tests/integration/layer2_ingest,
       # which the previous workflow additionally re-ran as separate steps.
       - name: Pytest — full suite, JUnit + coverage (>= 90%)

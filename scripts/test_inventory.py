@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import json
 import re
 import sys
@@ -44,6 +45,20 @@ _PG_DIRS = ("tests/integration/",)
 _PG_IMPORTS = ("sqlalchemy", "psycopg", "pgserver", "alembic")
 #: markers that imply the file cannot run on an ordinary hosted runner.
 _PRIVILEGED_HINTS = ("os.geteuid() == 0", "requires root", "privileged", "setcap", "chown(")
+
+
+def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    seen: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in seen:
+            raise ValueError(f"duplicate JSON key {key!r}")
+        seen[key] = value
+    return seen
+
+
+def load_strict(path: Path) -> Any:
+    """Parse JSON, rejecting duplicate keys anywhere in the document."""
+    return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_no_duplicate_keys)
 
 
 def _category(rel: str) -> str:
@@ -183,6 +198,12 @@ ANNOTATIONS: dict[str, tuple[str, str, str | None]] = {
         "embedded in YAML; executed exactly once by the full tier.",
         None,
     ),
+    "tests/unit/tools/test_workflow_policy.py": (
+        "keep",
+        "Evaluates the fast-tier job condition against synthetic GitHub event payloads, so the "
+        "one-run-per-commit policy is proven rather than grepped.",
+        None,
+    ),
     "tests/unit/tools/test_dbv2_audit.py": (
         "keep",
         "Retained specifically for DB-V2: guards the design-report validator and contract hash.",
@@ -215,7 +236,7 @@ CONTRACTS: dict[str, str] = {
     "tests/acceptance": "accepted stage-gate posture and git-bound evidence ancestry",
     "tests/determinism": "deterministic scientific identity",
     "tests/protocol_contract": "protocol contract stability",
-    "tests/unit/tools": "DB-V2 design-report integrity",
+    "tests/unit/tools": "DB-V2 design-report integrity and CI workflow trigger policy",
 }
 
 TIER_COMMANDS: dict[str, str] = {
@@ -306,7 +327,9 @@ def find_exact_duplicates(records: list[dict[str, Any]]) -> list[dict[str, Any]]
                 "occurrences": len(members),
                 "members": sorted(members),
                 "distinct_names": sorted({m.rsplit("::", 1)[1] for m in members}),
-                "body_digest": f"{hash(body) & 0xFFFFFFFF:08x}",
+                # sha256 of the normalized AST dump: stable across processes and machines,
+                # unlike Python's per-process randomized str hash().
+                "body_digest": hashlib.sha256(body.encode("utf-8")).hexdigest()[:16],
             }
         )
     return groups
@@ -407,6 +430,66 @@ def build(records_only: bool = False) -> dict[str, Any]:
     return payload
 
 
+#: Fields excluded from record equality. Empty on purpose: the report carries no timestamp, no
+#: absolute path and no nondeterministic value, so a fresh build must reproduce it exactly.
+PROVENANCE_ONLY_FIELDS: frozenset[str] = frozenset()
+
+
+def verify_inventory(path: Path = INVENTORY_PATH) -> list[str]:
+    """Require the committed report to equal a fresh ``build()`` semantically, record by record.
+
+    Totals and path sets are not enough: swapping two records' counts, retiering one file or
+    editing a decision all leave the totals identical. Every committed field is therefore
+    compared against the freshly derived one. ``verify`` never writes the report.
+    """
+    problems: list[str] = []
+    if not path.is_file():
+        return [f"{path} is missing"]
+    try:
+        committed = load_strict(path)
+    except ValueError as exc:
+        return [f"{path.name}: {exc}"]
+
+    current = build()
+
+    if committed.get("schema_version") != current["schema_version"]:
+        problems.append(
+            f"schema_version drifted: {committed.get('schema_version')!r} != "
+            f"{current['schema_version']!r}"
+        )
+    for section in ("totals", "tier_totals", "tier_commands", "removals", "redundancy"):
+        if committed.get(section) != current[section]:
+            problems.append(f"{section} drifted from a fresh build")
+
+    committed_by_path = {r["path"]: r for r in committed.get("files", [])}
+    current_by_path = {r["path"]: r for r in current["files"]}
+
+    for missing in sorted(current_by_path.keys() - committed_by_path.keys()):
+        problems.append(f"test file not in the inventory: {missing}")
+    for stale in sorted(committed_by_path.keys() - current_by_path.keys()):
+        problems.append(f"inventory lists a file that no longer exists: {stale}")
+
+    for rel in sorted(committed_by_path.keys() & current_by_path.keys()):
+        want, got = current_by_path[rel], committed_by_path[rel]
+        for field in sorted(set(want) | set(got)):
+            if field in PROVENANCE_ONLY_FIELDS:
+                continue
+            if want.get(field) != got.get(field):
+                problems.append(
+                    f"{rel}: {field} drifted (committed {got.get(field)!r} != "
+                    f"derived {want.get(field)!r})"
+                )
+
+    for record in committed.get("files", []):
+        if record.get("recommended_tier") not in TIERS:
+            problems.append(f"{record['path']}: unknown tier {record.get('recommended_tier')!r}")
+        if record.get("decision") not in DECISIONS:
+            problems.append(f"{record['path']}: unknown decision {record.get('decision')!r}")
+        if record.get("decision") != "keep" and not record.get("reason"):
+            problems.append(f"{record['path']}: {record['decision']} without a reason")
+    return problems
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="TEST-CI-1 inventory and redundancy analysis")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -448,27 +531,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     # verify
-    if not INVENTORY_PATH.is_file():
-        print(f"FAIL: {INVENTORY_PATH} is missing", file=sys.stderr)
-        return 1
-    committed = json.loads(INVENTORY_PATH.read_text(encoding="utf-8"))
-    current = build()
-    problems: list[str] = []
-    if committed["totals"] != current["totals"]:
-        problems.append(f"totals drifted: {committed['totals']} != {current['totals']}")
-    committed_paths = {f["path"] for f in committed["files"]}
-    current_paths = {f["path"] for f in current["files"]}
-    for path in sorted(current_paths - committed_paths):
-        problems.append(f"test file not in the inventory: {path}")
-    for path in sorted(committed_paths - current_paths):
-        problems.append(f"inventory lists a file that no longer exists: {path}")
-    for record in committed["files"]:
-        if record["recommended_tier"] not in TIERS:
-            problems.append(f"{record['path']}: unknown tier {record['recommended_tier']!r}")
-        if record["decision"] not in DECISIONS:
-            problems.append(f"{record['path']}: unknown decision {record['decision']!r}")
-        if record["decision"] != "keep" and not record["reason"]:
-            problems.append(f"{record['path']}: {record['decision']} without a reason")
+    problems = verify_inventory()
     for problem in problems:
         print(f"FAIL: {problem}", file=sys.stderr)
     print(f"verify: {len(problems)} problem(s)")

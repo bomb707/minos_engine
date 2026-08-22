@@ -4291,7 +4291,7 @@
     },
     {
       "category": "unit",
-      "contract_protected": "DB-V2 design-report integrity",
+      "contract_protected": "DB-V2 design-report integrity and CI workflow trigger policy",
       "decision": "keep",
       "dependencies": [
         "hashlib",
@@ -4301,18 +4301,45 @@
         "pytest",
         "typing"
       ],
-      "line_count": 258,
+      "line_count": 414,
       "path": "tests/unit/tools/test_dbv2_audit.py",
       "reason": "Retained specifically for DB-V2: guards the design-report validator and contract hash.",
-      "recommended_tier": "fast",
+      "recommended_tier": "manual_privileged",
       "replacement": null,
       "requires_filesystem": true,
       "requires_gate_evidence": false,
       "requires_posix": false,
       "requires_postgres": false,
-      "requires_privileged": false,
+      "requires_privileged": true,
       "source_modules_covered": [],
-      "test_count": 23
+      "test_count": 35
+    },
+    {
+      "category": "unit",
+      "contract_protected": "DB-V2 design-report integrity and CI workflow trigger policy",
+      "decision": "keep",
+      "dependencies": [
+        "pathlib",
+        "pytest",
+        "re",
+        "typing",
+        "yaml"
+      ],
+      "line_count": 273,
+      "path": "tests/unit/tools/test_workflow_policy.py",
+      "reason": "Evaluates the fast-tier job condition against synthetic GitHub event payloads, so the one-run-per-commit policy is proven rather than grepped.",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.qualification.layer2_ingest_runner",
+        "minos_engine.qualification.layer2_split_v2_runner"
+      ],
+      "test_count": 17
     },
     {
       "category": "unit",
@@ -4527,7 +4554,7 @@
     "exact_duplicate_functions": 4,
     "exact_duplicate_groups": [
       {
-        "body_digest": "d71dcf18",
+        "body_digest": "267290e6d56a42bd",
         "distinct_names": [
           "test_assemble_reject_when_a_tool_fails",
           "test_reject_when_tool_fails"
@@ -4539,7 +4566,7 @@
         "occurrences": 2
       },
       {
-        "body_digest": "f4812d95",
+        "body_digest": "b3262a1e19e876c1",
         "distinct_names": [
           "test_malformed_e4_report_fails_via_typed_error",
           "test_noncanonical_or_wrong_schema_key_is_rejected"
@@ -4575,15 +4602,15 @@
   "tier_totals": {
     "fast": {
       "files": 78,
-      "tests": 830
+      "tests": 824
     },
     "full": {
       "files": 90,
       "tests": 785
     },
     "manual_privileged": {
-      "files": 3,
-      "tests": 54
+      "files": 4,
+      "tests": 89
     },
     "retire_after_dbv2": {
       "files": 0,
@@ -4593,8 +4620,8 @@
   "totals": {
     "conftest_files": 6,
     "fixtures": 25,
-    "test_files": 171,
-    "test_functions": 1669,
-    "test_lines": 33506
+    "test_files": 172,
+    "test_functions": 1698,
+    "test_lines": 33935
   }
 }

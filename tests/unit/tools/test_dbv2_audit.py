@@ -255,3 +255,159 @@ def test_a_missing_report_is_detected(tmp_path: Path) -> None:
     reports = _copy_reports(tmp_path)
     (reports / "MINOS_DATABASE_V2_CONTRACT.json").unlink()
     assert any("missing report" in p for p in audit.validate(reports))
+
+
+# --------------------------------------------------------------------------- #
+# TEST-CI-2 — inventory drift verification must catch changes that leave totals intact
+# --------------------------------------------------------------------------- #
+_spec_ti = importlib.util.spec_from_file_location(
+    "test_inventory", REPO_ROOT / "scripts" / "test_inventory.py"
+)
+assert _spec_ti is not None and _spec_ti.loader is not None
+inventory = importlib.util.module_from_spec(_spec_ti)
+_spec_ti.loader.exec_module(inventory)
+
+INVENTORY_REPORT = REPO_ROOT / "reports" / "testing" / "MINOS_TEST_INVENTORY.json"
+
+
+def _inventory_copy(tmp_path: Path) -> Path:
+    out = tmp_path / "MINOS_TEST_INVENTORY.json"
+    out.write_bytes(INVENTORY_REPORT.read_bytes())
+    return out
+
+
+def _mutate_inventory(path: Path, mutate: Any) -> None:
+    document = inventory.load_strict(path)
+    mutate(document)
+    path.write_bytes(json.dumps(document, indent=2, sort_keys=True).encode("utf-8") + b"\n")
+
+
+def _record(document: dict[str, Any], index: int = 0) -> dict[str, Any]:
+    return document["files"][index]
+
+
+def test_the_committed_inventory_verifies() -> None:
+    """6: the unmodified inventory succeeds."""
+    assert inventory.verify_inventory(INVENTORY_REPORT) == []
+
+
+def test_the_inventory_build_is_deterministic() -> None:
+    """A committed report can only be verified if a fresh build reproduces it byte for byte."""
+    first = inventory.canonical_for_test = json.dumps(inventory.build(), sort_keys=True)
+    second = json.dumps(inventory.build(), sort_keys=True)
+    assert first == second
+
+
+def test_verify_does_not_rewrite_the_report(tmp_path: Path) -> None:
+    """verify must never self-heal the document it is checking."""
+    path = _inventory_copy(tmp_path)
+    before = path.read_bytes()
+    inventory.verify_inventory(path)
+    assert path.read_bytes() == before
+
+
+def test_a_changed_tier_is_detected(tmp_path: Path) -> None:
+    """1: one existing file's tier changes; totals are untouched."""
+    path = _inventory_copy(tmp_path)
+
+    def _break(d: dict[str, Any]) -> None:
+        record = next(r for r in d["files"] if r["recommended_tier"] == "fast")
+        record["recommended_tier"] = "full"
+
+    _mutate_inventory(path, _break)
+    problems = inventory.verify_inventory(path)
+    assert any("recommended_tier drifted" in p for p in problems), problems
+
+
+@pytest.mark.parametrize("field", ["decision", "reason", "replacement"])
+def test_a_changed_decision_reason_or_replacement_is_detected(tmp_path: Path, field: str) -> None:
+    """2: decision / reason / replacement changes."""
+    path = _inventory_copy(tmp_path)
+    value = {"decision": "remove", "reason": "invented", "replacement": "somewhere/else.py"}[field]
+    _mutate_inventory(path, lambda d: _record(d).__setitem__(field, value))
+    problems = inventory.verify_inventory(path)
+    assert any(f"{field} drifted" in p for p in problems), problems
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "requires_postgres",
+        "requires_filesystem",
+        "requires_posix",
+        "requires_privileged",
+        "requires_gate_evidence",
+        "category",
+        "contract_protected",
+        "dependencies",
+        "source_modules_covered",
+    ],
+)
+def test_changed_classification_inputs_are_detected(tmp_path: Path, field: str) -> None:
+    """3: the markers/classification inputs a tier is derived from."""
+    path = _inventory_copy(tmp_path)
+
+    def _break(d: dict[str, Any]) -> None:
+        record = _record(d)
+        current = record[field]
+        record[field] = (not current) if isinstance(current, bool) else ["tampered"]
+
+    _mutate_inventory(path, _break)
+    problems = inventory.verify_inventory(path)
+    assert any(f"{field} drifted" in p for p in problems), problems
+
+
+def test_counts_exchanged_between_two_records_are_detected(tmp_path: Path) -> None:
+    """4: swapping per-file counts leaves every total identical — and must still fail."""
+    path = _inventory_copy(tmp_path)
+
+    def _break(d: dict[str, Any]) -> None:
+        a, b = next(
+            (x, y)
+            for x in d["files"]
+            for y in d["files"]
+            if x["path"] < y["path"]
+            and x["test_count"] != y["test_count"]
+            and x["line_count"] != y["line_count"]
+        )
+        a["test_count"], b["test_count"] = b["test_count"], a["test_count"]
+        a["line_count"], b["line_count"] = b["line_count"], a["line_count"]
+
+    _mutate_inventory(path, _break)
+    document = inventory.load_strict(path)
+    fresh = inventory.build()
+    assert document["totals"] == fresh["totals"], "the swap must leave totals identical"
+    problems = inventory.verify_inventory(path)
+    assert any("test_count drifted" in p for p in problems), problems
+    assert any("line_count drifted" in p for p in problems), problems
+
+
+def test_a_duplicate_json_key_is_detected(tmp_path: Path) -> None:
+    """5: strict parsing rejects a duplicate key rather than silently taking the last one."""
+    path = _inventory_copy(tmp_path)
+    raw = path.read_text(encoding="utf-8")
+    tampered = raw.replace('"report":', '"report": "SHADOWED",\n  "report":', 1)
+    path.write_text(tampered, encoding="utf-8")
+    problems = inventory.verify_inventory(path)
+    assert any("duplicate JSON key" in p for p in problems), problems
+
+
+def test_an_added_or_removed_file_record_is_detected(tmp_path: Path) -> None:
+    path = _inventory_copy(tmp_path)
+    _mutate_inventory(path, lambda d: d["files"].pop(0))
+    assert any("not in the inventory" in p for p in inventory.verify_inventory(path))
+
+
+def test_a_tampered_redundancy_section_is_detected(tmp_path: Path) -> None:
+    path = _inventory_copy(tmp_path)
+    _mutate_inventory(path, lambda d: d["redundancy"].__setitem__("exact_duplicate_functions", 999))
+    assert any("redundancy drifted" in p for p in inventory.verify_inventory(path))
+
+
+def test_a_missing_inventory_is_detected(tmp_path: Path) -> None:
+    assert any("missing" in p for p in inventory.verify_inventory(tmp_path / "absent.json"))
+
+
+def test_no_provenance_only_field_is_excluded_from_equality() -> None:
+    """Every committed field participates in equality: there is no timestamp to exempt."""
+    assert frozenset() == inventory.PROVENANCE_ONLY_FIELDS
