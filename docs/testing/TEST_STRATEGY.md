@@ -82,12 +82,28 @@ drift check. It returns nonzero on any failure and prints a summary:
 make qualify-local
 ```
 
-It **refuses to start** if `MINOS_DATABASE_URL` resolves to the operational store
-(`127.0.0.1:5433/minos_engine_db`) — decided by parsing host, port and database out of the DSN,
-so `minos_engine_db_scratch` is correctly allowed and a credentialed or query-suffixed URL is
-correctly refused. It uses the repository's isolated test-PostgreSQL mechanism, never runs
-Alembic against a caller-supplied DSN, and never pushes, commits or edits a file. It is manual:
-nothing invokes it on push, commit, shell startup or application startup.
+It **refuses to start** if the caller supplied **any** database configuration — not merely the
+operational coordinates. `MINOS_DATABASE_URL` must be unset, and so must every libpq routing
+variable:
+
+`PGHOST` · `PGHOSTADDR` · `PGPORT` · `PGDATABASE` · `PGUSER` · `PGPASSWORD` · `PGSERVICE` ·
+`PGSERVICEFILE` · `PGPASSFILE` · `PGOPTIONS`
+
+A supplied DSN is forbidden whatever it points at — another host, another port, a scratch
+database, or another database inside the operational cluster. There is no bypass flag, and no DNS
+or connectivity probe is used to argue some database is "safe enough"; the rule is structural.
+**PostgreSQL is always provisioned by the repository's isolated test fixtures** (bundled
+`pgserver` scratch clusters created and dropped per test).
+
+As defence in depth, every subprocess is launched with a **sanitized environment** that has all
+database-routing variables removed, so a variable that somehow escaped the check still cannot
+reach a test. Alembic is never run against a caller-supplied DSN.
+
+Every tool is invoked as `sys.executable -m <module>` — `ruff`, `mypy`, `pytest` and the CLI as
+`minos_engine.cli.main` — so qualification does not depend on `.venv/bin` being on your `PATH`.
+
+It never pushes, commits, migrates or edits a file, and nothing invokes it on push, commit, shell
+startup or application startup.
 
 To see the exact sequence without running it: `python scripts/local_qualification.py --plan-only`.
 

@@ -59,8 +59,13 @@ stage0: lint fmt-check typecheck cov
 	@echo "Stage 0 checks complete."
 
 # --- test execution (see docs/testing/TEST_STRATEGY.md) -----------------------
-# GitHub runs the fast tier only. Full qualification is this MANUAL local command; it refuses to
-# start if MINOS_DATABASE_URL resolves to the operational store.
+# GitHub runs the fast tier only. Full qualification is this MANUAL local command.
+#
+# It refuses to start if the caller supplied ANY database configuration -- MINOS_DATABASE_URL or
+# a libpq routing variable (PGHOST, PGPORT, PGDATABASE, PGSERVICE, ...) -- whatever it points at.
+# PostgreSQL is always provisioned by the repository's isolated test fixtures. Unset those
+# variables before running; there is no override. Every tool is resolved through $(PY), so
+# .venv/bin does not need to be on PATH.
 qualify-local:
 	$(PY) scripts/local_qualification.py
 

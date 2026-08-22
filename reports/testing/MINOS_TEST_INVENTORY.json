@@ -4323,10 +4323,11 @@
         "importlib",
         "pathlib",
         "pytest",
+        "subprocess",
         "sys",
         "typing"
       ],
-      "line_count": 174,
+      "line_count": 333,
       "path": "tests/unit/tools/test_local_qualification.py",
       "reason": "Proves local full qualification refuses the operational store before any tool starts, and that its plan schedules the full suite exactly once.",
       "recommended_tier": "fast",
@@ -4337,7 +4338,7 @@
       "requires_postgres": false,
       "requires_privileged": false,
       "source_modules_covered": [],
-      "test_count": 15
+      "test_count": 25
     },
     {
       "category": "unit",
@@ -4630,7 +4631,7 @@
   "tier_totals": {
     "fast": {
       "files": 79,
-      "tests": 843
+      "tests": 853
     },
     "full": {
       "files": 90,
@@ -4649,7 +4650,7 @@
     "conftest_files": 6,
     "fixtures": 25,
     "test_files": 173,
-    "test_functions": 1717,
-    "test_lines": 34176
+    "test_functions": 1727,
+    "test_lines": 34335
   }
 }

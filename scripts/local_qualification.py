@@ -1,7 +1,7 @@
 """Local full qualification — the replacement for the deleted GitHub full-CI workflow.
 
-GitHub Actions now runs the fast tier only. Full qualification is a MANUAL, local step, required
-at major stage boundaries and before operational changes. It is never wired to a push, a commit
+GitHub Actions runs the fast tier only. Full qualification is a MANUAL, local step, required at
+major stage boundaries and before operational changes. It is never wired to a push, a commit
 hook, a shell profile or application startup.
 
     make qualify-local
@@ -13,11 +13,24 @@ What it does, in order, stopping at the first failure:
 3. the committed gate verifiers
 4. the DB-V2 contract validation and the test-inventory drift check
 
-Operational-database safety is the first thing that happens, before any tool starts. The
-operational store (127.0.0.1:5433/minos_engine_db) is refused by parsing the DSN — host, port and
-database name — not by matching a string. Qualification uses the repository's existing isolated
-test-PostgreSQL mechanism (bundled ``pgserver`` scratch clusters created and dropped by the test
-fixtures) and never runs Alembic against a caller-supplied DSN.
+Database isolation
+------------------
+Qualification refuses **every** externally supplied database configuration — not merely the
+operational coordinates. ``MINOS_DATABASE_URL`` must be unset, and so must the libpq routing
+variables (``PGHOST``, ``PGPORT``, ``PGDATABASE``, ``PGSERVICE``, ...). A caller-supplied DSN is
+forbidden whatever it points at: another host, another port, a scratch database, or another
+database inside the operational cluster. There is no bypass flag, and no DNS or connectivity
+probe is used to argue that some supplied database is "safe enough" — the rule is structural.
+
+PostgreSQL is therefore always provisioned by the repository's own isolated test fixtures
+(bundled ``pgserver`` scratch clusters, created and dropped per test). As defence in depth, every
+subprocess is launched with a sanitized environment from which all database-routing variables
+have been removed, so a variable that somehow escaped the check still cannot reach a test.
+
+Tool resolution
+---------------
+Tools are invoked as ``sys.executable -m <module>``, never by bare name, so qualification does
+not depend on ``.venv/bin`` being on the caller's ``PATH``.
 
 This script never pushes, commits, migrates or edits a repository file.
 """
@@ -26,80 +39,107 @@ from __future__ import annotations
 
 import argparse
 import os
-import subprocess  # noqa: S404 - fixed argv lists, shell=False, repository-local tools
+import subprocess  # noqa: S404 - fixed argv lists, shell=False, interpreter-resolved modules
 import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-#: The operational store. Qualification must never touch it.
-OPERATIONAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
-OPERATIONAL_PORT = 5433
-OPERATIONAL_DATABASE = "minos_engine_db"
-
 ENV_DATABASE_URL = "MINOS_DATABASE_URL"
 
+#: libpq routing variables. Any of these can silently redirect a connection, so a caller-supplied
+#: value is refused and none is ever passed to a subprocess.
+LIBPQ_ROUTING_VARS: tuple[str, ...] = (
+    "PGHOST",
+    "PGHOSTADDR",
+    "PGPORT",
+    "PGDATABASE",
+    "PGUSER",
+    "PGPASSWORD",
+    "PGSERVICE",
+    "PGSERVICEFILE",
+    "PGPASSFILE",
+    "PGOPTIONS",
+)
 
-class OperationalDatabaseRefused(RuntimeError):
-    """The configured DSN resolves to the operational store; qualification refuses to start."""
-
-
-@dataclass(frozen=True)
-class Dsn:
-    """The parts of a database URL that decide whether it is the operational store."""
-
-    host: str | None
-    port: int | None
-    database: str | None
-
-
-def parse_dsn(url: str) -> Dsn:
-    """Parse a SQLAlchemy/libpq URL into (host, port, database).
-
-    Structural parsing, not substring matching: ``postgresql+psycopg://u@127.0.0.1:5433/
-    minos_engine_db?x=1`` and ``postgresql://127.0.0.1:5433/minos_engine_db`` must resolve
-    identically, and a database named ``minos_engine_db_scratch`` must NOT be mistaken for the
-    operational one.
-    """
-    split = urlsplit(url)
-    host = (split.hostname or "").strip().lower() or None
-    try:
-        port = split.port
-    except ValueError:
-        port = None
-    database = unquote(split.path).lstrip("/").split("?", 1)[0].strip() or None
-    return Dsn(host=host, port=port, database=database)
+#: Everything stripped from the subprocess environment. Includes the libpq variables above plus
+#: the application DSN and a few further libpq knobs that can influence connection routing.
+SANITIZED_ENV_VARS: tuple[str, ...] = (
+    ENV_DATABASE_URL,
+    *LIBPQ_ROUTING_VARS,
+    "DATABASE_URL",
+    "PGSSLMODE",
+    "PGSSLROOTCERT",
+    "PGCONNECT_TIMEOUT",
+    "PGREQUIRESSL",
+    "PGCHANNELBINDING",
+    "PGTARGETSESSIONATTRS",
+)
 
 
-def is_operational(dsn: Dsn) -> bool:
-    """True iff every operational coordinate matches: host AND port AND database name."""
-    if dsn.database != OPERATIONAL_DATABASE:
-        return False
-    if dsn.port != OPERATIONAL_PORT:
-        return False
-    return (dsn.host or "") in OPERATIONAL_HOSTS
+class ExternalDatabaseRefused(RuntimeError):
+    """A caller-supplied database configuration was found; qualification refuses to start."""
 
 
-def assert_not_operational(env: dict[str, str] | None = None) -> Dsn | None:
-    """Refuse immediately when the environment points at the operational store.
+def find_external_database_vars(env: dict[str, str] | None = None) -> list[str]:
+    """Names of caller-supplied database variables, in a stable order.
 
-    Runs BEFORE any tool starts, so a refusal costs nothing and cannot half-run a suite.
+    A variable counts as supplied when it is present with a non-empty value. Emptiness is the
+    only tolerance: an exported-but-empty variable cannot route a connection.
     """
     environ = os.environ if env is None else env
-    raw = (environ.get(ENV_DATABASE_URL) or "").strip()
-    if not raw:
-        return None
-    dsn = parse_dsn(raw)
-    if is_operational(dsn):
-        raise OperationalDatabaseRefused(
-            f"{ENV_DATABASE_URL} resolves to the operational store "
-            f"({dsn.host}:{dsn.port}/{dsn.database}). Local qualification must use the isolated "
-            f"test-PostgreSQL mechanism; unset {ENV_DATABASE_URL} and re-run."
-        )
-    return dsn
+    found = [
+        name for name in (ENV_DATABASE_URL, *LIBPQ_ROUTING_VARS) if environ.get(name, "").strip()
+    ]
+    return found
+
+
+def assert_isolated_database(env: dict[str, str] | None = None) -> None:
+    """Refuse if ANY database configuration was supplied by the caller.
+
+    Runs before the plan is built and before any subprocess starts, so a refusal costs nothing
+    and can never half-run a suite against the wrong database.
+    """
+    offenders = find_external_database_vars(env)
+    if not offenders:
+        return
+    listed = ", ".join(offenders)
+    raise ExternalDatabaseRefused(
+        f"caller-supplied database configuration is not permitted: {listed}. "
+        "Local qualification always provisions PostgreSQL through the repository's isolated "
+        f"test fixtures. Unset {listed} and re-run. There is no override."
+    )
+
+
+def sanitized_environment(env: dict[str, str] | None = None) -> dict[str, str]:
+    """A copy of the environment with every database-routing variable removed.
+
+    Defence in depth: even if a variable were somehow missed by the check above, it cannot reach
+    a subprocess. Everything else the toolchain needs (PATH, HOME, VIRTUAL_ENV, ...) is kept.
+    """
+    environ = dict(os.environ if env is None else env)
+    for name in SANITIZED_ENV_VARS:
+        environ.pop(name, None)
+    return environ
+
+
+# --------------------------------------------------------------------------- #
+# tool resolution: always through the interpreter running this script
+# --------------------------------------------------------------------------- #
+def python_module(module: str, *args: str) -> tuple[str, ...]:
+    """``sys.executable -m module ...`` — never a bare tool name from PATH."""
+    return (sys.executable, "-m", module, *args)
+
+
+def cli(*args: str) -> tuple[str, ...]:
+    """The MINOS CLI as a module, so no console-script shim needs to be on PATH."""
+    return python_module("minos_engine.cli.main", *args)
+
+
+def repo_script(relpath: str, *args: str) -> tuple[str, ...]:
+    return (sys.executable, relpath, *args)
 
 
 # --------------------------------------------------------------------------- #
@@ -127,9 +167,7 @@ class Plan:
     steps: list[Step] = field(default_factory=list)
 
 
-PYTEST_FULL_SUITE: tuple[str, ...] = (
-    sys.executable,
-    "-m",
+PYTEST_FULL_SUITE: tuple[str, ...] = python_module(
     "pytest",
     "--junitxml=reports/ci-junit.xml",
     "--cov=src/minos_engine",
@@ -141,23 +179,22 @@ PYTEST_FULL_SUITE: tuple[str, ...] = (
 _GATE_STEPS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     (
         "gate PROTOCOL-READY",
-        ("minos-engine", "gate", "require-pass", "--gate", "gates/protocol-ready.json"),
+        ("gate", "require-pass", "--gate", "gates/protocol-ready.json"),
         "gates/protocol-ready.json",
     ),
     (
         "gate TWIN-READY",
-        ("minos-engine", "twin", "gate", "require-pass", "--gate", "gates/twin-ready.json"),
+        ("twin", "gate", "require-pass", "--gate", "gates/twin-ready.json"),
         "gates/twin-ready.json",
     ),
     (
         "gate L1-READY",
-        ("minos-engine", "layer1", "gate", "require-pass", "--gate", "gates/l1-ready.json"),
+        ("layer1", "gate", "require-pass", "--gate", "gates/l1-ready.json"),
         "gates/l1-ready.json",
     ),
     (
         "gate FEATURE-VIEW-READY",
         (
-            "minos-engine",
             "layer2",
             "feature-view",
             "gate",
@@ -170,7 +207,6 @@ _GATE_STEPS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     (
         "gate FEATURE-MATRIX-FROZEN-1",
         (
-            "minos-engine",
             "layer2",
             "feature-matrix",
             "gate",
@@ -186,23 +222,25 @@ _GATE_STEPS: tuple[tuple[str, tuple[str, ...], str], ...] = (
 def build_plan(root: Path = REPO_ROOT) -> Plan:
     """The exact ordered command sequence. Pure: builds the plan, runs nothing."""
     plan = Plan()
-    plan.steps.append(Step("ruff check", ("ruff", "check", ".")))
-    plan.steps.append(Step("ruff format --check", ("ruff", "format", "--check", ".")))
-    plan.steps.append(Step("mypy (strict)", ("mypy", "src")))
+    plan.steps.append(Step("ruff check", python_module("ruff", "check", ".")))
+    plan.steps.append(Step("ruff format --check", python_module("ruff", "format", "--check", ".")))
+    plan.steps.append(Step("mypy (strict)", python_module("mypy", "src")))
     plan.steps.append(Step("pytest full suite + coverage", PYTEST_FULL_SUITE))
-    for name, argv, gate in _GATE_STEPS:
-        plan.steps.append(Step(name, (*argv, "--base-dir", "."), optional_if_missing=root / gate))
+    for name, args, gate in _GATE_STEPS:
+        plan.steps.append(
+            Step(name, cli(*args, "--base-dir", "."), optional_if_missing=root / gate)
+        )
     plan.steps.append(
         Step(
             "gates SPLIT-FROZEN-V2 / INGEST-READY / SNAPSHOT-FROZEN-1",
-            (sys.executable, "scripts/local_qualification.py", "--verify-historical-gates"),
+            repo_script("scripts/local_qualification.py", "--verify-historical-gates"),
         )
     )
     plan.steps.append(
-        Step("DB-V2 contract validation", (sys.executable, "scripts/dbv2_audit.py", "validate"))
+        Step("DB-V2 contract validation", repo_script("scripts/dbv2_audit.py", "validate"))
     )
     plan.steps.append(
-        Step("test inventory drift", (sys.executable, "scripts/test_inventory.py", "verify"))
+        Step("test inventory drift", repo_script("scripts/test_inventory.py", "verify"))
     )
     return plan
 
@@ -227,8 +265,8 @@ def _verify_historical_gates(root: Path) -> int:
         ),
         ("PROFILE-SNAPSHOT-FROZEN-1", lambda: verify_snapshot_offline(root, 1)),
     )
-    for name, run in checks:
-        result = run()
+    for name, run_check in checks:
+        result = run_check()
         status = "ok" if result.ok else "FAIL"
         print(f"  {status:4s} {name}" + ("" if result.ok else f" {list(result.reasons)[:3]}"))
         failures += 0 if result.ok else 1
@@ -236,7 +274,11 @@ def _verify_historical_gates(root: Path) -> int:
 
 
 def run(plan: Plan, root: Path = REPO_ROOT) -> list[StepResult]:
-    """Execute the plan, stopping at the first failure. shell=False throughout."""
+    """Execute the plan, stopping at the first failure.
+
+    Every subprocess gets the SANITIZED environment explicitly and runs with ``shell=False``.
+    """
+    env = sanitized_environment()
     results: list[StepResult] = []
     for step in plan.steps:
         if step.optional_if_missing is not None and not step.optional_if_missing.exists():
@@ -245,7 +287,9 @@ def run(plan: Plan, root: Path = REPO_ROOT) -> list[StepResult]:
             continue
         print(f"[run ] {step.name}")
         started = time.monotonic()
-        proc = subprocess.run(step.argv, cwd=root, shell=False, check=False)  # noqa: S603
+        proc = subprocess.run(  # noqa: S603 - fixed argv, shell=False, sanitized env
+            step.argv, cwd=root, shell=False, check=False, env=env
+        )
         elapsed = time.monotonic() - started
         results.append(StepResult(step.name, proc.returncode, elapsed))
         if proc.returncode != 0:
@@ -280,21 +324,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--verify-historical-gates", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
-    # FIRST: refuse the operational store, before any tool runs.
+    # FIRST, for every mode including --plan-only: refuse any caller-supplied database
+    # configuration, before the plan is built and before any tool runs.
     try:
-        dsn = assert_not_operational()
-    except OperationalDatabaseRefused as exc:
+        assert_isolated_database()
+    except ExternalDatabaseRefused as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 2
 
     if args.verify_historical_gates:
         return _verify_historical_gates(REPO_ROOT)
 
-    if dsn is None:
-        print(f"{ENV_DATABASE_URL} is unset — the isolated test-PostgreSQL mechanism will be used.")
-    else:
-        print(f"{ENV_DATABASE_URL} -> {dsn.host}:{dsn.port}/{dsn.database} (not operational)")
-
+    print(
+        "database environment is clean — PostgreSQL will be provisioned by the isolated "
+        "test fixtures"
+    )
     plan = build_plan()
     if args.plan_only:
         for i, step in enumerate(plan.steps, 1):
