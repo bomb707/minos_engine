@@ -1,12 +1,16 @@
 name: CI (fast)
 
-# Tier 1 of the two-tier CI: static checks plus every test that needs no database, for feedback
-# in a couple of minutes.
+# THE ONLY MINOS GitHub Actions workflow. It runs static checks plus every test that needs no
+# database, for feedback in a couple of minutes.
 #
-# Deliberately NOT here: PostgreSQL integration, coverage, and the committed-gate verifiers.
-# Those run in .github/workflows/ci.yml, which is required before merge, release or a DB-V2
-# stage acceptance. A push to a feature branch runs THIS workflow only - it does not trigger
-# full qualification.
+# There is no remote full-qualification workflow any more. GitHub does NOT provide PostgreSQL,
+# whole-suite, coverage, migration-lifecycle or committed-gate qualification for this repository.
+# Full qualification is a MANUAL, LOCAL step:
+#
+#     make qualify-local
+#
+# Run it at major stage boundaries and before operational changes; intermediate commits rely on
+# focused local tests plus this workflow. See docs/testing/TEST_STRATEGY.md.
 #
 # Trigger matrix (see tests/unit/tools/test_workflow_policy.py, which evaluates the job
 # condition against synthetic event payloads rather than matching source text):

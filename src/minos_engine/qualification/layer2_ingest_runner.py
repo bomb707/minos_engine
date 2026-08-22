@@ -40,6 +40,7 @@ from minos_engine.storage.l2d_migration_contract import (
 
 from . import git_tree as G
 from .coverage import STAGE0_COVERAGE_THRESHOLD, CoverageResult, run_coverage
+from .git_tree import historical_blob_text
 from .layer2_db_runner import alembic_head
 from .provenance import GitProvenance, read_provenance
 from .pytest_accounting import PytestAccounting, run_pytest, suite_passes
@@ -76,6 +77,7 @@ INGEST_PACKAGE_DIR = "src/minos_engine/layer2/ingest"
 FINAL_REPORT_PATH = "reports/LAYER2_L2D_INGEST_READY_REPORT.md"
 _GATE_SELF_PATH = "gates/ingest-ready.json"
 _INGEST_SUITE = "tests/integration/layer2_ingest"
+#: Historical workflow path: read from the frozen qualified source commit, not from HEAD.
 CI_WORKFLOW = ".github/workflows/ci.yml"
 
 _CI_REQUIRED_TOKENS = (
@@ -184,11 +186,16 @@ def profile_snapshot_gate_name(epoch: int) -> str:
 
 
 def ci_asserts_head_0004(root: Path) -> bool:
-    """True iff CI pins Alembic head 0004 + the full downgrade/re-upgrade lifecycle."""
-    path = root / CI_WORKFLOW
-    if not path.exists():
+    """True iff the CI workflow AT THE FROZEN QUALIFIED SOURCE COMMIT pinned Alembic head 0004
+    and exercised the full downgrade/re-upgrade lifecycle.
+
+    Read from ``PRE.INGEST_READY_SOURCE_COMMIT``, not the working tree: this is evidence about
+    what CI did when L2-D was qualified. A missing object, a shallow clone or altered bytes all
+    fail closed.
+    """
+    content = historical_blob_text(root, CI_WORKFLOW, PRE.INGEST_READY_SOURCE_COMMIT)
+    if content is None:
         return False
-    content = path.read_text(encoding="utf-8")
     return all(tok in content for tok in _CI_REQUIRED_TOKENS)
 
 

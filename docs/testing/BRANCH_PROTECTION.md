@@ -14,18 +14,27 @@ observation or an action that requires a user with admin rights to perform and c
 | Tier | Workflow file | Job name reported to GitHub |
 |---|---|---|
 | Fast | `.github/workflows/ci-fast.yml` | `fast (python-3.12)` |
-| Full qualification | `.github/workflows/ci.yml` | `full qualification (python-3.12)` |
 
-The name that existed before TEST-CI-1 was **`quality (python-3.12)`**. That job no longer
-exists. It must not remain as a required status context on any branch.
+**`fast (python-3.12)` is the only status context GitHub reports for this repository.**
 
-## 2. What should be required
+Two job names existed previously and no longer exist. Neither may remain as a required status
+context on any branch — a required context that never reports blocks every pull request forever:
 
-- **`full qualification (python-3.12)`** — required to merge a pull request into the default
-  branch, and required before a DB-V2 stage acceptance.
-- **`fast (python-3.12)`** — useful as an additional required check. It is not a substitute:
-  it starts no database and runs no committed-gate verifier.
-- **`quality (python-3.12)`** — must be **removed** from every required-checks list.
+- `quality (python-3.12)` — removed by TEST-CI-1;
+- `full qualification (python-3.12)` — removed by TEST-CI-3, which deleted the remote full
+  workflow. Full qualification is now local (`make qualify-local`).
+
+## 2. What may be required
+
+- **`fast (python-3.12)`** — the only check that may be configured as a GitHub-required status
+  context. It starts no database and runs no committed-gate verifier, so it is a smoke gate, not
+  a qualification gate.
+- **`quality (python-3.12)`** and **`full qualification (python-3.12)`** — must be **absent**
+  from every required-checks list. Neither job exists.
+
+Full qualification is not enforceable by GitHub any more. It is a manual local step
+(`make qualify-local`) required at major stage boundaries and before operational changes, and its
+result is reported by the person who ran it.
 
 ## 3. Verification status — requires user action
 
@@ -54,34 +63,29 @@ created later.
 ### Checklist for a user with admin rights
 
 1. Open **Settings → Branches → Branch protection rules** for `main`.
-2. If a rule exists, remove `quality (python-3.12)` from *Require status checks to pass*.
-3. Add `full qualification (python-3.12)` as a required check.
-4. Optionally add `fast (python-3.12)` as well.
-5. If no rule exists, decide whether the default branch should be protected at all — until it
-   is, neither tier gates a merge.
+2. If a rule exists, remove both `quality (python-3.12)` and
+   `full qualification (python-3.12)` from *Require status checks to pass* — neither job exists,
+   so either one would block every pull request indefinitely.
+3. Optionally add `fast (python-3.12)`; it is the only context GitHub still reports.
+4. If no rule exists, decide whether the default branch should be protected at all.
 
-## 4. Triggering full qualification for a stage acceptance
+## 4. Full qualification is local
 
-Full qualification does **not** run on an ordinary feature-branch push. A user push to
-`feature/L2-F` runs the fast tier only.
+There is no remote full-qualification workflow. A push runs the fast tier only, and GitHub does
+not run PostgreSQL, the whole suite, coverage, the migration lifecycle or the committed-gate
+suite for this repository.
 
-It runs for: pull requests targeting `main`/`master`/`integration`, version tags (`v*`), manual
-dispatch, and the nightly schedule — and a GitHub `schedule` event always runs the repository
-**default branch** (`main`), never a feature or integration branch.
-
-So before a DB-V2 stage acceptance, unless an applicable pull request has already run it on that
-exact commit, full qualification must be **dispatched manually on the exact stage SHA**:
+Before a major stage boundary or any operational change, run locally:
 
 ```bash
-gh workflow run ci.yml --ref feature/L2-F
+make qualify-local
 ```
 
-`--ref` accepts a branch; to qualify one specific commit, ensure the branch tip *is* that commit,
-then confirm the run's `head_sha` matches:
+It runs ruff, format check and mypy, then the full suite once with JUnit and coverage at >= 90%,
+then the committed gate verifiers, then the DB-V2 contract and test-inventory checks, and returns
+nonzero on any failure. It refuses to start if `MINOS_DATABASE_URL` resolves to the operational
+store (`127.0.0.1:5433/minos_engine_db`), decided by parsing the DSN rather than matching a
+string, and it never pushes, commits or migrates.
 
-```bash
-gh run list --workflow=ci.yml --limit 1 --json headSha,status,conclusion
-```
-
-Treat a stage as qualified only when a `full qualification (python-3.12)` run reports success
-against the exact SHA being accepted.
+Historical L2-C and L2-D CI evidence is unaffected: it is verified from the frozen qualified
+source commits that produced it, not from the current working tree.

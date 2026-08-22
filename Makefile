@@ -8,7 +8,7 @@ MYPY ?= .venv/bin/mypy
 PYTEST ?= .venv/bin/pytest
 
 .PHONY: help bootstrap lint fmt-check typecheck test test-fast test-full cov \
-        protocol-contract doctor gate stage0 clean-test-artifacts
+        protocol-contract doctor gate stage0 clean-test-artifacts qualify-local
 
 help:
 	@echo "MINOS_ENGINE Stage 0 targets:"
@@ -58,7 +58,13 @@ layer1-qualify:
 stage0: lint fmt-check typecheck cov
 	@echo "Stage 0 checks complete."
 
-# --- two-tier test execution (see docs/testing/TEST_STRATEGY.md) --------------
+# --- test execution (see docs/testing/TEST_STRATEGY.md) -----------------------
+# GitHub runs the fast tier only. Full qualification is this MANUAL local command; it refuses to
+# start if MINOS_DATABASE_URL resolves to the operational store.
+qualify-local:
+	$(PY) scripts/local_qualification.py
+
+
 test-fast:
 	$(PY) -m pytest tests/unit tests/leakage tests/determinism tests/protocol_contract
 

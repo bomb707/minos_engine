@@ -7,33 +7,22 @@ tree and fails if the report has drifted, so the inventory cannot silently go st
 
 ---
 
-## 1. Why two tiers
+## 1. One remote tier, one local qualification
 
-The previous single workflow ran the whole suite twice — once for JUnit (5m25s) and again for
-coverage (6m57s) — then re-ran `tests/integration/layer2_db` (3m02s) and four more integration
-directories that the full suite had already covered. Of a 17m25s workflow, roughly 9 minutes was
-repetition.
+GitHub Actions runs **`ci-fast.yml` only**. There is no remote full-qualification workflow:
+GitHub does not start PostgreSQL, run the whole suite, compute coverage, run the migration
+lifecycle or run the committed-gate suite for this repository.
 
-The rule now: **a test runs at most once per workflow**, unless a genuinely different environment
-or database revision is being exercised.
+Full qualification is a **manual local** command, `make qualify-local`, required at **major stage
+boundaries and before operational changes**. Intermediate commits rely on focused local tests
+plus fast CI.
 
-| Tier | When it runs | Target | What it proves |
+| Tier | Where | When | What it proves |
 |---|---|---|---|
-| **fast** | every internal push; fork pull requests; manual dispatch | ≤ 4 min warm | Static checks + everything that needs no database |
-| **full** | PRs targeting `main`/`master`/`integration`, `v*` tags, nightly on the **default branch**, manual dispatch | ≤ 10 min | One full-suite invocation with coverage, one lifecycle preflight, every gate once |
-| **manual_privileged** | never automatic | — | Behaviour needing host privileges a hosted runner lacks |
+| **fast** | GitHub Actions | every internal push; fork pull requests; manual dispatch | Static checks + everything that needs no database |
+| **full** | **local only** — `make qualify-local` | major stage boundaries; before operational changes | One full-suite invocation with coverage >= 90%, then the committed gate verifiers, DB-V2 contract and inventory checks |
+| **manual_privileged** | local only | never automatic | Behaviour needing host privileges a hosted runner lacks |
 | **retire_after_dbv2** | — | — | Reserved: tests that only exist to protect a V1 structure DB-V2 will remove |
-
-### What a push actually triggers
-
-A push to a feature branch runs **the fast tier only**. It does **not** trigger full
-qualification. Full qualification runs for pull requests targeting `main`/`master`/`integration`,
-for `v*` tags, on manual dispatch, and on the nightly schedule — and a GitHub `schedule` event
-always runs the repository **default branch** (`main`), never a feature or integration branch.
-
-Before a DB-V2 stage acceptance, full qualification must therefore be **dispatched manually on
-the exact stage SHA**, unless an applicable pull request already ran it on that commit. See
-[BRANCH_PROTECTION.md](BRANCH_PROTECTION.md).
 
 ### One commit, one fast run
 
@@ -51,14 +40,22 @@ an open pull request. The fast job carries a condition that skips the same-repos
 
 `tests/unit/tools/test_workflow_policy.py` proves this matrix by *evaluating* the job condition
 against synthetic event payloads, not by matching workflow source text. Concurrency is keyed on
-the effective branch (a fork PR's head label, otherwise the pushed ref), so a newer push still
-cancels an obsolete in-progress run.
+the effective branch, so a newer push still cancels an obsolete in-progress run.
 
 The fast tier checks out **full history**. Two fast-tier modules —
 `tests/unit/storage/test_l2f_harness_verifier_attacks.py` and `test_l2f_job_enqueue_unit.py` —
 build the accepted plan, which runs the E5 prerequisite closure over git ancestry. A shallow
-clone lacks those objects and the closure correctly fails closed; the first run of the fast
-workflow failed for exactly this reason.
+clone lacks those objects and the closure correctly fails closed.
+
+### Historical CI evidence
+
+The accepted L2-C and L2-D gates record that a CI workflow pinned a given Alembic head and
+exercised the downgrade lifecycle. That evidence is verified from the **frozen qualified source
+commit** that produced it (`SPLIT_FROZEN_V2_SOURCE_COMMIT`, `INGEST_READY_SOURCE_COMMIT`,
+`PROFILE_SNAPSHOT_FROZEN_1_SOURCE_COMMIT`), never from the working tree. Deleting
+`.github/workflows/ci.yml` at HEAD therefore cannot invalidate it, and no replacement file is
+placed at that path to satisfy a path-existence check. A missing object, a shallow clone or
+altered bytes all fail closed.
 
 ---
 
@@ -77,11 +74,24 @@ pytest tests/unit tests/leakage tests/determinism tests/protocol_contract
 Measured at **27 s** locally. It covers unit tests, protocol contracts, leakage and architecture
 boundaries, determinism, the DB-V2 report validator and the security tests that need no database.
 
-**Full** — one full-suite invocation producing both JUnit and coverage, plus one
-non-overlapping lifecycle preflight; every test executes at most once per workflow. The preflight
-(`test_stepwise_migration_chain.py`) is deselected from the full-suite run and is kept separate
-so a broken migration chain fails in seconds with its own diagnostics rather than being buried
-inside a five-minute suite run:
+**Full qualification** — manual and local. One full-suite invocation producing both JUnit and
+coverage, then the committed gate verifiers, the DB-V2 contract validation and the inventory
+drift check. It returns nonzero on any failure and prints a summary:
+
+```bash
+make qualify-local
+```
+
+It **refuses to start** if `MINOS_DATABASE_URL` resolves to the operational store
+(`127.0.0.1:5433/minos_engine_db`) — decided by parsing host, port and database out of the DSN,
+so `minos_engine_db_scratch` is correctly allowed and a credentialed or query-suffixed URL is
+correctly refused. It uses the repository's isolated test-PostgreSQL mechanism, never runs
+Alembic against a caller-supplied DSN, and never pushes, commits or edits a file. It is manual:
+nothing invokes it on push, commit, shell startup or application startup.
+
+To see the exact sequence without running it: `python scripts/local_qualification.py --plan-only`.
+
+The underlying suite command, if you want it directly:
 
 ```bash
 make test-full
@@ -96,9 +106,7 @@ pytest \
   --cov-report=xml:reports/ci-coverage.xml
 ```
 
-Never run a second *full-suite* `pytest` for coverage — the single invocation emits both. The
-lifecycle preflight is not a second pass over the suite: it runs one module that the full-suite
-invocation explicitly deselects.
+Never run a second *full-suite* `pytest` for coverage — the single invocation emits both.
 
 **Manual privileged** — not run on ordinary hosted runners:
 

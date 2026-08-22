@@ -39,6 +39,8 @@ from minos_engine.common.hashing import canonical_hash, sha256_hex
 from minos_engine.gates.contracts import EvidenceItem, EvidenceKind, GateArtifact, GateStatus
 from minos_engine.layer2 import prerequisites as PRE
 
+from .git_tree import historical_blob_text
+
 __all__ = [
     "SNAPSHOT_QUALIFIER_VERSION",
     "MEMBER_MANIFEST_PATH",
@@ -62,6 +64,7 @@ MEMBER_MANIFEST_PATH = "manifests/profile_snapshot_epoch1_members.json"
 SELECTIONS_PATH = "manifests/profile_snapshot_epoch1_selections.json"
 INVENTORY_PATH = "manifests/profile_snapshot_epoch1_artifact_inventory.json"
 REPORT_PATH = "reports/PROFILE_SNAPSHOT_FROZEN_1_REPORT.md"
+#: Historical workflow path: read from the frozen qualified source commit, not from HEAD.
 CI_WORKFLOW = ".github/workflows/ci.yml"
 
 _EXPECTED_COUNTS = {"train": 50, "validation": 10, "test": 15}
@@ -184,10 +187,15 @@ def _verify_ingest_ready(root: Path) -> bool:
 
 
 def ci_verifies_snapshot_gate(root: Path, epoch: int) -> bool:
-    path = root / CI_WORKFLOW
-    if not path.exists():
+    """True iff the CI workflow AT THE FROZEN SNAPSHOT SOURCE COMMIT verified this epoch's gate.
+
+    Read from ``PRE.PROFILE_SNAPSHOT_FROZEN_1_SOURCE_COMMIT`` rather than the working tree, for
+    the same reason as the L2-C/L2-D checks. Fails closed on a missing object, a shallow clone
+    or altered bytes.
+    """
+    content = historical_blob_text(root, CI_WORKFLOW, PRE.PROFILE_SNAPSHOT_FROZEN_1_SOURCE_COMMIT)
+    if content is None:
         return False
-    content = path.read_text(encoding="utf-8")
     return f"profile-snapshot-frozen-{epoch}.json" in content and (
         "verify_snapshot_offline" in content
     )

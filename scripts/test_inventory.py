@@ -198,6 +198,12 @@ ANNOTATIONS: dict[str, tuple[str, str, str | None]] = {
         "embedded in YAML; executed exactly once by the full tier.",
         None,
     ),
+    "tests/unit/tools/test_local_qualification.py": (
+        "keep",
+        "Proves local full qualification refuses the operational store before any tool starts, "
+        "and that its plan schedules the full suite exactly once.",
+        None,
+    ),
     "tests/unit/tools/test_workflow_policy.py": (
         "keep",
         "Evaluates the fast-tier job condition against synthetic GitHub event payloads, so the "
@@ -236,7 +242,7 @@ CONTRACTS: dict[str, str] = {
     "tests/acceptance": "accepted stage-gate posture and git-bound evidence ancestry",
     "tests/determinism": "deterministic scientific identity",
     "tests/protocol_contract": "protocol contract stability",
-    "tests/unit/tools": "DB-V2 design-report integrity and CI workflow trigger policy",
+    "tests/unit/tools": "DB-V2 design-report integrity, CI workflow trigger policy and local-qualification safety",
 }
 
 TIER_COMMANDS: dict[str, str] = {

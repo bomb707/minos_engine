@@ -249,7 +249,7 @@
         "pytest",
         "shutil"
       ],
-      "line_count": 358,
+      "line_count": 374,
       "path": "tests/acceptance/layer2/test_profile_snapshot_gate.py",
       "reason": "",
       "recommended_tier": "full",
@@ -265,6 +265,7 @@
         "minos_engine.gates.required_checks",
         "minos_engine.layer2",
         "minos_engine.layer2.ingest.contracts",
+        "minos_engine.qualification.git_tree",
         "minos_engine.qualification.layer2_snapshot_runner"
       ],
       "test_count": 14
@@ -4291,7 +4292,7 @@
     },
     {
       "category": "unit",
-      "contract_protected": "DB-V2 design-report integrity and CI workflow trigger policy",
+      "contract_protected": "DB-V2 design-report integrity, CI workflow trigger policy and local-qualification safety",
       "decision": "keep",
       "dependencies": [
         "hashlib",
@@ -4316,7 +4317,31 @@
     },
     {
       "category": "unit",
-      "contract_protected": "DB-V2 design-report integrity and CI workflow trigger policy",
+      "contract_protected": "DB-V2 design-report integrity, CI workflow trigger policy and local-qualification safety",
+      "decision": "keep",
+      "dependencies": [
+        "importlib",
+        "pathlib",
+        "pytest",
+        "sys",
+        "typing"
+      ],
+      "line_count": 174,
+      "path": "tests/unit/tools/test_local_qualification.py",
+      "reason": "Proves local full qualification refuses the operational store before any tool starts, and that its plan schedules the full suite exactly once.",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [],
+      "test_count": 15
+    },
+    {
+      "category": "unit",
+      "contract_protected": "DB-V2 design-report integrity, CI workflow trigger policy and local-qualification safety",
       "decision": "keep",
       "dependencies": [
         "pathlib",
@@ -4325,21 +4350,24 @@
         "typing",
         "yaml"
       ],
-      "line_count": 273,
+      "line_count": 324,
       "path": "tests/unit/tools/test_workflow_policy.py",
       "reason": "Evaluates the fast-tier job condition against synthetic GitHub event payloads, so the one-run-per-commit policy is proven rather than grepped.",
       "recommended_tier": "fast",
       "replacement": null,
-      "requires_filesystem": false,
-      "requires_gate_evidence": false,
+      "requires_filesystem": true,
+      "requires_gate_evidence": true,
       "requires_posix": false,
       "requires_postgres": false,
       "requires_privileged": false,
       "source_modules_covered": [
+        "minos_engine.layer2",
+        "minos_engine.qualification.git_tree",
         "minos_engine.qualification.layer2_ingest_runner",
+        "minos_engine.qualification.layer2_snapshot_runner",
         "minos_engine.qualification.layer2_split_v2_runner"
       ],
-      "test_count": 17
+      "test_count": 21
     },
     {
       "category": "unit",
@@ -4601,8 +4629,8 @@
   },
   "tier_totals": {
     "fast": {
-      "files": 78,
-      "tests": 824
+      "files": 79,
+      "tests": 843
     },
     "full": {
       "files": 90,
@@ -4620,8 +4648,8 @@
   "totals": {
     "conftest_files": 6,
     "fixtures": 25,
-    "test_files": 172,
-    "test_functions": 1698,
-    "test_lines": 33935
+    "test_files": 173,
+    "test_functions": 1717,
+    "test_lines": 34176
   }
 }

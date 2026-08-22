@@ -220,3 +220,25 @@ def hash_git_path(root: Path, relpath: str, ref: str = "HEAD") -> str:
     if in_tree:
         return sha256_git_directory(root, relpath, ref)[0]
     raise GitUnavailableError(f"no content at {relpath!r} in ref {ref}")
+
+
+def historical_blob_text(root: Path, relpath: str, ref: str) -> str | None:
+    """Exact committed text of ``relpath`` at the frozen ``ref``, or ``None`` — fail closed.
+
+    Accepted historical evidence must be verified against the commit that produced it, never
+    against the current working tree: a file that was present when a stage was qualified stays
+    present in that commit forever, whether or not it still exists at HEAD.
+
+    Returns ``None`` (never a partial or substituted value) when the ref is not a commit, the
+    object is unreachable — including in a shallow clone — or the blob is missing.
+    """
+    if not is_commit(root, ref):
+        return None
+    try:
+        data = blob_bytes(root, relpath, ref)
+    except (GitUnavailableError, OSError):
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None

@@ -180,93 +180,144 @@ def test_fast_tier_starts_no_database_service(fast_workflow: dict[str, Any]) -> 
     assert "MINOS_DATABASE_URL" not in yaml.dump(job)
 
 
-def test_fast_tier_does_not_reference_a_nonexistent_workflow_file() -> None:
-    """C3: the stale `ci-full.yml` reference must be gone; the full tier lives at ci.yml."""
+def test_fast_tier_references_no_deleted_workflow() -> None:
+    """C3 + TEST-CI-3: neither the stale ci-full.yml nor the deleted ci.yml may be referenced
+    as a live sibling workflow."""
     text = FAST.read_text(encoding="utf-8")
     assert "ci-full.yml" not in text
-    assert "ci.yml" in text
-    assert FULL.is_file()
+    assert "workflows/ci.yml" not in text
 
 
 # --------------------------------------------------------------------------- #
-# C/D — full-tier semantics stated truthfully
+# TEST-CI-3 — the full GitHub workflow is gone; fast is the only remote tier
 # --------------------------------------------------------------------------- #
-@pytest.fixture(scope="module")
-def full_workflow() -> dict[str, Any]:
-    return yaml.safe_load(FULL.read_text(encoding="utf-8"))
+def _all_workflows() -> list[Path]:
+    return sorted((REPO_ROOT / ".github" / "workflows").glob("*.y*ml"))
 
 
-def test_full_tier_triggers(full_workflow: dict[str, Any]) -> None:
-    triggers = full_workflow[True] if True in full_workflow else full_workflow["on"]
-    assert set(triggers) == {"pull_request", "workflow_dispatch", "schedule", "push"}
-    assert triggers["pull_request"]["branches"] == ["main", "master", "integration"]
-    # tags only: an ordinary feature-branch push must NOT trigger full qualification
-    assert triggers["push"] == {"tags": ["v*"]}
-    assert "branches" not in triggers["push"]
+def test_the_full_workflow_file_is_absent() -> None:
+    """F1: .github/workflows/ci.yml no longer exists at HEAD."""
+    assert not FULL.exists()
 
 
-def test_a_feature_branch_push_does_not_trigger_full_qualification(
-    full_workflow: dict[str, Any],
-) -> None:
-    triggers = full_workflow[True] if True in full_workflow else full_workflow["on"]
-    push = triggers["push"]
-    assert list(push) == ["tags"]
-    assert not any(pattern in ("**", "*", "feature/**") for pattern in push["tags"])
+def test_fast_is_the_only_workflow() -> None:
+    """F: and it was not replaced by ci-full.yml, a reusable or a scheduled equivalent."""
+    assert _all_workflows() == [FAST]
 
 
-def test_full_tier_runs_each_test_at_most_once(full_workflow: dict[str, Any]) -> None:
-    """One full-suite invocation plus one non-overlapping lifecycle preflight."""
-    steps = full_workflow["jobs"]["qualification"]["steps"]
-    pytest_steps = [s for s in steps if "run" in s and re.search(r"\bpytest\b", s["run"])]
-    assert len(pytest_steps) == 2, [s.get("name") for s in pytest_steps]
-
-    preflight = next(s for s in pytest_steps if "stepwise" in s["run"])
-    full_suite = next(s for s in pytest_steps if "--junitxml" in s["run"])
-    assert preflight is not full_suite
-
-    chain = "tests/integration/layer2_db/test_stepwise_migration_chain.py"
-    assert chain in preflight["run"]
-    # the preflight module is deselected from the full suite, so it executes once per workflow
-    assert f"--deselect {chain}" in " ".join(full_suite["run"].split())
+def test_no_workflow_starts_postgresql() -> None:
+    """F2: structural YAML check — no job declares a database service."""
+    for path in _all_workflows():
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for job_name, job in document["jobs"].items():
+            assert "services" not in job, (path.name, job_name)
+        rendered = yaml.dump(document)
+        assert "postgres" not in rendered.lower(), path.name
+        assert "MINOS_DATABASE_URL" not in rendered, path.name
 
 
-def test_full_tier_emits_junit_and_coverage_from_one_invocation(
-    full_workflow: dict[str, Any],
-) -> None:
-    steps = full_workflow["jobs"]["qualification"]["steps"]
-    full_suite = next(
-        s for s in steps if "run" in s and "--junitxml" in s["run"] and "pytest" in s["run"]
-    )
-    run = " ".join(full_suite["run"].split())
-    for flag in ("--junitxml=", "--cov=src/minos_engine", "--cov-fail-under=90", "--cov-report="):
-        assert flag in run, flag
+def test_no_workflow_runs_the_full_suite_or_coverage() -> None:
+    """F3: no remote workflow may run the whole suite or compute coverage."""
+    for path in _all_workflows():
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for job in document["jobs"].values():
+            for step in job["steps"]:
+                run = " ".join(step.get("run", "").split())
+                if "pytest" not in run:
+                    continue
+                for banned in ("--cov", "--junitxml", "--cov-fail-under"):
+                    assert banned not in run, (path.name, step.get("name"), banned)
+                # a pytest step must name explicit paths, never the whole suite
+                assert re.search(r"pytest\s+tests/", run), (path.name, step.get("name"))
 
 
-def test_no_workflow_claims_a_single_pytest_invocation() -> None:
-    """D: the wording must not hide the preflight behind an 'exactly one invocation' claim."""
-    for path in (FAST, FULL):
-        text = path.read_text(encoding="utf-8").lower()
-        for banned in (
-            "exactly once, in a single invocation",
-            "the single full-suite invocation",
-            "no second pytest run anywhere",
-            "one pytest invocation",
-        ):
-            assert banned not in text, (path.name, banned)
+def test_no_workflow_runs_migration_lifecycle_or_the_gate_suite() -> None:
+    """F4: migration lifecycle qualification and the committed-gate suite are local-only."""
+    for path in _all_workflows():
+        text = path.read_text(encoding="utf-8")
+        document = yaml.safe_load(text)
+        for job in document["jobs"].values():
+            for step in job["steps"]:
+                run = " ".join(step.get("run", "").split())
+                assert "alembic" not in run.lower(), (path.name, step.get("name"))
+                assert "require-pass" not in run, (path.name, step.get("name"))
+                assert "stepwise_migration_chain" not in run, (path.name, step.get("name"))
 
 
-def test_full_tier_schedule_is_documented_as_default_branch_only() -> None:
-    """A GitHub schedule event runs the default branch; the comment must say so."""
-    text = FULL.read_text(encoding="utf-8")
-    assert "default branch" in text.lower()
-    assert "arbitrary feature or integration branch" in text.lower()
+def test_no_hidden_reusable_or_scheduled_equivalent() -> None:
+    """F: no workflow_call, and no schedule that could reintroduce full qualification."""
+    for path in _all_workflows():
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        triggers = document[True] if True in document else document["on"]
+        assert "workflow_call" not in triggers, path.name
+        assert "schedule" not in triggers, path.name
 
 
-def test_full_tier_keeps_the_accepted_workflow_path() -> None:
-    """Five qualification runners bind .github/workflows/ci.yml as git-bound evidence."""
+# --------------------------------------------------------------------------- #
+# historical evidence is resolved from frozen commits, not from HEAD
+# --------------------------------------------------------------------------- #
+def test_accepted_historical_ci_evidence_still_verifies() -> None:
+    """F6/F7/F9: L2-C and L2-D evidence verifies with no ci.yml at HEAD."""
     from minos_engine.qualification.layer2_ingest_runner import ci_asserts_head_0004
+    from minos_engine.qualification.layer2_snapshot_runner import ci_verifies_snapshot_gate
     from minos_engine.qualification.layer2_split_v2_runner import ci_asserts_head_0003
 
-    assert FULL.is_file()
+    assert not FULL.exists(), "precondition: the workflow must be absent at HEAD"
     assert ci_asserts_head_0003(REPO_ROOT) is True
     assert ci_asserts_head_0004(REPO_ROOT) is True
+    assert ci_verifies_snapshot_gate(REPO_ROOT, 1) is True
+
+
+def test_historical_verification_reads_the_frozen_commit_not_head(tmp_path: Path) -> None:
+    """F8: a decoy at the current path must not be what the check reads.
+
+    The check runs against a repository whose HEAD contains a *different* ci.yml. If it read the
+    working tree it would see the decoy; reading the frozen commit it sees the real evidence.
+    """
+    from minos_engine.layer2 import prerequisites as PRE
+    from minos_engine.qualification.git_tree import historical_blob_text
+
+    decoy = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+    assert not decoy.exists()
+    decoy.write_text("# decoy: not the historical workflow\n", encoding="utf-8")
+    try:
+        frozen = historical_blob_text(
+            REPO_ROOT, ".github/workflows/ci.yml", PRE.SPLIT_FROZEN_V2_SOURCE_COMMIT
+        )
+        assert frozen is not None
+        assert "decoy" not in frozen
+        assert "0003_l2c_split_v2_epochs" in frozen
+    finally:
+        decoy.unlink()
+
+
+def test_a_missing_historical_object_fails_closed() -> None:
+    """F10: an unknown ref yields None, never a substituted or partial value."""
+    from minos_engine.qualification.git_tree import historical_blob_text
+
+    absent = "0" * 40
+    assert historical_blob_text(REPO_ROOT, ".github/workflows/ci.yml", absent) is None
+    assert historical_blob_text(REPO_ROOT, "no/such/path.yml", "HEAD") is None
+
+
+def test_tampered_historical_bytes_fail_closed() -> None:
+    """F11: token checking is over the exact frozen bytes; altered content cannot pass."""
+    from minos_engine.qualification.layer2_split_v2_runner import _CI_REQUIRED_TOKENS
+
+    tampered = "# nothing of substance here\n"
+    assert not all(token in tampered for token in _CI_REQUIRED_TOKENS)
+
+
+def test_accepted_gates_verify_without_a_current_workflow() -> None:
+    """F9: the five committed gate verifiers pass with ci.yml absent."""
+    from minos_engine.qualification.layer2_ingest_runner import verify_ingest_ready_gate
+    from minos_engine.qualification.layer2_snapshot_runner import verify_snapshot_offline
+    from minos_engine.qualification.layer2_split_v2_runner import verify_split_frozen_v2_gate
+
+    assert not FULL.exists()
+    gates = REPO_ROOT / "gates"
+    assert verify_split_frozen_v2_gate(REPO_ROOT, gates / "split-frozen-v2.json").ok
+    assert verify_ingest_ready_gate(
+        REPO_ROOT, gates / "ingest-ready.json", require_descends=True
+    ).ok
+    assert verify_snapshot_offline(REPO_ROOT, 1).ok

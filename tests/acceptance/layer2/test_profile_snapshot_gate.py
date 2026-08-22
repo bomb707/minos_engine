@@ -108,11 +108,27 @@ def test_attestation_byte_tamper_detected(tmp_path: Path) -> None:
 # committed-evidence tamper matrix (activates once the evidence commit exists)
 # --------------------------------------------------------------------------- #
 def _tamper_root(tmp_path: Path, mutate) -> Path:
+    """Materialize the declared evidence set into a scratch root.
+
+    ``.github/workflows/ci.yml`` is HISTORICAL evidence: it was present at the frozen qualified
+    source commit and no longer exists at HEAD (TEST-CI-3 removed the remote full workflow). It is
+    therefore materialized from its frozen commit, exactly as the production verifier reads it —
+    never recreated at the live path, which would defeat the point of deleting it.
+    """
+    from minos_engine.layer2 import prerequisites as PRE
+    from minos_engine.qualification.git_tree import historical_blob_text
+
     root = tmp_path / "repo"
     for rel in _NEEDED:
         dst = root / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy(REPO_ROOT / rel, dst)
+        source = REPO_ROOT / rel
+        if source.exists():
+            shutil.copy(source, dst)
+            continue
+        frozen = historical_blob_text(REPO_ROOT, rel, PRE.PROFILE_SNAPSHOT_FROZEN_1_SOURCE_COMMIT)
+        assert frozen is not None, f"no committed blob for {rel} at the frozen source commit"
+        dst.write_text(frozen, encoding="utf-8")
     mutate(root)
     return root
 

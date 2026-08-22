@@ -51,6 +51,7 @@ from minos_engine.storage.l2c_split_v2_migration_contract import (
 
 from . import git_tree as G
 from .coverage import STAGE0_COVERAGE_THRESHOLD, CoverageResult, run_coverage
+from .git_tree import historical_blob_text
 from .layer2_db_runner import alembic_head
 from .provenance import GitProvenance, read_provenance
 from .pytest_accounting import PytestAccounting, run_pytest, suite_passes
@@ -138,7 +139,9 @@ SPLIT_V2_REQUIRED_TRACKED_FILES: tuple[str, ...] = (
     ".github/workflows/ci.yml",
 )
 
-#: CI must pin the v2 Alembic head and exercise the full v2 downgrade/re-upgrade lifecycle.
+#: The CI workflow path AS IT EXISTED at the frozen qualified source commit. It no longer exists
+#: at HEAD (TEST-CI-3 removed the full GitHub workflow); this constant names the historical blob,
+#: not a current file.
 CI_WORKFLOW = ".github/workflows/ci.yml"
 _CI_REQUIRED_TOKENS = (
     "0003_l2c_split_v2_epochs",
@@ -151,11 +154,17 @@ _CI_REQUIRED_TOKENS = (
 
 
 def ci_asserts_head_0003(root: Path) -> bool:
-    """True iff CI pins Alembic head 0003 + the full v2 downgrade/re-upgrade lifecycle."""
-    path = root / CI_WORKFLOW
-    if not path.exists():
+    """True iff the CI workflow AT THE FROZEN QUALIFIED SOURCE COMMIT pinned Alembic head 0003
+    and exercised the full v2 downgrade/re-upgrade lifecycle.
+
+    This is historical evidence, so it is read from the commit that produced it
+    (``PRE.SPLIT_FROZEN_V2_SOURCE_COMMIT``) rather than from the working tree. The workflow that
+    file describes ran and passed at that commit; deleting it at HEAD cannot retroactively
+    unmake that. A missing object, a shallow clone or altered bytes all fail closed.
+    """
+    text = historical_blob_text(root, CI_WORKFLOW, PRE.SPLIT_FROZEN_V2_SOURCE_COMMIT)
+    if text is None:
         return False
-    text = path.read_text(encoding="utf-8")
     return all(tok in text for tok in _CI_REQUIRED_TOKENS)
 
 
