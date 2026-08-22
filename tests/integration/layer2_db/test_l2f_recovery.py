@@ -263,12 +263,15 @@ def test_a_subprocess_startup_failure_is_durably_failed(env: Any) -> None:
 def test_an_output_read_failure_is_durably_failed(
     env: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Gap C3: reading the produced output can fail; the job must still end terminal."""
+    """Gap C3: reading the produced output can fail; the job must still end terminal.
+
+    Patches the descriptor-bound acquisition boundary, which is what the production path uses.
+    """
 
     def _boom(*_a: Any, **_k: Any) -> None:
         raise OSError("the produced output could not be read")
 
-    monkeypatch.setattr(EX, "verify_produced_output", _boom)
+    monkeypatch.setattr(EX, "acquire_produced_output", _boom)
     result = env.run()
     assert result is not None and result.status == "FAILED"
     assert _counts(env) == (0, 1)

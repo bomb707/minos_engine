@@ -24,7 +24,6 @@ import contextlib
 import datetime as _dt
 import hashlib
 import os
-import shutil
 import stat
 import uuid
 from dataclasses import dataclass
@@ -96,6 +95,9 @@ __all__ = [
     "AttemptWorkspace",
     "reject_symlinked_components",
     "verify_produced_output",
+    "acquire_produced_output",
+    "AcquiredOutput",
+    "OUTPUT_VCF_NAME",
     "ExecutionDispatchResult",
     "AmbiguousExecutionCommitError",
     "ExecutionResultConflictError",
@@ -114,6 +116,9 @@ __all__ = [
 F5_EXECUTION_REVISION = L2F_EXECUTION_REVISION
 #: every per-attempt work directory is created private to the executing user.
 ATTEMPT_DIR_MODE = 0o700
+#: the single produced-output name, resolved ONLY relative to the retained attempt descriptor.
+OUTPUT_VCF_NAME = "output.vcf"
+_OUTPUT_CHUNK = 1024 * 1024
 
 _SQLSTATE_RESULT_CONFLICT = "MN022"
 _SQLSTATE_DUAL_OUTCOME = "MN021"
@@ -244,24 +249,39 @@ def _now_utc() -> str:
 # --------------------------------------------------------------------------- #
 # per-attempt workspace: fresh, exclusive, private, inode-verified, never reused
 # --------------------------------------------------------------------------- #
-@dataclass(frozen=True)
+@dataclass
 class AttemptWorkspace:
     """One per-attempt directory bound to the EXACT inode this process created.
 
-    ``(st_dev, st_ino)`` are captured immediately after ``mkdir`` and re-checked before any
-    removal, so a directory or symlink that replaced the path afterwards is never descended
-    into or deleted. Because a filesystem may REUSE an inode number after ``rmdir``, the identity
-    is additionally pinned by a private ``O_EXCL`` sentinel file written at creation time with an
-    unguessable name: a directory that replaced the path cannot contain it.
+    Identity is pinned three ways, because each alone is defeatable:
+
+    * ``(st_dev, st_ino)`` captured immediately after ``mkdir``;
+    * a private ``O_EXCL`` sentinel with an unguessable name, because a filesystem may REUSE an
+      inode number after ``rmdir`` — a replacement directory cannot reproduce the sentinel;
+    * a RETAINED directory descriptor (``O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC``) opened at
+      creation time. Every later child operation is **descriptor-relative**, so the pathname is
+      never re-resolved and a replacement installed at :attr:`path` can never be traversed,
+      read through or deleted — closing the check/use race a pathname-based ``rmtree`` leaves
+      open.
+
+    A parent descriptor is retained as well, so the final ``rmdir`` of the attempt entry itself
+    is performed relative to the parent inode this attempt actually created its entry in.
     """
 
     path: Path
     st_dev: int
     st_ino: int
     sentinel: str
+    dir_fd: int | None = None
+    parent_fd: int | None = None
 
+    # -- identity ---------------------------------------------------------------------------- #
     def same_inode(self) -> bool:
-        """True when the path still resolves to a directory with the created ``(dev, ino)``."""
+        """True when the PATH still resolves to a directory with the created ``(dev, ino)``.
+
+        This is the check that detects a replacement installed at :attr:`path`; it is deliberately
+        pathname-based, because that is exactly the substitution it exists to notice.
+        """
         try:
             info = os.lstat(self.path)
         except OSError:
@@ -270,15 +290,37 @@ class AttemptWorkspace:
             stat.S_ISDIR(info.st_mode) and info.st_dev == self.st_dev and info.st_ino == self.st_ino
         )
 
-    def still_ours(self) -> bool:
-        """True only when the path is still the EXACT directory this attempt created."""
-        if not self.same_inode():
+    def descriptor_valid(self) -> bool:
+        """True when the RETAINED descriptor still refers to the directory we created."""
+        if self.dir_fd is None:
             return False
         try:
-            marker = os.lstat(self.path / self.sentinel)
+            info = os.fstat(self.dir_fd)
+        except OSError:
+            return False
+        return (
+            stat.S_ISDIR(info.st_mode) and info.st_dev == self.st_dev and info.st_ino == self.st_ino
+        )
+
+    def still_ours(self) -> bool:
+        """True only when the path AND the retained descriptor are the directory we created."""
+        if not self.same_inode() or not self.descriptor_valid():
+            return False
+        try:  # the sentinel is looked up RELATIVE to the retained descriptor
+            marker = os.stat(self.sentinel, dir_fd=self.dir_fd, follow_symlinks=False)
         except OSError:
             return False  # an inode-number reuse cannot reproduce the private sentinel
         return stat.S_ISREG(marker.st_mode)
+
+    # -- descriptor lifecycle ---------------------------------------------------------------- #
+    def close(self) -> None:
+        """Close both retained descriptors EXACTLY once, on every path (idempotent)."""
+        for name in ("dir_fd", "parent_fd"):
+            fd = getattr(self, name)
+            setattr(self, name, None)  # cleared FIRST, so a second call can never double-close
+            if fd is not None:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
 
 
 def reject_symlinked_components(path: Path) -> Path:
@@ -294,18 +336,87 @@ def reject_symlinked_components(path: Path) -> Path:
     return absolute
 
 
+def _remove_children_at(dir_fd: int) -> None:
+    """Recursively empty a directory using ONLY descriptor-relative operations.
+
+    Nothing here re-resolves a pathname and nothing follows a symlink, so a replacement installed
+    at the attempt path cannot be traversed. Sub-directories are opened relative to their parent
+    descriptor with ``O_NOFOLLOW``, so a symlink swapped in for a child is unlinked, never
+    followed.
+    """
+    for name in os.listdir(dir_fd):
+        try:
+            info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        except OSError:
+            continue
+        if stat.S_ISDIR(info.st_mode):
+            try:
+                child = os.open(
+                    name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dir_fd
+                )
+            except OSError:
+                continue
+            try:
+                _remove_children_at(child)
+            finally:
+                with contextlib.suppress(OSError):
+                    os.close(child)
+            with contextlib.suppress(OSError):
+                os.rmdir(name, dir_fd=dir_fd)
+        else:
+            with contextlib.suppress(OSError):
+                os.unlink(name, dir_fd=dir_fd)
+
+
 def _remove_created_inode(workspace: AttemptWorkspace, *, require_sentinel: bool = True) -> None:
-    """Remove ONLY the directory inode this call created; never a replacement.
+    """Remove ONLY the directory inode this attempt created; never a replacement.
+
+    Children are removed through the RETAINED descriptor, so the untrusted pathname is never
+    traversed. The attempt's own directory entry is then removed relative to the retained PARENT
+    descriptor, and only after re-confirming that the entry still names our exact inode; if that
+    identity cannot be established the entry is LEFT ALONE rather than risking the deletion of a
+    replacement. ``rmdir`` additionally refuses a non-empty directory, so a replacement that has
+    had anything written into it survives even the final step.
 
     ``require_sentinel=False`` is used exclusively on the creation-failure path, where the
-    sentinel may not have been written yet; the ``(st_dev, st_ino)`` check still applies.
+    sentinel may not have been written yet.
     """
-    if not workspace.same_inode():
+    if require_sentinel:
+        if not workspace.still_ours():
+            workspace.close()
+            return
+    elif not workspace.descriptor_valid() and not workspace.same_inode():
+        workspace.close()
         return
-    if require_sentinel and not workspace.still_ours():
+
+    try:
+        if workspace.dir_fd is not None and workspace.descriptor_valid():
+            _remove_children_at(workspace.dir_fd)
+        _rmdir_entry(workspace)
+    finally:
+        workspace.close()
+
+
+def _rmdir_entry(workspace: AttemptWorkspace) -> None:
+    """Remove the attempt's own directory entry relative to the retained parent descriptor."""
+    name = workspace.path.name
+    parent_fd = workspace.parent_fd
+    try:
+        if parent_fd is not None:
+            entry = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        else:  # pragma: no cover - the parent descriptor is always retained on the created path
+            entry = os.lstat(workspace.path)
+    except OSError:
         return
+    if not stat.S_ISDIR(entry.st_mode):
+        return
+    if (entry.st_dev, entry.st_ino) != (workspace.st_dev, workspace.st_ino):
+        return  # a replacement occupies the entry: leave it entirely alone
     with contextlib.suppress(OSError):
-        shutil.rmtree(workspace.path)
+        if parent_fd is not None:
+            os.rmdir(name, dir_fd=parent_fd)
+        else:  # pragma: no cover - see above
+            os.rmdir(workspace.path)
 
 
 def _create_attempt_dir(work_root: Path, *, job_id: str, attempt_id: str) -> AttemptWorkspace:
@@ -313,8 +424,9 @@ def _create_attempt_dir(work_root: Path, *, job_id: str, attempt_id: str) -> Att
 
     ``mkdir`` without ``exist_ok`` fails closed if anything already occupies the path, so a stale
     directory, a pre-planted output file or a substituted symlink cannot be adopted. The created
-    inode's ``(st_dev, st_ino)`` is captured immediately and every later check runs against that
-    identity; if validation fails afterwards, ONLY that inode is removed.
+    inode's ``(st_dev, st_ino)`` is captured immediately, a descriptor onto that exact inode is
+    retained for the attempt's whole lifetime, and every later check runs against that identity;
+    if validation fails afterwards, ONLY that inode is removed.
     """
     root = reject_symlinked_components(work_root)
     if not root.is_dir():
@@ -343,8 +455,30 @@ def _create_attempt_dir(work_root: Path, *, job_id: str, attempt_id: str) -> Att
     )
 
     try:
+        try:  # RETAIN descriptors: every later child operation is descriptor-relative
+            workspace.parent_fd = os.open(
+                root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+            )
+            workspace.dir_fd = os.open(
+                attempt, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+            )
+        except OSError as exc:
+            raise ExecutionWorkspaceError(
+                f"attempt work directory {attempt} could not be opened: {exc}"
+            ) from exc
+        if not workspace.descriptor_valid():
+            raise ExecutionWorkspaceError(
+                f"attempt work directory {attempt} descriptor does not match the created inode"
+            )
         try:  # a private O_EXCL marker pins the identity beyond inode-number reuse
-            os.close(os.open(attempt / sentinel, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+            os.close(
+                os.open(
+                    sentinel,
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    0o600,
+                    dir_fd=workspace.dir_fd,
+                )
+            )
         except OSError as exc:
             raise ExecutionWorkspaceError(
                 f"attempt work directory {attempt} could not be marked: {exc}"
@@ -384,11 +518,11 @@ def _require_absent_output(vcf_path: Path) -> None:
 
 
 def verify_produced_output(vcf_path: Path, workspace: AttemptWorkspace) -> None:
-    """Require the produced output to be a private regular file INSIDE the created attempt inode.
+    """Standalone pathname predicate: is this path a private regular file in OUR attempt inode?
 
-    Rejects symlinks, non-regular files, hard links (``st_nlink != 1``) and anything whose parent
-    directory is not the exact inode this attempt created (so path traversal or a swapped parent
-    cannot smuggle a file in).
+    The production path does **not** use this; it uses :func:`acquire_produced_output`, which
+    binds validation, hashing and publication to one opened descriptor. This remains as a
+    directly testable predicate over the same conditions.
     """
     try:
         info = os.lstat(vcf_path)
@@ -413,11 +547,92 @@ def verify_produced_output(vcf_path: Path, workspace: AttemptWorkspace) -> None:
         )
 
 
+@dataclass(frozen=True)
+class AcquiredOutput:
+    """The produced VCF, read ONCE from a single opened inode, with its derived identity.
+
+    ``sha256`` and ``size_bytes`` are computed from :attr:`payload` — the exact bytes that are
+    validated, published and bound into the result. Nothing downstream re-opens the pathname.
+    """
+
+    payload: bytes
+    sha256: str
+    size_bytes: int
+
+
+def _read_fd_bytes(fd: int) -> bytes:
+    """Read a descriptor to EOF in constant-size chunks (no pathname involved)."""
+    chunks: list[bytes] = []
+    while True:
+        chunk = os.read(fd, _OUTPUT_CHUNK)
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+
+
+def acquire_produced_output(workspace: AttemptWorkspace, inputs: ExecutionInput) -> AcquiredOutput:
+    """THE production output boundary: one inode, opened once, read once, hashed once.
+
+    Opens ``output.vcf`` **relative to the retained attempt descriptor** with ``O_NOFOLLOW |
+    O_NONBLOCK``, so a symlink is refused by the kernel and a FIFO or device fails promptly
+    instead of blocking. It then requires a regular file with ``st_nlink == 1`` whose descriptor
+    and parent both belong to this attempt, reads the exact bytes once, re-``fstat``s to catch a
+    mutation during the read, validates the VCF structure from **those** bytes, and derives the
+    digest and size from **those same** bytes. No later step re-opens or re-reads the pathname.
+    """
+    from minos_engine.storage.l2f_gatk_runner import validate_vcf_payload
+
+    if not workspace.descriptor_valid() or not workspace.same_inode():
+        raise GatkOutputError("the attempt directory was replaced before the output was acquired")
+    assert workspace.dir_fd is not None  # noqa: S101 - guaranteed by descriptor_valid()
+    try:
+        fd = os.open(
+            OUTPUT_VCF_NAME,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+            dir_fd=workspace.dir_fd,
+        )
+    except OSError as exc:
+        raise GatkOutputError(f"produced VCF could not be opened: {exc}") from exc
+    try:
+        before = os.fstat(fd)
+        if stat.S_ISFIFO(before.st_mode):
+            raise GatkOutputError("produced VCF is a FIFO")
+        if not stat.S_ISREG(before.st_mode):
+            raise GatkOutputError("produced VCF is not a regular file")
+        if before.st_nlink != 1:
+            raise GatkOutputError(
+                f"produced VCF has {before.st_nlink} links; hard-linked outputs are refused"
+            )
+        parent = os.fstat(workspace.dir_fd)
+        if (parent.st_dev, parent.st_ino) != (workspace.st_dev, workspace.st_ino):
+            raise GatkOutputError("produced VCF's parent is not this attempt's directory")
+        payload = _read_fd_bytes(fd)
+        after = os.fstat(fd)
+    except OSError as exc:
+        raise GatkOutputError(f"produced VCF could not be read: {exc}") from exc
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(fd)
+
+    if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino):
+        raise GatkOutputError("produced VCF was replaced while it was being read")
+    if after.st_size != before.st_size or len(payload) != after.st_size:
+        raise GatkOutputError("produced VCF changed size while it was being read")
+    if not payload:
+        raise GatkOutputError("produced VCF is empty")
+    if not workspace.same_inode():
+        raise GatkOutputError("the attempt directory was replaced while the output was read")
+
+    validate_vcf_payload(payload, inputs=inputs)
+    return AcquiredOutput(
+        payload=payload, sha256=hashlib.sha256(payload).hexdigest(), size_bytes=len(payload)
+    )
+
+
 def _remove_attempt_dir(workspace: AttemptWorkspace | None) -> None:
     """Remove the per-attempt directory after EVERY terminal outcome — success, nonzero exit,
     timeout, subprocess-start failure, invalid output, persistence rollback, an ambiguous commit
-    and a confirmed post-commit wrapper failure — but ONLY when the path still resolves to the
-    inode this attempt created."""
+    and a confirmed post-commit wrapper failure — through the RETAINED descriptor only."""
     if workspace is None:
         return
     _remove_created_inode(workspace)
@@ -1031,7 +1246,7 @@ def _run_and_finalize(
     try:
         try:
             workspace = _create_attempt_dir(work_root, job_id=job_id, attempt_id=uuid.uuid4().hex)
-            vcf_path = workspace.path / "output.vcf"
+            vcf_path = workspace.path / OUTPUT_VCF_NAME
             _require_absent_output(vcf_path)
             argv = render_execution_argv(
                 effective_config=prepared.config.effective_config,
@@ -1043,15 +1258,24 @@ def _run_and_finalize(
             outcome = runner.run(
                 argv=argv, work_dir=workspace.path, vcf_path=vcf_path, inputs=prepared.inputs
             )
-            verify_produced_output(vcf_path, workspace)
-            vcf_bytes = vcf_path.read_bytes()
-            # the runner NEVER supplies a trusted hash: the bytes about to be published must
-            # still digest to the validated value, so a mutation between validation and
-            # publication is caught here.
-            if hashlib.sha256(vcf_bytes).hexdigest() != outcome.vcf_sha256:
+            # THE output boundary: one inode, opened relative to the retained attempt descriptor,
+            # read once, validated and hashed from those exact bytes. Nothing below re-opens the
+            # pathname, so no object other than this one can be published or bound into a result.
+            acquired = acquire_produced_output(workspace, prepared.inputs)
+            # the runner's reported digest is never trusted on its own: it must agree with the
+            # digest of the bytes actually acquired, or the output changed underneath us.
+            if (
+                acquired.sha256 != outcome.vcf_sha256
+                or acquired.size_bytes != outcome.vcf_size_bytes
+            ):
                 raise GatkOutputError(
-                    f"produced VCF for job {job_id} changed between validation and publication"
+                    f"produced VCF for job {job_id} changed between execution and acquisition"
                 )
+            vcf_bytes = acquired.payload
+            # every downstream identity is derived from the ACQUIRED bytes.
+            outcome = outcome.model_copy(
+                update={"vcf_sha256": acquired.sha256, "vcf_size_bytes": acquired.size_bytes}
+            )
         except _RUNNER_FAILURES as exc:
             # a recognized GATK execution failure: the bounded FAILED outcome IS the result.
             return _recover_to_failed(

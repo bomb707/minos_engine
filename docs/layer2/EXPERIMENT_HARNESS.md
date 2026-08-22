@@ -1,9 +1,10 @@
 # L2-F — Offline Experiment Harness
 
-The L2-F harness performs **offline** deterministic GATK CONFIG candidate generation and
-experiment planning over the frozen L2-E train membership. It does **not** score, rank,
-select, optimize, train, or activate `Layer2Service.select_config`. `HARNESS-READY` (F7)
-is not implemented and is **not** claimed anywhere below.
+The L2-F harness performs **offline** deterministic GATK CONFIG candidate generation, experiment
+planning and GATK **execution** over the frozen L2-E train membership, recording each job's
+terminal outcome. It does **not** score, rank, select, optimize, train, or activate
+`Layer2Service.select_config`. `HARNESS-READY` (F7) is not implemented and is **not** claimed
+anywhere below.
 
 ## Scope (F3-A … F5 accepted; F6 recovery + security)
 
@@ -85,6 +86,34 @@ A planted FIFO or device node in the provisioned dataset root previously blocked
 indefinitely, because `os.open(..., O_RDONLY)` waits for a writer **before** the regular-file
 check can reject it. Both stream hashers now open with `O_NONBLOCK | O_NOFOLLOW`, so a
 non-regular input or output is rejected immediately instead of hanging.
+
+### F6 filesystem safety: descriptor-bound cleanup and output acquisition
+
+Two pathname check/use races are closed by binding both operations to descriptors opened once and
+retained for the attempt's lifetime.
+
+**Cleanup.** A directory descriptor (`O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC`) onto the created
+inode, plus one onto its parent, are opened at creation and `fstat`-verified against the recorded
+`(st_dev, st_ino)`. Recursive removal walks **descriptor-relative** entries only — `os.listdir(fd)`,
+`os.stat(..., dir_fd=..., follow_symlinks=False)`, `os.unlink(..., dir_fd=...)`, sub-directories
+reopened with `O_NOFOLLOW` — so the pathname is never re-resolved and a replacement installed at
+the attempt path can neither be traversed nor deleted. `shutil.rmtree` is no longer used on the
+attempt pathname at all. The attempt's own entry is removed relative to the retained **parent**
+descriptor, and only after re-confirming that entry still names our exact inode; if that identity
+cannot be established the entry is left alone, and `rmdir` additionally refuses a non-empty
+directory. Both descriptors are closed exactly once on every path (idempotently, cleared before
+closing so a second call cannot double-close).
+
+**Output acquisition.** `acquire_produced_output()` is the single production output boundary:
+`output.vcf` is opened **relative to the retained attempt descriptor** with `O_NOFOLLOW |
+O_NONBLOCK` (a symlink is refused by the kernel; a FIFO or device fails promptly instead of
+blocking), required to be a regular file with `st_nlink == 1` whose descriptor and parent both
+belong to this attempt, read **once**, `fstat`-rechecked for inode/size mutation, then structurally
+validated, hashed and sized from **those exact bytes**. The runner's reported digest is never
+trusted on its own — it must agree with the acquired bytes — and no later step re-opens or
+re-reads the pathname, so validation, publication and the result manifest cannot describe
+different objects. Any swap, mutation or substitution fails with a typed `GatkOutputError` and
+drives the RUNNING job to its existing durable `FAILED` recovery outcome.
 
 ### F6 workspace and filesystem hardening
 
@@ -599,8 +628,8 @@ the missing jobs; and a replay **never** resets an existing job's mutable `statu
 `JobEnqueueResult` returns `plan_hash`, `requested_start`, `requested_count`, `created_count`,
 `existing_count`, and `total_jobs_for_plan`. A private explicit-trust boundary
 (`_enqueue_experiment_jobs_with_trust`, unexported) drives synthetic / non-75 tests only.
-**Claiming, `SKIP LOCKED`, status transitions, execution and results are F4 — not implemented
-here.**
+**Claiming and `SKIP LOCKED` are F4; execution, terminal transitions and results are F5 — none of
+them happen in this enqueue step.**
 
 ### F3-C1 durable plan persistence (no jobs)
 
@@ -958,12 +987,21 @@ is one of:
   `0005↔0006` lifecycle is CI-verified on scratch PostgreSQL only. `0006` is **never**
   applied to the operational `minos_engine_db` in this source step.
 
-## Still unauthorized / not implemented
+## Implemented / still unauthorized
 
-GATK execution, result storage, terminal status transitions (`SUCCEEDED`/`FAILED`/`CANCELLED`),
-scoring, training, optimization (F5–F6); `HARNESS-READY` (F7); `select_config` (blocked). F4 also
-deliberately omits leases, stale-claim reclamation, heartbeats and automatic retries. The
-operational `minos_engine_db` remains at `0005` and no operational data is created. (Accepted and
-implemented: the `ExperimentPlan` builder + `plan_hash`/`job_key` formulas (F3-B), durable plan
-persistence (F3-C1), bounded job enqueue (F3-C2), the non-mutating harness verifier + logical
-attack matrix (F3-D), and safe job claiming + pre-execution transitions (F4).)
+**Implemented and accepted.** The `ExperimentPlan` builder + `plan_hash`/`job_key` formulas
+(F3-B); durable plan persistence (F3-C1); bounded job enqueue (F3-C2); the non-mutating harness
+verifier + logical attack matrix (F3-D); safe job claiming + pre-execution transitions (F4);
+**GATK execution, terminal `SUCCEEDED`/`FAILED` transitions, success-result persistence, bounded
+failure recording and independent execution verification (F5)**; and **execution recovery,
+filesystem/subprocess security hardening, injection resistance, leakage enforcement and
+consistent-forgery verification (F6, complete as of this corrective)**.
+
+**Still unauthorized and absent.** Scoring, hap.py, truth comparison, training, optimization,
+model selection and ranking; `HARNESS-READY` (F7); and `Layer2Service.select_config`, which still
+raises `StageNotReadyError`. `CANCELLED` remains unreachable, and F4/F5/F6 continue to omit
+leases, stale-claim reclamation, heartbeats and automatic retries by design.
+
+The operational `minos_engine_db` remains at `0005_l2e_feature_view` with zero L2-F tables: every
+L2-F migration is applied to scratch databases only, and no operational job has been enqueued or
+executed.

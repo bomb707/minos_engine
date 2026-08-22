@@ -61,6 +61,7 @@ __all__ = [
     "render_execution_argv",
     "region_token",
     "validate_vcf_bytes",
+    "validate_vcf_payload",
     "VCF_FIXED_COLUMNS",
     "VCF_SINGLE_SAMPLE_COLUMN_COUNT",
     "work_root_from_env",
@@ -190,6 +191,15 @@ VCF_FIXED_COLUMNS: tuple[str, ...] = (
 VCF_SINGLE_SAMPLE_COLUMN_COUNT = len(VCF_FIXED_COLUMNS) + 1
 
 
+def validate_vcf_payload(payload: bytes, *, inputs: ExecutionInput) -> None:
+    """Validate a produced VCF's structure and every record from EXACT bytes (no filesystem).
+
+    This is the byte-level contract used by the descriptor-bound production acquisition, where
+    the very bytes that are validated are also the bytes that are hashed and published.
+    """
+    _validate_vcf_lines(payload.split(b"\n"), label="produced VCF", inputs=inputs)
+
+
 def _validate_vcf_structure(vcf_path: Path, inputs: ExecutionInput) -> None:
     """Validate the produced VCF's structure and every record, strictly from its bytes.
 
@@ -198,63 +208,71 @@ def _validate_vcf_structure(vcf_path: Path, inputs: ExecutionInput) -> None:
     a position inside the accepted half-open interval ``[region_start0, region_end0_exclusive)``
     (1-based ``POS`` in ``[region_start0 + 1, region_end0_exclusive]``).
     """
+    with vcf_path.open("rb") as fh:
+        _validate_vcf_lines(list(fh), label=str(vcf_path), inputs=inputs)
+
+
+def _validate_vcf_lines(lines: list[bytes], *, label: str, inputs: ExecutionInput) -> None:
+    """The single structural contract, shared by the path-based and byte-based validators."""
+    vcf_path = label
     chrom_headers = 0
     columns: int | None = None
     low = inputs.region_start0 + 1
     high = inputs.region_end0_exclusive
-    with vcf_path.open("rb") as fh:
-        for index, raw in enumerate(fh):
-            line = raw.rstrip(b"\r\n")
-            if index == 0:
-                if not _VCF_FILEFORMAT.match(line):
-                    raise GatkOutputError(
-                        f"produced VCF {vcf_path} does not begin with a ##fileformat=VCFv4.x header"
-                    )
-                continue
-            if line.startswith(b"#CHROM"):
-                chrom_headers += 1
-                fields = line.split(b"\t")
-                header = tuple(f.decode("utf-8", errors="replace") for f in fields)
-                if header[: len(VCF_FIXED_COLUMNS)] != VCF_FIXED_COLUMNS:
-                    raise GatkOutputError(
-                        f"produced VCF {vcf_path} has a malformed #CHROM header layout"
-                    )
-                if len(header) != VCF_SINGLE_SAMPLE_COLUMN_COUNT:
-                    raise GatkOutputError(
-                        f"produced VCF {vcf_path} is not single-sample: the #CHROM header declares "
-                        f"{len(header)} columns, expected {VCF_SINGLE_SAMPLE_COLUMN_COUNT}"
-                    )
-                columns = len(header)
-                continue
-            if line.startswith(b"#"):
-                continue
-            if columns is None:
+    for index, raw in enumerate(lines):
+        line = raw.rstrip(b"\r\n")
+        if not line and index > 0:
+            continue  # a trailing newline is not a record
+        if index == 0:
+            if not _VCF_FILEFORMAT.match(line):
                 raise GatkOutputError(
-                    f"produced VCF {vcf_path} contains a record before its #CHROM header"
+                    f"produced VCF {vcf_path} does not begin with a ##fileformat=VCFv4.x header"
                 )
+            continue
+        if line.startswith(b"#CHROM"):
+            chrom_headers += 1
             fields = line.split(b"\t")
-            if len(fields) != columns:
+            header = tuple(f.decode("utf-8", errors="replace") for f in fields)
+            if header[: len(VCF_FIXED_COLUMNS)] != VCF_FIXED_COLUMNS:
                 raise GatkOutputError(
-                    f"produced VCF {vcf_path} record has {len(fields)} columns, expected {columns}"
+                    f"produced VCF {vcf_path} has a malformed #CHROM header layout"
                 )
-            chrom = fields[0].decode("utf-8", errors="replace")
-            if chrom != inputs.chromosome:
+            if len(header) != VCF_SINGLE_SAMPLE_COLUMN_COUNT:
                 raise GatkOutputError(
-                    f"produced VCF {vcf_path} contains record chromosome {chrom!r}, expected "
-                    f"{inputs.chromosome!r}"
+                    f"produced VCF {vcf_path} is not single-sample: the #CHROM header declares "
+                    f"{len(header)} columns, expected {VCF_SINGLE_SAMPLE_COLUMN_COUNT}"
                 )
-            raw_pos = fields[1].decode("utf-8", errors="replace")
-            try:
-                pos = int(raw_pos)
-            except ValueError as exc:
-                raise GatkOutputError(
-                    f"produced VCF {vcf_path} record POS {raw_pos!r} is not an integer"
-                ) from exc
-            if not (low <= pos <= high):
-                raise GatkOutputError(
-                    f"produced VCF {vcf_path} record POS {pos} is outside the accepted interval "
-                    f"[{low}, {high}]"
-                )
+            columns = len(header)
+            continue
+        if line.startswith(b"#"):
+            continue
+        if columns is None:
+            raise GatkOutputError(
+                f"produced VCF {vcf_path} contains a record before its #CHROM header"
+            )
+        fields = line.split(b"\t")
+        if len(fields) != columns:
+            raise GatkOutputError(
+                f"produced VCF {vcf_path} record has {len(fields)} columns, expected {columns}"
+            )
+        chrom = fields[0].decode("utf-8", errors="replace")
+        if chrom != inputs.chromosome:
+            raise GatkOutputError(
+                f"produced VCF {vcf_path} contains record chromosome {chrom!r}, expected "
+                f"{inputs.chromosome!r}"
+            )
+        raw_pos = fields[1].decode("utf-8", errors="replace")
+        try:
+            pos = int(raw_pos)
+        except ValueError as exc:
+            raise GatkOutputError(
+                f"produced VCF {vcf_path} record POS {raw_pos!r} is not an integer"
+            ) from exc
+        if not (low <= pos <= high):
+            raise GatkOutputError(
+                f"produced VCF {vcf_path} record POS {pos} is outside the accepted interval "
+                f"[{low}, {high}]"
+            )
     if chrom_headers != 1:
         raise GatkOutputError(
             f"produced VCF {vcf_path} must contain exactly one #CHROM header, found {chrom_headers}"
