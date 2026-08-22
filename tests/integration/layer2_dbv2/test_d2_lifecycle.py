@@ -67,7 +67,13 @@ def _dbv2_object_counts(url: str) -> dict[str, int]:
     }
 
 
-EXPECTED_COUNTS = {"schemas": 7, "tables": 37, "functions": 34, "triggers": 89}
+#: derived from the frozen migration contract, never from a literal in this file.
+EXPECTED_COUNTS = {
+    "schemas": len(contract.SHADOW_SCHEMAS),
+    "tables": len(contract.SHADOW_TABLES),
+    "functions": len(contract.FUNCTIONS),
+    "triggers": len(contract.TRIGGERS),
+}
 
 
 def _diff(before: dict[str, Any], after: dict[str, Any], *, ignore_alembic_row: bool) -> list[str]:

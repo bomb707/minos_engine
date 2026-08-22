@@ -30,7 +30,10 @@
         "catalog.enforce_backup_set_immutability",
         "catalog.enforce_backup_set_shape",
         "catalog.enforce_release_state",
-        "catalog.get_or_verify_artifact",
+        "catalog.get_or_verify_artifact_location",
+        "catalog.get_or_verify_external_artifact",
+        "catalog.get_or_verify_inline_artifact",
+        "catalog.record_artifact_verification",
         "catalog.register_backup_set",
         "evaluation.enforce_evaluation_run_state",
         "evaluation.record_evaluation_scores",
@@ -1499,7 +1502,7 @@
       },
       {
         "grant_option": false,
-        "object": "catalog.get_or_verify_artifact",
+        "object": "catalog.get_or_verify_artifact_location",
         "object_type": "function",
         "principal": "PUBLIC",
         "privileges": {
@@ -1516,7 +1519,7 @@
       },
       {
         "grant_option": false,
-        "object": "catalog.get_or_verify_artifact",
+        "object": "catalog.get_or_verify_artifact_location",
         "object_type": "function",
         "principal": "minos_enqueue",
         "privileges": {
@@ -1533,7 +1536,7 @@
       },
       {
         "grant_option": false,
-        "object": "catalog.get_or_verify_artifact",
+        "object": "catalog.get_or_verify_artifact_location",
         "object_type": "function",
         "principal": "minos_evaluator",
         "privileges": {
@@ -1550,7 +1553,7 @@
       },
       {
         "grant_option": false,
-        "object": "catalog.get_or_verify_artifact",
+        "object": "catalog.get_or_verify_artifact_location",
         "object_type": "function",
         "principal": "minos_live",
         "privileges": {
@@ -1567,7 +1570,7 @@
       },
       {
         "grant_option": false,
-        "object": "catalog.get_or_verify_artifact",
+        "object": "catalog.get_or_verify_artifact_location",
         "object_type": "function",
         "principal": "minos_migrate",
         "privileges": {
@@ -1584,7 +1587,7 @@
       },
       {
         "grant_option": false,
-        "object": "catalog.get_or_verify_artifact",
+        "object": "catalog.get_or_verify_artifact_location",
         "object_type": "function",
         "principal": "minos_owner",
         "privileges": {
@@ -1601,7 +1604,7 @@
       },
       {
         "grant_option": false,
-        "object": "catalog.get_or_verify_artifact",
+        "object": "catalog.get_or_verify_artifact_location",
         "object_type": "function",
         "principal": "minos_planner",
         "privileges": {
@@ -1618,7 +1621,7 @@
       },
       {
         "grant_option": false,
-        "object": "catalog.get_or_verify_artifact",
+        "object": "catalog.get_or_verify_artifact_location",
         "object_type": "function",
         "principal": "minos_runner",
         "privileges": {
@@ -1635,7 +1638,7 @@
       },
       {
         "grant_option": false,
-        "object": "catalog.get_or_verify_artifact",
+        "object": "catalog.get_or_verify_artifact_location",
         "object_type": "function",
         "principal": "minos_trainer",
         "privileges": {
@@ -1652,12 +1655,522 @@
       },
       {
         "grant_option": false,
-        "object": "catalog.get_or_verify_artifact",
+        "object": "catalog.get_or_verify_artifact_location",
         "object_type": "function",
         "principal": "minos_verifier",
         "privileges": {
           "DELETE": false,
           "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.get_or_verify_external_artifact",
+        "object_type": "function",
+        "principal": "PUBLIC",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.get_or_verify_external_artifact",
+        "object_type": "function",
+        "principal": "minos_enqueue",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.get_or_verify_external_artifact",
+        "object_type": "function",
+        "principal": "minos_evaluator",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.get_or_verify_external_artifact",
+        "object_type": "function",
+        "principal": "minos_live",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.get_or_verify_external_artifact",
+        "object_type": "function",
+        "principal": "minos_migrate",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.get_or_verify_external_artifact",
+        "object_type": "function",
+        "principal": "minos_owner",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.get_or_verify_external_artifact",
+        "object_type": "function",
+        "principal": "minos_planner",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.get_or_verify_external_artifact",
+        "object_type": "function",
+        "principal": "minos_runner",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.get_or_verify_external_artifact",
+        "object_type": "function",
+        "principal": "minos_trainer",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.get_or_verify_external_artifact",
+        "object_type": "function",
+        "principal": "minos_verifier",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.get_or_verify_inline_artifact",
+        "object_type": "function",
+        "principal": "PUBLIC",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.get_or_verify_inline_artifact",
+        "object_type": "function",
+        "principal": "minos_enqueue",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.get_or_verify_inline_artifact",
+        "object_type": "function",
+        "principal": "minos_evaluator",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.get_or_verify_inline_artifact",
+        "object_type": "function",
+        "principal": "minos_live",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.get_or_verify_inline_artifact",
+        "object_type": "function",
+        "principal": "minos_migrate",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.get_or_verify_inline_artifact",
+        "object_type": "function",
+        "principal": "minos_owner",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.get_or_verify_inline_artifact",
+        "object_type": "function",
+        "principal": "minos_planner",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.get_or_verify_inline_artifact",
+        "object_type": "function",
+        "principal": "minos_runner",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.get_or_verify_inline_artifact",
+        "object_type": "function",
+        "principal": "minos_trainer",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.get_or_verify_inline_artifact",
+        "object_type": "function",
+        "principal": "minos_verifier",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.record_artifact_verification",
+        "object_type": "function",
+        "principal": "PUBLIC",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.record_artifact_verification",
+        "object_type": "function",
+        "principal": "minos_enqueue",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.record_artifact_verification",
+        "object_type": "function",
+        "principal": "minos_evaluator",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.record_artifact_verification",
+        "object_type": "function",
+        "principal": "minos_live",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.record_artifact_verification",
+        "object_type": "function",
+        "principal": "minos_migrate",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.record_artifact_verification",
+        "object_type": "function",
+        "principal": "minos_owner",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.record_artifact_verification",
+        "object_type": "function",
+        "principal": "minos_planner",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.record_artifact_verification",
+        "object_type": "function",
+        "principal": "minos_runner",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.record_artifact_verification",
+        "object_type": "function",
+        "principal": "minos_trainer",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "catalog.record_artifact_verification",
+        "object_type": "function",
+        "principal": "minos_verifier",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
           "INSERT": false,
           "REFERENCES": false,
           "SELECT": false,
@@ -13817,20 +14330,55 @@
       "profiling.profile_snapshot_members"
     ]
   },
-  "contract_sha256": "1e67735f2dcd4e6bec6f688755e3fc2456b71cebfb72cf0898c700591a9e45cf",
+  "audit_contract": {
+    "actions": {
+      "catalog.get_or_verify_artifact_location": "artifact_location.registered",
+      "catalog.get_or_verify_external_artifact": "artifact.registered_external",
+      "catalog.get_or_verify_inline_artifact": "artifact.published_inline",
+      "catalog.record_artifact_verification": "artifact.verification_recorded"
+    },
+    "actor_identity": "session_user - the INVOKING login identity - is recorded, never current_user. Every audited function is SECURITY DEFINER, so current_user is always the definer principal and would make every row look identical.",
+    "admin_operations": {
+      "evidence_hash": "sha256 of the recovery set's recovery_manifest_sha256, in lowercase hex; it points at the exact recovery evidence the operation was authorized by",
+      "function": "catalog.register_backup_set",
+      "operation_kind": "migration",
+      "outcome": "succeeded",
+      "rule": "Written in the SAME transaction as the backup_sets INSERT, so a failed or rolled-back registration leaves no admin row."
+    },
+    "atomicity": "Every audit row is written inside the caller's transaction. A rollback, a constraint violation or a failed gate leaves no audit row at all - there is no out-of-band logging path.",
+    "evidence_hash_formula": "payload_hash = encode(sha256(convert_to(<frozen evidence string>, 'UTF8')), 'hex'), where the evidence string is the function's frozen, documented projection of the values that actually changed. It is never a digest of the whole row and never includes a timestamp.",
+    "no_op_rule": "An idempotent replay that changes nothing writes NO event. Exactly one event per actual successful state change is the invariant, and the tests assert the count, not the presence.",
+    "unaudited_functions": {
+      "functions": [
+        "experiments.claim_next_job",
+        "experiments.enqueue_plan_jobs",
+        "experiments.extend_attempt_lease",
+        "experiments.record_attempt_failure",
+        "experiments.record_attempt_result",
+        "experiments.start_attempt",
+        "evaluation.record_evaluation_scores",
+        "runtime.acquire_lease",
+        "runtime.register_service_instance",
+        "runtime.release_lease",
+        "runtime.renew_lease"
+      ],
+      "note": "These functions declare no audit table and write none. Job and lease state changes are already fully reconstructible from experiments.job_events and the monotonic runtime.leases fence token, so a parallel audit row would duplicate an existing history rather than record a new fact."
+    }
+  },
+  "contract_sha256": "69ed3783fa86659ff7b4f8a6ed1ae7a85b92735100665b222936fbc0fa874929",
   "counts": {
-    "acl_function_records": 340,
-    "acl_objects": 80,
+    "acl_function_records": 370,
+    "acl_objects": 83,
     "acl_principals": 10,
-    "acl_records": 800,
+    "acl_records": 830,
     "acl_schema_records": 80,
     "acl_table_records": 380,
-    "api_functions": 16,
+    "api_functions": 19,
     "append_only_tables": 23,
-    "d2_acl_objects": 78,
-    "d2_acl_records": 780,
-    "functions": 34,
-    "immutable_columns": 286,
+    "d2_acl_objects": 81,
+    "d2_acl_records": 810,
+    "functions": 37,
+    "immutable_columns": 287,
     "no_delete_tables": 37,
     "protected_tables": 37,
     "state_machines": 16,
@@ -13840,10 +14388,10 @@
   "d2_physical_acl": {
     "applies_at": "migration 0009",
     "counts": {
-      "functions": 34,
-      "objects": 78,
+      "functions": 37,
+      "objects": 81,
       "principals": 10,
-      "records": 780,
+      "records": 810,
       "schemas": 7,
       "tables": 37
     },
@@ -13891,7 +14439,10 @@
         "dbv2_catalog.enforce_backup_set_immutability",
         "dbv2_catalog.enforce_backup_set_shape",
         "dbv2_catalog.enforce_release_state",
-        "dbv2_catalog.get_or_verify_artifact",
+        "dbv2_catalog.get_or_verify_artifact_location",
+        "dbv2_catalog.get_or_verify_external_artifact",
+        "dbv2_catalog.get_or_verify_inline_artifact",
+        "dbv2_catalog.record_artifact_verification",
         "dbv2_catalog.register_backup_set",
         "dbv2_evaluation.enforce_evaluation_run_state",
         "dbv2_evaluation.record_evaluation_scores",
@@ -15354,7 +15905,7 @@
       },
       {
         "grant_option": false,
-        "object": "dbv2_catalog.get_or_verify_artifact",
+        "object": "dbv2_catalog.get_or_verify_artifact_location",
         "object_type": "function",
         "principal": "PUBLIC",
         "privileges": {
@@ -15371,7 +15922,7 @@
       },
       {
         "grant_option": false,
-        "object": "dbv2_catalog.get_or_verify_artifact",
+        "object": "dbv2_catalog.get_or_verify_artifact_location",
         "object_type": "function",
         "principal": "minos_enqueue",
         "privileges": {
@@ -15388,7 +15939,7 @@
       },
       {
         "grant_option": false,
-        "object": "dbv2_catalog.get_or_verify_artifact",
+        "object": "dbv2_catalog.get_or_verify_artifact_location",
         "object_type": "function",
         "principal": "minos_evaluator",
         "privileges": {
@@ -15405,7 +15956,7 @@
       },
       {
         "grant_option": false,
-        "object": "dbv2_catalog.get_or_verify_artifact",
+        "object": "dbv2_catalog.get_or_verify_artifact_location",
         "object_type": "function",
         "principal": "minos_live",
         "privileges": {
@@ -15422,7 +15973,7 @@
       },
       {
         "grant_option": false,
-        "object": "dbv2_catalog.get_or_verify_artifact",
+        "object": "dbv2_catalog.get_or_verify_artifact_location",
         "object_type": "function",
         "principal": "minos_migrate",
         "privileges": {
@@ -15439,7 +15990,7 @@
       },
       {
         "grant_option": false,
-        "object": "dbv2_catalog.get_or_verify_artifact",
+        "object": "dbv2_catalog.get_or_verify_artifact_location",
         "object_type": "function",
         "principal": "minos_owner",
         "privileges": {
@@ -15456,7 +16007,7 @@
       },
       {
         "grant_option": false,
-        "object": "dbv2_catalog.get_or_verify_artifact",
+        "object": "dbv2_catalog.get_or_verify_artifact_location",
         "object_type": "function",
         "principal": "minos_planner",
         "privileges": {
@@ -15473,7 +16024,7 @@
       },
       {
         "grant_option": false,
-        "object": "dbv2_catalog.get_or_verify_artifact",
+        "object": "dbv2_catalog.get_or_verify_artifact_location",
         "object_type": "function",
         "principal": "minos_runner",
         "privileges": {
@@ -15490,7 +16041,7 @@
       },
       {
         "grant_option": false,
-        "object": "dbv2_catalog.get_or_verify_artifact",
+        "object": "dbv2_catalog.get_or_verify_artifact_location",
         "object_type": "function",
         "principal": "minos_trainer",
         "privileges": {
@@ -15507,12 +16058,522 @@
       },
       {
         "grant_option": false,
-        "object": "dbv2_catalog.get_or_verify_artifact",
+        "object": "dbv2_catalog.get_or_verify_artifact_location",
         "object_type": "function",
         "principal": "minos_verifier",
         "privileges": {
           "DELETE": false,
           "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.get_or_verify_external_artifact",
+        "object_type": "function",
+        "principal": "PUBLIC",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.get_or_verify_external_artifact",
+        "object_type": "function",
+        "principal": "minos_enqueue",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.get_or_verify_external_artifact",
+        "object_type": "function",
+        "principal": "minos_evaluator",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.get_or_verify_external_artifact",
+        "object_type": "function",
+        "principal": "minos_live",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.get_or_verify_external_artifact",
+        "object_type": "function",
+        "principal": "minos_migrate",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.get_or_verify_external_artifact",
+        "object_type": "function",
+        "principal": "minos_owner",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.get_or_verify_external_artifact",
+        "object_type": "function",
+        "principal": "minos_planner",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.get_or_verify_external_artifact",
+        "object_type": "function",
+        "principal": "minos_runner",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.get_or_verify_external_artifact",
+        "object_type": "function",
+        "principal": "minos_trainer",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.get_or_verify_external_artifact",
+        "object_type": "function",
+        "principal": "minos_verifier",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.get_or_verify_inline_artifact",
+        "object_type": "function",
+        "principal": "PUBLIC",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.get_or_verify_inline_artifact",
+        "object_type": "function",
+        "principal": "minos_enqueue",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.get_or_verify_inline_artifact",
+        "object_type": "function",
+        "principal": "minos_evaluator",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.get_or_verify_inline_artifact",
+        "object_type": "function",
+        "principal": "minos_live",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.get_or_verify_inline_artifact",
+        "object_type": "function",
+        "principal": "minos_migrate",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.get_or_verify_inline_artifact",
+        "object_type": "function",
+        "principal": "minos_owner",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.get_or_verify_inline_artifact",
+        "object_type": "function",
+        "principal": "minos_planner",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.get_or_verify_inline_artifact",
+        "object_type": "function",
+        "principal": "minos_runner",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.get_or_verify_inline_artifact",
+        "object_type": "function",
+        "principal": "minos_trainer",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.get_or_verify_inline_artifact",
+        "object_type": "function",
+        "principal": "minos_verifier",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.record_artifact_verification",
+        "object_type": "function",
+        "principal": "PUBLIC",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.record_artifact_verification",
+        "object_type": "function",
+        "principal": "minos_enqueue",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.record_artifact_verification",
+        "object_type": "function",
+        "principal": "minos_evaluator",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.record_artifact_verification",
+        "object_type": "function",
+        "principal": "minos_live",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.record_artifact_verification",
+        "object_type": "function",
+        "principal": "minos_migrate",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": false,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.record_artifact_verification",
+        "object_type": "function",
+        "principal": "minos_owner",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.record_artifact_verification",
+        "object_type": "function",
+        "principal": "minos_planner",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.record_artifact_verification",
+        "object_type": "function",
+        "principal": "minos_runner",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.record_artifact_verification",
+        "object_type": "function",
+        "principal": "minos_trainer",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
+          "INSERT": false,
+          "REFERENCES": false,
+          "SELECT": false,
+          "TRIGGER": false,
+          "TRUNCATE": false,
+          "UPDATE": false,
+          "USAGE": false
+        }
+      },
+      {
+        "grant_option": false,
+        "object": "dbv2_catalog.record_artifact_verification",
+        "object_type": "function",
+        "principal": "minos_verifier",
+        "privileges": {
+          "DELETE": false,
+          "EXECUTE": true,
           "INSERT": false,
           "REFERENCES": false,
           "SELECT": false,
@@ -27537,7 +28598,7 @@
       "kind": "trigger_function",
       "language": "plpgsql",
       "name": "catalog.enforce_backup_set_shape",
-      "purpose": "The cross-table completeness gate. A CHECK constraint cannot reference another table, so 'complete requires three verified, active, present recovery artifacts whose bytes recompute' is enforced here, as a DEFERRABLE INITIALLY IMMEDIATE CONSTRAINT trigger, in the SAME transaction as the insert.",
+      "purpose": "The cross-table completeness gate. A CHECK cannot reference another table, so 'complete requires three verified, active recovery artifacts whose bytes recompute' is enforced here, as a DEFERRABLE INITIALLY IMMEDIATE CONSTRAINT trigger, in the SAME transaction as the insert. The two INLINE manifests are proved by their own stored bytes; only the EXTERNAL database dump needs an artifact_locations row in state 'present'.",
       "resulting_states": [
         "the row, or an error that aborts the transaction"
       ],
@@ -27562,17 +28623,25 @@
         "23514 referenced artifact is not verification_state = 'verified'",
         "23514 referenced artifact is not lifecycle_state = 'active'",
         "23514 referenced artifact is not backup_scope = 'recovery'",
-        "23514 referenced artifact has no artifact_locations row in state 'present'",
+        "23514 an artifact is not stored in its declared storage mode",
+        "23514 inline manifest bytes do not recompute to their raw digest",
+        "23514 inline manifest byte size does not match the stored payload",
         "23514 snapshot manifest bytes do not recompute to artifact_snapshot_sha256",
+        "23514 the snapshot was not taken with the frozen predicate",
         "23514 snapshot entry count <> artifact_count",
         "23514 snapshot entry total size <> artifact_total_bytes",
         "23514 a snapshot entry does not resolve to exactly one active operational artifact",
         "23514 a recovery artifact appears in the snapshot",
         "23514 recovery manifest bytes do not recompute to recovery_manifest_sha256",
         "23514 an R1 field does not equal its mapped column",
+        "23514 the external database dump has no artifact_locations row in state 'present'",
         "23505 conflicting recovery_set_id, backup_key or recovery_manifest_sha256",
         "23514 completeness changed"
       ],
+      "storage_rules": {
+        "external": "database backup: present location required, verified, digest and size registered",
+        "inline": "recovery manifest and snapshot manifest: bytes verified in place, no location needed"
+      },
       "tables_mutated": [],
       "tables_read": [
         "catalog.backup_sets",
@@ -27631,9 +28700,9 @@
       "accepted_source_states": [
         "absent",
         "present and identical",
-        "present and different"
+        "present and conflicting"
       ],
-      "concurrency": "the unique index on content_sha256 serializes concurrent first publications",
+      "concurrency": "The owning artifact row is locked before the probe, so two concurrent binds of the same artifact serialize.",
       "configured_search_path": "pg_catalog",
       "cutover_note": "A plpgsql body is stored as TEXT and re-parsed at execution, so a schema-qualified reference does NOT follow a schema rename. 0009 creates this function in its dbv2_* schema with a body qualified against dbv2_* names; the cutover transaction, in the same transaction as the schema renames, issues CREATE OR REPLACE FUNCTION with the body qualified against the CANONICAL names, and the rollback transaction restores the dbv2_*-qualified body. Neither direction ever leaves a body naming a retired schema.",
       "cutover_recreation_required": true,
@@ -27644,13 +28713,14 @@
         "minos_trainer",
         "minos_evaluator"
       ],
-      "idempotency": "fully idempotent for identical metadata; conflicting metadata fails closed",
+      "idempotency": "Exact replay returns the same row and writes no second audit event; a conflicting backend, key or artifact fails closed.",
       "kind": "api_function",
       "language": "plpgsql",
-      "name": "catalog.get_or_verify_artifact",
-      "purpose": "Get-or-verify: returns the id of the artifact with this content digest, inserting it if absent. Never overwrites: an existing row whose size, media type, kind or backup_scope differs fails closed.",
+      "name": "catalog.get_or_verify_artifact_location",
+      "purpose": "Binds an artifact to a backend and a RELATIVE object key through the complete identity triple. Rejects any absolute path, any scheme-qualified URI such as file://, any '..' component, any empty component and any trailing separator - a key that could only be produced by resolving a symlink or escaping the backend root is not an identity this database will store.",
       "resulting_states": [
-        "the artifact id, or an error"
+        "the location id",
+        "a typed conflict"
       ],
       "return_type": "uuid",
       "revoked_roles": [
@@ -27660,12 +28730,69 @@
         "minos_verifier",
         "minos_live"
       ],
-      "rows_locked": "the existing catalog.artifacts row, FOR UPDATE, when one is found",
+      "rows_locked": "the owning catalog.artifacts row, FOR UPDATE",
       "security_mode": "DEFINER",
-      "signature": "catalog.get_or_verify_artifact(p_content_sha256 char(64), p_size_bytes bigint, p_media_type text, p_artifact_kind text, p_backup_scope text, p_provenance jsonb)",
+      "signature": "catalog.get_or_verify_artifact_location(p_artifact_id uuid, p_backend_key text, p_object_key text, p_is_primary boolean)",
       "sqlstates": [
-        "23505 digest exists with different immutable metadata",
-        "22023 backup_scope not in ('operational','recovery')"
+        "22023 object_key is absolute, scheme-qualified, contains '..', an empty component or a trailing separator",
+        "23503 unknown artifact or unknown backend key",
+        "23505 the backend/key pair belongs to a different artifact",
+        "23505 the artifact already has a different key on this backend"
+      ],
+      "tables_mutated": [
+        "catalog.artifact_locations",
+        "audit.events"
+      ],
+      "tables_read": [
+        "catalog.artifacts",
+        "catalog.storage_backends",
+        "catalog.artifact_locations"
+      ],
+      "volatility": "VOLATILE"
+    },
+    {
+      "accepted_source_states": [
+        "absent",
+        "present with identical metadata",
+        "present with different metadata"
+      ],
+      "concurrency": "uq_artifacts_content_sha256 serializes concurrent first registrations",
+      "configured_search_path": "pg_catalog",
+      "cutover_note": "A plpgsql body is stored as TEXT and re-parsed at execution, so a schema-qualified reference does NOT follow a schema rename. 0009 creates this function in its dbv2_* schema with a body qualified against dbv2_* names; the cutover transaction, in the same transaction as the schema renames, issues CREATE OR REPLACE FUNCTION with the body qualified against the CANONICAL names, and the rollback transaction restores the dbv2_*-qualified body. Neither direction ever leaves a body naming a retired schema.",
+      "cutover_recreation_required": true,
+      "downgrade_behavior": "DROP FUNCTION with its triggers; downgrading 0009 removes it entirely and restores no V1 equivalent, because V1 has none.",
+      "executable_roles": [
+        "minos_planner",
+        "minos_runner",
+        "minos_trainer",
+        "minos_evaluator"
+      ],
+      "idempotency": "Exact replay returns the same row and writes no second audit event; any differing immutable value fails closed.",
+      "kind": "api_function",
+      "language": "plpgsql",
+      "name": "catalog.get_or_verify_external_artifact",
+      "purpose": "Registers the immutable metadata of an artifact whose bytes live outside the database. Registration confers NO verification: the row is born 'unverified' and reaches 'verified' only through catalog.record_artifact_verification(). Replaces the D2 catalog.get_or_verify_artifact(), which had no inline counterpart.",
+      "resulting_states": [
+        "the artifact id, verification_state = 'unverified'",
+        "a typed conflict"
+      ],
+      "return_type": "uuid",
+      "revoked_roles": [
+        "PUBLIC",
+        "minos_migrate",
+        "minos_enqueue",
+        "minos_verifier",
+        "minos_live"
+      ],
+      "rows_locked": "the existing catalog.artifacts row, FOR UPDATE, when the digest already exists",
+      "security_mode": "DEFINER",
+      "signature": "catalog.get_or_verify_external_artifact(p_content_sha256 char(64), p_size_bytes bigint, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_provenance jsonb)",
+      "sqlstates": [
+        "22023 content_sha256 is not 64 lowercase hex characters",
+        "22023 size_bytes is negative",
+        "22023 backup_scope not in ('operational','recovery')",
+        "42501 a runtime role attempted a recovery-scope artifact",
+        "23505 the digest exists with different immutable metadata"
       ],
       "tables_mutated": [
         "catalog.artifacts",
@@ -27673,6 +28800,114 @@
       ],
       "tables_read": [
         "catalog.artifacts"
+      ],
+      "volatility": "VOLATILE"
+    },
+    {
+      "accepted_source_states": [
+        "absent",
+        "present with identical metadata",
+        "present with different metadata"
+      ],
+      "concurrency": "uq_artifacts_content_sha256 serializes concurrent first publications",
+      "configured_search_path": "pg_catalog",
+      "cutover_note": "A plpgsql body is stored as TEXT and re-parsed at execution, so a schema-qualified reference does NOT follow a schema rename. 0009 creates this function in its dbv2_* schema with a body qualified against dbv2_* names; the cutover transaction, in the same transaction as the schema renames, issues CREATE OR REPLACE FUNCTION with the body qualified against the CANONICAL names, and the rollback transaction restores the dbv2_*-qualified body. Neither direction ever leaves a body naming a retired schema.",
+      "cutover_recreation_required": true,
+      "downgrade_behavior": "DROP FUNCTION with its triggers; downgrading 0009 removes it entirely and restores no V1 equivalent, because V1 has none.",
+      "executable_roles": [
+        "minos_planner",
+        "minos_runner",
+        "minos_trainer",
+        "minos_evaluator"
+      ],
+      "idempotency": "Exact replay - the same bytes and the same immutable metadata - returns the same row and writes NO second audit event. Any differing immutable value fails closed.",
+      "kind": "api_function",
+      "language": "plpgsql",
+      "name": "catalog.get_or_verify_inline_artifact",
+      "purpose": "The legal path for an inline artifact. The caller supplies the EXACT payload bytes and the immutable descriptive metadata; PostgreSQL derives content_sha256 and size_bytes itself, so no caller can misdeclare either. The row is created already verified, because the database possesses and hashes the authoritative bytes.",
+      "resulting_states": [
+        "the artifact id, verification_state = 'verified'",
+        "a typed conflict"
+      ],
+      "return_type": "uuid",
+      "revoked_roles": [
+        "PUBLIC",
+        "minos_migrate",
+        "minos_enqueue",
+        "minos_verifier",
+        "minos_live"
+      ],
+      "rows_locked": "the existing catalog.artifacts row, FOR UPDATE, when the digest already exists",
+      "security_mode": "DEFINER",
+      "signature": "catalog.get_or_verify_inline_artifact(p_payload bytea, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_provenance jsonb)",
+      "sqlstates": [
+        "22023 payload is null or exceeds the 65536-byte inline bound",
+        "22023 backup_scope not in ('operational','recovery')",
+        "42501 a runtime role attempted a recovery-scope artifact",
+        "23505 the digest exists with different immutable metadata"
+      ],
+      "tables_mutated": [
+        "catalog.artifacts",
+        "audit.events"
+      ],
+      "tables_read": [
+        "catalog.artifacts"
+      ],
+      "volatility": "VOLATILE"
+    },
+    {
+      "accepted_source_states": [
+        "unverified",
+        "verified",
+        "missing",
+        "corrupt"
+      ],
+      "concurrency": "both rows are locked before any state is read or written",
+      "configured_search_path": "pg_catalog",
+      "cutover_note": "A plpgsql body is stored as TEXT and re-parsed at execution, so a schema-qualified reference does NOT follow a schema rename. 0009 creates this function in its dbv2_* schema with a body qualified against dbv2_* names; the cutover transaction, in the same transaction as the schema renames, issues CREATE OR REPLACE FUNCTION with the body qualified against the CANONICAL names, and the rollback transaction restores the dbv2_*-qualified body. Neither direction ever leaves a body naming a retired schema.",
+      "cutover_recreation_required": true,
+      "downgrade_behavior": "DROP FUNCTION with its triggers; downgrading 0009 removes it entirely and restores no V1 equivalent, because V1 has none.",
+      "executable_roles": [
+        "minos_verifier",
+        "minos_planner",
+        "minos_runner",
+        "minos_trainer",
+        "minos_evaluator"
+      ],
+      "idempotency": "Re-verifying an already-verified artifact with the same observed identity only moves last_verified_at forward; it creates no second audit event and no duplicate state.",
+      "kind": "api_function",
+      "language": "plpgsql",
+      "name": "catalog.record_artifact_verification",
+      "purpose": "The only path to verification_state = 'verified'. The observed digest and byte size must equal the registered identity; a mismatch moves the artifact only along the declared transitions to 'corrupt', and an absent payload only to 'missing'.",
+      "resulting_states": [
+        "'verified'",
+        "'corrupt'",
+        "'missing'"
+      ],
+      "return_type": "text",
+      "revoked_roles": [
+        "PUBLIC",
+        "minos_migrate",
+        "minos_enqueue",
+        "minos_live"
+      ],
+      "rows_locked": "the catalog.artifacts row and the named catalog.artifact_locations row, FOR UPDATE",
+      "security_mode": "DEFINER",
+      "signature": "catalog.record_artifact_verification(p_artifact_id uuid, p_observed_sha256 char(64), p_observed_size_bytes bigint, p_location_id uuid)",
+      "sqlstates": [
+        "23503 unknown artifact, or a location that does not belong to it",
+        "22023 an external artifact was verified without naming a location",
+        "22023 more than one candidate location and none named",
+        "23514 a forbidden verification transition"
+      ],
+      "tables_mutated": [
+        "catalog.artifacts",
+        "catalog.artifact_locations",
+        "audit.events"
+      ],
+      "tables_read": [
+        "catalog.artifacts",
+        "catalog.artifact_locations"
       ],
       "volatility": "VOLATILE"
     },
@@ -28110,6 +29345,7 @@
       "accepted_source_states": [
         "a plan whose upstream identities all resolve"
       ],
+      "audit_note": "The D2 contract declared an audit.events write that the generated body never made. The claim is withdrawn rather than implemented: a plan's identity hash already makes its creation reconstructible, and persist_experiment_plan is get-or-return, so an event would fire on a no-op read.",
       "concurrency": "serialized by the plan identity unique constraint",
       "configured_search_path": "pg_catalog",
       "cutover_note": "A plpgsql body is stored as TEXT and re-parsed at execution, so a schema-qualified reference does NOT follow a schema rename. 0009 creates this function in its dbv2_* schema with a body qualified against dbv2_* names; the cutover transaction, in the same transaction as the schema renames, issues CREATE OR REPLACE FUNCTION with the body qualified against the CANONICAL names, and the rollback transaction restores the dbv2_*-qualified body. Neither direction ever leaves a body naming a retired schema.",
@@ -28147,8 +29383,7 @@
       "tables_mutated": [
         "experiments.experiment_plans",
         "experiments.experiment_plan_members",
-        "experiments.experiment_plan_configs",
-        "audit.events"
+        "experiments.experiment_plan_configs"
       ],
       "tables_read": [
         "profiling.profile_snapshots",
@@ -28312,6 +29547,7 @@
       "accepted_source_states": [
         "an open activation, or none"
       ],
+      "audit_note": "The D2 contract declared an audit.admin_operations write that the generated body never made, and audit.admin_operations is constrained to migration, restore, restore_drill, cutover and rollback - an activation is none of those. The claim is withdrawn; activation history is already append-only in its own table.",
       "concurrency": "the open-activation row lock serializes activation changes",
       "configured_search_path": "pg_catalog",
       "cutover_note": "A plpgsql body is stored as TEXT and re-parsed at execution, so a schema-qualified reference does NOT follow a schema rename. 0009 creates this function in its dbv2_* schema with a body qualified against dbv2_* names; the cutover transaction, in the same transaction as the schema renames, issues CREATE OR REPLACE FUNCTION with the body qualified against the CANONICAL names, and the rollback transaction restores the dbv2_*-qualified body. Neither direction ever leaves a body naming a retired schema.",
@@ -28346,8 +29582,7 @@
         "23503 unknown model version or release"
       ],
       "tables_mutated": [
-        "models.model_activations",
-        "audit.admin_operations"
+        "models.model_activations"
       ],
       "tables_read": [
         "models.model_versions",
@@ -28816,6 +30051,7 @@
       "accepted_source_states": [
         "an open selection, or none"
       ],
+      "audit_note": "The D2 contract declared an audit.admin_operations write that the generated body never made, and audit.admin_operations is constrained to migration, restore, restore_drill, cutover and rollback - an activation is none of those. The claim is withdrawn; activation history is already append-only in its own table.",
       "concurrency": "the open-selection row lock serializes selection changes",
       "configured_search_path": "pg_catalog",
       "cutover_note": "A plpgsql body is stored as TEXT and re-parsed at execution, so a schema-qualified reference does NOT follow a schema rename. 0009 creates this function in its dbv2_* schema with a body qualified against dbv2_* names; the cutover transaction, in the same transaction as the schema renames, issues CREATE OR REPLACE FUNCTION with the body qualified against the CANONICAL names, and the rollback transaction restores the dbv2_*-qualified body. Neither direction ever leaves a body naming a retired schema.",
@@ -28850,8 +30086,7 @@
         "23503 unknown release, version or config"
       ],
       "tables_mutated": [
-        "runtime.active_selections",
-        "audit.admin_operations"
+        "runtime.active_selections"
       ],
       "tables_read": [
         "catalog.releases",
@@ -28922,6 +30157,7 @@
       "wal_start_lsn",
       "wal_end_lsn",
       "artifact_snapshot_manifest_artifact_id",
+      "artifact_snapshot_manifest_sha256",
       "artifact_snapshot_sha256",
       "artifact_snapshot_manifest_media_type",
       "artifact_count",
@@ -29463,7 +30699,7 @@
     }
   },
   "schema_version": "minos-db-v2-database-api-v1",
-  "stage": "DB-V2 D2",
+  "stage": "DB-V2 D2.1",
   "state_machines": {
     "active_selection_window": {
       "additional_rule": "effective_to must be >= effective_from.",

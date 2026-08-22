@@ -461,11 +461,13 @@ def _recovery_manifest(
     backup_digest: str,
     backup_size: int,
     snapshot_digest: str | None,
+    snapshot_raw: str | None,
     artifact_count: int | None,
     artifact_total: int | None,
 ) -> dict[str, Any]:
     return {
         "artifact_count": artifact_count,
+        "artifact_snapshot_manifest_sha256": snapshot_raw,
         "artifact_snapshot_sha256": snapshot_digest,
         "artifact_total_bytes": artifact_total,
         "artifact_verification_tool_version": "verify-1",
@@ -506,7 +508,7 @@ def _insert_backup_set(
         scope=backup_scope_override or "recovery",
         kind="database_backup",
     )
-    snapshot_id = snapshot_digest = None
+    snapshot_id = snapshot_digest = snapshot_raw = None
     artifact_count = artifact_total = None
     if complete:
         entries = snapshot_entries if snapshot_entries is not None else []
@@ -524,10 +526,11 @@ def _insert_backup_set(
         }
         payload = _canonical(manifest)
         snapshot_digest = hashlib.sha256(SNAPSHOT_DOMAIN + payload).hexdigest()
-        snapshot_id, _, _ = _artifact(
+        # the artifact carries the RAW digest of its own bytes; the domain-separated value is the
+        # snapshot's scientific identity and lives in its own column
+        snapshot_id, snapshot_raw, _ = _artifact(
             connection,
             payload=payload,
-            digest=snapshot_digest,
             media_type=SNAPSHOT_MEDIA,
             scope=snapshot_scope,
             kind="artifact_snapshot",
@@ -537,6 +540,7 @@ def _insert_backup_set(
         backup_digest=backup_digest,
         backup_size=backup_size,
         snapshot_digest=snapshot_digest,
+        snapshot_raw=snapshot_raw,
         artifact_count=artifact_count,
         artifact_total=artifact_total,
     )
@@ -555,11 +559,13 @@ def _insert_backup_set(
         "recovery_manifest_artifact_id, recovery_manifest_sha256, database_backup_kind, "
         "database_backup_artifact_id, database_backup_sha256, database_backup_size_bytes, "
         "wal_start_lsn, wal_end_lsn, artifact_snapshot_manifest_artifact_id, "
-        "artifact_snapshot_sha256, artifact_snapshot_manifest_media_type, artifact_count, "
+        "artifact_snapshot_manifest_sha256, artifact_snapshot_sha256, "
+        "artifact_snapshot_manifest_media_type, artifact_count, "
         "artifact_total_bytes, postgresql_version, backup_tool_version, "
         "artifact_verification_tool_version, completeness, created_at) "
         "VALUES (:bk, :rs, :rev, :qs, :qe, :sv, :db, :mid, :md, 'pg_dump', :bid, :bd, :bs, "
-        "        :ws, :we, :sid, :sd, :sm, :ac, :at, '16.2', 'pg_dump-16.2', 'verify-1', :comp, "
+        "        :ws, :we, :sid, :sraw, :sd, :sm, :ac, :at, '16.2', 'pg_dump-16.2', "
+        "        'verify-1', :comp, "
         "        :created)",
         bk=f"backup-{recovery_set_id}",
         rs=recovery_set_id,
@@ -576,6 +582,7 @@ def _insert_backup_set(
         ws=r1["wal_start_lsn"],
         we=r1["wal_end_lsn"],
         sid=snapshot_id,
+        sraw=snapshot_raw,
         sd=snapshot_digest,
         sm=SNAPSHOT_MEDIA if complete else None,
         ac=artifact_count if artifact_count_override is None else artifact_count_override,
@@ -628,10 +635,9 @@ def _unverified_backup_set(connection: Connection, entries: list[dict[str, Any]]
     }
     payload = _canonical(manifest)
     snapshot_digest = hashlib.sha256(SNAPSHOT_DOMAIN + payload).hexdigest()
-    snapshot_id, _, _ = _artifact(
+    snapshot_id, snapshot_raw, _ = _artifact(
         connection,
         payload=payload,
-        digest=snapshot_digest,
         media_type=SNAPSHOT_MEDIA,
         scope="recovery",
         kind="artifact_snapshot",
@@ -641,6 +647,7 @@ def _unverified_backup_set(connection: Connection, entries: list[dict[str, Any]]
         backup_digest=backup_digest,
         backup_size=backup_size,
         snapshot_digest=snapshot_digest,
+        snapshot_raw=snapshot_raw,
         artifact_count=len(entries),
         artifact_total=manifest["artifact_total_bytes"],
     )
@@ -659,12 +666,13 @@ def _unverified_backup_set(connection: Connection, entries: list[dict[str, Any]]
         "recovery_manifest_artifact_id, recovery_manifest_sha256, database_backup_kind, "
         "database_backup_artifact_id, database_backup_sha256, database_backup_size_bytes, "
         "wal_start_lsn, wal_end_lsn, artifact_snapshot_manifest_artifact_id, "
-        "artifact_snapshot_sha256, artifact_snapshot_manifest_media_type, artifact_count, "
+        "artifact_snapshot_manifest_sha256, artifact_snapshot_sha256, "
+        "artifact_snapshot_manifest_media_type, artifact_count, "
         "artifact_total_bytes, postgresql_version, backup_tool_version, "
         "artifact_verification_tool_version, completeness, created_at) "
         "VALUES (:bk, :rs, :rev, :qs, :qe, :sv, :db, :mid, :md, 'pg_dump', :bid, :bd, :bs, "
-        "        :ws, :we, :sid, :sd, :sm, :ac, :at, '16.2', 'pg_dump-16.2', 'verify-1', "
-        "        'complete', :created)",
+        "        :ws, :we, :sid, :sraw, :sd, :sm, :ac, :at, '16.2', 'pg_dump-16.2', "
+        "        'verify-1', 'complete', :created)",
         bk=f"backup-{recovery_set_id}",
         rs=recovery_set_id,
         rev=contract.REVISION,
@@ -680,6 +688,7 @@ def _unverified_backup_set(connection: Connection, entries: list[dict[str, Any]]
         ws=r1["wal_start_lsn"],
         we=r1["wal_end_lsn"],
         sid=snapshot_id,
+        sraw=snapshot_raw,
         sd=snapshot_digest,
         sm=SNAPSHOT_MEDIA,
         ac=len(entries),

@@ -869,7 +869,11 @@ def test_the_contradictory_rollback_statement_is_recorded_as_withdrawn() -> None
     assert "Point the application back" in statements
     assert "one recovery point" in statements
     assert "covers every active artifact" in statements
-    assert len(withdrawn) == 7
+    assert len(withdrawn) >= 7
+    assert "artifact_snapshot_sha256 to" in statements
+    assert "artifact_locations row in\nstate 'present'".replace("\n", " ") in " ".join(
+        " ".join(w["statement"].split()) for w in withdrawn
+    )
 
 
 def test_forward_cutover_followed_by_rollback_is_the_identity_permutation() -> None:
@@ -1792,14 +1796,14 @@ def test_the_validator_detects_a_half_populated_shape(tmp_path: Path) -> None:
 
 
 # --- K6: cross-table completeness enforcement ------------------------------------------------ #
-def test_the_completeness_gate_is_a_constraint_trigger_checking_all_fifteen_conditions() -> None:
+def test_the_completeness_gate_is_a_constraint_trigger_checking_every_condition() -> None:
     """6: a CHECK cannot reference another table, so the gate must exist and be exact."""
     api = _api()
     gate = next(f for f in api["functions"] if f["name"] == "catalog.enforce_backup_set_shape")
     assert gate["security_mode"] == "DEFINER"
     assert "catalog.artifacts" in gate["tables_read"]
     assert "catalog.artifact_locations" in gate["tables_read"]
-    assert len(gate["sqlstates"]) == 15
+    assert len(gate["sqlstates"]) == len(audit.GATE_REQUIRED_CHECKS)
     declared = " | ".join(gate["sqlstates"])
     for phrase in audit.GATE_REQUIRED_CHECKS:
         assert phrase in declared, phrase
@@ -1855,7 +1859,7 @@ def test_every_immutable_column_is_covered_by_a_declared_trigger() -> None:
             functions = {t["function"] for t in by_table[ident]}
             assert functions & audit.IMMUTABILITY_FUNCTIONS, ident
             covered += len(immutable)
-    assert covered == api["counts"]["immutable_columns"] == 286
+    assert covered == api["counts"]["immutable_columns"]
 
 
 def test_every_table_refuses_delete() -> None:
@@ -1972,8 +1976,9 @@ def test_the_validator_detects_an_unreachable_declared_state(tmp_path: Path) -> 
 def test_every_function_has_an_exact_signature_and_security_contract() -> None:
     """10: 34 functions, each with a pinned search_path and PUBLIC revoked."""
     functions = _api()["functions"]
-    assert len(functions) == 34
-    assert len({f["name"] for f in functions}) == 34
+    declared = _api()["counts"]["functions"]
+    assert len(functions) == declared
+    assert len({f["name"] for f in functions}) == declared
     for function in functions:
         assert function["signature"].startswith(function["name"] + "("), function["name"]
         assert function["security_mode"] in {"INVOKER", "DEFINER"}
@@ -2051,17 +2056,17 @@ def test_the_acl_matrix_is_complete_and_unambiguous() -> None:
     assert set(acl["objects"]["schemas"]) == schemas
     assert set(acl["objects"]["tables"]) == tables
     assert set(acl["objects"]["functions"]) == functions
+    expected = (len(schemas) + len(tables) + len(functions)) * 10
     pairs = [(r["object_type"], r["object"], r["principal"]) for r in acl["records"]]
-    assert len(pairs) == len(set(pairs)) == 800
+    assert len(pairs) == len(set(pairs)) == expected == api["counts"]["acl_records"]
     assert len(acl["principals"]) == 10
-    assert (len(schemas) + len(tables) + len(functions)) * 10 == 800
 
 
 def test_public_holds_no_application_privilege() -> None:
     """15: every PUBLIC record is empty, and the default grant is revoked."""
     api = _api()
     public = [r for r in api["acl"]["records"] if r["principal"] == "PUBLIC"]
-    assert len(public) == 80
+    assert len(public) == api["counts"]["acl_objects"]
     for record in public:
         assert not any(record["privileges"].values()), record["object"]
         assert record["grant_option"] is False
@@ -2197,17 +2202,19 @@ def test_migration_0009_preflights_roles_and_creates_none() -> None:
 
 
 def test_the_d2_physical_acl_is_scoped_to_new_objects_only() -> None:
-    """D2 B2: 780 records over 78 shadow objects; nothing shared, V1 or database-level."""
+    """D2 B2 and D2.1: the shadow-scoped matrix, derived from the declared object set."""
     api = _api()
     d2 = api["d2_physical_acl"]
+    functions = api["counts"]["functions"]
     assert d2["counts"] == {
-        "functions": 34,
-        "objects": 78,
+        "functions": functions,
+        "objects": 7 + 37 + functions,
         "principals": 10,
-        "records": 780,
+        "records": (7 + 37 + functions) * 10,
         "schemas": 7,
         "tables": 37,
     }
+    assert d2["counts"]["records"] == audit.D2_ACL_RECORDS
     assert api["acl"]["applies_at"] == "after cutover"
     for record in d2["records"]:
         assert record["object"].startswith("dbv2_"), record["object"]

@@ -502,11 +502,20 @@ def _r1_equality_checks(contracts: Contracts) -> str:
 
 
 def _backup_set_gate_body(contracts: Contracts) -> tuple[str, str]:
-    """The cross-table completeness gate: fifteen conditions, in the insert's own transaction."""
+    """The cross-table completeness gate.
+
+    The two manifests are stored INLINE, so their bytes are proved in place: no artifact_locations
+    row is required to show that bytes PostgreSQL is already holding exist. Only the EXTERNAL
+    database dump needs a present location. The composite foreign key binds the RAW manifest
+    digest; the domain-separated snapshot identity is verified here, by recomputation.
+    """
     shadow = contracts.shadow
     predicate = contracts.logical["artifact_snapshot_predicate"]["where"]
     domain = contracts.logical["artifact_snapshot_digest"]["domain"]
     domain_literal = "E" + _lit(domain.replace("\n", "\\n"))
+    verified = _lit("verified")
+    active = _lit("active")
+    recovery = _lit("recovery")
     declare = (
         "    binding record;\n"
         "    art record;\n"
@@ -540,8 +549,8 @@ def _backup_set_gate_body(contracts: Contracts) -> tuple[str, str]:
         "            ('database backup', NEW.database_backup_artifact_id,\n"
         "             NEW.database_backup_sha256, NEW.database_backup_media_type, 'external'),\n"
         "            ('artifact snapshot manifest', NEW.artifact_snapshot_manifest_artifact_id,\n"
-        "             NEW.artifact_snapshot_sha256, NEW.artifact_snapshot_manifest_media_type,\n"
-        "             'inline')\n"
+        "             NEW.artifact_snapshot_manifest_sha256,\n"
+        "             NEW.artifact_snapshot_manifest_media_type, 'inline')\n"
         "        ) AS v(label, artifact_id, digest, media_type, storage)\n"
         "        WHERE v.artifact_id IS NOT NULL\n"
         "    LOOP\n"
@@ -557,30 +566,44 @@ def _backup_set_gate_body(contracts: Contracts) -> tuple[str, str]:
         "            RAISE EXCEPTION '% triple does not bind one artifact', binding.label\n"
         "                USING ERRCODE = 'check_violation';\n"
         "        END IF;\n"
-        "        IF art.verification_state <> 'verified' THEN\n"
-        "            RAISE EXCEPTION '% is not verification_state = ''verified'' (%)',\n"
+        f"        IF art.verification_state <> {verified} THEN\n"
+        "            RAISE EXCEPTION '% is not verification_state = verified (%)',\n"
         "                binding.label, art.verification_state\n"
         "                USING ERRCODE = 'check_violation';\n"
         "        END IF;\n"
-        "        IF art.lifecycle_state <> 'active' THEN\n"
-        "            RAISE EXCEPTION '% is not lifecycle_state = ''active'' (%)',\n"
+        f"        IF art.lifecycle_state <> {active} THEN\n"
+        "            RAISE EXCEPTION '% is not lifecycle_state = active (%)',\n"
         "                binding.label, art.lifecycle_state\n"
         "                USING ERRCODE = 'check_violation';\n"
         "        END IF;\n"
-        "        IF art.backup_scope <> 'recovery' THEN\n"
-        "            RAISE EXCEPTION '% is not backup_scope = ''recovery'' (%)',\n"
+        f"        IF art.backup_scope <> {recovery} THEN\n"
+        "            RAISE EXCEPTION '% is not backup_scope = recovery (%)',\n"
         "                binding.label, art.backup_scope USING ERRCODE = 'check_violation';\n"
         "        END IF;\n"
         "        IF art.storage_mode <> binding.storage THEN\n"
-        "            RAISE EXCEPTION '% must be stored %, not %',\n"
-        "                binding.label, binding.storage, art.storage_mode\n"
+        "            RAISE EXCEPTION '% is not stored in its declared storage mode: % (expected "
+        "%)', binding.label, art.storage_mode, binding.storage\n"
         "                USING ERRCODE = 'check_violation';\n"
         "        END IF;\n"
-        f"        PERFORM 1 FROM {shadow['catalog']}.artifact_locations\n"
-        "            WHERE artifact_id = art.id AND location_state = 'present' LIMIT 1;\n"
-        "        IF NOT FOUND THEN\n"
-        "            RAISE EXCEPTION '% has no artifact_locations row in state ''present''',\n"
-        "                binding.label USING ERRCODE = 'check_violation';\n"
+        "        IF binding.storage = 'inline' THEN\n"
+        "            -- the authoritative bytes ARE the row: prove them in place, and demand no\n"
+        "            -- location evidence for bytes this database is already holding and hashing\n"
+        "            IF encode(sha256(art.inline_payload), 'hex') <> binding.digest THEN\n"
+        "                RAISE EXCEPTION 'inline manifest bytes do not recompute to their raw "
+        "digest (%)', binding.label USING ERRCODE = 'check_violation';\n"
+        "            END IF;\n"
+        "            IF octet_length(art.inline_payload) <> art.size_bytes THEN\n"
+        "                RAISE EXCEPTION 'inline manifest byte size does not match the stored "
+        "payload (%)', binding.label USING ERRCODE = 'check_violation';\n"
+        "            END IF;\n"
+        "        ELSE\n"
+        f"            PERFORM 1 FROM {shadow['catalog']}.artifact_locations\n"
+        "                WHERE artifact_id = art.id AND location_state = 'present' LIMIT 1;\n"
+        "            IF NOT FOUND THEN\n"
+        "                RAISE EXCEPTION 'the external database dump has no artifact_locations row "
+        "in state present'\n"
+        "                    USING ERRCODE = 'check_violation';\n"
+        "            END IF;\n"
         "        END IF;\n"
         "    END LOOP;\n"
         f"    SELECT * INTO art FROM {shadow['catalog']}.artifacts\n"
@@ -608,7 +631,8 @@ def _backup_set_gate_body(contracts: Contracts) -> tuple[str, str]:
         "            INTO entry_count, entry_bytes\n"
         "            FROM jsonb_array_elements(snap -> 'entries') AS e;\n"
         "        IF entry_count IS DISTINCT FROM NEW.artifact_count\n"
-        "           OR (snap ->> 'artifact_count')::bigint IS DISTINCT FROM NEW.artifact_count THEN\n"
+        "           OR (snap ->> 'artifact_count')::bigint IS DISTINCT FROM NEW.artifact_count\n"
+        "        THEN\n"
         "            RAISE EXCEPTION 'snapshot entry count <> artifact_count (% vs %)',\n"
         "                entry_count, NEW.artifact_count USING ERRCODE = 'check_violation';\n"
         "        END IF;\n"
@@ -644,12 +668,270 @@ def _backup_set_gate_body(contracts: Contracts) -> tuple[str, str]:
     return declare, body
 
 
+def _audit_event(shadow: dict[str, str], action: str, table: str, evidence: str) -> str:
+    """One append-only audit row for one ACTUAL state change, attributed to the LOGIN identity.
+
+    session_user, not current_user: every audited function is SECURITY DEFINER, so current_user is
+    always the definer principal and every row would look identical.
+    """
+    return (
+        f"    INSERT INTO {shadow['audit']}.events\n"
+        "        (actor_role, action, object_schema, object_table, object_id, payload_hash)\n"
+        f"    VALUES (session_user, {_lit(action)}, {_lit(shadow['catalog'])}, {_lit(table)},\n"
+        f"            audited_id, encode(sha256(convert_to({evidence}, 'UTF8')), 'hex'));\n"
+    )
+
+
+#: the frozen recovery-scope boundary: a runtime login may publish operational artifacts only.
+def _recovery_scope_guard(runtime_roles: tuple[str, ...]) -> str:
+    roles = ", ".join(_lit(role) for role in runtime_roles)
+    return (
+        "    IF p_backup_scope = 'recovery' AND session_user IN (" + roles + ") THEN\n"
+        "        RAISE EXCEPTION 'role % may not create a recovery-scope artifact', session_user\n"
+        "            USING ERRCODE = 'insufficient_privilege';\n"
+        "    END IF;\n"
+    )
+
+
+def _artifact_api_bodies(contracts: Contracts) -> dict[str, tuple[str, str]]:
+    """The four artifact-control APIs of DB-V2 D2.1, each writing exactly one audit event."""
+    s = contracts.shadow
+    runtime = tuple(
+        role
+        for role in contracts.api["role_provisioning"]["required_roles"]
+        if role not in (DEFINER, "minos_migrate")
+    )
+    guard = _recovery_scope_guard(runtime)
+    out: dict[str, tuple[str, str]] = {}
+
+    out["catalog.get_or_verify_inline_artifact"] = (
+        "    existing record;\n    audited_id uuid;\n    digest text;\n    payload_size bigint;\n",
+        "    IF p_payload IS NULL THEN\n"
+        "        RAISE EXCEPTION 'inline payload must not be null'\n"
+        "            USING ERRCODE = 'invalid_parameter_value';\n"
+        "    END IF;\n"
+        "    IF octet_length(p_payload) > 65536 THEN\n"
+        "        RAISE EXCEPTION 'inline payload of % bytes exceeds the 65536-byte bound',\n"
+        "            octet_length(p_payload) USING ERRCODE = 'invalid_parameter_value';\n"
+        "    END IF;\n"
+        "    IF p_backup_scope NOT IN ('operational', 'recovery') THEN\n"
+        "        RAISE EXCEPTION 'backup_scope must be operational or recovery, got %',\n"
+        "            p_backup_scope USING ERRCODE = 'invalid_parameter_value';\n"
+        "    END IF;\n" + guard + "    digest := encode(sha256(p_payload), 'hex');\n"
+        "    payload_size := octet_length(p_payload);\n"
+        f"    SELECT * INTO existing FROM {s['catalog']}.artifacts\n"
+        "        WHERE content_sha256 = digest FOR UPDATE;\n"
+        "    IF FOUND THEN\n"
+        "        IF existing.storage_mode <> 'inline' OR existing.media_type <> p_media_type\n"
+        "           OR existing.artifact_kind <> p_artifact_kind\n"
+        "           OR existing.backup_scope <> p_backup_scope\n"
+        "           OR existing.retention_class <> p_retention_class THEN\n"
+        "            RAISE EXCEPTION 'artifact % already exists with different immutable "
+        "metadata', digest USING ERRCODE = 'unique_violation';\n"
+        "        END IF;\n"
+        "        RETURN existing.id;\n"
+        "    END IF;\n"
+        f"    INSERT INTO {s['catalog']}.artifacts\n"
+        "        (artifact_kind, content_sha256, size_bytes, media_type, storage_mode,\n"
+        "         inline_payload, lifecycle_state, retention_class, backup_scope, provenance,\n"
+        "         verification_state, first_verified_at, last_verified_at)\n"
+        "    VALUES (p_artifact_kind, digest, payload_size, p_media_type, 'inline', p_payload,\n"
+        "            'active', p_retention_class, p_backup_scope, p_provenance, 'verified',\n"
+        "            now(), now())\n"
+        "    RETURNING id INTO audited_id;\n"
+        + _audit_event(
+            s,
+            "artifact.published_inline",
+            "artifacts",
+            "digest || ':' || payload_size::text || ':' || p_media_type || ':' "
+            "|| p_artifact_kind || ':' || p_backup_scope",
+        )
+        + "    RETURN audited_id;\n",
+    )
+
+    out["catalog.get_or_verify_external_artifact"] = (
+        "    existing record;\n    audited_id uuid;\n",
+        "    IF p_content_sha256 !~ '^[0-9a-f]{64}$' THEN\n"
+        "        RAISE EXCEPTION 'content_sha256 must be 64 lowercase hex characters'\n"
+        "            USING ERRCODE = 'invalid_parameter_value';\n"
+        "    END IF;\n"
+        "    IF p_size_bytes IS NULL OR p_size_bytes < 0 THEN\n"
+        "        RAISE EXCEPTION 'size_bytes must be non-negative, got %', p_size_bytes\n"
+        "            USING ERRCODE = 'invalid_parameter_value';\n"
+        "    END IF;\n"
+        "    IF p_backup_scope NOT IN ('operational', 'recovery') THEN\n"
+        "        RAISE EXCEPTION 'backup_scope must be operational or recovery, got %',\n"
+        "            p_backup_scope USING ERRCODE = 'invalid_parameter_value';\n"
+        "    END IF;\n" + guard + f"    SELECT * INTO existing FROM {s['catalog']}.artifacts\n"
+        "        WHERE content_sha256 = p_content_sha256 FOR UPDATE;\n"
+        "    IF FOUND THEN\n"
+        "        IF existing.storage_mode <> 'external' OR existing.size_bytes <> p_size_bytes\n"
+        "           OR existing.media_type <> p_media_type\n"
+        "           OR existing.artifact_kind <> p_artifact_kind\n"
+        "           OR existing.backup_scope <> p_backup_scope\n"
+        "           OR existing.retention_class <> p_retention_class THEN\n"
+        "            RAISE EXCEPTION 'artifact % already exists with different immutable "
+        "metadata', p_content_sha256 USING ERRCODE = 'unique_violation';\n"
+        "        END IF;\n"
+        "        RETURN existing.id;\n"
+        "    END IF;\n"
+        f"    INSERT INTO {s['catalog']}.artifacts\n"
+        "        (artifact_kind, content_sha256, size_bytes, media_type, storage_mode,\n"
+        "         lifecycle_state, retention_class, backup_scope, provenance, verification_state)\n"
+        "    VALUES (p_artifact_kind, p_content_sha256, p_size_bytes, p_media_type, 'external',\n"
+        "            'active', p_retention_class, p_backup_scope, p_provenance, 'unverified')\n"
+        "    RETURNING id INTO audited_id;\n"
+        + _audit_event(
+            s,
+            "artifact.registered_external",
+            "artifacts",
+            "p_content_sha256 || ':' || p_size_bytes::text || ':' || p_media_type || ':' "
+            "|| p_artifact_kind || ':' || p_backup_scope",
+        )
+        + "    RETURN audited_id;\n",
+    )
+
+    out["catalog.get_or_verify_artifact_location"] = (
+        "    backend record;\n    existing record;\n    audited_id uuid;\n",
+        "    IF p_object_key IS NULL OR length(p_object_key) = 0 THEN\n"
+        "        RAISE EXCEPTION 'object_key must be a non-empty relative key'\n"
+        "            USING ERRCODE = 'invalid_parameter_value';\n"
+        "    END IF;\n"
+        "    IF p_object_key ~ '^/' OR p_object_key ~ '^[a-zA-Z][a-zA-Z0-9+.-]*://'\n"
+        "       OR p_object_key ~ '(^|/)[.][.](/|$)' OR p_object_key ~ '//'\n"
+        "       OR p_object_key ~ '/$' OR p_object_key ~ '^[.]/' THEN\n"
+        "        RAISE EXCEPTION 'object_key % is not a clean relative key', p_object_key\n"
+        "            USING ERRCODE = 'invalid_parameter_value';\n"
+        "    END IF;\n"
+        f"    PERFORM 1 FROM {s['catalog']}.artifacts WHERE id = p_artifact_id FOR UPDATE;\n"
+        "    IF NOT FOUND THEN\n"
+        "        RAISE EXCEPTION 'unknown artifact %', p_artifact_id\n"
+        "            USING ERRCODE = 'foreign_key_violation';\n"
+        "    END IF;\n"
+        f"    SELECT * INTO backend FROM {s['catalog']}.storage_backends\n"
+        "        WHERE backend_key = p_backend_key;\n"
+        "    IF NOT FOUND THEN\n"
+        "        RAISE EXCEPTION 'unknown storage backend %', p_backend_key\n"
+        "            USING ERRCODE = 'foreign_key_violation';\n"
+        "    END IF;\n"
+        f"    SELECT * INTO existing FROM {s['catalog']}.artifact_locations\n"
+        "        WHERE backend_id = backend.id AND object_key = p_object_key;\n"
+        "    IF FOUND THEN\n"
+        "        IF existing.artifact_id <> p_artifact_id THEN\n"
+        "            RAISE EXCEPTION 'backend %/% already belongs to artifact %',\n"
+        "                p_backend_key, p_object_key, existing.artifact_id\n"
+        "                USING ERRCODE = 'unique_violation';\n"
+        "        END IF;\n"
+        "        IF existing.is_primary <> p_is_primary THEN\n"
+        "            RAISE EXCEPTION 'location %/% is already registered with is_primary = %',\n"
+        "                p_backend_key, p_object_key, existing.is_primary\n"
+        "                USING ERRCODE = 'unique_violation';\n"
+        "        END IF;\n"
+        "        RETURN existing.id;\n"
+        "    END IF;\n"
+        f"    SELECT * INTO existing FROM {s['catalog']}.artifact_locations\n"
+        "        WHERE artifact_id = p_artifact_id AND backend_id = backend.id;\n"
+        "    IF FOUND THEN\n"
+        "        RAISE EXCEPTION 'artifact % already has key % on backend %',\n"
+        "            p_artifact_id, existing.object_key, p_backend_key\n"
+        "            USING ERRCODE = 'unique_violation';\n"
+        "    END IF;\n"
+        f"    INSERT INTO {s['catalog']}.artifact_locations\n"
+        "        (artifact_id, backend_id, object_key, location_state, is_primary)\n"
+        "    VALUES (p_artifact_id, backend.id, p_object_key, 'present', p_is_primary)\n"
+        "    RETURNING id INTO audited_id;\n"
+        + _audit_event(
+            s,
+            "artifact_location.registered",
+            "artifact_locations",
+            "p_artifact_id::text || ':' || p_backend_key || ':' || p_object_key",
+        )
+        + "    RETURN audited_id;\n",
+    )
+
+    out["catalog.record_artifact_verification"] = (
+        "    art record;\n    loc record;\n    candidates bigint;\n"
+        "    audited_id uuid;\n    outcome text;\n",
+        f"    SELECT * INTO art FROM {s['catalog']}.artifacts\n"
+        "        WHERE id = p_artifact_id FOR UPDATE;\n"
+        "    IF NOT FOUND THEN\n"
+        "        RAISE EXCEPTION 'unknown artifact %', p_artifact_id\n"
+        "            USING ERRCODE = 'foreign_key_violation';\n"
+        "    END IF;\n"
+        "    IF art.storage_mode = 'external' THEN\n"
+        "        IF p_location_id IS NULL THEN\n"
+        f"            SELECT count(*) INTO candidates FROM {s['catalog']}.artifact_locations\n"
+        "                WHERE artifact_id = art.id;\n"
+        "            IF candidates <> 1 THEN\n"
+        "                RAISE EXCEPTION 'an external artifact needs exactly one named location "
+        "(% candidates)', candidates USING ERRCODE = 'invalid_parameter_value';\n"
+        "            END IF;\n"
+        f"            SELECT * INTO loc FROM {s['catalog']}.artifact_locations\n"
+        "                WHERE artifact_id = art.id FOR UPDATE;\n"
+        "        ELSE\n"
+        f"            SELECT * INTO loc FROM {s['catalog']}.artifact_locations\n"
+        "                WHERE id = p_location_id AND artifact_id = art.id FOR UPDATE;\n"
+        "            IF NOT FOUND THEN\n"
+        "                RAISE EXCEPTION 'location % does not belong to artifact %',\n"
+        "                    p_location_id, art.id USING ERRCODE = 'foreign_key_violation';\n"
+        "            END IF;\n"
+        "        END IF;\n"
+        "    END IF;\n"
+        "    IF p_observed_sha256 IS NULL OR p_observed_size_bytes IS NULL THEN\n"
+        "        outcome := 'missing';\n"
+        "    ELSIF p_observed_sha256 = art.content_sha256\n"
+        "          AND p_observed_size_bytes = art.size_bytes THEN\n"
+        "        outcome := 'verified';\n"
+        "    ELSE\n"
+        "        outcome := 'corrupt';\n"
+        "    END IF;\n"
+        "    IF art.verification_state = outcome AND outcome = 'verified' THEN\n"
+        f"        UPDATE {s['catalog']}.artifacts SET last_verified_at = now()\n"
+        "            WHERE id = art.id;\n"
+        "        IF loc.id IS NOT NULL THEN\n"
+        f"            UPDATE {s['catalog']}.artifact_locations SET last_verified_at = now()\n"
+        "                WHERE id = loc.id;\n"
+        "        END IF;\n"
+        "        RETURN outcome;\n"
+        "    END IF;\n"
+        "    IF art.verification_state = outcome THEN\n"
+        "        RETURN outcome;\n"
+        "    END IF;\n"
+        f"    UPDATE {s['catalog']}.artifacts\n"
+        "        SET verification_state = outcome,\n"
+        "            first_verified_at = CASE WHEN outcome = 'verified'\n"
+        "                                     THEN coalesce(art.first_verified_at, now())\n"
+        "                                     ELSE art.first_verified_at END,\n"
+        "            last_verified_at = now()\n"
+        "        WHERE id = art.id;\n"
+        "    IF loc.id IS NOT NULL THEN\n"
+        f"        UPDATE {s['catalog']}.artifact_locations\n"
+        "            SET location_state = CASE WHEN outcome = 'verified' THEN 'present'\n"
+        "                                      WHEN outcome = 'missing' THEN 'missing'\n"
+        "                                      ELSE 'corrupt' END,\n"
+        "                -- a location that is not present may not remain primary\n"
+        "                is_primary = (outcome = 'verified') AND loc.is_primary,\n"
+        "                last_verified_at = now()\n"
+        "            WHERE id = loc.id;\n"
+        "    END IF;\n"
+        "    audited_id := art.id;\n"
+        + _audit_event(
+            s,
+            "artifact.verification_recorded",
+            "artifacts",
+            "art.content_sha256 || ':' || art.size_bytes::text || ':' || outcome",
+        )
+        + "    RETURN outcome;\n",
+    )
+    return out
+
+
 def _api_bodies(contracts: Contracts) -> dict[str, tuple[str, str]]:
     """The sixteen SECURITY DEFINER API functions, fully qualified against the shadow namespace."""
     s = contracts.shadow
     out: dict[str, tuple[str, str]] = {}
 
-    out["catalog.get_or_verify_artifact"] = (
+    out["catalog.__removed_get_or_verify_artifact"] = (
         "    existing record;\n    new_id uuid;\n",
         "    IF p_backup_scope NOT IN ('operational', 'recovery') THEN\n"
         "        RAISE EXCEPTION 'backup_scope must be operational or recovery, got %',\n"
@@ -676,7 +958,7 @@ def _api_bodies(contracts: Contracts) -> dict[str, tuple[str, str]]:
     )
 
     out["catalog.register_backup_set"] = (
-        "    new_id uuid;\n",
+        "    new_id uuid;\n    manifest_digest text;\n",
         "    IF p_completeness NOT IN ('complete', 'database_only') THEN\n"
         "        RAISE EXCEPTION 'completeness must be complete or database_only, got %',\n"
         "            p_completeness USING ERRCODE = 'invalid_parameter_value';\n"
@@ -688,7 +970,8 @@ def _api_bodies(contracts: Contracts) -> dict[str, tuple[str, str]]:
         "        recovery_manifest_media_type, database_backup_kind, database_backup_artifact_id,\n"
         "        database_backup_sha256, database_backup_media_type, database_backup_size_bytes,\n"
         "        wal_start_lsn, wal_end_lsn, artifact_snapshot_manifest_artifact_id,\n"
-        "        artifact_snapshot_sha256, artifact_snapshot_manifest_media_type, artifact_count,\n"
+        "        artifact_snapshot_manifest_sha256, artifact_snapshot_sha256,\n"
+        "        artifact_snapshot_manifest_media_type, artifact_count,\n"
         "        artifact_total_bytes, postgresql_version, backup_tool_version,\n"
         "        artifact_verification_tool_version, completeness)\n"
         "    SELECT p_manifest ->> 'backup_key', (p_manifest ->> 'recovery_set_id')::uuid,\n"
@@ -705,6 +988,7 @@ def _api_bodies(contracts: Contracts) -> dict[str, tuple[str, str]]:
         "           (p_manifest ->> 'database_backup_size_bytes')::bigint,\n"
         "           p_manifest ->> 'wal_start_lsn', p_manifest ->> 'wal_end_lsn',\n"
         "           (p_manifest ->> 'artifact_snapshot_manifest_artifact_id')::uuid,\n"
+        "           p_manifest ->> 'artifact_snapshot_manifest_sha256',\n"
         "           p_manifest ->> 'artifact_snapshot_sha256',\n"
         "           CASE WHEN p_completeness = 'complete'\n"
         "                THEN 'application/vnd.minos.artifact-snapshot+json' END,\n"
@@ -713,6 +997,13 @@ def _api_bodies(contracts: Contracts) -> dict[str, tuple[str, str]]:
         "           p_manifest ->> 'postgresql_version', p_manifest ->> 'backup_tool_version',\n"
         "           p_manifest ->> 'artifact_verification_tool_version', p_completeness\n"
         "    RETURNING id INTO new_id;\n"
+        "    manifest_digest := p_manifest ->> 'recovery_manifest_sha256';\n"
+        f"    INSERT INTO {s['audit']}.admin_operations\n"
+        "        (operation_kind, alembic_revision_from, alembic_revision_to, backup_set_id,\n"
+        "         outcome, evidence_hash)\n"
+        "    VALUES ('migration', p_manifest ->> 'source_alembic_revision',\n"
+        "            p_manifest ->> 'source_alembic_revision', new_id, 'succeeded',\n"
+        "            encode(sha256(convert_to(manifest_digest, 'UTF8')), 'hex'));\n"
         "    RETURN new_id;\n",
     )
 
@@ -733,6 +1024,16 @@ def _api_bodies(contracts: Contracts) -> dict[str, tuple[str, str]]:
         "           (p_plan ->> 'candidate_count')::integer,\n"
         "           (p_plan ->> 'logical_job_count')::bigint\n"
         "    RETURNING id INTO new_id;\n"
+        f"    INSERT INTO {s['experiments']}.experiment_plan_members\n"
+        "        (plan_id, snapshot_member_id, bam_profile_id, dataset_id, member_index)\n"
+        "    SELECT new_id, (m ->> 'snapshot_member_id')::uuid, (m ->> 'bam_profile_id')::uuid,\n"
+        "           (m ->> 'dataset_id')::uuid, (m ->> 'member_index')::integer\n"
+        "    FROM jsonb_array_elements(p_plan -> 'members') AS m;\n"
+        f"    INSERT INTO {s['experiments']}.experiment_plan_configs\n"
+        "        (plan_id, candidate_config_id, config_hash, config_index)\n"
+        "    SELECT new_id, (c ->> 'candidate_config_id')::uuid, c ->> 'config_hash',\n"
+        "           (c ->> 'config_index')::integer\n"
+        "    FROM jsonb_array_elements(p_plan -> 'configs') AS c;\n"
         "    RETURN new_id;\n",
     )
 
@@ -763,9 +1064,15 @@ def _api_bodies(contracts: Contracts) -> dict[str, tuple[str, str]]:
         "            (plan_id, plan_member_id, plan_config_id, job_key, status, attempt_count)\n"
         "        SELECT p_plan_id, member_id, config_id, job_key, 'PENDING', 0 FROM candidate\n"
         "        ON CONFLICT ON CONSTRAINT uq_jobs_logical_identity DO NOTHING\n"
+        "        RETURNING id\n"
+        "    ),\n"
+        "    logged AS (\n"
+        f"        INSERT INTO {s['experiments']}.job_events\n"
+        "            (job_id, from_status, to_status, actor_role)\n"
+        "        SELECT id, NULL, 'PENDING', session_user FROM inserted\n"
         "        RETURNING 1\n"
         "    )\n"
-        "    SELECT count(*) INTO created FROM inserted;\n"
+        "    SELECT count(*) INTO created FROM logged;\n"
         "    RETURN created;\n",
     )
 
@@ -791,6 +1098,9 @@ def _api_bodies(contracts: Contracts) -> dict[str, tuple[str, str]]:
         "            lease_expires_at = now() + make_interval(secs => p_lease_seconds),\n"
         "            updated_at = now()\n"
         "        WHERE id = claimed;\n"
+        f"    INSERT INTO {s['experiments']}.job_events\n"
+        "        (job_id, from_status, to_status, actor_role, worker_id)\n"
+        "    VALUES (claimed, 'PENDING', 'CLAIMED', session_user, p_worker_id);\n"
         "    RETURN claimed;\n",
     )
 
@@ -810,6 +1120,9 @@ def _api_bodies(contracts: Contracts) -> dict[str, tuple[str, str]]:
         f"    UPDATE {s['experiments']}.experiment_jobs\n"
         "        SET status = 'RUNNING', attempt_count = job.attempt_count + 1, updated_at = now()\n"
         "        WHERE id = job.id;\n"
+        f"    INSERT INTO {s['experiments']}.job_events\n"
+        "        (job_id, attempt_id, from_status, to_status, actor_role, worker_id)\n"
+        "    VALUES (job.id, attempt_id, 'CLAIMED', 'RUNNING', session_user, p_worker_id);\n"
         "    RETURN attempt_id;\n",
     )
 
@@ -865,6 +1178,9 @@ def _api_bodies(contracts: Contracts) -> dict[str, tuple[str, str]]:
         f"    UPDATE {s['experiments']}.experiment_jobs\n"
         "        SET status = 'SUCCEEDED', terminal_attempt_id = attempt.id, updated_at = now()\n"
         "        WHERE id = job.id;\n"
+        f"    INSERT INTO {s['experiments']}.job_events\n"
+        "        (job_id, attempt_id, from_status, to_status, actor_role, worker_id)\n"
+        "    VALUES (job.id, attempt.id, 'RUNNING', 'SUCCEEDED', session_user, p_worker_id);\n"
         "    RETURN result_id;\n",
     )
 
@@ -896,6 +1212,9 @@ def _api_bodies(contracts: Contracts) -> dict[str, tuple[str, str]]:
         f"    UPDATE {s['experiments']}.experiment_jobs\n"
         "        SET status = 'FAILED', terminal_attempt_id = attempt.id, updated_at = now()\n"
         "        WHERE id = job.id;\n"
+        f"    INSERT INTO {s['experiments']}.job_events\n"
+        "        (job_id, attempt_id, from_status, to_status, actor_role, worker_id)\n"
+        "    VALUES (job.id, attempt.id, 'RUNNING', 'FAILED', session_user, p_worker_id);\n"
         "    RETURN failure_id;\n",
     )
 
@@ -1079,6 +1398,8 @@ def function_ddl(contracts: Contracts) -> list[str]:
     bodies.update(_generic_bodies())
     bodies.update(_state_machine_bodies(contracts))
     bodies.update(_api_bodies(contracts))
+    bodies.update(_artifact_api_bodies(contracts))
+    bodies.pop("catalog.__removed_get_or_verify_artifact", None)
     bodies["catalog.enforce_backup_set_shape"] = _backup_set_gate_body(contracts)
 
     statements: list[str] = []

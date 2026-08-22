@@ -1954,6 +1954,37 @@
       "decision": "keep",
       "dependencies": [
         "collections",
+        "hashlib",
+        "importlib",
+        "json",
+        "pathlib",
+        "pytest",
+        "sqlalchemy",
+        "typing",
+        "uuid"
+      ],
+      "line_count": 768,
+      "path": "tests/integration/layer2_dbv2/test_d21_artifact_identity.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage",
+        "minos_engine.storage.database"
+      ],
+      "test_count": 26
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "collections",
         "conftest",
         "hashlib",
         "json",
@@ -1962,7 +1993,7 @@
         "typing",
         "uuid"
       ],
-      "line_count": 762,
+      "line_count": 771,
       "path": "tests/integration/layer2_dbv2/test_d2_behavior.py",
       "reason": "",
       "recommended_tier": "full",
@@ -1987,7 +2018,7 @@
         "pytest",
         "typing"
       ],
-      "line_count": 192,
+      "line_count": 198,
       "path": "tests/integration/layer2_dbv2/test_d2_lifecycle.py",
       "reason": "",
       "recommended_tier": "full",
@@ -2041,7 +2072,7 @@
         "sys",
         "typing"
       ],
-      "line_count": 501,
+      "line_count": 502,
       "path": "tests/integration/layer2_dbv2/test_d2_security.py",
       "reason": "",
       "recommended_tier": "manual_privileged",
@@ -4412,7 +4443,7 @@
         "re",
         "typing"
       ],
-      "line_count": 2301,
+      "line_count": 2308,
       "path": "tests/unit/tools/test_dbv2_audit.py",
       "reason": "Retained specifically for DB-V2: guards the design-report validator and contract hash.",
       "recommended_tier": "manual_privileged",
@@ -4756,8 +4787,8 @@
       "tests": 853
     },
     "full": {
-      "files": 93,
-      "tests": 820
+      "files": 94,
+      "tests": 846
     },
     "manual_privileged": {
       "files": 5,
@@ -4771,8 +4802,8 @@
   "totals": {
     "conftest_files": 7,
     "fixtures": 28,
-    "test_files": 177,
-    "test_functions": 1920,
-    "test_lines": 37962
+    "test_files": 178,
+    "test_functions": 1946,
+    "test_lines": 38753
   }
 }

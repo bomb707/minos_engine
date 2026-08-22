@@ -1,7 +1,7 @@
 """DB-V2 D2 — the complete empty DB-V2 shadow schema (additive to 0008).
 
 Creates the seven ``dbv2_*`` shadow schemas and every object the frozen DB-V2 contracts declare:
-37 tables, 34 functions, 89 triggers and the 780-record D2 physical ACL. No V1
+37 tables, 37 functions, 89 triggers and the 810-record D2 physical ACL. No V1
 object is created, renamed, altered, dropped or written, and no data is moved: the shadow schema
 is created EMPTY.
 
@@ -9,9 +9,9 @@ The migration is self-contained. It reads no report, calls no generator and touc
 or network; the SQL below is the complete executable result of
 ``scripts/gen_dbv2_migration.py``, which is a pure function of the three committed contracts:
 
-    logical  fc980a5a878cddff1b9a8a2a4b25ba4690abb85e8e28add84ac7f4bee75616ca
-    physical c4711bfa3282acc44f9a9ff47c0d8a15aed29f0d67063e9116baf272ae5f3ff5
-    api      1e67735f2dcd4e6bec6f688755e3fc2456b71cebfb72cf0898c700591a9e45cf
+    logical  2a94b3d6a2e638a7d9aade36bfdb8a66308877e80c665f0d94ce40352376958d
+    physical 706ba89942964400c5fcea46710b58e45cf85a9621b5a28d5da6aad2798b672c
+    api      69ed3783fa86659ff7b4f8a6ed1ae7a85b92735100665b222936fbc0fa874929
 
 Role handling. PostgreSQL roles are CLUSTER objects, so this migration creates, alters and drops
 none of them. It preflights: it records the original migration identity, requires all nine roles
@@ -179,15 +179,15 @@ $elevated$;""",
     CONSTRAINT pk_artifacts PRIMARY KEY (id),
     CONSTRAINT uq_artifacts_content_sha256 UNIQUE (content_sha256),
     CONSTRAINT uq_artifacts_id_sha_media UNIQUE (id, content_sha256, media_type),
+    CONSTRAINT ck_artifacts_backup_scope CHECK (backup_scope IN ('operational','recovery')),
+    CONSTRAINT ck_artifacts_inline_bounded CHECK ((storage_mode = 'inline' AND inline_payload IS NOT NULL AND size_bytes = octet_length(inline_payload) AND content_sha256 = encode(sha256(inline_payload), 'hex') AND size_bytes <= 65536) OR (storage_mode = 'external' AND inline_payload IS NULL)),
+    CONSTRAINT ck_artifacts_kind CHECK (length(artifact_kind) > 0),
+    CONSTRAINT ck_artifacts_lifecycle CHECK (lifecycle_state IN ('active','archived','quarantined','deleted')),
+    CONSTRAINT ck_artifacts_retention CHECK (retention_class IN ('permanent','long','standard','ephemeral')),
     CONSTRAINT ck_artifacts_sha_hex CHECK (content_sha256 ~ '^[0-9a-f]{64}$'),
     CONSTRAINT ck_artifacts_size_nonneg CHECK (size_bytes >= 0),
     CONSTRAINT ck_artifacts_storage_mode CHECK (storage_mode IN ('external','inline')),
-    CONSTRAINT ck_artifacts_lifecycle CHECK (lifecycle_state IN ('active','archived','quarantined','deleted')),
-    CONSTRAINT ck_artifacts_verification CHECK (verification_state IN ('unverified','verified','missing','corrupt')),
-    CONSTRAINT ck_artifacts_retention CHECK (retention_class IN ('permanent','long','standard','ephemeral')),
-    CONSTRAINT ck_artifacts_inline_bounded CHECK ((storage_mode = 'inline' AND inline_payload IS NOT NULL AND size_bytes <= 65536) OR (storage_mode = 'external' AND inline_payload IS NULL)),
-    CONSTRAINT ck_artifacts_kind CHECK (length(artifact_kind) > 0),
-    CONSTRAINT ck_artifacts_backup_scope CHECK (backup_scope IN ('operational','recovery'))
+    CONSTRAINT ck_artifacts_verification CHECK (verification_state IN ('unverified','verified','missing','corrupt'))
 );""",
     r"""CREATE INDEX ix_artifacts_kind_created ON dbv2_catalog.artifacts USING btree (artifact_kind, created_at);""",
     r"""CREATE INDEX ix_artifacts_needs_verification ON dbv2_catalog.artifacts USING btree (last_verified_at) WHERE lifecycle_state = 'active';""",
@@ -212,6 +212,7 @@ $elevated$;""",
     wal_start_lsn text NULL,
     wal_end_lsn text NULL,
     artifact_snapshot_manifest_artifact_id uuid NULL,
+    artifact_snapshot_manifest_sha256 char(64) NULL,
     artifact_snapshot_sha256 char(64) NULL,
     artifact_snapshot_manifest_media_type text NULL,
     artifact_count bigint NULL,
@@ -226,7 +227,7 @@ $elevated$;""",
     CONSTRAINT uq_backup_sets_key UNIQUE (backup_key),
     CONSTRAINT uq_backup_sets_recovery_set UNIQUE (recovery_set_id),
     CONSTRAINT uq_backup_sets_manifest UNIQUE (recovery_manifest_sha256),
-    CONSTRAINT ck_backup_sets_artifact_hex CHECK (artifact_snapshot_sha256 IS NULL OR artifact_snapshot_sha256 ~ '^[0-9a-f]{64}$'),
+    CONSTRAINT ck_backup_sets_artifact_hex CHECK ((artifact_snapshot_sha256 IS NULL OR artifact_snapshot_sha256 ~ '^[0-9a-f]{64}$') AND (artifact_snapshot_manifest_sha256 IS NULL OR artifact_snapshot_manifest_sha256 ~ '^[0-9a-f]{64}$')),
     CONSTRAINT ck_backup_sets_completeness CHECK (completeness IN ('complete','database_only')),
     CONSTRAINT ck_backup_sets_db_hex CHECK (database_backup_sha256 ~ '^[0-9a-f]{64}$'),
     CONSTRAINT ck_backup_sets_db_media CHECK (database_backup_media_type = 'application/vnd.postgresql.dump'),
@@ -236,11 +237,12 @@ $elevated$;""",
     CONSTRAINT ck_backup_sets_manifest_hex CHECK (recovery_manifest_sha256 ~ '^[0-9a-f]{64}$'),
     CONSTRAINT ck_backup_sets_manifest_media CHECK (recovery_manifest_media_type = 'application/vnd.minos.db-recovery-manifest+json'),
     CONSTRAINT ck_backup_sets_quiesce_window CHECK (quiesce_ended_at >= quiesce_started_at),
-    CONSTRAINT ck_backup_sets_shape CHECK ((completeness = 'complete' AND artifact_snapshot_manifest_artifact_id IS NOT NULL AND artifact_snapshot_sha256 IS NOT NULL AND artifact_snapshot_manifest_media_type IS NOT NULL AND artifact_count IS NOT NULL AND artifact_count >= 0 AND artifact_total_bytes IS NOT NULL AND artifact_total_bytes >= 0) OR (completeness = 'database_only' AND artifact_snapshot_manifest_artifact_id IS NULL AND artifact_snapshot_sha256 IS NULL AND artifact_snapshot_manifest_media_type IS NULL AND artifact_count IS NULL AND artifact_total_bytes IS NULL)),
+    CONSTRAINT ck_backup_sets_shape CHECK ((completeness = 'complete' AND artifact_snapshot_manifest_artifact_id IS NOT NULL AND artifact_snapshot_manifest_sha256 IS NOT NULL AND artifact_snapshot_sha256 IS NOT NULL AND artifact_snapshot_manifest_media_type IS NOT NULL AND artifact_count IS NOT NULL AND artifact_total_bytes IS NOT NULL AND artifact_count >= 0 AND artifact_total_bytes >= 0) OR (completeness = 'database_only' AND artifact_snapshot_manifest_artifact_id IS NULL AND artifact_snapshot_manifest_sha256 IS NULL AND artifact_snapshot_sha256 IS NULL AND artifact_snapshot_manifest_media_type IS NULL AND artifact_count IS NULL AND artifact_total_bytes IS NULL)),
+    CONSTRAINT ck_backup_sets_snapshot_identities_differ CHECK (artifact_snapshot_sha256 IS NULL OR artifact_snapshot_sha256 <> artifact_snapshot_manifest_sha256),
     CONSTRAINT ck_backup_sets_snapshot_media CHECK (artifact_snapshot_manifest_media_type IS NULL OR artifact_snapshot_manifest_media_type = 'application/vnd.minos.artifact-snapshot+json'),
-    CONSTRAINT fk_backup_sets_recovery_manifest FOREIGN KEY (recovery_manifest_artifact_id, recovery_manifest_sha256, recovery_manifest_media_type) REFERENCES dbv2_catalog.artifacts (id, content_sha256, media_type),
+    CONSTRAINT fk_backup_sets_artifact_snapshot_manifest FOREIGN KEY (artifact_snapshot_manifest_artifact_id, artifact_snapshot_manifest_sha256, artifact_snapshot_manifest_media_type) REFERENCES dbv2_catalog.artifacts (id, content_sha256, media_type),
     CONSTRAINT fk_backup_sets_database_backup FOREIGN KEY (database_backup_artifact_id, database_backup_sha256, database_backup_media_type) REFERENCES dbv2_catalog.artifacts (id, content_sha256, media_type),
-    CONSTRAINT fk_backup_sets_artifact_snapshot_manifest FOREIGN KEY (artifact_snapshot_manifest_artifact_id, artifact_snapshot_sha256, artifact_snapshot_manifest_media_type) REFERENCES dbv2_catalog.artifacts (id, content_sha256, media_type)
+    CONSTRAINT fk_backup_sets_recovery_manifest FOREIGN KEY (recovery_manifest_artifact_id, recovery_manifest_sha256, recovery_manifest_media_type) REFERENCES dbv2_catalog.artifacts (id, content_sha256, media_type)
 );""",
     r"""CREATE INDEX ix_backup_sets_created ON dbv2_catalog.backup_sets USING btree (created_at);""",
     r"""CREATE TABLE dbv2_audit.admin_operations (
@@ -1032,8 +1034,8 @@ BEGIN
             ('database backup', NEW.database_backup_artifact_id,
              NEW.database_backup_sha256, NEW.database_backup_media_type, 'external'),
             ('artifact snapshot manifest', NEW.artifact_snapshot_manifest_artifact_id,
-             NEW.artifact_snapshot_sha256, NEW.artifact_snapshot_manifest_media_type,
-             'inline')
+             NEW.artifact_snapshot_manifest_sha256,
+             NEW.artifact_snapshot_manifest_media_type, 'inline')
         ) AS v(label, artifact_id, digest, media_type, storage)
         WHERE v.artifact_id IS NOT NULL
     LOOP
@@ -1050,29 +1052,39 @@ BEGIN
                 USING ERRCODE = 'check_violation';
         END IF;
         IF art.verification_state <> 'verified' THEN
-            RAISE EXCEPTION '% is not verification_state = ''verified'' (%)',
+            RAISE EXCEPTION '% is not verification_state = verified (%)',
                 binding.label, art.verification_state
                 USING ERRCODE = 'check_violation';
         END IF;
         IF art.lifecycle_state <> 'active' THEN
-            RAISE EXCEPTION '% is not lifecycle_state = ''active'' (%)',
+            RAISE EXCEPTION '% is not lifecycle_state = active (%)',
                 binding.label, art.lifecycle_state
                 USING ERRCODE = 'check_violation';
         END IF;
         IF art.backup_scope <> 'recovery' THEN
-            RAISE EXCEPTION '% is not backup_scope = ''recovery'' (%)',
+            RAISE EXCEPTION '% is not backup_scope = recovery (%)',
                 binding.label, art.backup_scope USING ERRCODE = 'check_violation';
         END IF;
         IF art.storage_mode <> binding.storage THEN
-            RAISE EXCEPTION '% must be stored %, not %',
-                binding.label, binding.storage, art.storage_mode
+            RAISE EXCEPTION '% is not stored in its declared storage mode: % (expected %)', binding.label, art.storage_mode, binding.storage
                 USING ERRCODE = 'check_violation';
         END IF;
-        PERFORM 1 FROM dbv2_catalog.artifact_locations
-            WHERE artifact_id = art.id AND location_state = 'present' LIMIT 1;
-        IF NOT FOUND THEN
-            RAISE EXCEPTION '% has no artifact_locations row in state ''present''',
-                binding.label USING ERRCODE = 'check_violation';
+        IF binding.storage = 'inline' THEN
+            -- the authoritative bytes ARE the row: prove them in place, and demand no
+            -- location evidence for bytes this database is already holding and hashing
+            IF encode(sha256(art.inline_payload), 'hex') <> binding.digest THEN
+                RAISE EXCEPTION 'inline manifest bytes do not recompute to their raw digest (%)', binding.label USING ERRCODE = 'check_violation';
+            END IF;
+            IF octet_length(art.inline_payload) <> art.size_bytes THEN
+                RAISE EXCEPTION 'inline manifest byte size does not match the stored payload (%)', binding.label USING ERRCODE = 'check_violation';
+            END IF;
+        ELSE
+            PERFORM 1 FROM dbv2_catalog.artifact_locations
+                WHERE artifact_id = art.id AND location_state = 'present' LIMIT 1;
+            IF NOT FOUND THEN
+                RAISE EXCEPTION 'the external database dump has no artifact_locations row in state present'
+                    USING ERRCODE = 'check_violation';
+            END IF;
         END IF;
     END LOOP;
     SELECT * INTO art FROM dbv2_catalog.artifacts
@@ -1084,6 +1096,10 @@ BEGIN
     IF (r1 ->> 'artifact_count')::bigint IS DISTINCT FROM NEW.artifact_count THEN
         RAISE EXCEPTION 'R1 field % does not equal its mapped column %',
             'artifact_count', 'artifact_count' USING ERRCODE = 'check_violation';
+    END IF;
+    IF (r1 ->> 'artifact_snapshot_manifest_sha256') IS DISTINCT FROM NEW.artifact_snapshot_manifest_sha256 THEN
+        RAISE EXCEPTION 'R1 field % does not equal its mapped column %',
+            'artifact_snapshot_manifest_sha256', 'artifact_snapshot_manifest_sha256' USING ERRCODE = 'check_violation';
     END IF;
     IF (r1 ->> 'artifact_snapshot_sha256') IS DISTINCT FROM NEW.artifact_snapshot_sha256 THEN
         RAISE EXCEPTION 'R1 field % does not equal its mapped column %',
@@ -1169,7 +1185,8 @@ BEGIN
             INTO entry_count, entry_bytes
             FROM jsonb_array_elements(snap -> 'entries') AS e;
         IF entry_count IS DISTINCT FROM NEW.artifact_count
-           OR (snap ->> 'artifact_count')::bigint IS DISTINCT FROM NEW.artifact_count THEN
+           OR (snap ->> 'artifact_count')::bigint IS DISTINCT FROM NEW.artifact_count
+        THEN
             RAISE EXCEPTION 'snapshot entry count <> artifact_count (% vs %)',
                 entry_count, NEW.artifact_count USING ERRCODE = 'check_violation';
         END IF;
@@ -1229,7 +1246,72 @@ BEGIN
     RETURN NEW;
 END
 $minos$;""",
-    r"""CREATE FUNCTION dbv2_catalog.get_or_verify_artifact(p_content_sha256 char(64), p_size_bytes bigint, p_media_type text, p_artifact_kind text, p_backup_scope text, p_provenance jsonb)
+    r"""CREATE FUNCTION dbv2_catalog.get_or_verify_artifact_location(p_artifact_id uuid, p_backend_key text, p_object_key text, p_is_primary boolean)
+RETURNS uuid
+LANGUAGE plpgsql
+VOLATILE SECURITY DEFINER
+SET search_path = pg_catalog
+AS $minos$
+DECLARE
+    backend record;
+    existing record;
+    audited_id uuid;
+BEGIN
+    IF p_object_key IS NULL OR length(p_object_key) = 0 THEN
+        RAISE EXCEPTION 'object_key must be a non-empty relative key'
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    IF p_object_key ~ '^/' OR p_object_key ~ '^[a-zA-Z][a-zA-Z0-9+.-]*://'
+       OR p_object_key ~ '(^|/)[.][.](/|$)' OR p_object_key ~ '//'
+       OR p_object_key ~ '/$' OR p_object_key ~ '^[.]/' THEN
+        RAISE EXCEPTION 'object_key % is not a clean relative key', p_object_key
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    PERFORM 1 FROM dbv2_catalog.artifacts WHERE id = p_artifact_id FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'unknown artifact %', p_artifact_id
+            USING ERRCODE = 'foreign_key_violation';
+    END IF;
+    SELECT * INTO backend FROM dbv2_catalog.storage_backends
+        WHERE backend_key = p_backend_key;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'unknown storage backend %', p_backend_key
+            USING ERRCODE = 'foreign_key_violation';
+    END IF;
+    SELECT * INTO existing FROM dbv2_catalog.artifact_locations
+        WHERE backend_id = backend.id AND object_key = p_object_key;
+    IF FOUND THEN
+        IF existing.artifact_id <> p_artifact_id THEN
+            RAISE EXCEPTION 'backend %/% already belongs to artifact %',
+                p_backend_key, p_object_key, existing.artifact_id
+                USING ERRCODE = 'unique_violation';
+        END IF;
+        IF existing.is_primary <> p_is_primary THEN
+            RAISE EXCEPTION 'location %/% is already registered with is_primary = %',
+                p_backend_key, p_object_key, existing.is_primary
+                USING ERRCODE = 'unique_violation';
+        END IF;
+        RETURN existing.id;
+    END IF;
+    SELECT * INTO existing FROM dbv2_catalog.artifact_locations
+        WHERE artifact_id = p_artifact_id AND backend_id = backend.id;
+    IF FOUND THEN
+        RAISE EXCEPTION 'artifact % already has key % on backend %',
+            p_artifact_id, existing.object_key, p_backend_key
+            USING ERRCODE = 'unique_violation';
+    END IF;
+    INSERT INTO dbv2_catalog.artifact_locations
+        (artifact_id, backend_id, object_key, location_state, is_primary)
+    VALUES (p_artifact_id, backend.id, p_object_key, 'present', p_is_primary)
+    RETURNING id INTO audited_id;
+    INSERT INTO dbv2_audit.events
+        (actor_role, action, object_schema, object_table, object_id, payload_hash)
+    VALUES (session_user, 'artifact_location.registered', 'dbv2_catalog', 'artifact_locations',
+            audited_id, encode(sha256(convert_to(p_artifact_id::text || ':' || p_backend_key || ':' || p_object_key, 'UTF8')), 'hex'));
+    RETURN audited_id;
+END
+$minos$;""",
+    r"""CREATE FUNCTION dbv2_catalog.get_or_verify_external_artifact(p_content_sha256 char(64), p_size_bytes bigint, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_provenance jsonb)
 RETURNS uuid
 LANGUAGE plpgsql
 VOLATILE SECURITY DEFINER
@@ -1237,20 +1319,33 @@ SET search_path = pg_catalog
 AS $minos$
 DECLARE
     existing record;
-    new_id uuid;
+    audited_id uuid;
 BEGIN
+    IF p_content_sha256 !~ '^[0-9a-f]{64}$' THEN
+        RAISE EXCEPTION 'content_sha256 must be 64 lowercase hex characters'
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    IF p_size_bytes IS NULL OR p_size_bytes < 0 THEN
+        RAISE EXCEPTION 'size_bytes must be non-negative, got %', p_size_bytes
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
     IF p_backup_scope NOT IN ('operational', 'recovery') THEN
         RAISE EXCEPTION 'backup_scope must be operational or recovery, got %',
             p_backup_scope USING ERRCODE = 'invalid_parameter_value';
     END IF;
+    IF p_backup_scope = 'recovery' AND session_user IN ('minos_planner', 'minos_enqueue', 'minos_runner', 'minos_verifier', 'minos_trainer', 'minos_evaluator', 'minos_live') THEN
+        RAISE EXCEPTION 'role % may not create a recovery-scope artifact', session_user
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
     SELECT * INTO existing FROM dbv2_catalog.artifacts
         WHERE content_sha256 = p_content_sha256 FOR UPDATE;
     IF FOUND THEN
-        IF existing.size_bytes <> p_size_bytes OR existing.media_type <> p_media_type
+        IF existing.storage_mode <> 'external' OR existing.size_bytes <> p_size_bytes
+           OR existing.media_type <> p_media_type
            OR existing.artifact_kind <> p_artifact_kind
-           OR existing.backup_scope <> p_backup_scope THEN
-            RAISE EXCEPTION 'artifact % already exists with different immutable metadata',
-                p_content_sha256 USING ERRCODE = 'unique_violation';
+           OR existing.backup_scope <> p_backup_scope
+           OR existing.retention_class <> p_retention_class THEN
+            RAISE EXCEPTION 'artifact % already exists with different immutable metadata', p_content_sha256 USING ERRCODE = 'unique_violation';
         END IF;
         RETURN existing.id;
     END IF;
@@ -1258,9 +1353,151 @@ BEGIN
         (artifact_kind, content_sha256, size_bytes, media_type, storage_mode,
          lifecycle_state, retention_class, backup_scope, provenance, verification_state)
     VALUES (p_artifact_kind, p_content_sha256, p_size_bytes, p_media_type, 'external',
-            'active', 'standard', p_backup_scope, p_provenance, 'unverified')
-    RETURNING id INTO new_id;
-    RETURN new_id;
+            'active', p_retention_class, p_backup_scope, p_provenance, 'unverified')
+    RETURNING id INTO audited_id;
+    INSERT INTO dbv2_audit.events
+        (actor_role, action, object_schema, object_table, object_id, payload_hash)
+    VALUES (session_user, 'artifact.registered_external', 'dbv2_catalog', 'artifacts',
+            audited_id, encode(sha256(convert_to(p_content_sha256 || ':' || p_size_bytes::text || ':' || p_media_type || ':' || p_artifact_kind || ':' || p_backup_scope, 'UTF8')), 'hex'));
+    RETURN audited_id;
+END
+$minos$;""",
+    r"""CREATE FUNCTION dbv2_catalog.get_or_verify_inline_artifact(p_payload bytea, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_provenance jsonb)
+RETURNS uuid
+LANGUAGE plpgsql
+VOLATILE SECURITY DEFINER
+SET search_path = pg_catalog
+AS $minos$
+DECLARE
+    existing record;
+    audited_id uuid;
+    digest text;
+    payload_size bigint;
+BEGIN
+    IF p_payload IS NULL THEN
+        RAISE EXCEPTION 'inline payload must not be null'
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    IF octet_length(p_payload) > 65536 THEN
+        RAISE EXCEPTION 'inline payload of % bytes exceeds the 65536-byte bound',
+            octet_length(p_payload) USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    IF p_backup_scope NOT IN ('operational', 'recovery') THEN
+        RAISE EXCEPTION 'backup_scope must be operational or recovery, got %',
+            p_backup_scope USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    IF p_backup_scope = 'recovery' AND session_user IN ('minos_planner', 'minos_enqueue', 'minos_runner', 'minos_verifier', 'minos_trainer', 'minos_evaluator', 'minos_live') THEN
+        RAISE EXCEPTION 'role % may not create a recovery-scope artifact', session_user
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    digest := encode(sha256(p_payload), 'hex');
+    payload_size := octet_length(p_payload);
+    SELECT * INTO existing FROM dbv2_catalog.artifacts
+        WHERE content_sha256 = digest FOR UPDATE;
+    IF FOUND THEN
+        IF existing.storage_mode <> 'inline' OR existing.media_type <> p_media_type
+           OR existing.artifact_kind <> p_artifact_kind
+           OR existing.backup_scope <> p_backup_scope
+           OR existing.retention_class <> p_retention_class THEN
+            RAISE EXCEPTION 'artifact % already exists with different immutable metadata', digest USING ERRCODE = 'unique_violation';
+        END IF;
+        RETURN existing.id;
+    END IF;
+    INSERT INTO dbv2_catalog.artifacts
+        (artifact_kind, content_sha256, size_bytes, media_type, storage_mode,
+         inline_payload, lifecycle_state, retention_class, backup_scope, provenance,
+         verification_state, first_verified_at, last_verified_at)
+    VALUES (p_artifact_kind, digest, payload_size, p_media_type, 'inline', p_payload,
+            'active', p_retention_class, p_backup_scope, p_provenance, 'verified',
+            now(), now())
+    RETURNING id INTO audited_id;
+    INSERT INTO dbv2_audit.events
+        (actor_role, action, object_schema, object_table, object_id, payload_hash)
+    VALUES (session_user, 'artifact.published_inline', 'dbv2_catalog', 'artifacts',
+            audited_id, encode(sha256(convert_to(digest || ':' || payload_size::text || ':' || p_media_type || ':' || p_artifact_kind || ':' || p_backup_scope, 'UTF8')), 'hex'));
+    RETURN audited_id;
+END
+$minos$;""",
+    r"""CREATE FUNCTION dbv2_catalog.record_artifact_verification(p_artifact_id uuid, p_observed_sha256 char(64), p_observed_size_bytes bigint, p_location_id uuid)
+RETURNS text
+LANGUAGE plpgsql
+VOLATILE SECURITY DEFINER
+SET search_path = pg_catalog
+AS $minos$
+DECLARE
+    art record;
+    loc record;
+    candidates bigint;
+    audited_id uuid;
+    outcome text;
+BEGIN
+    SELECT * INTO art FROM dbv2_catalog.artifacts
+        WHERE id = p_artifact_id FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'unknown artifact %', p_artifact_id
+            USING ERRCODE = 'foreign_key_violation';
+    END IF;
+    IF art.storage_mode = 'external' THEN
+        IF p_location_id IS NULL THEN
+            SELECT count(*) INTO candidates FROM dbv2_catalog.artifact_locations
+                WHERE artifact_id = art.id;
+            IF candidates <> 1 THEN
+                RAISE EXCEPTION 'an external artifact needs exactly one named location (% candidates)', candidates USING ERRCODE = 'invalid_parameter_value';
+            END IF;
+            SELECT * INTO loc FROM dbv2_catalog.artifact_locations
+                WHERE artifact_id = art.id FOR UPDATE;
+        ELSE
+            SELECT * INTO loc FROM dbv2_catalog.artifact_locations
+                WHERE id = p_location_id AND artifact_id = art.id FOR UPDATE;
+            IF NOT FOUND THEN
+                RAISE EXCEPTION 'location % does not belong to artifact %',
+                    p_location_id, art.id USING ERRCODE = 'foreign_key_violation';
+            END IF;
+        END IF;
+    END IF;
+    IF p_observed_sha256 IS NULL OR p_observed_size_bytes IS NULL THEN
+        outcome := 'missing';
+    ELSIF p_observed_sha256 = art.content_sha256
+          AND p_observed_size_bytes = art.size_bytes THEN
+        outcome := 'verified';
+    ELSE
+        outcome := 'corrupt';
+    END IF;
+    IF art.verification_state = outcome AND outcome = 'verified' THEN
+        UPDATE dbv2_catalog.artifacts SET last_verified_at = now()
+            WHERE id = art.id;
+        IF loc.id IS NOT NULL THEN
+            UPDATE dbv2_catalog.artifact_locations SET last_verified_at = now()
+                WHERE id = loc.id;
+        END IF;
+        RETURN outcome;
+    END IF;
+    IF art.verification_state = outcome THEN
+        RETURN outcome;
+    END IF;
+    UPDATE dbv2_catalog.artifacts
+        SET verification_state = outcome,
+            first_verified_at = CASE WHEN outcome = 'verified'
+                                     THEN coalesce(art.first_verified_at, now())
+                                     ELSE art.first_verified_at END,
+            last_verified_at = now()
+        WHERE id = art.id;
+    IF loc.id IS NOT NULL THEN
+        UPDATE dbv2_catalog.artifact_locations
+            SET location_state = CASE WHEN outcome = 'verified' THEN 'present'
+                                      WHEN outcome = 'missing' THEN 'missing'
+                                      ELSE 'corrupt' END,
+                -- a location that is not present may not remain primary
+                is_primary = (outcome = 'verified') AND loc.is_primary,
+                last_verified_at = now()
+            WHERE id = loc.id;
+    END IF;
+    audited_id := art.id;
+    INSERT INTO dbv2_audit.events
+        (actor_role, action, object_schema, object_table, object_id, payload_hash)
+    VALUES (session_user, 'artifact.verification_recorded', 'dbv2_catalog', 'artifacts',
+            audited_id, encode(sha256(convert_to(art.content_sha256 || ':' || art.size_bytes::text || ':' || outcome, 'UTF8')), 'hex'));
+    RETURN outcome;
 END
 $minos$;""",
     r"""CREATE FUNCTION dbv2_catalog.register_backup_set(p_manifest jsonb, p_completeness text)
@@ -1271,6 +1508,7 @@ SET search_path = pg_catalog
 AS $minos$
 DECLARE
     new_id uuid;
+    manifest_digest text;
 BEGIN
     IF p_completeness NOT IN ('complete', 'database_only') THEN
         RAISE EXCEPTION 'completeness must be complete or database_only, got %',
@@ -1283,7 +1521,8 @@ BEGIN
         recovery_manifest_media_type, database_backup_kind, database_backup_artifact_id,
         database_backup_sha256, database_backup_media_type, database_backup_size_bytes,
         wal_start_lsn, wal_end_lsn, artifact_snapshot_manifest_artifact_id,
-        artifact_snapshot_sha256, artifact_snapshot_manifest_media_type, artifact_count,
+        artifact_snapshot_manifest_sha256, artifact_snapshot_sha256,
+        artifact_snapshot_manifest_media_type, artifact_count,
         artifact_total_bytes, postgresql_version, backup_tool_version,
         artifact_verification_tool_version, completeness)
     SELECT p_manifest ->> 'backup_key', (p_manifest ->> 'recovery_set_id')::uuid,
@@ -1300,6 +1539,7 @@ BEGIN
            (p_manifest ->> 'database_backup_size_bytes')::bigint,
            p_manifest ->> 'wal_start_lsn', p_manifest ->> 'wal_end_lsn',
            (p_manifest ->> 'artifact_snapshot_manifest_artifact_id')::uuid,
+           p_manifest ->> 'artifact_snapshot_manifest_sha256',
            p_manifest ->> 'artifact_snapshot_sha256',
            CASE WHEN p_completeness = 'complete'
                 THEN 'application/vnd.minos.artifact-snapshot+json' END,
@@ -1308,6 +1548,13 @@ BEGIN
            p_manifest ->> 'postgresql_version', p_manifest ->> 'backup_tool_version',
            p_manifest ->> 'artifact_verification_tool_version', p_completeness
     RETURNING id INTO new_id;
+    manifest_digest := p_manifest ->> 'recovery_manifest_sha256';
+    INSERT INTO dbv2_audit.admin_operations
+        (operation_kind, alembic_revision_from, alembic_revision_to, backup_set_id,
+         outcome, evidence_hash)
+    VALUES ('migration', p_manifest ->> 'source_alembic_revision',
+            p_manifest ->> 'source_alembic_revision', new_id, 'succeeded',
+            encode(sha256(convert_to(manifest_digest, 'UTF8')), 'hex'));
     RETURN new_id;
 END
 $minos$;""",
@@ -1392,6 +1639,9 @@ BEGIN
             lease_expires_at = now() + make_interval(secs => p_lease_seconds),
             updated_at = now()
         WHERE id = claimed;
+    INSERT INTO dbv2_experiments.job_events
+        (job_id, from_status, to_status, actor_role, worker_id)
+    VALUES (claimed, 'PENDING', 'CLAIMED', session_user, p_worker_id);
     RETURN claimed;
 END
 $minos$;""",
@@ -1524,9 +1774,15 @@ BEGIN
             (plan_id, plan_member_id, plan_config_id, job_key, status, attempt_count)
         SELECT p_plan_id, member_id, config_id, job_key, 'PENDING', 0 FROM candidate
         ON CONFLICT ON CONSTRAINT uq_jobs_logical_identity DO NOTHING
+        RETURNING id
+    ),
+    logged AS (
+        INSERT INTO dbv2_experiments.job_events
+            (job_id, from_status, to_status, actor_role)
+        SELECT id, NULL, 'PENDING', session_user FROM inserted
         RETURNING 1
     )
-    SELECT count(*) INTO created FROM inserted;
+    SELECT count(*) INTO created FROM logged;
     RETURN created;
 END
 $minos$;""",
@@ -1584,6 +1840,16 @@ BEGIN
            (p_plan ->> 'candidate_count')::integer,
            (p_plan ->> 'logical_job_count')::bigint
     RETURNING id INTO new_id;
+    INSERT INTO dbv2_experiments.experiment_plan_members
+        (plan_id, snapshot_member_id, bam_profile_id, dataset_id, member_index)
+    SELECT new_id, (m ->> 'snapshot_member_id')::uuid, (m ->> 'bam_profile_id')::uuid,
+           (m ->> 'dataset_id')::uuid, (m ->> 'member_index')::integer
+    FROM jsonb_array_elements(p_plan -> 'members') AS m;
+    INSERT INTO dbv2_experiments.experiment_plan_configs
+        (plan_id, candidate_config_id, config_hash, config_index)
+    SELECT new_id, (c ->> 'candidate_config_id')::uuid, c ->> 'config_hash',
+           (c ->> 'config_index')::integer
+    FROM jsonb_array_elements(p_plan -> 'configs') AS c;
     RETURN new_id;
 END
 $minos$;""",
@@ -1624,6 +1890,9 @@ BEGIN
     UPDATE dbv2_experiments.experiment_jobs
         SET status = 'FAILED', terminal_attempt_id = attempt.id, updated_at = now()
         WHERE id = job.id;
+    INSERT INTO dbv2_experiments.job_events
+        (job_id, attempt_id, from_status, to_status, actor_role, worker_id)
+    VALUES (job.id, attempt.id, 'RUNNING', 'FAILED', session_user, p_worker_id);
     RETURN failure_id;
 END
 $minos$;""",
@@ -1667,6 +1936,9 @@ BEGIN
     UPDATE dbv2_experiments.experiment_jobs
         SET status = 'SUCCEEDED', terminal_attempt_id = attempt.id, updated_at = now()
         WHERE id = job.id;
+    INSERT INTO dbv2_experiments.job_events
+        (job_id, attempt_id, from_status, to_status, actor_role, worker_id)
+    VALUES (job.id, attempt.id, 'RUNNING', 'SUCCEEDED', session_user, p_worker_id);
     RETURN result_id;
 END
 $minos$;""",
@@ -1693,6 +1965,9 @@ BEGIN
     UPDATE dbv2_experiments.experiment_jobs
         SET status = 'RUNNING', attempt_count = job.attempt_count + 1, updated_at = now()
         WHERE id = job.id;
+    INSERT INTO dbv2_experiments.job_events
+        (job_id, attempt_id, from_status, to_status, actor_role, worker_id)
+    VALUES (job.id, attempt_id, 'CLAIMED', 'RUNNING', session_user, p_worker_id);
     RETURN attempt_id;
 END
 $minos$;""",
@@ -2425,7 +2700,10 @@ $minos$;""",
     r"""REVOKE ALL ON FUNCTION dbv2_catalog.enforce_backup_set_immutability() FROM PUBLIC;""",
     r"""REVOKE ALL ON FUNCTION dbv2_catalog.enforce_backup_set_shape() FROM PUBLIC;""",
     r"""REVOKE ALL ON FUNCTION dbv2_catalog.enforce_release_state() FROM PUBLIC;""",
-    r"""REVOKE ALL ON FUNCTION dbv2_catalog.get_or_verify_artifact(p_content_sha256 char(64), p_size_bytes bigint, p_media_type text, p_artifact_kind text, p_backup_scope text, p_provenance jsonb) FROM PUBLIC;""",
+    r"""REVOKE ALL ON FUNCTION dbv2_catalog.get_or_verify_artifact_location(p_artifact_id uuid, p_backend_key text, p_object_key text, p_is_primary boolean) FROM PUBLIC;""",
+    r"""REVOKE ALL ON FUNCTION dbv2_catalog.get_or_verify_external_artifact(p_content_sha256 char(64), p_size_bytes bigint, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_provenance jsonb) FROM PUBLIC;""",
+    r"""REVOKE ALL ON FUNCTION dbv2_catalog.get_or_verify_inline_artifact(p_payload bytea, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_provenance jsonb) FROM PUBLIC;""",
+    r"""REVOKE ALL ON FUNCTION dbv2_catalog.record_artifact_verification(p_artifact_id uuid, p_observed_sha256 char(64), p_observed_size_bytes bigint, p_location_id uuid) FROM PUBLIC;""",
     r"""REVOKE ALL ON FUNCTION dbv2_catalog.register_backup_set(p_manifest jsonb, p_completeness text) FROM PUBLIC;""",
     r"""REVOKE ALL ON FUNCTION dbv2_evaluation.enforce_evaluation_run_state() FROM PUBLIC;""",
     r"""REVOKE ALL ON FUNCTION dbv2_evaluation.record_evaluation_scores(p_run_id uuid, p_scores jsonb) FROM PUBLIC;""",
@@ -2496,11 +2774,27 @@ $minos$;""",
     r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.enforce_backup_set_immutability() TO minos_owner;""",
     r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.enforce_backup_set_shape() TO minos_owner;""",
     r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.enforce_release_state() TO minos_owner;""",
-    r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.get_or_verify_artifact(p_content_sha256 char(64), p_size_bytes bigint, p_media_type text, p_artifact_kind text, p_backup_scope text, p_provenance jsonb) TO minos_evaluator;""",
-    r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.get_or_verify_artifact(p_content_sha256 char(64), p_size_bytes bigint, p_media_type text, p_artifact_kind text, p_backup_scope text, p_provenance jsonb) TO minos_owner;""",
-    r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.get_or_verify_artifact(p_content_sha256 char(64), p_size_bytes bigint, p_media_type text, p_artifact_kind text, p_backup_scope text, p_provenance jsonb) TO minos_planner;""",
-    r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.get_or_verify_artifact(p_content_sha256 char(64), p_size_bytes bigint, p_media_type text, p_artifact_kind text, p_backup_scope text, p_provenance jsonb) TO minos_runner;""",
-    r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.get_or_verify_artifact(p_content_sha256 char(64), p_size_bytes bigint, p_media_type text, p_artifact_kind text, p_backup_scope text, p_provenance jsonb) TO minos_trainer;""",
+    r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.get_or_verify_artifact_location(p_artifact_id uuid, p_backend_key text, p_object_key text, p_is_primary boolean) TO minos_evaluator;""",
+    r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.get_or_verify_artifact_location(p_artifact_id uuid, p_backend_key text, p_object_key text, p_is_primary boolean) TO minos_owner;""",
+    r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.get_or_verify_artifact_location(p_artifact_id uuid, p_backend_key text, p_object_key text, p_is_primary boolean) TO minos_planner;""",
+    r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.get_or_verify_artifact_location(p_artifact_id uuid, p_backend_key text, p_object_key text, p_is_primary boolean) TO minos_runner;""",
+    r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.get_or_verify_artifact_location(p_artifact_id uuid, p_backend_key text, p_object_key text, p_is_primary boolean) TO minos_trainer;""",
+    r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.get_or_verify_external_artifact(p_content_sha256 char(64), p_size_bytes bigint, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_provenance jsonb) TO minos_evaluator;""",
+    r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.get_or_verify_external_artifact(p_content_sha256 char(64), p_size_bytes bigint, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_provenance jsonb) TO minos_owner;""",
+    r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.get_or_verify_external_artifact(p_content_sha256 char(64), p_size_bytes bigint, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_provenance jsonb) TO minos_planner;""",
+    r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.get_or_verify_external_artifact(p_content_sha256 char(64), p_size_bytes bigint, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_provenance jsonb) TO minos_runner;""",
+    r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.get_or_verify_external_artifact(p_content_sha256 char(64), p_size_bytes bigint, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_provenance jsonb) TO minos_trainer;""",
+    r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.get_or_verify_inline_artifact(p_payload bytea, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_provenance jsonb) TO minos_evaluator;""",
+    r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.get_or_verify_inline_artifact(p_payload bytea, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_provenance jsonb) TO minos_owner;""",
+    r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.get_or_verify_inline_artifact(p_payload bytea, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_provenance jsonb) TO minos_planner;""",
+    r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.get_or_verify_inline_artifact(p_payload bytea, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_provenance jsonb) TO minos_runner;""",
+    r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.get_or_verify_inline_artifact(p_payload bytea, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_provenance jsonb) TO minos_trainer;""",
+    r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.record_artifact_verification(p_artifact_id uuid, p_observed_sha256 char(64), p_observed_size_bytes bigint, p_location_id uuid) TO minos_evaluator;""",
+    r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.record_artifact_verification(p_artifact_id uuid, p_observed_sha256 char(64), p_observed_size_bytes bigint, p_location_id uuid) TO minos_owner;""",
+    r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.record_artifact_verification(p_artifact_id uuid, p_observed_sha256 char(64), p_observed_size_bytes bigint, p_location_id uuid) TO minos_planner;""",
+    r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.record_artifact_verification(p_artifact_id uuid, p_observed_sha256 char(64), p_observed_size_bytes bigint, p_location_id uuid) TO minos_runner;""",
+    r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.record_artifact_verification(p_artifact_id uuid, p_observed_sha256 char(64), p_observed_size_bytes bigint, p_location_id uuid) TO minos_trainer;""",
+    r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.record_artifact_verification(p_artifact_id uuid, p_observed_sha256 char(64), p_observed_size_bytes bigint, p_location_id uuid) TO minos_verifier;""",
     r"""GRANT EXECUTE ON FUNCTION dbv2_catalog.register_backup_set(p_manifest jsonb, p_completeness text) TO minos_owner;""",
     r"""GRANT EXECUTE ON FUNCTION dbv2_evaluation.enforce_evaluation_run_state() TO minos_owner;""",
     r"""GRANT EXECUTE ON FUNCTION dbv2_evaluation.record_evaluation_scores(p_run_id uuid, p_scores jsonb) TO minos_evaluator;""",

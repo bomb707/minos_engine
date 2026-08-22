@@ -16,13 +16,13 @@ REVISION: Final = "0009_dbv2_shadow_schema"
 
 DOWN_REVISION: Final = "0008_l2f_execution_results"
 
-MIGRATION_SHA256: Final = "5179e0bd28c553ea84e24a63c0cbd1f49b15eeb411034fc99640d74835333c5e"
+MIGRATION_SHA256: Final = "da06d696bf5e0cbc37f932ce7f4dc1ac3eb9593cbee36dbfe3302fd5acb92d11"
 
-LOGICAL_CONTRACT_SHA256: Final = "fc980a5a878cddff1b9a8a2a4b25ba4690abb85e8e28add84ac7f4bee75616ca"
+LOGICAL_CONTRACT_SHA256: Final = "2a94b3d6a2e638a7d9aade36bfdb8a66308877e80c665f0d94ce40352376958d"
 
-PHYSICAL_CONTRACT_SHA256: Final = "c4711bfa3282acc44f9a9ff47c0d8a15aed29f0d67063e9116baf272ae5f3ff5"
+PHYSICAL_CONTRACT_SHA256: Final = "706ba89942964400c5fcea46710b58e45cf85a9621b5a28d5da6aad2798b672c"
 
-DATABASE_API_SHA256: Final = "1e67735f2dcd4e6bec6f688755e3fc2456b71cebfb72cf0898c700591a9e45cf"
+DATABASE_API_SHA256: Final = "69ed3783fa86659ff7b4f8a6ed1ae7a85b92735100665b222936fbc0fa874929"
 
 SHADOW_SCHEMAS: Final = (
     "dbv2_audit",
@@ -148,6 +148,7 @@ TABLE_COLUMNS: Final = {
         ("wal_start_lsn", "text", True, None),
         ("wal_end_lsn", "text", True, None),
         ("artifact_snapshot_manifest_artifact_id", "uuid", True, None),
+        ("artifact_snapshot_manifest_sha256", "char(64)", True, None),
         ("artifact_snapshot_sha256", "char(64)", True, None),
         ("artifact_snapshot_manifest_media_type", "text", True, None),
         ("artifact_count", "bigint", True, None),
@@ -541,6 +542,7 @@ TABLE_CONSTRAINTS: Final = {
             "ck_backup_sets_manifest_media",
             "ck_backup_sets_quiesce_window",
             "ck_backup_sets_shape",
+            "ck_backup_sets_snapshot_identities_differ",
             "ck_backup_sets_snapshot_media",
         ),
         "foreign_keys": (
@@ -931,7 +933,10 @@ FUNCTIONS: Final = (
     "dbv2_catalog.enforce_backup_set_immutability()",
     "dbv2_catalog.enforce_backup_set_shape()",
     "dbv2_catalog.enforce_release_state()",
-    "dbv2_catalog.get_or_verify_artifact(p_content_sha256 char(64), p_size_bytes bigint, p_media_type text, p_artifact_kind text, p_backup_scope text, p_provenance jsonb)",
+    "dbv2_catalog.get_or_verify_artifact_location(p_artifact_id uuid, p_backend_key text, p_object_key text, p_is_primary boolean)",
+    "dbv2_catalog.get_or_verify_external_artifact(p_content_sha256 char(64), p_size_bytes bigint, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_provenance jsonb)",
+    "dbv2_catalog.get_or_verify_inline_artifact(p_payload bytea, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_provenance jsonb)",
+    "dbv2_catalog.record_artifact_verification(p_artifact_id uuid, p_observed_sha256 char(64), p_observed_size_bytes bigint, p_location_id uuid)",
     "dbv2_catalog.register_backup_set(p_manifest jsonb, p_completeness text)",
     "dbv2_evaluation.enforce_evaluation_run_state()",
     "dbv2_evaluation.record_evaluation_scores(p_run_id uuid, p_scores jsonb)",
@@ -961,7 +966,10 @@ FUNCTIONS: Final = (
 
 SECURITY_DEFINER_FUNCTIONS: Final = (
     "dbv2_catalog.enforce_backup_set_shape()",
-    "dbv2_catalog.get_or_verify_artifact(p_content_sha256 char(64), p_size_bytes bigint, p_media_type text, p_artifact_kind text, p_backup_scope text, p_provenance jsonb)",
+    "dbv2_catalog.get_or_verify_artifact_location(p_artifact_id uuid, p_backend_key text, p_object_key text, p_is_primary boolean)",
+    "dbv2_catalog.get_or_verify_external_artifact(p_content_sha256 char(64), p_size_bytes bigint, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_provenance jsonb)",
+    "dbv2_catalog.get_or_verify_inline_artifact(p_payload bytea, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_provenance jsonb)",
+    "dbv2_catalog.record_artifact_verification(p_artifact_id uuid, p_observed_sha256 char(64), p_observed_size_bytes bigint, p_location_id uuid)",
     "dbv2_catalog.register_backup_set(p_manifest jsonb, p_completeness text)",
     "dbv2_evaluation.record_evaluation_scores(p_run_id uuid, p_scores jsonb)",
     "dbv2_experiments.claim_next_job(p_worker_id text, p_lease_seconds integer, p_plan_id uuid)",
@@ -1587,11 +1595,11 @@ TRIGGERS: Final = (
     ),
 )
 
-D2_ACL_SHA256: Final = "e5962e5142a99e33c75f4b5bdceee07cee5d0afe86984de7cd3d5f85728c137c"
+D2_ACL_SHA256: Final = "f99f10c409ae61db22d83748d726bbcaa7f846026761ee8be49542c046f1e740"
 
-D2_ACL_RECORDS: Final = 780
+D2_ACL_RECORDS: Final = 810
 
-D2_ACL_OBJECTS: Final = 78
+D2_ACL_OBJECTS: Final = 81
 
 DOWNGRADE_DROPS: Final = (
     "dbv2_runtime",
@@ -1633,4 +1641,4 @@ REQUIRED_ROLES: Final = (
 SHARED_TABLE: Final = "public.alembic_version"
 
 #: sha256 of every line above this one, so the contract cannot be edited without detection.
-CONTRACT_SHA256: Final = "45bc9d93a1591ca7980c6d84d1f8144fabfa9e4152b0defef97f6fd57e5a163e"
+CONTRACT_SHA256: Final = "9c64a043737f44aadb44dca5c0d549e590434af2491c42532d7a7348ef759226"

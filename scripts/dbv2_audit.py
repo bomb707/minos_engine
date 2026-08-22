@@ -89,6 +89,7 @@ REQUIRED_R1_FIELDS = (
     "quiesce_ended_at",
     "wal_start_lsn",
     "wal_end_lsn",
+    "artifact_snapshot_manifest_sha256",
     "artifact_snapshot_sha256",
     "artifact_count",
     "artifact_total_bytes",
@@ -124,11 +125,17 @@ SNAPSHOT_DIGEST_DOMAIN = "minos:db-v2-artifact-snapshot:v1\n"
 #: the five columns that are present together or absent together.
 SNAPSHOT_SHAPE_COLUMNS = (
     "artifact_snapshot_manifest_artifact_id",
+    "artifact_snapshot_manifest_sha256",
     "artifact_snapshot_sha256",
     "artifact_snapshot_manifest_media_type",
     "artifact_count",
     "artifact_total_bytes",
 )
+
+#: the RAW manifest digest is what the composite foreign key binds; the domain-separated
+#: scientific identity deliberately participates in no foreign key at all.
+SNAPSHOT_RAW_DIGEST_COLUMN = "artifact_snapshot_manifest_sha256"
+SNAPSHOT_SCIENTIFIC_COLUMN = "artifact_snapshot_sha256"
 COMPLETENESS_STATES = frozenset({"complete", "database_only"})
 
 #: the pseudo-state a nullable state column starts in.
@@ -142,14 +149,18 @@ GATE_REQUIRED_CHECKS = (
     "verification_state = 'verified'",
     "lifecycle_state = 'active'",
     "backup_scope = 'recovery'",
-    "no artifact_locations row in state 'present'",
-    "snapshot manifest bytes do not recompute",
+    "is not stored in its declared storage mode",
+    "inline manifest bytes do not recompute to their raw digest",
+    "inline manifest byte size does not match the stored payload",
+    "snapshot manifest bytes do not recompute to artifact_snapshot_sha256",
+    "the snapshot was not taken with the frozen predicate",
     "snapshot entry count <> artifact_count",
     "snapshot entry total size <> artifact_total_bytes",
     "does not resolve to exactly one active operational artifact",
     "a recovery artifact appears in the snapshot",
-    "recovery manifest bytes do not recompute",
+    "recovery manifest bytes do not recompute to recovery_manifest_sha256",
     "an R1 field does not equal its mapped column",
+    "the external database dump has no artifact_locations row in state 'present'",
     "conflicting recovery_set_id, backup_key or recovery_manifest_sha256",
     "completeness changed",
 )
@@ -232,8 +243,8 @@ PREFLIGHT_REQUIRED_STEPS = (
 )
 
 #: D2 applies the physical ACL only: the logical final matrix restricted to the dbv2_* namespace.
-D2_ACL_RECORDS = 780
-D2_ACL_OBJECTS = 78
+D2_ACL_RECORDS = 810
+D2_ACL_OBJECTS = 81
 D2_FORBIDDEN_ACL_TARGETS = (
     "ON DATABASE minos_engine_db",
     "ON SCHEMA public",
@@ -692,6 +703,7 @@ def validate(reports: Path, root: Path = REPO_ROOT) -> list[str]:
             problems.extend(_validate_acl(contract, api))
             problems.extend(_validate_d2_acl(contract, physical, api))
             problems.extend(_validate_role_provisioning(api))
+            problems.extend(_validate_declared_mutations(root, physical, api))
             for document, label in ((contract, "logical contract"), (physical, "physical report")):
                 declared = document.get("database_api", {}).get(CONTRACT_HASH_FIELD)
                 if declared != api.get(CONTRACT_HASH_FIELD):
@@ -1758,6 +1770,52 @@ def _validate_d2_acl(
         for privilege in DDL_TABLE_PRIVILEGES:
             if record["privileges"].get(privilege):
                 problems.append(f"{record['principal']} holds {privilege} on {record['object']}")
+    return problems
+
+
+def _validate_declared_mutations(
+    root: Path, physical: dict[str, Any], api: dict[str, Any]
+) -> list[str]:
+    """D2.1 G: a declared tables_mutated inventory that the generated body does not perform.
+
+    The D2 contract claimed audit writes that no function made. This reads the committed
+    migration - the executable artifact, not the contract that describes it - and compares the
+    tables each function actually writes against the tables it declares.
+    """
+    problems: list[str] = []
+    migration = root / "migrations" / "versions" / f"{EXPECTED_REVISION_PATH[-1]}.py"
+    if not migration.is_file():
+        return [f"cannot audit declared mutations: {migration.name} is missing"]
+    source = migration.read_text(encoding="utf-8")
+    shadow = physical.get("schema_mapping", {}).get("canonical_to_shadow", {})
+    inverse = {v: k for k, v in shadow.items()}
+
+    bodies: dict[str, str] = {}
+    for match in re.finditer(r"CREATE FUNCTION (dbv2_\w+)\.(\w+)\((.*?)\n\$minos\$;", source, re.S):
+        bodies[f"{match.group(1)}.{match.group(2)}"] = match.group(3)
+
+    for function in sorted(api.get("functions", []), key=lambda f: f["name"]):
+        if function.get("kind") != "api_function":
+            continue
+        canonical = function["name"]
+        schema_name, bare = canonical.split(".", 1)
+        physical_name = f"{shadow.get(schema_name)}.{bare}"
+        body = bodies.get(physical_name)
+        if body is None:
+            problems.append(f"{canonical}: no generated body found in the migration")
+            continue
+        observed: set[str] = set()
+        for statement in re.finditer(r"(?:INSERT INTO|UPDATE)\s+(dbv2_\w+)\.(\w+)", body):
+            mapped = inverse.get(statement.group(1))
+            if mapped:
+                observed.add(f"{mapped}.{statement.group(2)}")
+        declared = set(function.get("tables_mutated", []))
+        for table in sorted(declared - observed):
+            problems.append(
+                f"{canonical} declares it mutates {table} but the generated body never writes it"
+            )
+        for table in sorted(observed - declared):
+            problems.append(f"{canonical} writes {table} but does not declare it in tables_mutated")
     return problems
 
 

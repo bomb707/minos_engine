@@ -1,21 +1,22 @@
 # MINOS Database V2 — Canonical Architecture
 
-**Stage:** DB-V2 **D2** — migration `0009` implemented and exercised on **scratch PostgreSQL only**.
-D1 through D1.4 are accepted and frozen. The operational database is untouched.
-**Designed against:** `feature/L2-F` at `292c2294c3e2f67c54db9a61e2c4d5c1b5771996`.
+**Stage:** DB-V2 **D2.1** — migration `0009` implemented, corrected and exercised on
+**scratch PostgreSQL only**. D1 through D1.4 are accepted and frozen. The operational
+database is untouched.
+**Designed against:** `feature/L2-F` at `e1f82bafec48cfc967832b857f1f9e17537193b7`.
 **Operational database:** `minos_engine_db`, live at `0005_l2e_feature_view`, **untouched by this
 stage**.
-**Contract hash:** `fc980a5a878cddff1b9a8a2a4b25ba4690abb85e8e28add84ac7f4bee75616ca`
+**Contract hash:** `2a94b3d6a2e638a7d9aade36bfdb8a66308877e80c665f0d94ce40352376958d`
 (over [`MINOS_DATABASE_V2_CONTRACT.json`](../../reports/database/MINOS_DATABASE_V2_CONTRACT.json),
 excluding its own `contract_sha256` field).
 
 **Physical deployment contract:**
 [`MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json`](../../reports/database/MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json),
-hash `c4711bfa3282acc44f9a9ff47c0d8a15aed29f0d67063e9116baf272ae5f3ff5`.
+hash `706ba89942964400c5fcea46710b58e45cf85a9621b5a28d5da6aad2798b672c`.
 
 **Database API contract:**
 [`MINOS_DATABASE_V2_DATABASE_API.json`](../../reports/database/MINOS_DATABASE_V2_DATABASE_API.json),
-hash `1e67735f2dcd4e6bec6f688755e3fc2456b71cebfb72cf0898c700591a9e45cf` — 34 functions, 89 triggers,
+hash `69ed3783fa86659ff7b4f8a6ed1ae7a85b92735100665b222936fbc0fa874929` — 37 functions, 89 triggers,
 16 state machines and an 800-record ACL matrix. Both contracts above pin this hash; this document
 pins neither of theirs, so the three hashes form a one-way graph.
 
@@ -463,7 +464,7 @@ in the registered row, so the consistency claim is auditable rather than asserte
 ## 6c. D2 — the shadow schema exists (on scratch PostgreSQL)
 
 `migrations/versions/0009_dbv2_shadow_schema.py` is committed. It creates the seven `dbv2_*`
-schemas, **37 tables, 34 functions, 89 triggers** and the **780-record D2 physical ACL**, and it
+schemas, **37 tables, 37 functions, 89 triggers** and the **810-record D2 physical ACL**, and it
 has been exercised end to end on a scratch cluster: `0008 → 0009 → 0008 → 0009`, plus the truthful
 operational lineage `0005 → 0006 → 0007 → 0008 → 0009`. Every V1 object is fingerprinted before the
 migration — schemas, relations, columns, constraints, indexes, triggers, functions, grants, table
@@ -489,12 +490,50 @@ version-table update, which runs inside the same transaction, is not attempted a
 
 **D2 grants only what D2 creates.** The 800-record logical ACL is the *final* matrix, applied by
 the later cutover/security stage. What `0009` applies is the **D2 physical ACL**: the same matrix
-restricted to the shadow namespace — 7 schemas, 37 tables, 34 functions × 9 roles and `PUBLIC` =
-780 records. It executes no `REVOKE` on the database, none on schema `public`, none on
+restricted to the shadow namespace — 7 schemas, 37 tables, 37 functions × 9 roles and `PUBLIC` =
+810 records. It executes no `REVOKE` on the database, none on schema `public`, none on
 `public.alembic_version`, and no `ALTER DEFAULT PRIVILEGES` outside the seven new schemas. The
 shared Alembic table is verified and never altered.
 
-### 6c.1 What D2 did not do
+### 6c.1 D2.1 — five defects the first cut carried
+
+**Canonical artifact identity.** `catalog.artifacts.content_sha256` is now, without exception, the
+lowercase hex SHA-256 of the exact stored payload bytes — no domain prefix, no scientific envelope.
+For an inline artifact PostgreSQL derives that identity itself, and
+`ck_artifacts_inline_bounded` refuses any row whose declared digest or byte count is not what the
+stored bytes actually are. Direct SQL cannot forge either; it does not need to go through a
+function to be caught.
+
+**Two identities, separated.** The snapshot manifest now has a raw digest of its own bytes,
+`artifact_snapshot_manifest_sha256`, and that is what
+`fk_backup_sets_artifact_snapshot_manifest` binds to `catalog.artifacts.content_sha256`. The
+domain-separated `artifact_snapshot_sha256` is the snapshot's scientific identity and participates
+in no foreign key at all — binding it had forced the artifact row to claim a digest that was not
+the digest of its own content. `ck_backup_sets_snapshot_identities_differ` refuses a row where one
+was substituted for the other, and all **six** snapshot columns are now populated together or NULL
+together.
+
+**Inline needs no location.** The two manifests are stored inline, so the gate proves their bytes
+in place. Requiring an `artifact_locations` row to show that bytes the database is already holding
+and hashing exist was a contradiction no legal API could satisfy. Only the external database dump
+needs a present location, and it also needs `verification_state = 'verified'`.
+
+**A complete artifact-control API.** Four functions replace the single external-only
+`get_or_verify_artifact`: `get_or_verify_inline_artifact` (the database derives the digest and size
+and the row is born verified), `get_or_verify_external_artifact` (metadata only, born unverified),
+`get_or_verify_artifact_location` (a clean relative key — no absolute path, no `file://`, no `..`,
+no empty component, no trailing separator), and `record_artifact_verification` (the only path to
+`verified`, and only when the observed digest and size match). A runtime login may publish
+operational artifacts only; recovery scope is the administrative boundary.
+
+**Audit that is real.** Every mutating artifact API writes exactly one append-only
+`audit.events` row per actual state change, attributed to `session_user` — the invoking login, not
+the `SECURITY DEFINER` principal. A replay writes none. `register_backup_set` writes its
+`audit.admin_operations` row in the same transaction. Where the D2 contract claimed a write that
+never happened, the write is now real or the claim is withdrawn with its reason, and a validator
+fails the build if any declared `tables_mutated` entry is not something the generated body performs.
+
+### 6c.2 What D2 and D2.1 did not do
 
 No data was moved or transformed. No artifact was published, no job enqueued, no job executed: all
 37 shadow tables are created and remain **empty**. No canonical schema was renamed, no

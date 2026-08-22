@@ -8,7 +8,7 @@
       "size_bytes",
       "artifact_kind"
     ],
-    "formula": "artifact_snapshot_sha256 = sha256(DOMAIN_bytes + canonical_json_bytes(manifest))",
+    "formula": "artifact_snapshot_sha256 = sha256(DOMAIN_bytes + canonical_json_bytes(manifest)); it is the scientific identity of the inventory, never an artifact content digest",
     "manifest_fields": [
       "schema_version",
       "recovery_set_id",
@@ -17,7 +17,8 @@
       "artifact_count",
       "artifact_total_bytes"
     ],
-    "note": "Domain separation makes an artifact-snapshot digest unusable as a recovery-manifest digest even if the two documents ever serialize identically."
+    "note": "Domain separation makes an artifact-snapshot digest unusable as a recovery-manifest digest even if the two documents ever serialize identically.",
+    "raw_manifest_digest": "artifact_snapshot_manifest_sha256 = sha256(the exact stored manifest bytes), with NO domain prefix. It is the artifact's own content_sha256 and is what the composite foreign key binds."
   },
   "artifact_snapshot_predicate": {
     "columns_selected": [
@@ -36,6 +37,22 @@
     "supporting_index": "ix_artifacts_operational_snapshot",
     "table": "catalog.artifacts",
     "where": "lifecycle_state = 'active' AND backup_scope = 'operational'"
+  },
+  "artifact_storage_rules": {
+    "external": {
+      "content_identity": "describes independently verified external bytes",
+      "inline_payload": "NULL",
+      "location_required": true,
+      "location_rule": "The bytes live somewhere else, so at least one catalog.artifact_locations row in state 'present' is what proves they exist at all.",
+      "verification": "born 'unverified'; reaches 'verified' only through catalog.record_artifact_verification() with a matching observed digest and size"
+    },
+    "inline": {
+      "content_identity": "content_sha256 = encode(sha256(inline_payload), 'hex')",
+      "inline_payload": "NOT NULL, size_bytes = octet_length(inline_payload), <= 65536 bytes",
+      "location_required": false,
+      "location_rule": "The authoritative bytes ARE the row. Requiring an artifact_locations row to prove an inline payload exists is a contradiction: it would demand external evidence for bytes PostgreSQL is already holding and hashing. A durable external COPY of an inline artifact may have a location, but such a location is never required for validity.",
+      "verification": "created 'verified', because PostgreSQL possesses the authoritative bytes and derives the digest itself"
+    }
   },
   "artifacts_unique_targets_required_by_backup_sets": {
     "already_declared": true,
@@ -144,7 +161,7 @@
     "statement_timeout_ms": 30000,
     "verification_sessions": "default_transaction_read_only = on"
   },
-  "contract_sha256": "fc980a5a878cddff1b9a8a2a4b25ba4690abb85e8e28add84ac7f4bee75616ca",
+  "contract_sha256": "2a94b3d6a2e638a7d9aade36bfdb8a66308877e80c665f0d94ce40352376958d",
   "critical_queries": [
     {
       "async_allowed": false,
@@ -353,9 +370,9 @@
     }
   ],
   "database_api": {
-    "contract_sha256": "1e67735f2dcd4e6bec6f688755e3fc2456b71cebfb72cf0898c700591a9e45cf",
-    "d2_physical_acl_records": 780,
-    "functions": 34,
+    "contract_sha256": "69ed3783fa86659ff7b4f8a6ed1ae7a85b92735100665b222936fbc0fa874929",
+    "d2_physical_acl_records": 810,
+    "functions": 37,
     "note": "The executable half of the contract: every function, trigger, state transition and grant migration 0009 must create. Frozen in DB-V2 D1.4.",
     "report": "MINOS_DATABASE_V2_DATABASE_API.json",
     "triggers": 89
@@ -475,7 +492,7 @@
       "profiling": "dbv2_profiling",
       "runtime": "dbv2_runtime"
     },
-    "contract_sha256": "c4711bfa3282acc44f9a9ff47c0d8a15aed29f0d67063e9116baf272ae5f3ff5",
+    "contract_sha256": "706ba89942964400c5fcea46710b58e45cf85a9621b5a28d5da6aad2798b672c",
     "operational_preparation_path": [
       "0005_l2e_feature_view",
       "0006_l2f_experiment_plan",
@@ -722,6 +739,27 @@
           "cardinality": "227 today; 10^4-10^5 at full L2-F execution scale",
           "check_constraints": [
             {
+              "expression": "backup_scope IN ('operational','recovery')",
+              "name": "ck_artifacts_backup_scope"
+            },
+            {
+              "expression": "(storage_mode = 'inline' AND inline_payload IS NOT NULL AND size_bytes = octet_length(inline_payload) AND content_sha256 = encode(sha256(inline_payload), 'hex') AND size_bytes <= 65536) OR (storage_mode = 'external' AND inline_payload IS NULL)",
+              "name": "ck_artifacts_inline_bounded",
+              "note": "For an inline artifact PostgreSQL itself derives the identity: the digest and the byte count must equal what the stored bytes actually are. Direct SQL cannot forge either, with or without the API function. sha256(bytea), encode and octet_length are all IMMUTABLE, so this is a legal CHECK."
+            },
+            {
+              "expression": "length(artifact_kind) > 0",
+              "name": "ck_artifacts_kind"
+            },
+            {
+              "expression": "lifecycle_state IN ('active','archived','quarantined','deleted')",
+              "name": "ck_artifacts_lifecycle"
+            },
+            {
+              "expression": "retention_class IN ('permanent','long','standard','ephemeral')",
+              "name": "ck_artifacts_retention"
+            },
+            {
               "expression": "content_sha256 ~ '^[0-9a-f]{64}$'",
               "name": "ck_artifacts_sha_hex"
             },
@@ -734,28 +772,8 @@
               "name": "ck_artifacts_storage_mode"
             },
             {
-              "expression": "lifecycle_state IN ('active','archived','quarantined','deleted')",
-              "name": "ck_artifacts_lifecycle"
-            },
-            {
               "expression": "verification_state IN ('unverified','verified','missing','corrupt')",
               "name": "ck_artifacts_verification"
-            },
-            {
-              "expression": "retention_class IN ('permanent','long','standard','ephemeral')",
-              "name": "ck_artifacts_retention"
-            },
-            {
-              "expression": "(storage_mode = 'inline' AND inline_payload IS NOT NULL AND size_bytes <= 65536) OR (storage_mode = 'external' AND inline_payload IS NULL)",
-              "name": "ck_artifacts_inline_bounded"
-            },
-            {
-              "expression": "length(artifact_kind) > 0",
-              "name": "ck_artifacts_kind"
-            },
-            {
-              "expression": "backup_scope IN ('operational','recovery')",
-              "name": "ck_artifacts_backup_scope"
             }
           ],
           "columns": [
@@ -866,10 +884,12 @@
               "type": "timestamptz"
             }
           ],
+          "content_identity": "content_sha256 is the lowercase hex SHA-256 of the EXACT stored payload bytes: no domain prefix, no scientific-identity envelope, no canonicalisation of its own. A scientific identity that needs domain separation (an artifact snapshot, for instance) is a SEPARATE column on the table that owns it, never this one.",
           "critical_queries": [
             "Q10",
             "Q13"
           ],
+          "external_verification_rule": "Registering external metadata never confers verification: an external artifact is born verification_state = 'unverified' and reaches 'verified' only through catalog.record_artifact_verification(), which requires an observed digest and byte size equal to the registered identity.",
           "foreign_keys": [],
           "indexes": [
             {
@@ -1376,7 +1396,7 @@
           "cardinality": "100s",
           "check_constraints": [
             {
-              "expression": "artifact_snapshot_sha256 IS NULL OR artifact_snapshot_sha256 ~ '^[0-9a-f]{64}$'",
+              "expression": "(artifact_snapshot_sha256 IS NULL OR artifact_snapshot_sha256 ~ '^[0-9a-f]{64}$') AND (artifact_snapshot_manifest_sha256 IS NULL OR artifact_snapshot_manifest_sha256 ~ '^[0-9a-f]{64}$')",
               "name": "ck_backup_sets_artifact_hex"
             },
             {
@@ -1416,9 +1436,14 @@
               "name": "ck_backup_sets_quiesce_window"
             },
             {
-              "expression": "(completeness = 'complete' AND artifact_snapshot_manifest_artifact_id IS NOT NULL AND artifact_snapshot_sha256 IS NOT NULL AND artifact_snapshot_manifest_media_type IS NOT NULL AND artifact_count IS NOT NULL AND artifact_count >= 0 AND artifact_total_bytes IS NOT NULL AND artifact_total_bytes >= 0) OR (completeness = 'database_only' AND artifact_snapshot_manifest_artifact_id IS NULL AND artifact_snapshot_sha256 IS NULL AND artifact_snapshot_manifest_media_type IS NULL AND artifact_count IS NULL AND artifact_total_bytes IS NULL)",
+              "expression": "(completeness = 'complete' AND artifact_snapshot_manifest_artifact_id IS NOT NULL AND artifact_snapshot_manifest_sha256 IS NOT NULL AND artifact_snapshot_sha256 IS NOT NULL AND artifact_snapshot_manifest_media_type IS NOT NULL AND artifact_count IS NOT NULL AND artifact_total_bytes IS NOT NULL AND artifact_count >= 0 AND artifact_total_bytes >= 0) OR (completeness = 'database_only' AND artifact_snapshot_manifest_artifact_id IS NULL AND artifact_snapshot_manifest_sha256 IS NULL AND artifact_snapshot_sha256 IS NULL AND artifact_snapshot_manifest_media_type IS NULL AND artifact_count IS NULL AND artifact_total_bytes IS NULL)",
               "name": "ck_backup_sets_shape",
-              "note": "The two shapes are mutually exclusive and, because ck_backup_sets_completeness admits only these two values, exhaustive. All-or-none: no half-populated snapshot triple exists."
+              "note": "All SIX snapshot-related columns are populated together for a complete set and all six are NULL for a database_only set. The two shapes are mutually exclusive and, because ck_backup_sets_completeness admits only these two values, exhaustive."
+            },
+            {
+              "expression": "artifact_snapshot_sha256 IS NULL OR artifact_snapshot_sha256 <> artifact_snapshot_manifest_sha256",
+              "name": "ck_backup_sets_snapshot_identities_differ",
+              "note": "The domain prefix guarantees the two digests differ for any manifest; equality means one was substituted for the other."
             },
             {
               "expression": "artifact_snapshot_manifest_media_type IS NULL OR artifact_snapshot_manifest_media_type = 'application/vnd.minos.artifact-snapshot+json'",
@@ -1554,8 +1579,15 @@
             },
             {
               "mutability": "immutable",
+              "name": "artifact_snapshot_manifest_sha256",
+              "note": "The RAW SHA-256 of the exact inline snapshot-manifest bytes. This is what the composite foreign key binds to catalog.artifacts.content_sha256; it is NOT the snapshot's scientific identity.",
+              "nullable": true,
+              "type": "char(64)"
+            },
+            {
+              "mutability": "immutable",
               "name": "artifact_snapshot_sha256",
-              "note": "NULL exactly when completeness = 'database_only'; NOT NULL exactly when completeness = 'complete'. Enforced all-or-none by ck_backup_sets_shape.",
+              "note": "The domain-separated snapshot scientific identity: sha256(b'minos:db-v2-artifact-snapshot:v1\\n' + the exact canonical manifest bytes). It deliberately participates in NO foreign key: binding it to catalog.artifacts.content_sha256 would have forced the artifact row to claim a digest that is not the digest of its own bytes.",
               "nullable": true,
               "type": "char(64)"
             },
@@ -1619,19 +1651,19 @@
               "type": "timestamptz"
             }
           ],
-          "completeness_rule": "completeness is set once, at INSERT, and is immutable thereafter. 'complete' is admitted only when catalog.enforce_backup_set_shape() verifies, in the SAME transaction, that all THREE referenced artifacts exist, bind by id/digest/media type, carry verification_state = 'verified', lifecycle_state = 'active' and backup_scope = 'recovery', each have at least one artifact_locations row in state 'present', and that the snapshot manifest bytes recompute to artifact_snapshot_sha256 with entry count and total size equal to artifact_count and artifact_total_bytes. 'database_only' carries the two-artifact shape and may NOT authorize a migration, a transformation or a cutover.",
+          "completeness_rule": "completeness is set once, at INSERT, and is immutable thereafter. 'complete' is admitted only when catalog.enforce_backup_set_shape() verifies, in the SAME transaction, that all THREE referenced artifacts exist and bind by id/RAW digest/media type, carry verification_state = 'verified', lifecycle_state = 'active' and backup_scope = 'recovery'; that the two INLINE manifests' stored bytes recompute to their registered raw digests and byte sizes; that the snapshot manifest's domain-separated identity recomputes to artifact_snapshot_sha256; that its entry count and total size equal artifact_count and artifact_total_bytes; and that the EXTERNAL database dump has at least one artifact_locations row in state 'present'. 'database_only' carries the two-artifact shape and may NOT authorize a migration, a transformation or a cutover.",
           "critical_queries": [
             "Q16"
           ],
           "foreign_keys": [
             {
               "columns": [
-                "recovery_manifest_artifact_id",
-                "recovery_manifest_sha256",
-                "recovery_manifest_media_type"
+                "artifact_snapshot_manifest_artifact_id",
+                "artifact_snapshot_manifest_sha256",
+                "artifact_snapshot_manifest_media_type"
               ],
-              "name": "fk_backup_sets_recovery_manifest",
-              "note": "binds the id AND the digest AND the media type to ONE artifact row via uq_artifacts_id_sha_media",
+              "name": "fk_backup_sets_artifact_snapshot_manifest",
+              "note": "Binds the manifest artifact by its RAW content digest. artifact_snapshot_sha256 is the scientific identity of what the manifest describes and is verified by catalog.enforce_backup_set_shape(), not by a foreign key.",
               "referenced_columns": [
                 "id",
                 "content_sha256",
@@ -1656,12 +1688,12 @@
             },
             {
               "columns": [
-                "artifact_snapshot_manifest_artifact_id",
-                "artifact_snapshot_sha256",
-                "artifact_snapshot_manifest_media_type"
+                "recovery_manifest_artifact_id",
+                "recovery_manifest_sha256",
+                "recovery_manifest_media_type"
               ],
-              "name": "fk_backup_sets_artifact_snapshot_manifest",
-              "note": "artifact_snapshot_sha256 is therefore provably the digest of the referenced artifact",
+              "name": "fk_backup_sets_recovery_manifest",
+              "note": "binds the id AND the digest AND the media type to ONE artifact row via uq_artifacts_id_sha_media",
               "referenced_columns": [
                 "id",
                 "content_sha256",
@@ -1693,6 +1725,7 @@
           "purpose": "An immutable recovery-set identity: one PostgreSQL backup, the exact R1 recovery manifest that describes it, and - for a complete set - the operational artifact snapshot taken with it. All present artifacts are bound as artifacts by composite foreign key, so the row cannot name a digest that belongs to a different artifact. A dump without its artifact snapshot is a 'database_only' set and is not a valid MINOS recovery point.",
           "r1_field_to_column": {
             "artifact_count": "artifact_count",
+            "artifact_snapshot_manifest_sha256": "artifact_snapshot_manifest_sha256",
             "artifact_snapshot_sha256": "artifact_snapshot_sha256",
             "artifact_total_bytes": "artifact_total_bytes",
             "artifact_verification_tool_version": "artifact_verification_tool_version",
@@ -1711,13 +1744,14 @@
             "wal_end_lsn": "wal_end_lsn",
             "wal_start_lsn": "wal_start_lsn"
           },
-          "r1_field_to_column_note": "Every immutable R1 manifest field maps to exactly one column, so the registered row represents the manifest completely. recovery_manifest_sha256 additionally binds the whole manifest's canonical bytes, so no mapped value can drift from the file. Three of the mapped fields (artifact_snapshot_sha256, artifact_count, artifact_total_bytes) are present only in a complete manifest and are NULL in both the manifest and the row for a database_only set.",
+          "r1_field_to_column_note": "Every immutable R1 manifest field maps to exactly one column, so the registered row represents the manifest completely. recovery_manifest_sha256 additionally binds the whole manifest's canonical bytes. Four of the mapped fields (artifact_snapshot_manifest_sha256, artifact_snapshot_sha256, artifact_count, artifact_total_bytes) exist only in a complete manifest and are NULL in both the manifest and the row for a database_only set.",
           "read_responsibility": "operations",
           "retention": "per backup policy",
           "row_shapes": {
             "complete": {
               "artifact_count": "NOT NULL, >= 0",
-              "artifact_snapshot_triple": "required",
+              "artifact_snapshot_manifest_triple": "required (id, RAW digest, media type)",
+              "artifact_snapshot_sha256": "required (domain-separated, no foreign key)",
               "artifact_total_bytes": "NOT NULL, >= 0",
               "database_backup_triple": "required",
               "may_authorize_migration": true,
@@ -1726,7 +1760,8 @@
             },
             "database_only": {
               "artifact_count": "NULL",
-              "artifact_snapshot_triple": "NULL",
+              "artifact_snapshot_manifest_triple": "NULL",
+              "artifact_snapshot_sha256": "NULL",
               "artifact_total_bytes": "NULL",
               "database_backup_triple": "required",
               "may_authorize_migration": false,
@@ -5725,7 +5760,7 @@
       ]
     }
   ],
-  "stage": "DB-V2 D2",
+  "stage": "DB-V2 D2.1",
   "table_counts": {
     "audit": 2,
     "catalog": 6,

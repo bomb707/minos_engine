@@ -68,9 +68,10 @@ def _acl_map(url: str, sql: str) -> dict[str, dict[str, str]]:
 # J19: the D2 physical ACL, exactly
 # --------------------------------------------------------------------------- #
 def test_the_d2_physical_acl_matches_exactly(dbv2_url: str) -> None:
-    """J19: 780 declared records, compared against the live aclitem entries."""
+    """J19: every declared record, compared against the live aclitem entries."""
     acl = _d2_acl()
-    assert acl["counts"]["records"] == 780
+    objects = 7 + 37 + len(contract.FUNCTIONS)
+    assert acl["counts"]["records"] == objects * 10
     schemas = _acl_map(
         dbv2_url,
         "SELECT nspname, COALESCE(array_to_string(nspacl::text[], ','), '') FROM pg_namespace "
@@ -108,8 +109,8 @@ def test_the_d2_physical_acl_matches_exactly(dbv2_url: str) -> None:
                 )
             checked += 1
         assert "*" not in held, f"{principal} holds a grant option on {record['object']}"
-    # 78 objects x 9 named principals x 9 privilege keys; PUBLIC is asserted separately
-    assert checked == 78 * 9 * 9
+    # objects x 9 named principals x 9 privilege keys; PUBLIC is asserted separately
+    assert checked == objects * 9 * 9
 
 
 def test_public_holds_nothing_on_any_new_object(dbv2_url: str) -> None:

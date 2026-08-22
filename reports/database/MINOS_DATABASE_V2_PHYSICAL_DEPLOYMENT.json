@@ -8,7 +8,7 @@
       "size_bytes",
       "artifact_kind"
     ],
-    "formula": "artifact_snapshot_sha256 = sha256(DOMAIN_bytes + canonical_json_bytes(manifest))",
+    "formula": "artifact_snapshot_sha256 = sha256(DOMAIN_bytes + canonical_json_bytes(manifest)); it is the scientific identity of the inventory, never an artifact content digest",
     "manifest_fields": [
       "schema_version",
       "recovery_set_id",
@@ -17,7 +17,8 @@
       "artifact_count",
       "artifact_total_bytes"
     ],
-    "note": "Domain separation makes an artifact-snapshot digest unusable as a recovery-manifest digest even if the two documents ever serialize identically."
+    "note": "Domain separation makes an artifact-snapshot digest unusable as a recovery-manifest digest even if the two documents ever serialize identically.",
+    "raw_manifest_digest": "artifact_snapshot_manifest_sha256 = sha256(the exact stored manifest bytes), with NO domain prefix. It is the artifact's own content_sha256 and is what the composite foreign key binds."
   },
   "artifact_snapshot_predicate": {
     "columns_selected": [
@@ -37,7 +38,23 @@
     "table": "catalog.artifacts",
     "where": "lifecycle_state = 'active' AND backup_scope = 'operational'"
   },
-  "contract_sha256": "c4711bfa3282acc44f9a9ff47c0d8a15aed29f0d67063e9116baf272ae5f3ff5",
+  "artifact_storage_rules": {
+    "external": {
+      "content_identity": "describes independently verified external bytes",
+      "inline_payload": "NULL",
+      "location_required": true,
+      "location_rule": "The bytes live somewhere else, so at least one catalog.artifact_locations row in state 'present' is what proves they exist at all.",
+      "verification": "born 'unverified'; reaches 'verified' only through catalog.record_artifact_verification() with a matching observed digest and size"
+    },
+    "inline": {
+      "content_identity": "content_sha256 = encode(sha256(inline_payload), 'hex')",
+      "inline_payload": "NOT NULL, size_bytes = octet_length(inline_payload), <= 65536 bytes",
+      "location_required": false,
+      "location_rule": "The authoritative bytes ARE the row. Requiring an artifact_locations row to prove an inline payload exists is a contradiction: it would demand external evidence for bytes PostgreSQL is already holding and hashing. A durable external COPY of an inline artifact may have a location, but such a location is never required for validity.",
+      "verification": "created 'verified', because PostgreSQL possesses the authoritative bytes and derives the digest itself"
+    }
+  },
+  "contract_sha256": "706ba89942964400c5fcea46710b58e45cf85a9621b5a28d5da6aad2798b672c",
   "counts": {
     "d2_tables_created": 37,
     "logical_tables": 38,
@@ -130,6 +147,17 @@
   },
   "d2_status": {
     "applied_to_operational_database": false,
+    "corrective": {
+      "closed": [
+        "the composite foreign key bound a domain-separated scientific hash to an artifact's raw content digest",
+        "direct SQL could forge an inline artifact's content_sha256 and size_bytes",
+        "no declared API could publish the inline recovery and snapshot manifests a recovery set needs",
+        "the completeness gate demanded external location evidence for inline bytes",
+        "five functions declared audit or history writes that no generated body performed"
+      ],
+      "note": "Still scratch PostgreSQL only. No data moved, no migration applied to the operational database, no recovery file published.",
+      "stage": "DB-V2 D2.1"
+    },
     "data_transformed": false,
     "exercised_on": "scratch PostgreSQL clusters only",
     "lifecycle_verified": "0008 -> 0009 -> 0008 -> 0009, and 0005 -> 0006 -> 0007 -> 0008 -> 0009",
@@ -137,16 +165,16 @@
     "note": "The shadow schema is created EMPTY: no artifact published, no job enqueued, no job executed, no V1 row read or written. D3 does not exist, recovery publication is unimplemented and cutover is unauthorized.",
     "operational_revision": "0005_l2e_feature_view",
     "shadow_objects": {
-      "functions": 34,
+      "functions": 37,
       "schemas": 7,
       "tables": 37,
       "triggers": 89
     }
   },
   "database_api": {
-    "contract_sha256": "1e67735f2dcd4e6bec6f688755e3fc2456b71cebfb72cf0898c700591a9e45cf",
-    "d2_physical_acl_records": 780,
-    "functions": 34,
+    "contract_sha256": "69ed3783fa86659ff7b4f8a6ed1ae7a85b92735100665b222936fbc0fa874929",
+    "d2_physical_acl_records": 810,
+    "functions": 37,
     "note": "The executable half of the contract: every function, trigger, state transition and grant migration 0009 must create. Frozen in DB-V2 D1.4.",
     "report": "MINOS_DATABASE_V2_DATABASE_API.json",
     "triggers": 89
@@ -492,11 +520,32 @@
       "post_cutover_function": "catalog.enforce_release_state"
     },
     {
-      "canonical_function": "catalog.get_or_verify_artifact",
+      "canonical_function": "catalog.get_or_verify_artifact_location",
       "cutover_recreation_required": true,
-      "d2_physical_function": "dbv2_catalog.get_or_verify_artifact",
+      "d2_physical_function": "dbv2_catalog.get_or_verify_artifact_location",
       "kind": "api_function",
-      "post_cutover_function": "catalog.get_or_verify_artifact"
+      "post_cutover_function": "catalog.get_or_verify_artifact_location"
+    },
+    {
+      "canonical_function": "catalog.get_or_verify_external_artifact",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_catalog.get_or_verify_external_artifact",
+      "kind": "api_function",
+      "post_cutover_function": "catalog.get_or_verify_external_artifact"
+    },
+    {
+      "canonical_function": "catalog.get_or_verify_inline_artifact",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_catalog.get_or_verify_inline_artifact",
+      "kind": "api_function",
+      "post_cutover_function": "catalog.get_or_verify_inline_artifact"
+    },
+    {
+      "canonical_function": "catalog.record_artifact_verification",
+      "cutover_recreation_required": true,
+      "d2_physical_function": "dbv2_catalog.record_artifact_verification",
+      "kind": "api_function",
+      "post_cutover_function": "catalog.record_artifact_verification"
     },
     {
       "canonical_function": "catalog.register_backup_set",
@@ -788,11 +837,12 @@
   },
   "r1_manifest_conditional_fields": {
     "fields": [
+      "artifact_snapshot_manifest_sha256",
       "artifact_snapshot_sha256",
       "artifact_count",
       "artifact_total_bytes"
     ],
-    "rule": "Present and non-null exactly when the recovery set is 'complete'. A 'database_only' manifest carries these three as null, and the registered row carries them as NULL."
+    "rule": "Present and non-null exactly when the recovery set is 'complete'. A 'database_only' manifest carries all four as null, and the registered row carries them as NULL."
   },
   "r1_manifest_fields": [
     "schema_version",
@@ -806,6 +856,7 @@
     "database_backup_size_bytes",
     "wal_start_lsn",
     "wal_end_lsn",
+    "artifact_snapshot_manifest_sha256",
     "artifact_snapshot_sha256",
     "artifact_count",
     "artifact_total_bytes",
@@ -842,6 +893,7 @@
           "database_backup_size_bytes",
           "wal_start_lsn",
           "wal_end_lsn",
+          "artifact_snapshot_manifest_sha256",
           "artifact_snapshot_sha256",
           "artifact_count",
           "artifact_total_bytes",
@@ -913,9 +965,11 @@
       {
         "artifact_bindings": {
           "artifact_snapshot_manifest": {
-            "digest_column": "artifact_snapshot_sha256",
+            "digest_column": "artifact_snapshot_manifest_sha256",
             "id_column": "artifact_snapshot_manifest_artifact_id",
-            "media_type": "application/vnd.minos.artifact-snapshot+json"
+            "media_type": "application/vnd.minos.artifact-snapshot+json",
+            "note": "The foreign key binds the RAW manifest digest. The domain-separated snapshot identity is a separate column, verified by the gate rather than by a foreign key.",
+            "scientific_identity_column": "artifact_snapshot_sha256"
           },
           "database_backup": {
             "digest_column": "database_backup_sha256",
@@ -939,6 +993,7 @@
         "phase": "R2",
         "r1_field_to_column": {
           "artifact_count": "artifact_count",
+          "artifact_snapshot_manifest_sha256": "artifact_snapshot_manifest_sha256",
           "artifact_snapshot_sha256": "artifact_snapshot_sha256",
           "artifact_total_bytes": "artifact_total_bytes",
           "artifact_verification_tool_version": "artifact_verification_tool_version",
@@ -980,6 +1035,7 @@
           "database_backup_size_bytes",
           "wal_start_lsn",
           "wal_end_lsn",
+          "artifact_snapshot_manifest_sha256",
           "artifact_snapshot_sha256",
           "artifact_count",
           "artifact_total_bytes",
@@ -1262,7 +1318,7 @@
   },
   "schema_version": "minos-db-v2-physical-deployment-v1",
   "shared_table": "public.alembic_version",
-  "stage": "DB-V2 D2",
+  "stage": "DB-V2 D2.1",
   "trigger_deployment": {
     "count": 89,
     "note": "Triggers are attached to the dbv2_* shadow tables and track them by OID, so the schema rename does not detach them. Their FUNCTION reference is by OID as well; what does NOT follow the rename is the schema-qualified text INSIDE each function body, which is why every function is re-created in the cutover transaction.",
@@ -1342,6 +1398,16 @@
       "replaced_by": "the exact predicate lifecycle_state = 'active' AND backup_scope = 'operational'",
       "statement": "that the R1 artifact snapshot covers every active artifact",
       "why_wrong": "R2 makes three more artifacts active and verified, so re-running an unqualified 'all active artifacts' predicate after R2 yields a different digest than the one R1 recorded. The snapshot would never be reproducible."
+    },
+    {
+      "replaced_by": "a separate artifact_snapshot_manifest_sha256 column carrying the raw manifest digest, which is what fk_backup_sets_artifact_snapshot_manifest binds",
+      "statement": "that fk_backup_sets_artifact_snapshot_manifest may bind artifact_snapshot_sha256 to catalog.artifacts.content_sha256",
+      "why_wrong": "artifact_snapshot_sha256 is domain-separated, so it can never equal the SHA-256 of the stored manifest bytes. The foreign key forced the artifact row to claim a content digest that was not the digest of its own content."
+    },
+    {
+      "replaced_by": "artifact_storage_rules, which requires a location for external artifacts only",
+      "statement": "that every artifact a recovery set references must have an artifact_locations row in state 'present'",
+      "why_wrong": "The two manifests are stored INLINE. Demanding external location evidence for bytes PostgreSQL already holds and hashes is a contradiction, and no legal API could satisfy it."
     }
   ]
 }

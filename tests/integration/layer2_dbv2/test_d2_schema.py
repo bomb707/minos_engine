@@ -215,8 +215,8 @@ def test_partial_index_predicates_are_present(dbv2_url: str) -> None:
 # --------------------------------------------------------------------------- #
 # J8-J9: functions and triggers
 # --------------------------------------------------------------------------- #
-def test_all_thirty_four_functions_match_signature_security_and_search_path(dbv2_url: str) -> None:
-    """J8."""
+def test_every_function_matches_signature_security_and_search_path(dbv2_url: str) -> None:
+    """J8: the count comes from the frozen contract, never from a literal in this file."""
     live = rows(
         dbv2_url,
         "SELECT n.nspname || '.' || p.proname || '(' || "
@@ -225,7 +225,7 @@ def test_all_thirty_four_functions_match_signature_security_and_search_path(dbv2
         "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
         "WHERE n.nspname LIKE 'dbv2\\_%' ORDER BY 1",
     )
-    assert len(live) == 34
+    assert len(live) == len(contract.FUNCTIONS)
     names = {signature.split("(", 1)[0] for signature, _, _ in live}
     assert names == {s.split("(", 1)[0] for s in contract.FUNCTIONS}
     definer = {signature.split("(", 1)[0] for signature, secdef, _ in live if secdef}
