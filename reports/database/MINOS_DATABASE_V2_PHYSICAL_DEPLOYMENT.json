@@ -3,6 +3,7 @@
     "ambiguity_rule": "Two entries sharing a content_sha256, or any entry whose content_sha256 does not resolve to exactly one active operational artifact, is a corrupt inventory and fails closed. catalog.artifacts declares UNIQUE (content_sha256), so a duplicate can only come from a hand-edited or truncated manifest.",
     "count_rule": "artifact_count and artifact_total_bytes are the row count and the SUM(size_bytes) of exactly the rows the predicate selects - no other row contributes to either.",
     "domain": "minos:db-v2-artifact-snapshot:v1\n",
+    "duplicate_key_note": "PostgreSQL's jsonb parser silently keeps the LAST value of a duplicated key and does not report that the original byte stream had one. The gate therefore cannot detect a duplicated JSON key, and does not claim to: the D3 application loader performs strict duplicate-key parsing of the manifest bytes BEFORE they are published as an artifact, and the raw-digest binding is what ties the parsed document to those exact bytes.",
     "entry_fields": [
       "content_sha256",
       "size_bytes",
@@ -18,7 +19,8 @@
       "artifact_total_bytes"
     ],
     "note": "Domain separation makes an artifact-snapshot digest unusable as a recovery-manifest digest even if the two documents ever serialize identically.",
-    "raw_manifest_digest": "artifact_snapshot_manifest_sha256 = sha256(the exact stored manifest bytes), with NO domain prefix. It is the artifact's own content_sha256 and is what the composite foreign key binds."
+    "raw_manifest_digest": "artifact_snapshot_manifest_sha256 = sha256(the exact stored manifest bytes), with NO domain prefix. It is the artifact's own content_sha256 and is what the composite foreign key binds.",
+    "snapshot_schema_version": "minos-artifact-snapshot-v1"
   },
   "artifact_snapshot_predicate": {
     "columns_selected": [
@@ -54,7 +56,7 @@
       "verification": "created 'verified', because PostgreSQL possesses the authoritative bytes and derives the digest itself"
     }
   },
-  "contract_sha256": "706ba89942964400c5fcea46710b58e45cf85a9621b5a28d5da6aad2798b672c",
+  "contract_sha256": "b612845b5807991d6ccc75923e6baf63007e321b83633a3d8649f9282ed34b7e",
   "counts": {
     "d2_tables_created": 37,
     "logical_tables": 38,
@@ -149,14 +151,16 @@
     "applied_to_operational_database": false,
     "corrective": {
       "closed": [
-        "the composite foreign key bound a domain-separated scientific hash to an artifact's raw content digest",
-        "direct SQL could forge an inline artifact's content_sha256 and size_bytes",
-        "no declared API could publish the inline recovery and snapshot manifests a recovery set needs",
-        "the completeness gate demanded external location evidence for inline bytes",
-        "five functions declared audit or history writes that no generated body performed"
+        "R2 was declared to precede every data transformation, which 0009's empty shadow catalog made unexecutable",
+        "catalog.register_backup_set never registered anything: its INSERT omitted created_at and the snapshot media type, so the gate rejected every call",
+        "a real concurrent first publication surfaced a uniqueness error instead of both callers resolving the same row",
+        "a replay with different provenance was silently accepted",
+        "a snapshot could omit or duplicate an artifact as long as its own count and total agreed",
+        "an artifact could never return to verified after a restore",
+        "the mutation validator scanned source text and was described as behavioural"
       ],
-      "note": "Still scratch PostgreSQL only. No data moved, no migration applied to the operational database, no recovery file published.",
-      "stage": "DB-V2 D2.1"
+      "note": "Still scratch PostgreSQL only. B0 and B1 are D3 and are not implemented: nothing here moves a single row.",
+      "stage": "DB-V2 D2.2"
     },
     "data_transformed": false,
     "exercised_on": "scratch PostgreSQL clusters only",
@@ -172,7 +176,7 @@
     }
   },
   "database_api": {
-    "contract_sha256": "69ed3783fa86659ff7b4f8a6ed1ae7a85b92735100665b222936fbc0fa874929",
+    "contract_sha256": "7ee16f2dd94791f7143e8b81dfbc80a6fa6d9167d78b253913f0a3bef2ab1d5c",
     "d2_physical_acl_records": 810,
     "functions": 37,
     "note": "The executable half of the contract: every function, trigger, state transition and grant migration 0009 must create. Frozen in DB-V2 D1.4.",
@@ -870,10 +874,83 @@
     "database_backup": "application/vnd.postgresql.dump",
     "recovery_manifest": "application/vnd.minos.db-recovery-manifest+json"
   },
+  "recovery_sequence": {
+    "d2_2_scope": "D2.2 freezes this sequence and makes R2 executable. B0 and B1 are D3 and are NOT implemented here: nothing in this commit moves a single row.",
+    "note": "The D1.3-D2.1 protocol said R2 precedes EVERY data transformation. That is not executable: 0009 creates the 37 shadow tables EMPTY, and a complete R1 snapshot describes the operational artifact inventory, so registering it immediately after 0009 fails - not one snapshot entry resolves to an active operational artifact. The artifact catalog must be bootstrapped first. R2 now sits between that bootstrap and every remaining transformation.",
+    "phases": [
+      {
+        "authorizes": "the structural upgrade",
+        "implemented_in": "operational runbook; no database object",
+        "name": "R1 - external recovery set",
+        "occurs": "before any Alembic upgrade",
+        "phase": "R1",
+        "steps": [
+          "quiesce the operational system",
+          "create and verify the database dump",
+          "create and verify the COMPLETE artifact snapshot",
+          "publish the durable R1 recovery files beneath MINOS_DB_RECOVERY_ROOT"
+        ]
+      },
+      {
+        "authorizes": "nothing on its own",
+        "implemented_in": "migrations 0006, 0007, 0008 and 0009 (DB-V2 D2)",
+        "name": "S1 - structural preparation",
+        "occurs": "after a complete R1",
+        "phase": "S1",
+        "steps": [
+          "apply 0006 -> 0007 -> 0008 -> 0009",
+          "0009 creates the 37 shadow tables EMPTY",
+          "no business row is created automatically, by 0009 or by anything else"
+        ]
+      },
+      {
+        "authorizes": "R2",
+        "implemented_in": "DB-V2 D3 - NOT implemented in D2.2",
+        "name": "B0 - artifact-catalog bootstrap",
+        "occurs": "after S1, before R2",
+        "phase": "B0",
+        "steps": [
+          "transform ONLY the V1 artifact catalog and its locations into the shadow artifact catalog",
+          "verify every payload byte against the R1 recovery set",
+          "require exact equality with the frozen R1 artifact snapshot",
+          "transform NO profile, plan, job, result, evaluation or runtime row"
+        ]
+      },
+      {
+        "authorizes": "B1 and, with R1, the cutover",
+        "implemented_in": "catalog.register_backup_set plus the completeness gate",
+        "name": "R2 - database registration",
+        "occurs": "after B0, before every remaining business-table transformation",
+        "phase": "R2",
+        "steps": [
+          "publish/register the two INLINE recovery manifests and the EXTERNAL database dump in the shadow artifact catalog",
+          "register the complete backup-set row",
+          "re-read and verify it"
+        ]
+      },
+      {
+        "authorizes": "the cutover, together with R1 and R2",
+        "implemented_in": "DB-V2 D3 - NOT implemented in D2.2",
+        "name": "B1 - remaining deterministic transformation",
+        "occurs": "after a complete R2",
+        "phase": "B1",
+        "steps": [
+          "transform every remaining V1 business table into the shadow schema, deterministically and re-runnably"
+        ]
+      }
+    ],
+    "safety_rules": [
+      "A complete R1 is required before any upgrade.",
+      "A complete R2 is required before any transformation beyond B0.",
+      "The cutover requires BOTH a complete R1 and a complete R2.",
+      "A database_only recovery set authorizes none of the three."
+    ]
+  },
   "recovery_set_protocol": {
     "ordering_invariants": [
       "R1 strictly precedes revision 0009.",
-      "R2 strictly follows revision 0009 and strictly precedes any data transformation.",
+      "R2 strictly follows revision 0009 and the artifact-catalog bootstrap B0.",
+      "R2 strictly precedes every business-table transformation beyond B0.",
       "No recovery row is ever written to a V1 relation.",
       "No transformation or cutover may begin while completeness != 'complete'.",
       "Downgrading 0009 never deletes an R1 recovery file."
@@ -982,6 +1059,7 @@
             "media_type": "application/vnd.minos.db-recovery-manifest+json"
           }
         },
+        "bootstrap_precondition": "Every entry of a complete snapshot must resolve to exactly one active operational artifact. 0009 creates dbv2_catalog.artifacts empty, so B0 must have run first. Attempting a complete registration on an empty catalog raises a typed bootstrap-not-complete error.",
         "downgrade_rule": "Downgrading 0009 removes the dbv2_catalog.backup_sets rows but MUST NOT delete any R1 recovery file. The files under MINOS_DB_RECOVERY_ROOT are the authoritative pre-migration record and outlive every database object.",
         "enforcement_function": "catalog.enforce_backup_set_shape()",
         "forbidden_target": "catalog.backup_sets",
@@ -989,7 +1067,8 @@
         "idempotency": "A re-run with the same recovery_set_id and the same immutable data is a no-op. The same recovery_set_id or backup_key with ANY differing immutable value fails closed; it never overwrites.",
         "name": "register the R1 manifest in the shadow schema",
         "occurs_after_revision": "0009_dbv2_shadow_schema",
-        "occurs_before_step": "deterministic data transformation",
+        "occurs_after_step": "the artifact-catalog bootstrap (B0)",
+        "occurs_before_step": "every remaining business-table transformation (B1); it occurs AFTER the artifact-catalog bootstrap (B0), because a complete snapshot cannot resolve against an empty artifact catalog",
         "phase": "R2",
         "r1_field_to_column": {
           "artifact_count": "artifact_count",
@@ -1318,7 +1397,7 @@
   },
   "schema_version": "minos-db-v2-physical-deployment-v1",
   "shared_table": "public.alembic_version",
-  "stage": "DB-V2 D2.1",
+  "stage": "DB-V2 D2.2",
   "trigger_deployment": {
     "count": 89,
     "note": "Triggers are attached to the dbv2_* shadow tables and track them by OID, so the schema rename does not detach them. Their FUNCTION reference is by OID as well; what does NOT follow the rename is the schema-qualified text INSIDE each function body, which is why every function is re-created in the cutover transaction.",
@@ -1408,6 +1487,11 @@
       "replaced_by": "artifact_storage_rules, which requires a location for external artifacts only",
       "statement": "that every artifact a recovery set references must have an artifact_locations row in state 'present'",
       "why_wrong": "The two manifests are stored INLINE. Demanding external location evidence for bytes PostgreSQL already holds and hashes is a contradiction, and no legal API could satisfy it."
+    },
+    {
+      "replaced_by": "the R1 -> S1 -> B0 -> R2 -> B1 sequence in recovery_sequence",
+      "statement": "that R2 strictly precedes any data transformation",
+      "why_wrong": "0009 creates the shadow artifact catalog EMPTY, and a complete R1 snapshot describes the operational artifact inventory. Registering it before the artifact catalog is bootstrapped fails on every entry, so the statement was not executable."
     }
   ]
 }

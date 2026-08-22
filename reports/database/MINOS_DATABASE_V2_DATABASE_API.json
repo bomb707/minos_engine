@@ -14346,8 +14346,13 @@
       "rule": "Written in the SAME transaction as the backup_sets INSERT, so a failed or rolled-back registration leaves no admin row."
     },
     "atomicity": "Every audit row is written inside the caller's transaction. A rollback, a constraint violation or a failed gate leaves no audit row at all - there is no out-of-band logging path.",
-    "evidence_hash_formula": "payload_hash = encode(sha256(convert_to(<frozen evidence string>, 'UTF8')), 'hex'), where the evidence string is the function's frozen, documented projection of the values that actually changed. It is never a digest of the whole row and never includes a timestamp.",
+    "evidence_hash_formula": "payload_hash = encode(sha256(convert_to(jsonb_build_object(...)::text, 'UTF8')), 'hex'). The evidence is a jsonb object naming every immutable field relevant to the operation, so the preimage is unambiguous - delimiter-joined strings collide, since 'a:b' || ':' || 'c' and 'a' || ':' || 'b:c' are the same bytes. jsonb normalises key order, so the text form is deterministic for a given value.",
     "no_op_rule": "An idempotent replay that changes nothing writes NO event. Exactly one event per actual successful state change is the invariant, and the tests assert the count, not the presence.",
+    "non_state_changing_observations": "catalog.record_artifact_verification() called when the observation does not change verification_state refreshes last_verified_at and writes NO event. That is classified here, deliberately: a timestamp refresh is an observation, not a state change, and the invariant the tests assert is exactly one event per ACTUAL change.",
+    "static_vs_behavioural": {
+      "behavioural_check": "tests/integration/layer2_dbv2/test_d22_recovery_sequence.py captures every shadow table's row count before a call, executes the function, and asserts that exactly the declared tables changed and no undeclared table did. This is the behavioural verification.",
+      "static_check": "scripts/dbv2_audit.py _validate_declared_mutations is a STATIC COVERAGE CHECK: it regex-scans the committed migration for INSERT/UPDATE targets inside each function body. It executes nothing and proves nothing about runtime behaviour; it catches a declaration that no statement could possibly satisfy."
+    },
     "unaudited_functions": {
       "functions": [
         "experiments.claim_next_job",
@@ -14365,7 +14370,7 @@
       "note": "These functions declare no audit table and write none. Job and lease state changes are already fully reconstructible from experiments.job_events and the monotonic runtime.leases fence token, so a parallel audit row would duplicate an existing history rather than record a new fact."
     }
   },
-  "contract_sha256": "69ed3783fa86659ff7b4f8a6ed1ae7a85b92735100665b222936fbc0fa874929",
+  "contract_sha256": "7ee16f2dd94791f7143e8b81dfbc80a6fa6d9167d78b253913f0a3bef2ab1d5c",
   "counts": {
     "acl_function_records": 370,
     "acl_objects": 83,
@@ -28593,6 +28598,7 @@
       "cutover_note": "A plpgsql body is stored as TEXT and re-parsed at execution, so a schema-qualified reference does NOT follow a schema rename. 0009 creates this function in its dbv2_* schema with a body qualified against dbv2_* names; the cutover transaction, in the same transaction as the schema renames, issues CREATE OR REPLACE FUNCTION with the body qualified against the CANONICAL names, and the rollback transaction restores the dbv2_*-qualified body. Neither direction ever leaves a body naming a retired schema.",
       "cutover_recreation_required": true,
       "downgrade_behavior": "DROP FUNCTION with its triggers; downgrading 0009 removes it entirely and restores no V1 equivalent, because V1 has none.",
+      "exact_set_rule": "A complete snapshot must be the EXACT active operational artifact set. Equality is proved relationally, in both directions and with multiplicity, by EXCEPT ALL over (content_sha256, size_bytes, artifact_kind): no entry may be absent from the active query and no active artifact may be absent from the entries. An omitted entry, an extra entry, a duplicated entry and a reordered array are each rejected by their own check.",
       "executable_roles": [],
       "idempotency": "An exactly equal replay - same recovery_set_id, same backup_key, same manifest digest and every immutable column equal - is a no-op: the unique constraints reject the duplicate insert and the caller treats that as success. ANY differing immutable value fails closed and is never merged.",
       "kind": "trigger_function",
@@ -28628,10 +28634,18 @@
         "23514 inline manifest byte size does not match the stored payload",
         "23514 snapshot manifest bytes do not recompute to artifact_snapshot_sha256",
         "23514 the snapshot was not taken with the frozen predicate",
+        "23514 the snapshot declares the wrong schema_version",
+        "23514 snapshot entries have a noncanonical field inventory, type or value",
+        "23514 the snapshot repeats entries",
+        "23514 the snapshot entries are not in the frozen ascending order",
+        "23514 the artifact-catalog bootstrap (B0) has not run",
+        "23514 snapshot entries do not resolve to an active operational artifact",
+        "23514 active operational artifacts are absent from the snapshot",
         "23514 snapshot entry count <> artifact_count",
         "23514 snapshot entry total size <> artifact_total_bytes",
-        "23514 a snapshot entry does not resolve to exactly one active operational artifact",
-        "23514 a recovery artifact appears in the snapshot",
+        "23514 snapshotted external artifacts are unverified, absent or ambiguously primary",
+        "23514 snapshotted inline artifacts do not recompute",
+        "23514 recovery artifacts appear in the snapshot",
         "23514 recovery manifest bytes do not recompute to recovery_manifest_sha256",
         "23514 an R1 field does not equal its mapped column",
         "23514 the external database dump has no artifact_locations row in state 'present'",
@@ -28702,7 +28716,7 @@
         "present and identical",
         "present and conflicting"
       ],
-      "concurrency": "The owning artifact row is locked before the probe, so two concurrent binds of the same artifact serialize.",
+      "concurrency": "Insert first; on a uniqueness race the winning row is re-read under FOR UPDATE and every immutable location column is compared before its id is returned.",
       "configured_search_path": "pg_catalog",
       "cutover_note": "A plpgsql body is stored as TEXT and re-parsed at execution, so a schema-qualified reference does NOT follow a schema rename. 0009 creates this function in its dbv2_* schema with a body qualified against dbv2_* names; the cutover transaction, in the same transaction as the schema renames, issues CREATE OR REPLACE FUNCTION with the body qualified against the CANONICAL names, and the rollback transaction restores the dbv2_*-qualified body. Neither direction ever leaves a body naming a retired schema.",
       "cutover_recreation_required": true,
@@ -28718,6 +28732,12 @@
       "language": "plpgsql",
       "name": "catalog.get_or_verify_artifact_location",
       "purpose": "Binds an artifact to a backend and a RELATIVE object key through the complete identity triple. Rejects any absolute path, any scheme-qualified URI such as file://, any '..' component, any empty component and any trailing separator - a key that could only be produced by resolving a symlink or escaping the backend root is not an identity this database will store.",
+      "replay_comparison": [
+        "artifact_id",
+        "backend_id",
+        "object_key",
+        "is_primary"
+      ],
       "resulting_states": [
         "the location id",
         "a typed conflict"
@@ -28756,7 +28776,7 @@
         "present with identical metadata",
         "present with different metadata"
       ],
-      "concurrency": "uq_artifacts_content_sha256 serializes concurrent first registrations",
+      "concurrency": "Insert first, without overwriting. On a uniqueness race the winning row is re-read under FOR UPDATE - which blocks until the other transaction commits - and EVERY immutable column is compared before the existing id is returned. A uniqueness error is never swallowed without that comparison, and the transaction is never retried automatically.",
       "configured_search_path": "pg_catalog",
       "cutover_note": "A plpgsql body is stored as TEXT and re-parsed at execution, so a schema-qualified reference does NOT follow a schema rename. 0009 creates this function in its dbv2_* schema with a body qualified against dbv2_* names; the cutover transaction, in the same transaction as the schema renames, issues CREATE OR REPLACE FUNCTION with the body qualified against the CANONICAL names, and the rollback transaction restores the dbv2_*-qualified body. Neither direction ever leaves a body naming a retired schema.",
       "cutover_recreation_required": true,
@@ -28767,11 +28787,23 @@
         "minos_trainer",
         "minos_evaluator"
       ],
-      "idempotency": "Exact replay returns the same row and writes no second audit event; any differing immutable value fails closed.",
+      "idempotency": "Exact replay - the same identity and every immutable column equal, provenance included - returns the same row and writes NO second audit event. Any difference raises a typed conflict. Two concurrent first publications both succeed and resolve to one row.",
       "kind": "api_function",
       "language": "plpgsql",
       "name": "catalog.get_or_verify_external_artifact",
       "purpose": "Registers the immutable metadata of an artifact whose bytes live outside the database. Registration confers NO verification: the row is born 'unverified' and reaches 'verified' only through catalog.record_artifact_verification(). Replaces the D2 catalog.get_or_verify_artifact(), which had no inline counterpart.",
+      "replay_comparison": [
+        "content_sha256",
+        "size_bytes",
+        "media_type",
+        "artifact_kind",
+        "storage_mode",
+        "inline_payload (inline only)",
+        "retention_class",
+        "backup_scope",
+        "schema_version",
+        "provenance"
+      ],
       "resulting_states": [
         "the artifact id, verification_state = 'unverified'",
         "a typed conflict"
@@ -28786,7 +28818,7 @@
       ],
       "rows_locked": "the existing catalog.artifacts row, FOR UPDATE, when the digest already exists",
       "security_mode": "DEFINER",
-      "signature": "catalog.get_or_verify_external_artifact(p_content_sha256 char(64), p_size_bytes bigint, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_provenance jsonb)",
+      "signature": "catalog.get_or_verify_external_artifact(p_content_sha256 char(64), p_size_bytes bigint, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_schema_version text, p_provenance jsonb)",
       "sqlstates": [
         "22023 content_sha256 is not 64 lowercase hex characters",
         "22023 size_bytes is negative",
@@ -28809,7 +28841,7 @@
         "present with identical metadata",
         "present with different metadata"
       ],
-      "concurrency": "uq_artifacts_content_sha256 serializes concurrent first publications",
+      "concurrency": "Insert first, without overwriting. On a uniqueness race the winning row is re-read under FOR UPDATE - which blocks until the other transaction commits - and EVERY immutable column is compared before the existing id is returned. A uniqueness error is never swallowed without that comparison, and the transaction is never retried automatically.",
       "configured_search_path": "pg_catalog",
       "cutover_note": "A plpgsql body is stored as TEXT and re-parsed at execution, so a schema-qualified reference does NOT follow a schema rename. 0009 creates this function in its dbv2_* schema with a body qualified against dbv2_* names; the cutover transaction, in the same transaction as the schema renames, issues CREATE OR REPLACE FUNCTION with the body qualified against the CANONICAL names, and the rollback transaction restores the dbv2_*-qualified body. Neither direction ever leaves a body naming a retired schema.",
       "cutover_recreation_required": true,
@@ -28820,11 +28852,23 @@
         "minos_trainer",
         "minos_evaluator"
       ],
-      "idempotency": "Exact replay - the same bytes and the same immutable metadata - returns the same row and writes NO second audit event. Any differing immutable value fails closed.",
+      "idempotency": "Exact replay - the same identity and every immutable column equal, provenance included - returns the same row and writes NO second audit event. Any difference raises a typed conflict. Two concurrent first publications both succeed and resolve to one row.",
       "kind": "api_function",
       "language": "plpgsql",
       "name": "catalog.get_or_verify_inline_artifact",
       "purpose": "The legal path for an inline artifact. The caller supplies the EXACT payload bytes and the immutable descriptive metadata; PostgreSQL derives content_sha256 and size_bytes itself, so no caller can misdeclare either. The row is created already verified, because the database possesses and hashes the authoritative bytes.",
+      "replay_comparison": [
+        "content_sha256",
+        "size_bytes",
+        "media_type",
+        "artifact_kind",
+        "storage_mode",
+        "inline_payload (inline only)",
+        "retention_class",
+        "backup_scope",
+        "schema_version",
+        "provenance"
+      ],
       "resulting_states": [
         "the artifact id, verification_state = 'verified'",
         "a typed conflict"
@@ -28839,7 +28883,7 @@
       ],
       "rows_locked": "the existing catalog.artifacts row, FOR UPDATE, when the digest already exists",
       "security_mode": "DEFINER",
-      "signature": "catalog.get_or_verify_inline_artifact(p_payload bytea, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_provenance jsonb)",
+      "signature": "catalog.get_or_verify_inline_artifact(p_payload bytea, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_schema_version text, p_provenance jsonb)",
       "sqlstates": [
         "22023 payload is null or exceeds the 65536-byte inline bound",
         "22023 backup_scope not in ('operational','recovery')",
@@ -28874,11 +28918,12 @@
         "minos_trainer",
         "minos_evaluator"
       ],
-      "idempotency": "Re-verifying an already-verified artifact with the same observed identity only moves last_verified_at forward; it creates no second audit event and no duplicate state.",
+      "idempotency": "Re-verifying an artifact whose state does not change only moves last_verified_at forward. That refresh is classified as a non-state-changing observation and writes NO audit event; only an actual verification_state change does.",
+      "inline_rule": "For storage_mode = 'inline' the outcome is derived from encode(sha256(inline_payload), 'hex') and octet_length(inline_payload). A caller-supplied observation is not consulted.",
       "kind": "api_function",
       "language": "plpgsql",
       "name": "catalog.record_artifact_verification",
-      "purpose": "The only path to verification_state = 'verified'. The observed digest and byte size must equal the registered identity; a mismatch moves the artifact only along the declared transitions to 'corrupt', and an absent payload only to 'missing'.",
+      "purpose": "The only path to verification_state = 'verified', and the only path back to it after a 'missing' or 'corrupt' observation. The observed digest and byte size must equal the artifact's immutable identity. For an INLINE artifact the caller's observation is ignored entirely: PostgreSQL rehashes the bytes it is holding, so valid inline bytes can never be marked missing or corrupt by a caller's claim.",
       "resulting_states": [
         "'verified'",
         "'corrupt'",
@@ -28916,17 +28961,22 @@
         "a complete manifest",
         "a database_only manifest"
       ],
-      "concurrency": "serialized by uq_backup_sets_recovery_set",
+      "advisory_lock": "pg_advisory_xact_lock(hashtextextended(p_manifest ->> 'recovery_set_id', 0)) - deterministic in the recovery set's own identity, transaction-scoped, released by commit or abort.",
+      "concurrency": "A transaction-scoped advisory lock derived from the recovery_set_id digest serializes registration of the same recovery set, so two concurrent registrations resolve to one row rather than racing on the unique constraint.",
       "configured_search_path": "pg_catalog",
       "cutover_note": "A plpgsql body is stored as TEXT and re-parsed at execution, so a schema-qualified reference does NOT follow a schema rename. 0009 creates this function in its dbv2_* schema with a body qualified against dbv2_* names; the cutover transaction, in the same transaction as the schema renames, issues CREATE OR REPLACE FUNCTION with the body qualified against the CANONICAL names, and the rollback transaction restores the dbv2_*-qualified body. Neither direction ever leaves a body naming a retired schema.",
       "cutover_recreation_required": true,
       "downgrade_behavior": "DROP FUNCTION with its triggers; downgrading 0009 removes it entirely and restores no V1 equivalent, because V1 has none.",
       "executable_roles": [],
-      "idempotency": "an exactly equal replay is a no-op; any differing immutable value fails closed",
+      "idempotency": "Exact replay returns the ORIGINAL id, writes no second backup_sets row and no second administrative audit row. Every immutable backup_sets column and every referenced artifact identity is compared first; any difference raises a typed conflict without mutating anything.",
       "kind": "api_function",
       "language": "plpgsql",
       "name": "catalog.register_backup_set",
       "purpose": "Phase R2. Inserts the recovery-set row from the parsed R1 manifest; catalog.enforce_backup_set_shape() then performs the full cross-table check in the same transaction. Executable by no login role: it runs on the administrative connection as the definer principal.",
+      "replay_comparison": [
+        "every immutable catalog.backup_sets column",
+        "the three referenced artifact ids and their content digests"
+      ],
       "resulting_states": [
         "the backup_sets id, or an error"
       ],
@@ -28946,8 +28996,10 @@
       "security_mode": "DEFINER",
       "signature": "catalog.register_backup_set(p_manifest jsonb, p_completeness text)",
       "sqlstates": [
+        "22023 completeness is not complete or database_only",
         "23514 shape violation",
-        "23505 conflicting recovery_set_id or backup_key"
+        "23514 the artifact-catalog bootstrap (B0) has not run",
+        "23505 a conflicting recovery_set_id, backup_key or manifest digest"
       ],
       "tables_mutated": [
         "catalog.backup_sets",
@@ -30699,7 +30751,7 @@
     }
   },
   "schema_version": "minos-db-v2-database-api-v1",
-  "stage": "DB-V2 D2.1",
+  "stage": "DB-V2 D2.2",
   "state_machines": {
     "active_selection_window": {
       "additional_rule": "effective_to must be >= effective_from.",
@@ -30787,7 +30839,7 @@
       ]
     },
     "artifact_location": {
-      "additional_rule": "At most one location per artifact may carry is_primary = true, and a location may only become primary while it is 'present'.",
+      "additional_rule": "At most one location per artifact may carry is_primary = true, and a location may only be primary while it is 'present'. A location that stops being present loses its primary flag in the same statement. Returning to 'present' is permitted only through a successful catalog.record_artifact_verification() of the correct bytes.",
       "column": "location_state",
       "enforced_by": "catalog.enforce_artifact_location_state",
       "forbidden": [
@@ -30796,11 +30848,15 @@
           "present"
         ],
         [
-          "corrupt",
-          "present"
+          "evacuated",
+          "missing"
+        ],
+        [
+          "evacuated",
+          "corrupt"
         ]
       ],
-      "forbidden_rule": "An evacuated or corrupt location never becomes 'present' again; a replacement copy is a new artifact_locations row.",
+      "forbidden_rule": "Evacuation is terminal: those bytes are gone from that backend and a replacement copy is a new artifact_locations row. 'missing' and 'corrupt' are observations, not sentences - a restored payload may return the location to 'present', but only through a verification that matched the artifact's immutable digest and size.",
       "initial": [
         "present"
       ],
@@ -30835,29 +30891,37 @@
         ],
         [
           "corrupt",
+          "present"
+        ],
+        [
+          "corrupt",
+          "missing"
+        ],
+        [
+          "corrupt",
           "evacuated"
         ]
       ]
     },
     "artifact_verification": {
-      "additional_rule": "first_verified_at is set exactly once, on the first transition to 'verified', and is immutable thereafter; last_verified_at only ever moves forward.",
+      "additional_rule": "first_verified_at is set exactly once, on the FIRST transition to 'verified', and is immutable thereafter; last_verified_at only ever moves forward. A return to 'verified' is permitted only when catalog.record_artifact_verification() observed a digest AND a byte size equal to the artifact's immutable identity - the identity itself never changes, so 'verified' means 'the bytes match what this row has always claimed'.",
       "column": "verification_state",
       "enforced_by": "catalog.enforce_artifact_lifecycle",
       "forbidden": [
         [
-          "corrupt",
-          "verified"
+          "verified",
+          "unverified"
         ],
         [
           "missing",
-          "verified"
+          "unverified"
         ],
         [
-          "verified",
+          "corrupt",
           "unverified"
         ]
       ],
-      "forbidden_rule": "A corrupt or missing artifact is never silently re-verified, and a verified artifact never regresses to unverified. Re-verification of damaged bytes requires a new artifact row, not an in-place state change.",
+      "forbidden_rule": "Nothing returns to 'unverified': once an observation has been made, the column records the LATEST observation, and 'never observed' is not something a row can become again. Every other move is a legitimate observation and is allowed, including recovery back to 'verified' after a restore - but only through record_artifact_verification(), which requires the observed digest and size to match.",
       "initial": [
         "unverified"
       ],
@@ -30886,7 +30950,19 @@
         ],
         [
           "missing",
+          "verified"
+        ],
+        [
+          "missing",
           "corrupt"
+        ],
+        [
+          "corrupt",
+          "verified"
+        ],
+        [
+          "corrupt",
+          "missing"
         ]
       ]
     },

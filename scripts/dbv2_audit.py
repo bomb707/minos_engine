@@ -154,10 +154,18 @@ GATE_REQUIRED_CHECKS = (
     "inline manifest byte size does not match the stored payload",
     "snapshot manifest bytes do not recompute to artifact_snapshot_sha256",
     "the snapshot was not taken with the frozen predicate",
+    "the snapshot declares the wrong schema_version",
+    "noncanonical field inventory, type or value",
+    "the snapshot repeats entries",
+    "not in the frozen ascending order",
+    "the artifact-catalog bootstrap (B0) has not run",
+    "do not resolve to an active operational artifact",
+    "are absent from the snapshot",
     "snapshot entry count <> artifact_count",
     "snapshot entry total size <> artifact_total_bytes",
-    "does not resolve to exactly one active operational artifact",
-    "a recovery artifact appears in the snapshot",
+    "unverified, absent or ambiguously primary",
+    "snapshotted inline artifacts do not recompute",
+    "recovery artifacts appear in the snapshot",
     "recovery manifest bytes do not recompute to recovery_manifest_sha256",
     "an R1 field does not equal its mapped column",
     "the external database dump has no artifact_locations row in state 'present'",
@@ -224,6 +232,9 @@ ACL_PRIVILEGE_KEYS = (
 )
 DDL_TABLE_PRIVILEGES = ("TRUNCATE", "REFERENCES", "TRIGGER")
 TRUTH_BINDINGS = "evaluation.truth_bindings"
+
+#: R1 -> S1 -> B0 -> R2 -> B1. B0 and B1 are D3; D2.2 freezes the order only.
+RECOVERY_SEQUENCE = ("R1", "S1", "B0", "R2", "B1")
 
 #: the migration elevates transaction-scoped, and only after every preflight check has passed.
 ELEVATION_STATEMENT = "SET LOCAL ROLE minos_owner"
@@ -704,6 +715,7 @@ def validate(reports: Path, root: Path = REPO_ROOT) -> list[str]:
             problems.extend(_validate_d2_acl(contract, physical, api))
             problems.extend(_validate_role_provisioning(api))
             problems.extend(_validate_declared_mutations(root, physical, api))
+            problems.extend(_validate_recovery_sequence(contract, physical))
             for document, label in ((contract, "logical contract"), (physical, "physical report")):
                 declared = document.get("database_api", {}).get(CONTRACT_HASH_FIELD)
                 if declared != api.get(CONTRACT_HASH_FIELD):
@@ -769,8 +781,10 @@ def _validate_recovery_and_retirement(doc: dict[str, Any]) -> list[str]:
     invariants = " ".join(protocol.get("ordering_invariants", [])).lower()
     if "strictly precedes revision 0009" not in invariants:
         problems.append("ordering invariants must state R1 strictly precedes 0009")
-    if "strictly precedes any data transformation" not in invariants:
-        problems.append("ordering invariants must state R2 precedes transformation")
+    if "strictly precedes every business-table transformation beyond b0" not in invariants:
+        problems.append("ordering invariants must state R2 precedes transformation beyond B0")
+    if "strictly follows revision 0009 and the artifact-catalog bootstrap" not in invariants:
+        problems.append("ordering invariants must state R2 follows the artifact-catalog bootstrap")
 
     # --- rollback boundaries -------------------------------------------------------------
     boundaries = {b.get("boundary"): b for b in doc.get("rollback_boundaries", [])}
@@ -1773,14 +1787,67 @@ def _validate_d2_acl(
     return problems
 
 
+def _validate_recovery_sequence(contract: dict[str, Any], physical: dict[str, Any]) -> list[str]:
+    """D2.2 C: the five phases, in order, with B0 and B1 declared as later work."""
+    problems: list[str] = []
+    sequence = contract.get("recovery_sequence")
+    if not isinstance(sequence, dict):
+        return ["the logical contract declares no recovery sequence"]
+    if physical.get("recovery_sequence") != sequence:
+        problems.append("the two contracts disagree on the recovery sequence")
+
+    phases = sequence.get("phases", [])
+    order = [phase.get("phase") for phase in phases]
+    if tuple(order) != RECOVERY_SEQUENCE:
+        problems.append(f"the recovery sequence is {order}, not {list(RECOVERY_SEQUENCE)}")
+        return problems
+    by_phase = {phase["phase"]: phase for phase in phases}
+    for phase in RECOVERY_SEQUENCE:
+        if not by_phase[phase].get("steps"):
+            problems.append(f"{phase} declares no steps")
+        if not by_phase[phase].get("implemented_in"):
+            problems.append(f"{phase} does not say where it is implemented")
+    for phase in ("B0", "B1"):
+        if "NOT implemented" not in by_phase[phase]["implemented_in"]:
+            problems.append(f"{phase} must be declared as later work, not as implemented")
+    if not by_phase["R2"].get("occurs", "").startswith("after B0"):
+        problems.append("R2 must occur after the artifact-catalog bootstrap")
+    if "0009 creates the 37 shadow tables EMPTY" not in " ".join(by_phase["S1"]["steps"]):
+        problems.append("S1 must state that 0009 creates the shadow tables empty")
+
+    rules = " ".join(sequence.get("safety_rules", []))
+    for rule in (
+        "complete R1 is required before any upgrade",
+        "complete R2 is required before any transformation beyond B0",
+        "cutover requires BOTH",
+    ):
+        if rule not in rules:
+            problems.append(f"the safety rules omit {rule!r}")
+
+    withdrawn = " ".join(w.get("statement", "") for w in physical.get("withdrawn_statements", []))
+    if "R2 strictly precedes any data transformation" not in withdrawn:
+        problems.append("the unexecutable R2-precedes-everything statement must be withdrawn")
+
+    protocol = physical.get("recovery_set_protocol", {})
+    r2: dict[str, Any] = next((p for p in protocol.get("phases", []) if p.get("phase") == "R2"), {})
+    if "bootstrap" not in r2.get("occurs_after_step", ""):
+        problems.append("the R2 phase must record that it follows the artifact-catalog bootstrap")
+    if not r2.get("bootstrap_precondition"):
+        problems.append("the R2 phase must state the bootstrap precondition")
+    return problems
+
+
 def _validate_declared_mutations(
     root: Path, physical: dict[str, Any], api: dict[str, Any]
 ) -> list[str]:
-    """D2.1 G: a declared tables_mutated inventory that the generated body does not perform.
+    """A STATIC COVERAGE CHECK on the declared tables_mutated inventory.
 
-    The D2 contract claimed audit writes that no function made. This reads the committed
-    migration - the executable artifact, not the contract that describes it - and compares the
-    tables each function actually writes against the tables it declares.
+    It regex-scans the committed migration for the INSERT/UPDATE targets inside each function
+    body and compares them with what the function declares. It executes nothing and proves nothing
+    about runtime behaviour: it catches a declaration that no statement could possibly satisfy,
+    which is exactly the defect D2 shipped. The BEHAVIOURAL verification - execute the function,
+    observe which tables actually changed - lives in
+    tests/integration/layer2_dbv2/test_d22_recovery_sequence.py.
     """
     problems: list[str] = []
     migration = root / "migrations" / "versions" / f"{EXPECTED_REVISION_PATH[-1]}.py"

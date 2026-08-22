@@ -1,22 +1,22 @@
 # MINOS Database V2 — Canonical Architecture
 
-**Stage:** DB-V2 **D2.1** — migration `0009` implemented, corrected and exercised on
+**Stage:** DB-V2 **D2.2** — migration `0009` implemented, corrected twice and exercised on
 **scratch PostgreSQL only**. D1 through D1.4 are accepted and frozen. The operational
 database is untouched.
-**Designed against:** `feature/L2-F` at `e1f82bafec48cfc967832b857f1f9e17537193b7`.
+**Designed against:** `feature/L2-F` at `651cf3d3bc02e610aa4c70ace3db7a67a8049c0c`.
 **Operational database:** `minos_engine_db`, live at `0005_l2e_feature_view`, **untouched by this
 stage**.
-**Contract hash:** `2a94b3d6a2e638a7d9aade36bfdb8a66308877e80c665f0d94ce40352376958d`
+**Contract hash:** `8975aa19d6f48ac4b6e6ea083b3970de0aa25162ce5ace3fbb6e57b37ca804d0`
 (over [`MINOS_DATABASE_V2_CONTRACT.json`](../../reports/database/MINOS_DATABASE_V2_CONTRACT.json),
 excluding its own `contract_sha256` field).
 
 **Physical deployment contract:**
 [`MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json`](../../reports/database/MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json),
-hash `706ba89942964400c5fcea46710b58e45cf85a9621b5a28d5da6aad2798b672c`.
+hash `b612845b5807991d6ccc75923e6baf63007e321b83633a3d8649f9282ed34b7e`.
 
 **Database API contract:**
 [`MINOS_DATABASE_V2_DATABASE_API.json`](../../reports/database/MINOS_DATABASE_V2_DATABASE_API.json),
-hash `69ed3783fa86659ff7b4f8a6ed1ae7a85b92735100665b222936fbc0fa874929` — 37 functions, 89 triggers,
+hash `7ee16f2dd94791f7143e8b81dfbc80a6fa6d9167d78b253913f0a3bef2ab1d5c` — 37 functions, 89 triggers,
 16 state machines and an 800-record ACL matrix. Both contracts above pin this hash; this document
 pins neither of theirs, so the three hashes form a one-way graph.
 
@@ -533,7 +533,62 @@ the `SECURITY DEFINER` principal. A replay writes none. `register_backup_set` wr
 never happened, the write is now real or the claim is withdrawn with its reason, and a validator
 fails the build if any declared `tables_mutated` entry is not something the generated body performs.
 
-### 6c.2 What D2 and D2.1 did not do
+### 6c.2 D2.2 — the sequence, exact sets, and real idempotency
+
+**The recovery sequence is now executable.** D1.3 through D2.1 said R2 precedes *every* data
+transformation. It cannot: `0009` creates the shadow artifact catalog **empty**, and a complete R1
+snapshot describes the operational artifact inventory, so registering it straight after `0009`
+fails on every entry. The frozen sequence is:
+
+| Phase | What it is | Implemented in |
+|---|---|---|
+| **R1** | quiesce, dump, complete artifact snapshot, publish the durable recovery files | operational runbook |
+| **S1** | apply `0006 → 0007 → 0008 → 0009`; the 37 shadow tables are created **empty** | DB-V2 D2 |
+| **B0** | transform **only** the V1 artifact catalog and locations, verified byte-for-byte against R1 | **D3 — not implemented** |
+| **R2** | register the two inline recovery manifests, the external dump, and the complete backup-set row | `catalog.register_backup_set` + the gate |
+| **B1** | every remaining deterministic transformation | **D3 — not implemented** |
+
+A complete R1 is required before any upgrade; a complete R2 before any transformation beyond B0;
+the cutover requires both. Registering a complete set on an un-bootstrapped catalog now raises a
+typed *bootstrap has not run* error rather than a confusing per-entry failure.
+
+**A complete snapshot must be the exact active operational set.** Equality is proved relationally,
+in both directions and with multiplicity, by `EXCEPT ALL` over
+`(content_sha256, size_bytes, artifact_kind)`. An omitted entry, an extra entry, a duplicated
+entry, a reordered array, a noncanonical field inventory, a wrong type, a wrong count and a wrong
+total are each refused by their own check. Every included external artifact must be `verified`
+with exactly one present primary location; every included inline artifact must still recompute
+from its own bytes. PostgreSQL's `jsonb` parser silently keeps the last value of a duplicated key
+and cannot report that the byte stream had one — the gate does not claim otherwise; the D3 loader
+parses the manifest bytes strictly before they are published, and the raw-digest binding ties the
+parsed document to those exact bytes.
+
+**Idempotency is real, and survives a race.** The three get-or-verify functions and
+`register_backup_set` insert first and, on a uniqueness race, re-read the winning row under
+`FOR UPDATE` — which blocks until the other transaction commits — and compare **every** immutable
+column, provenance included, before returning the existing id. A uniqueness error is never
+swallowed without that comparison and no transaction is retried automatically. Backup registration
+additionally takes a transaction-scoped advisory lock derived from the recovery set's own
+identity. Two-engine tests prove both callers succeed and resolve one row for inline artifacts,
+external artifacts, locations and backup sets.
+
+**`verification_state` is the latest observation, not a sentence.** `unverified` is reachable only
+at creation; every other move is a legitimate observation, so a restored payload returns to
+`verified` — but only through `record_artifact_verification()` with a digest and size equal to the
+artifact's immutable identity. `first_verified_at` is still written once, `last_verified_at` is
+still monotonic, and a restored location reclaims its primary role only if no other present
+location holds it. For an inline artifact the caller's observation is ignored entirely: PostgreSQL
+rehashes the bytes it holds, so valid inline bytes cannot be marked missing or corrupt by a claim.
+
+**Audit evidence is structured.** The payload hash is taken over a `jsonb` object naming every
+relevant immutable field, not over delimiter-joined strings where `'a:b' || ':' || 'c'` and
+`'a' || ':' || 'b:c'` collide. A verification that changes nothing refreshes `last_verified_at` and
+writes no event — classified explicitly as a non-state-changing observation. The static
+`tables_mutated` check in `dbv2_audit.py` is labelled a **static coverage check**; the behavioural
+verification captures row counts, executes the function, and asserts exactly the declared tables
+changed.
+
+### 6c.3 What D2, D2.1 and D2.2 did not do
 
 No data was moved or transformed. No artifact was published, no job enqueued, no job executed: all
 37 shadow tables are created and remain **empty**. No canonical schema was renamed, no

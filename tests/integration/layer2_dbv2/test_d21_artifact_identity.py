@@ -67,12 +67,13 @@ def _publish_inline(connection: Connection, payload: bytes, **overrides: Any) ->
         "media": "application/json",
         "scope": "operational",
         "retention": "standard",
+        "schema_version": "v1",
     }
     params.update(overrides)
     return _sql(
         connection,
         "SELECT dbv2_catalog.get_or_verify_inline_artifact(:p, :media, :kind, :scope, "
-        ":retention, '{}'::jsonb)",
+        ":retention, :schema_version, '{}'::jsonb)",
         p=payload,
         **params,
     ).scalar_one()
@@ -86,12 +87,13 @@ def _register_external(
         "media": BACKUP_MEDIA,
         "scope": "operational",
         "retention": "standard",
+        "schema_version": "v1",
     }
     params.update(overrides)
     return _sql(
         connection,
         "SELECT dbv2_catalog.get_or_verify_external_artifact(:d, :s, :media, :kind, :scope, "
-        ":retention, '{}'::jsonb)",
+        ":retention, :schema_version, '{}'::jsonb)",
         d=digest,
         s=size,
         **params,
@@ -558,7 +560,7 @@ def test_location_registration_is_idempotent_and_conflicts_fail_closed(conn: Con
     ).scalar_one()
     assert first == second
     other = _register_external(conn, hashlib.sha256(b"loc-other").hexdigest(), 1)
-    with pytest.raises(Exception, match="already belongs to artifact"):
+    with pytest.raises(Exception, match="already registered with a different identity"):
         _sql(
             conn,
             "SELECT dbv2_catalog.get_or_verify_artifact_location(:a, :b, :k, true)",
@@ -584,8 +586,8 @@ def test_a_runtime_role_cannot_create_a_recovery_scope_artifact(dbv2_url: str, r
             with pytest.raises(Exception, match="may not create a recovery-scope artifact"):
                 connection.execute(
                     text(
-                        "SELECT dbv2_catalog.get_or_verify_inline_artifact(:p, 'application/json',"
-                        " 'k', 'recovery', 'standard', '{}'::jsonb)"
+                        "SELECT dbv2_catalog.get_or_verify_inline_artifact(:p, "
+                        "'application/json', 'k', 'recovery', 'standard', 'v1', '{}'::jsonb)"
                     ),
                     {"p": b"runtime-recovery-attempt"},
                 )
@@ -594,7 +596,7 @@ def test_a_runtime_role_cannot_create_a_recovery_scope_artifact(dbv2_url: str, r
             published = connection.execute(
                 text(
                     "SELECT dbv2_catalog.get_or_verify_inline_artifact(:p, 'application/json', "
-                    "'k', 'operational', 'standard', '{}'::jsonb)"
+                    "'k', 'operational', 'standard', 'v1', '{}'::jsonb)"
                 ),
                 {"p": f"runtime-operational-{role}".encode()},
             ).scalar_one()
@@ -708,7 +710,7 @@ def test_a_rolled_back_operation_leaves_no_audit_row(dbv2_url: str) -> None:
             connection.execute(
                 text(
                     "SELECT dbv2_catalog.get_or_verify_inline_artifact(:p, 'application/json', "
-                    "'k', 'operational', 'standard', '{}'::jsonb)"
+                    "'k', 'operational', 'standard', 'v1', '{}'::jsonb)"
                 ),
                 {"p": b"rolled back bytes"},
             )

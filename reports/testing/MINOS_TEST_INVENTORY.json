@@ -1963,7 +1963,7 @@
         "typing",
         "uuid"
       ],
-      "line_count": 768,
+      "line_count": 770,
       "path": "tests/integration/layer2_dbv2/test_d21_artifact_identity.py",
       "reason": "",
       "recommended_tier": "full",
@@ -1985,6 +1985,38 @@
       "decision": "keep",
       "dependencies": [
         "collections",
+        "hashlib",
+        "importlib",
+        "json",
+        "pathlib",
+        "pytest",
+        "sqlalchemy",
+        "threading",
+        "typing",
+        "uuid"
+      ],
+      "line_count": 867,
+      "path": "tests/integration/layer2_dbv2/test_d22_recovery_sequence.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage",
+        "minos_engine.storage.database"
+      ],
+      "test_count": 30
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "collections",
         "conftest",
         "hashlib",
         "json",
@@ -1993,7 +2025,7 @@
         "typing",
         "uuid"
       ],
-      "line_count": 771,
+      "line_count": 779,
       "path": "tests/integration/layer2_dbv2/test_d2_behavior.py",
       "reason": "",
       "recommended_tier": "full",
@@ -4443,7 +4475,7 @@
         "re",
         "typing"
       ],
-      "line_count": 2308,
+      "line_count": 2312,
       "path": "tests/unit/tools/test_dbv2_audit.py",
       "reason": "Retained specifically for DB-V2: guards the design-report validator and contract hash.",
       "recommended_tier": "manual_privileged",
@@ -4787,8 +4819,8 @@
       "tests": 853
     },
     "full": {
-      "files": 94,
-      "tests": 846
+      "files": 95,
+      "tests": 876
     },
     "manual_privileged": {
       "files": 5,
@@ -4801,9 +4833,9 @@
   },
   "totals": {
     "conftest_files": 7,
-    "fixtures": 28,
-    "test_files": 178,
-    "test_functions": 1946,
-    "test_lines": 38753
+    "fixtures": 29,
+    "test_files": 179,
+    "test_functions": 1976,
+    "test_lines": 39634
   }
 }

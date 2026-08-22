@@ -284,3 +284,18 @@ def isolated_cluster_url() -> Iterator[str]:
     finally:
         with contextlib.suppress(Exception):
             server.cleanup()
+
+
+@pytest.fixture
+def dbv2_fresh_url(dbv2_cluster_url: str, request: pytest.FixtureRequest) -> Iterator[str]:
+    """A scratch database of its own, at 0009, for tests that must COMMIT.
+
+    The shared ``dbv2_url`` database is kept pristine by rolling every test back. A concurrency
+    test cannot do that - both callers have to commit for the race to be real - so those tests get
+    a database nobody else observes.
+    """
+    provision_roles(dbv2_cluster_url)
+    name = f"minos_dbv2_{abs(hash(request.node.nodeid)) % 10**9}"
+    with dbv2_scratch_database(dbv2_cluster_url, name) as url:
+        alembic_upgrade(url, "0009_dbv2_shadow_schema")
+        yield url

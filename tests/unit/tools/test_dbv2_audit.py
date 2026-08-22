@@ -1813,20 +1813,24 @@ def test_the_completeness_gate_is_a_constraint_trigger_checking_every_condition(
     assert "INSERT" in trigger["event"]
 
 
-def test_the_validator_detects_a_gate_that_skips_a_condition(tmp_path: Path) -> None:
+@pytest.mark.parametrize("condition", audit.GATE_REQUIRED_CHECKS)
+def test_the_validator_detects_a_gate_that_skips_any_condition(
+    tmp_path: Path, condition: str
+) -> None:
+    """Dropping ANY frozen gate condition from the declaration is caught, not just one."""
     root = _copy_root(tmp_path)
 
     def _break(document: dict[str, Any]) -> None:
         gate = next(
             f for f in document["functions"] if f["name"] == "catalog.enforce_backup_set_shape"
         )
-        gate["sqlstates"] = [
-            s for s in gate["sqlstates"] if "a recovery artifact appears in the snapshot" not in s
-        ]
+        remaining = [s for s in gate["sqlstates"] if condition not in s]
+        assert len(remaining) < len(gate["sqlstates"]), f"{condition!r} matches no declared state"
+        gate["sqlstates"] = remaining
 
     _break_api(root, _break)
     problems = _validate_root(root)
-    assert any("does not reject: a recovery artifact appears" in p for p in problems), problems
+    assert any(f"does not reject: {condition}" in p for p in problems), problems
 
 
 def test_the_validator_detects_a_non_constraint_gate(tmp_path: Path) -> None:

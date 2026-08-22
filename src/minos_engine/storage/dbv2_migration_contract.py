@@ -16,13 +16,13 @@ REVISION: Final = "0009_dbv2_shadow_schema"
 
 DOWN_REVISION: Final = "0008_l2f_execution_results"
 
-MIGRATION_SHA256: Final = "da06d696bf5e0cbc37f932ce7f4dc1ac3eb9593cbee36dbfe3302fd5acb92d11"
+MIGRATION_SHA256: Final = "e3366e991aa72aeb6b8a1d1153876b472994b5ad82eee10603ee22b5321d4611"
 
-LOGICAL_CONTRACT_SHA256: Final = "2a94b3d6a2e638a7d9aade36bfdb8a66308877e80c665f0d94ce40352376958d"
+LOGICAL_CONTRACT_SHA256: Final = "8975aa19d6f48ac4b6e6ea083b3970de0aa25162ce5ace3fbb6e57b37ca804d0"
 
-PHYSICAL_CONTRACT_SHA256: Final = "706ba89942964400c5fcea46710b58e45cf85a9621b5a28d5da6aad2798b672c"
+PHYSICAL_CONTRACT_SHA256: Final = "b612845b5807991d6ccc75923e6baf63007e321b83633a3d8649f9282ed34b7e"
 
-DATABASE_API_SHA256: Final = "69ed3783fa86659ff7b4f8a6ed1ae7a85b92735100665b222936fbc0fa874929"
+DATABASE_API_SHA256: Final = "7ee16f2dd94791f7143e8b81dfbc80a6fa6d9167d78b253913f0a3bef2ab1d5c"
 
 SHADOW_SCHEMAS: Final = (
     "dbv2_audit",
@@ -934,8 +934,8 @@ FUNCTIONS: Final = (
     "dbv2_catalog.enforce_backup_set_shape()",
     "dbv2_catalog.enforce_release_state()",
     "dbv2_catalog.get_or_verify_artifact_location(p_artifact_id uuid, p_backend_key text, p_object_key text, p_is_primary boolean)",
-    "dbv2_catalog.get_or_verify_external_artifact(p_content_sha256 char(64), p_size_bytes bigint, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_provenance jsonb)",
-    "dbv2_catalog.get_or_verify_inline_artifact(p_payload bytea, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_provenance jsonb)",
+    "dbv2_catalog.get_or_verify_external_artifact(p_content_sha256 char(64), p_size_bytes bigint, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_schema_version text, p_provenance jsonb)",
+    "dbv2_catalog.get_or_verify_inline_artifact(p_payload bytea, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_schema_version text, p_provenance jsonb)",
     "dbv2_catalog.record_artifact_verification(p_artifact_id uuid, p_observed_sha256 char(64), p_observed_size_bytes bigint, p_location_id uuid)",
     "dbv2_catalog.register_backup_set(p_manifest jsonb, p_completeness text)",
     "dbv2_evaluation.enforce_evaluation_run_state()",
@@ -967,8 +967,8 @@ FUNCTIONS: Final = (
 SECURITY_DEFINER_FUNCTIONS: Final = (
     "dbv2_catalog.enforce_backup_set_shape()",
     "dbv2_catalog.get_or_verify_artifact_location(p_artifact_id uuid, p_backend_key text, p_object_key text, p_is_primary boolean)",
-    "dbv2_catalog.get_or_verify_external_artifact(p_content_sha256 char(64), p_size_bytes bigint, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_provenance jsonb)",
-    "dbv2_catalog.get_or_verify_inline_artifact(p_payload bytea, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_provenance jsonb)",
+    "dbv2_catalog.get_or_verify_external_artifact(p_content_sha256 char(64), p_size_bytes bigint, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_schema_version text, p_provenance jsonb)",
+    "dbv2_catalog.get_or_verify_inline_artifact(p_payload bytea, p_media_type text, p_artifact_kind text, p_backup_scope text, p_retention_class text, p_schema_version text, p_provenance jsonb)",
     "dbv2_catalog.record_artifact_verification(p_artifact_id uuid, p_observed_sha256 char(64), p_observed_size_bytes bigint, p_location_id uuid)",
     "dbv2_catalog.register_backup_set(p_manifest jsonb, p_completeness text)",
     "dbv2_evaluation.record_evaluation_scores(p_run_id uuid, p_scores jsonb)",
@@ -1641,4 +1641,4 @@ REQUIRED_ROLES: Final = (
 SHARED_TABLE: Final = "public.alembic_version"
 
 #: sha256 of every line above this one, so the contract cannot be edited without detection.
-CONTRACT_SHA256: Final = "9c64a043737f44aadb44dca5c0d549e590434af2491c42532d7a7348ef759226"
+CONTRACT_SHA256: Final = "109284f68df0c5e9e2698c07296752c25fbb26fe9fda1fba64f9e363f25202ed"

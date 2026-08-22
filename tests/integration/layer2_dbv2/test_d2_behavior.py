@@ -173,8 +173,13 @@ def test_forbidden_artifact_transitions_are_rejected(
         )
 
 
-def test_verification_state_never_regresses(conn: Connection) -> None:
-    """J11: a corrupt artifact is never silently re-verified."""
+def test_verification_state_never_returns_to_unverified(conn: Connection) -> None:
+    """J11, corrected in D2.2: recovery to 'verified' is legitimate; 'never observed' is not.
+
+    An artifact that has been observed can be observed again - a restored payload returns to
+    'verified' through catalog.record_artifact_verification(). What no observation can produce is
+    'unverified', which means "never looked at".
+    """
     artifact_id = _seed_artifact_row(conn)
     _sql(
         conn,
@@ -184,7 +189,7 @@ def test_verification_state_never_regresses(conn: Connection) -> None:
     with pytest.raises(Exception, match="forbidden verification transition"):
         _sql(
             conn,
-            "UPDATE dbv2_catalog.artifacts SET verification_state = 'verified' WHERE id = :i",
+            "UPDATE dbv2_catalog.artifacts SET verification_state = 'unverified' WHERE id = :i",
             i=artifact_id,
         )
 
@@ -724,7 +729,8 @@ def test_completeness_is_immutable(conn: Connection) -> None:
 
 
 def test_a_recovery_artifact_cannot_enter_the_operational_snapshot(conn: Connection) -> None:
-    """J16."""
+    """J16: with a real operational artifact present, so the bootstrap check is not what fires."""
+    _artifact(conn, payload=b"an operational payload", kind="vcf")
     recovery_payload = _artifact(
         conn, payload=b"recovery-bytes", kind="recovery_extra", scope="recovery"
     )
@@ -735,7 +741,9 @@ def test_a_recovery_artifact_cannot_enter_the_operational_snapshot(conn: Connect
             "size_bytes": recovery_payload[2],
         }
     ]
-    with pytest.raises(Exception, match="does not resolve to exactly one active operational"):
+    with pytest.raises(
+        Exception, match="do not resolve to an active operational artifact|recovery artifacts"
+    ):
         _insert_backup_set(conn, complete=True, snapshot_entries=entries)
 
 

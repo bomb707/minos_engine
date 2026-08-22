@@ -3,6 +3,7 @@
     "ambiguity_rule": "Two entries sharing a content_sha256, or any entry whose content_sha256 does not resolve to exactly one active operational artifact, is a corrupt inventory and fails closed. catalog.artifacts declares UNIQUE (content_sha256), so a duplicate can only come from a hand-edited or truncated manifest.",
     "count_rule": "artifact_count and artifact_total_bytes are the row count and the SUM(size_bytes) of exactly the rows the predicate selects - no other row contributes to either.",
     "domain": "minos:db-v2-artifact-snapshot:v1\n",
+    "duplicate_key_note": "PostgreSQL's jsonb parser silently keeps the LAST value of a duplicated key and does not report that the original byte stream had one. The gate therefore cannot detect a duplicated JSON key, and does not claim to: the D3 application loader performs strict duplicate-key parsing of the manifest bytes BEFORE they are published as an artifact, and the raw-digest binding is what ties the parsed document to those exact bytes.",
     "entry_fields": [
       "content_sha256",
       "size_bytes",
@@ -18,7 +19,8 @@
       "artifact_total_bytes"
     ],
     "note": "Domain separation makes an artifact-snapshot digest unusable as a recovery-manifest digest even if the two documents ever serialize identically.",
-    "raw_manifest_digest": "artifact_snapshot_manifest_sha256 = sha256(the exact stored manifest bytes), with NO domain prefix. It is the artifact's own content_sha256 and is what the composite foreign key binds."
+    "raw_manifest_digest": "artifact_snapshot_manifest_sha256 = sha256(the exact stored manifest bytes), with NO domain prefix. It is the artifact's own content_sha256 and is what the composite foreign key binds.",
+    "snapshot_schema_version": "minos-artifact-snapshot-v1"
   },
   "artifact_snapshot_predicate": {
     "columns_selected": [
@@ -161,7 +163,7 @@
     "statement_timeout_ms": 30000,
     "verification_sessions": "default_transaction_read_only = on"
   },
-  "contract_sha256": "2a94b3d6a2e638a7d9aade36bfdb8a66308877e80c665f0d94ce40352376958d",
+  "contract_sha256": "8975aa19d6f48ac4b6e6ea083b3970de0aa25162ce5ace3fbb6e57b37ca804d0",
   "critical_queries": [
     {
       "async_allowed": false,
@@ -370,7 +372,7 @@
     }
   ],
   "database_api": {
-    "contract_sha256": "69ed3783fa86659ff7b4f8a6ed1ae7a85b92735100665b222936fbc0fa874929",
+    "contract_sha256": "7ee16f2dd94791f7143e8b81dfbc80a6fa6d9167d78b253913f0a3bef2ab1d5c",
     "d2_physical_acl_records": 810,
     "functions": 37,
     "note": "The executable half of the contract: every function, trigger, state transition and grant migration 0009 must create. Frozen in DB-V2 D1.4.",
@@ -492,7 +494,7 @@
       "profiling": "dbv2_profiling",
       "runtime": "dbv2_runtime"
     },
-    "contract_sha256": "706ba89942964400c5fcea46710b58e45cf85a9621b5a28d5da6aad2798b672c",
+    "contract_sha256": "b612845b5807991d6ccc75923e6baf63007e321b83633a3d8649f9282ed34b7e",
     "operational_preparation_path": [
       "0005_l2e_feature_view",
       "0006_l2f_experiment_plan",
@@ -544,6 +546,78 @@
     "artifact_snapshot_manifest": "application/vnd.minos.artifact-snapshot+json",
     "database_backup": "application/vnd.postgresql.dump",
     "recovery_manifest": "application/vnd.minos.db-recovery-manifest+json"
+  },
+  "recovery_sequence": {
+    "d2_2_scope": "D2.2 freezes this sequence and makes R2 executable. B0 and B1 are D3 and are NOT implemented here: nothing in this commit moves a single row.",
+    "note": "The D1.3-D2.1 protocol said R2 precedes EVERY data transformation. That is not executable: 0009 creates the 37 shadow tables EMPTY, and a complete R1 snapshot describes the operational artifact inventory, so registering it immediately after 0009 fails - not one snapshot entry resolves to an active operational artifact. The artifact catalog must be bootstrapped first. R2 now sits between that bootstrap and every remaining transformation.",
+    "phases": [
+      {
+        "authorizes": "the structural upgrade",
+        "implemented_in": "operational runbook; no database object",
+        "name": "R1 - external recovery set",
+        "occurs": "before any Alembic upgrade",
+        "phase": "R1",
+        "steps": [
+          "quiesce the operational system",
+          "create and verify the database dump",
+          "create and verify the COMPLETE artifact snapshot",
+          "publish the durable R1 recovery files beneath MINOS_DB_RECOVERY_ROOT"
+        ]
+      },
+      {
+        "authorizes": "nothing on its own",
+        "implemented_in": "migrations 0006, 0007, 0008 and 0009 (DB-V2 D2)",
+        "name": "S1 - structural preparation",
+        "occurs": "after a complete R1",
+        "phase": "S1",
+        "steps": [
+          "apply 0006 -> 0007 -> 0008 -> 0009",
+          "0009 creates the 37 shadow tables EMPTY",
+          "no business row is created automatically, by 0009 or by anything else"
+        ]
+      },
+      {
+        "authorizes": "R2",
+        "implemented_in": "DB-V2 D3 - NOT implemented in D2.2",
+        "name": "B0 - artifact-catalog bootstrap",
+        "occurs": "after S1, before R2",
+        "phase": "B0",
+        "steps": [
+          "transform ONLY the V1 artifact catalog and its locations into the shadow artifact catalog",
+          "verify every payload byte against the R1 recovery set",
+          "require exact equality with the frozen R1 artifact snapshot",
+          "transform NO profile, plan, job, result, evaluation or runtime row"
+        ]
+      },
+      {
+        "authorizes": "B1 and, with R1, the cutover",
+        "implemented_in": "catalog.register_backup_set plus the completeness gate",
+        "name": "R2 - database registration",
+        "occurs": "after B0, before every remaining business-table transformation",
+        "phase": "R2",
+        "steps": [
+          "publish/register the two INLINE recovery manifests and the EXTERNAL database dump in the shadow artifact catalog",
+          "register the complete backup-set row",
+          "re-read and verify it"
+        ]
+      },
+      {
+        "authorizes": "the cutover, together with R1 and R2",
+        "implemented_in": "DB-V2 D3 - NOT implemented in D2.2",
+        "name": "B1 - remaining deterministic transformation",
+        "occurs": "after a complete R2",
+        "phase": "B1",
+        "steps": [
+          "transform every remaining V1 business table into the shadow schema, deterministically and re-runnably"
+        ]
+      }
+    ],
+    "safety_rules": [
+      "A complete R1 is required before any upgrade.",
+      "A complete R2 is required before any transformation beyond B0.",
+      "The cutover requires BOTH a complete R1 and a complete R2.",
+      "A database_only recovery set authorizes none of the three."
+    ]
   },
   "report": "MINOS_DATABASE_V2_CONTRACT",
   "role_privilege_authority": "Prose privilege summaries are NOT the contract. The authoritative, object-level ACL matrix lives in MINOS_DATABASE_V2_DATABASE_API.json and carries exactly one record for every (object, principal) pair, suitable for direct migration generation and live-schema comparison.",
@@ -5760,7 +5834,7 @@
       ]
     }
   ],
-  "stage": "DB-V2 D2.1",
+  "stage": "DB-V2 D2.2",
   "table_counts": {
     "audit": 2,
     "catalog": 6,
