@@ -7,10 +7,11 @@ field, and cross-document checks that actually fail when a document drifts.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -763,8 +764,8 @@ def test_r1_occurs_before_migration_0009() -> None:
     r1 = _phases()["R1"]
     assert r1["occurs_before_revision"] == "0009_dbv2_shadow_schema"
     assert r1["occurs_after_revision"] is None
-    assert r1["storage"] == "external file, outside PostgreSQL"
-    assert r1["artifact_path"].endswith(".json")
+    assert r1["storage"] == ("external file beneath MINOS_DB_RECOVERY_ROOT, outside PostgreSQL")
+    assert r1["artifact_path"].endswith(".recovery.json")
     assert r1["immutable"] is True
     # it must NOT be described as a database row
     assert "not a database row" in r1["rationale"].lower()
@@ -773,7 +774,7 @@ def test_r1_occurs_before_migration_0009() -> None:
 def test_r1_binds_every_required_identity_field() -> None:
     bound = set(_phases()["R1"]["bound_fields"])
     for field in (
-        "database_identity",
+        "database_name",
         "source_alembic_revision",
         "database_backup_sha256",
         "wal_start_lsn",
@@ -782,7 +783,9 @@ def test_r1_binds_every_required_identity_field() -> None:
         "artifact_total_bytes",
         "artifact_snapshot_sha256",
         "created_at",
-        "tool_versions",
+        "postgresql_version",
+        "backup_tool_version",
+        "artifact_verification_tool_version",
     ):
         assert field in bound, field
     assert "incomplete" in _phases()["R1"]["completeness_rule"].lower()
@@ -858,7 +861,10 @@ def test_the_contradictory_rollback_statement_is_recorded_as_withdrawn() -> None
     dropping = next(w for w in withdrawn if "dropping the shadow tables" in w["statement"])
     assert "delete the migrated database" in dropping["why_wrong"].lower()
     assert dropping["replaced_by"]
-    assert len(withdrawn) == 3
+    statements = " | ".join(w["statement"] for w in withdrawn)
+    assert "reports/database/recovery/R1_RECOVERY_MANIFEST.json" in statements
+    assert "Point the application back" in statements
+    assert len(withdrawn) == 5
 
 
 def test_forward_cutover_followed_by_rollback_is_the_identity_permutation() -> None:
@@ -1020,4 +1026,483 @@ def test_the_validator_detects_r1_stored_in_the_database(tmp_path: Path) -> None
 
     _rewrite(reports / "MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json", _break)
     problems = audit.validate(reports)
-    assert any("outside the database" in p for p in problems), problems
+    assert any("external file beneath MINOS_DB_RECOVERY_ROOT" in p for p in problems), problems
+
+
+# --------------------------------------------------------------------------- #
+# DB-V2 D1.3 — external recovery storage, R1<->R2 byte binding, stale runbook text
+# --------------------------------------------------------------------------- #
+DOCS = REPO_ROOT / "docs" / "database"
+CONTRACT_REPORT = REPORTS / "MINOS_DATABASE_V2_CONTRACT.json"
+
+
+def _contract() -> dict[str, Any]:
+    return cast("dict[str, Any]", audit.load_strict(CONTRACT_REPORT))
+
+
+def _copy_root(tmp_path: Path) -> Path:
+    """A minimal repository root: the four reports, the four docs, an empty versions dir."""
+    root = tmp_path / "root"
+    reports = root / "reports" / "database"
+    reports.mkdir(parents=True)
+    for name in (
+        "MINOS_DATABASE_V1_INVENTORY.json",
+        "MINOS_DATABASE_V2_CONTRACT.json",
+        "MINOS_DATABASE_V2_CURRENT_TO_TARGET.json",
+        "MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json",
+    ):
+        (reports / name).write_bytes((REPORTS / name).read_bytes())
+    testing = root / "reports" / "testing"
+    testing.mkdir(parents=True)
+    (testing / "MINOS_TEST_INVENTORY.json").write_bytes(INVENTORY_REPORT.read_bytes())
+    docs = root / "docs" / "database"
+    docs.mkdir(parents=True)
+    for doc in sorted(DOCS.glob("*.md")):
+        (docs / doc.name).write_bytes(doc.read_bytes())
+    versions = root / "migrations" / "versions"
+    versions.mkdir(parents=True)
+    (versions / "0008_l2f_execution_results.py").write_text("", encoding="utf-8")
+    return root
+
+
+def _validate_root(root: Path) -> list[str]:
+    return cast("list[str]", audit.validate(root / "reports" / "database", root))
+
+
+def _break_physical(root: Path, mutate: Any) -> None:
+    path = root / "reports" / "database" / "MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json"
+
+    def _apply(document: dict[str, Any]) -> None:
+        mutate(document)
+        document[audit.CONTRACT_HASH_FIELD] = audit.contract_hash(document)
+
+    _rewrite(path, _apply)
+
+
+def _break_contract(root: Path, mutate: Any) -> None:
+    path = root / "reports" / "database" / "MINOS_DATABASE_V2_CONTRACT.json"
+
+    def _apply(document: dict[str, Any]) -> None:
+        mutate(document)
+        document[audit.CONTRACT_HASH_FIELD] = audit.contract_hash(document)
+
+    _rewrite(path, _apply)
+
+
+def _table(document: dict[str, Any], schema: str, table: str) -> dict[str, Any]:
+    section = next(s for s in document["schemas"] if s["schema"] == schema)
+    return next(t for t in section["tables"] if t["table"] == table)
+
+
+def test_the_committed_design_validates_as_a_whole(tmp_path: Path) -> None:
+    """The unmodified D1.3 design must pass every guard — the baseline every negative needs."""
+    assert _validate_root(_copy_root(tmp_path)) == []
+
+
+# --- G1/G2: the recovery root is external and has no implicit default ---------------------- #
+def test_no_recovery_path_points_inside_the_repository() -> None:
+    """1: the live recovery contract names no repository directory."""
+    physical = _physical()
+    live = {k: v for k, v in physical["recovery_storage_contract"].items() if k != "supersedes"}
+    texts = audit._strings(live) + audit._strings(physical["recovery_set_protocol"]["phases"])
+    offenders = [t for t in texts if audit.REPO_RELATIVE_RE.search(t)]
+    assert offenders == [], offenders
+
+
+def test_the_superseded_repository_path_is_still_recorded() -> None:
+    """The defect is recorded rather than silently deleted."""
+    supersedes = _physical()["recovery_storage_contract"]["supersedes"]
+    assert supersedes["previous_artifact_path"] == (
+        "reports/database/recovery/R1_RECOVERY_MANIFEST.json"
+    )
+
+
+def test_the_recovery_root_has_no_default_and_no_repository_fallback() -> None:
+    """2: an unset MINOS_DB_RECOVERY_ROOT fails closed; nothing selects the checkout."""
+    storage = _physical()["recovery_storage_contract"]
+    assert storage["env_var"] == "MINOS_DB_RECOVERY_ROOT"
+    assert storage["has_default"] is False
+    assert storage["git_rules"]["repository_relative_fallback"] is False
+    assert storage["git_rules"]["never_committed"] is True
+
+
+def test_the_validator_detects_a_repository_relative_recovery_path(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        phase = next(p for p in document["recovery_set_protocol"]["phases"] if p["phase"] == "R1")
+        phase["artifact_path"] = "reports/database/recovery/R1_RECOVERY_MANIFEST.json"
+
+    _break_physical(root, _break)
+    problems = _validate_root(root)
+    assert any("points inside the repository" in p for p in problems), problems
+
+
+def test_the_validator_detects_an_implicit_recovery_root_default(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+    _break_physical(root, lambda d: d["recovery_storage_contract"].__setitem__("has_default", True))
+    problems = _validate_root(root)
+    assert any("must have no default" in p for p in problems), problems
+
+
+def test_the_validator_detects_a_repository_relative_fallback(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+    _break_physical(
+        root,
+        lambda d: d["recovery_storage_contract"]["git_rules"].__setitem__(
+            "repository_relative_fallback", True
+        ),
+    )
+    problems = _validate_root(root)
+    assert any("repository-relative recovery fallback" in p for p in problems), problems
+
+
+# --- G3/G4/G5: the three artifact bindings ------------------------------------------------- #
+def test_backup_sets_binds_all_three_recovery_artifacts() -> None:
+    """3: manifest, database backup and artifact snapshot each have id + digest + media type."""
+    columns = {c["name"] for c in _table(_contract(), "catalog", "backup_sets")["columns"]}
+    for prefix in (
+        ("recovery_manifest_artifact_id", "recovery_manifest_sha256"),
+        ("database_backup_artifact_id", "database_backup_sha256"),
+        ("artifact_snapshot_manifest_artifact_id", "artifact_snapshot_sha256"),
+    ):
+        for column in prefix:
+            assert column in columns, column
+
+
+def test_every_recovery_foreign_key_resolves_to_a_unique_artifact_target() -> None:
+    """4: each FK target is a declared UNIQUE target on catalog.artifacts."""
+    contract = _contract()
+    artifacts = _table(contract, "catalog", "artifacts")
+    unique = {tuple(u["columns"]) for u in artifacts["unique_constraints"]}
+    unique.add(tuple(artifacts["primary_key"]["columns"]))
+    fks = _table(contract, "catalog", "backup_sets")["foreign_keys"]
+    assert len(fks) == 3
+    for fk in fks:
+        assert fk["references"] == "catalog.artifacts"
+        assert tuple(fk["referenced_columns"]) in unique, fk["name"]
+
+
+def test_every_digest_is_bound_to_the_same_artifact_as_its_id() -> None:
+    """5: id, digest and media type travel in ONE composite key, so they cannot disagree."""
+    contract, physical = _contract(), _physical()
+    fks = {
+        fk["columns"][0]: fk for fk in _table(contract, "catalog", "backup_sets")["foreign_keys"]
+    }
+    phases = {p["phase"]: p for p in physical["recovery_set_protocol"]["phases"]}
+    for role, binding in phases["R2"]["artifact_bindings"].items():
+        fk = fks[binding["id_column"]]
+        assert fk["columns"][1] == binding["digest_column"], role
+        assert fk["columns"][2].endswith("media_type"), role
+
+
+def test_the_validator_detects_a_digest_bound_to_a_different_artifact(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        fk = next(
+            f
+            for f in _table(document, "catalog", "backup_sets")["foreign_keys"]
+            if f["name"] == "fk_backup_sets_database_backup"
+        )
+        fk["columns"][1] = "artifact_snapshot_sha256"
+
+    _break_contract(root, _break)
+    problems = _validate_root(root)
+    assert any("not bound to the same artifact" in p for p in problems), problems
+
+
+def test_the_validator_detects_a_missing_binding_column(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        table = _table(document, "catalog", "backup_sets")
+        table["columns"] = [
+            c for c in table["columns"] if c["name"] != "recovery_manifest_artifact_id"
+        ]
+
+    _break_contract(root, _break)
+    problems = _validate_root(root)
+    assert any("has no id_column" in p for p in problems), problems
+
+
+def test_the_validator_detects_a_foreign_key_to_a_non_unique_target(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        artifacts = _table(document, "catalog", "artifacts")
+        artifacts["unique_constraints"] = [
+            u for u in artifacts["unique_constraints"] if u["name"] != "uq_artifacts_id_sha_media"
+        ]
+
+    _break_contract(root, _break)
+    problems = _validate_root(root)
+    assert any("not a declared UNIQUE target" in p for p in problems), problems
+
+
+# --- G6/G7/G8: exact media types ----------------------------------------------------------- #
+@pytest.mark.parametrize(
+    ("role", "media_type"),
+    [
+        ("recovery_manifest", "application/vnd.minos.db-recovery-manifest+json"),
+        ("database_backup", "application/vnd.postgresql.dump"),
+        ("artifact_snapshot_manifest", "application/vnd.minos.artifact-snapshot+json"),
+    ],
+)
+def test_each_recovery_media_type_is_exact(role: str, media_type: str) -> None:
+    """6, 7, 8: the declared media types agree across both reports and the check constraints."""
+    contract, physical = _contract(), _physical()
+    assert contract["recovery_media_types"][role] == media_type
+    assert physical["recovery_media_types"][role] == media_type
+    phases = {p["phase"]: p for p in physical["recovery_set_protocol"]["phases"]}
+    assert phases["R2"]["artifact_bindings"][role]["media_type"] == media_type
+    checks = " ".join(
+        c["expression"] for c in _table(contract, "catalog", "backup_sets")["check_constraints"]
+    )
+    assert media_type in checks
+
+
+def test_the_validator_detects_a_wrong_media_type(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        phases = {p["phase"]: p for p in document["recovery_set_protocol"]["phases"]}
+        phases["R2"]["artifact_bindings"]["database_backup"]["media_type"] = (
+            "application/octet-stream"
+        )
+
+    _break_physical(root, _break)
+    problems = _validate_root(root)
+    assert any("media type" in p for p in problems), problems
+
+
+# --- G9: the R1 canonical bytes are independently hashable --------------------------------- #
+def test_the_r1_canonical_digest_is_reproducible_and_total() -> None:
+    """9: hash a manifest independently — order-independent, and covering every field."""
+    manifest = {field: f"value-of-{field}" for field in audit.REQUIRED_R1_FIELDS}
+    reordered = dict(reversed(list(manifest.items())))
+    digest = hashlib.sha256(audit.canonical_bytes(manifest)).hexdigest()
+    assert digest == hashlib.sha256(audit.canonical_bytes(reordered)).hexdigest()
+    for field in audit.REQUIRED_R1_FIELDS:
+        perturbed = dict(manifest, **{field: "changed"})
+        assert hashlib.sha256(audit.canonical_bytes(perturbed)).hexdigest() != digest, field
+
+
+def test_the_validator_detects_a_missing_canonical_bytes_rule(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        phase = next(p for p in document["recovery_set_protocol"]["phases"] if p["phase"] == "R1")
+        phase["canonical_bytes_rule"] = "the manifest is hashed somehow"
+
+    _break_physical(root, _break)
+    problems = _validate_root(root)
+    assert any("canonical bytes" in p for p in problems), problems
+
+
+# --- G10: R2 represents every immutable R1 field ------------------------------------------- #
+def test_every_immutable_r1_field_maps_to_exactly_one_column() -> None:
+    """10: no R1 field is unrepresentable, and no column represents two fields."""
+    table = _table(_contract(), "catalog", "backup_sets")
+    mapping = table["r1_field_to_column"]
+    columns = {c["name"] for c in table["columns"]}
+    assert set(mapping) == set(audit.REQUIRED_R1_FIELDS)
+    assert set(mapping.values()) <= columns
+    assert len(set(mapping.values())) == len(mapping)
+
+
+def test_the_validator_detects_an_unrepresentable_r1_field(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        _table(document, "catalog", "backup_sets")["r1_field_to_column"].pop("wal_end_lsn")
+
+    _break_contract(root, _break)
+    problems = _validate_root(root)
+    assert any("r1_field_to_column missing" in p for p in problems), problems
+
+
+def test_the_validator_detects_a_field_mapped_to_an_absent_column(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        _table(document, "catalog", "backup_sets")["r1_field_to_column"]["created_at"] = "nope"
+
+    _break_contract(root, _break)
+    problems = _validate_root(root)
+    assert any("maps to absent column" in p for p in problems), problems
+
+
+# --- G11/G12/G13: completeness, idempotency, conflicting metadata --------------------------- #
+def test_completeness_requires_all_three_verified_artifacts() -> None:
+    """11: 'complete' is unreachable until every referenced artifact is verified."""
+    rule = _table(_contract(), "catalog", "backup_sets")["completeness_rule"].lower()
+    assert "three" in rule and "verified" in rule
+
+
+def test_the_validator_detects_a_weakened_completeness_rule(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        _table(document, "catalog", "backup_sets")["completeness_rule"] = (
+            "completeness may become 'complete' whenever the operator says so."
+        )
+
+    _break_contract(root, _break)
+    problems = _validate_root(root)
+    assert any("completeness rule" in p for p in problems), problems
+
+
+def test_reregistration_is_idempotent_and_conflicts_fail_closed() -> None:
+    """12, 13: a same-data re-run is a no-op; any differing immutable value fails closed."""
+    table = _table(_contract(), "catalog", "backup_sets")
+    assert "no-op" in table["idempotency_rule"]
+    assert "fails closed" in table["idempotency_rule"]
+    assert "never overwrites" in table["idempotency_rule"]
+    uniques = {tuple(u["columns"]) for u in table["unique_constraints"]}
+    assert ("recovery_set_id",) in uniques
+    assert ("backup_key",) in uniques
+    assert ("recovery_manifest_sha256",) in uniques
+
+
+def test_the_validator_detects_a_missing_conflict_constraint(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        table = _table(document, "catalog", "backup_sets")
+        table["unique_constraints"] = [
+            u for u in table["unique_constraints"] if u["name"] != "uq_backup_sets_recovery_set"
+        ]
+
+    _break_contract(root, _break)
+    problems = _validate_root(root)
+    assert any("UNIQUE(recovery_set_id)" in p for p in problems), problems
+
+
+def test_the_validator_detects_a_lost_idempotency_rule(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+
+    def _break(document: dict[str, Any]) -> None:
+        _table(document, "catalog", "backup_sets")["idempotency_rule"] = "re-runs overwrite."
+
+    _break_contract(root, _break)
+    problems = _validate_root(root)
+    assert any("idempotent re-registration" in p for p in problems), problems
+
+
+# --- G14: no stale drop-the-shadow rollback instruction ------------------------------------ #
+def test_no_post_cutover_drop_the_shadow_instruction_remains() -> None:
+    """14: every surviving mention is inside a paragraph that records it as withdrawn."""
+    for doc in sorted(DOCS.glob("*.md")):
+        for paragraph in doc.read_text(encoding="utf-8").split("\n\n"):
+            if not audit.DROP_SHADOW_RE.search(paragraph):
+                continue
+            lowered = paragraph.lower()
+            assert any(m in lowered for m in audit.WITHDRAWAL_MARKERS), (doc.name, paragraph[:120])
+
+
+def test_the_strategy_table_rollback_entry_is_boundary_aware() -> None:
+    """The exact corrected wording, not a paraphrase."""
+    text = (DOCS / "MINOS_DATABASE_V2_MIGRATION_PLAN.md").read_text(encoding="utf-8")
+    assert "Point the application back; drop the shadow |" not in text
+    assert "pre-cutover `downgrade 0009 → 0008`" in text
+    assert "post-cutover transactional inverse schema rename" in text
+
+
+def test_the_validator_detects_a_reintroduced_drop_the_shadow_instruction(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+    doc = root / "docs" / "database" / "MINOS_DATABASE_V2_MIGRATION_PLAN.md"
+    doc.write_text(
+        doc.read_text(encoding="utf-8")
+        + "\n\nTo roll back after cutover, point the application back and drop the shadow tables.\n",
+        encoding="utf-8",
+    )
+    problems = _validate_root(root)
+    assert any("stale drop-the-shadow" in p for p in problems), problems
+
+
+# --- G15: no canonical V2 object is a retirement target ------------------------------------ #
+def test_no_canonical_v2_object_is_a_retirement_target_after_d1_3() -> None:
+    """15: still true after the D1.3 edits."""
+    eligible = _physical()["retirement"]["eligible_targets"]
+    targets = [
+        *eligible["tables"],
+        *eligible["views"],
+        *eligible.get("archived_source_objects", []),
+    ]
+    assert targets
+    for target in targets:
+        assert target.split(".", 1)[0].startswith("v1_retired_"), target
+
+
+# --- G16/G17/G18/G19: migration absence, strict parsing, hashes, links ---------------------- #
+def test_migration_0009_is_still_absent() -> None:
+    """16: the versions directory exists, holds 0008, and holds nothing named 0009."""
+    versions = REPO_ROOT / "migrations" / "versions"
+    assert versions.is_dir()
+    assert sorted(p.stem for p in versions.glob("0008*.py")) == ["0008_l2f_execution_results"]
+    assert sorted(versions.glob("0009*")) == []
+
+
+def test_the_validator_detects_a_missing_versions_directory(tmp_path: Path) -> None:
+    """The 0009-absence check must never pass by looking at nothing."""
+    root = _copy_root(tmp_path)
+    for child in sorted((root / "migrations" / "versions").iterdir()):
+        child.unlink()
+    (root / "migrations" / "versions").rmdir()
+    problems = _validate_root(root)
+    assert any("no migrations directory" in p for p in problems), problems
+
+
+def test_the_validator_detects_a_created_migration_0009(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+    (root / "migrations" / "versions" / "0009_dbv2_shadow_schema.py").write_text(
+        "", encoding="utf-8"
+    )
+    problems = _validate_root(root)
+    assert any("0009 must not exist" in p for p in problems), problems
+
+
+def test_every_committed_json_report_parses_strictly_and_rehashes() -> None:
+    """17, 18: duplicate keys are rejected and every embedded hash recomputes."""
+    checked = 0
+    for path in sorted(REPORTS.glob("*.json")):
+        document = audit.load_strict(path)
+        if audit.CONTRACT_HASH_FIELD in document:
+            assert document[audit.CONTRACT_HASH_FIELD] == audit.contract_hash(document), path.name
+            checked += 1
+    assert checked >= 2
+
+
+def test_the_validator_detects_a_duplicate_key_in_any_report(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+    path = root / "reports" / "database" / "MINOS_DATABASE_V1_INVENTORY.json"
+    path.write_text('{"live": 1, "live": 2}', encoding="utf-8")
+    problems = _validate_root(root)
+    assert any("duplicate" in p for p in problems), problems
+
+
+def test_every_documentation_link_resolves() -> None:
+    """19: no DB-V2 document points at a file that does not exist."""
+    assert audit._validate_docs_and_migrations(REPO_ROOT) == []
+
+
+def test_the_validator_detects_a_broken_documentation_link(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+    doc = root / "docs" / "database" / "MINOS_DATABASE_V2_ERD.md"
+    doc.write_text(
+        doc.read_text(encoding="utf-8") + "\n\nSee [the plan](MINOS_DATABASE_V2_GONE.md).\n",
+        encoding="utf-8",
+    )
+    problems = _validate_root(root)
+    assert any("broken link" in p for p in problems), problems
+
+
+def test_the_logical_and_physical_hashes_changed_in_d1_3() -> None:
+    """The D1.2 hashes must no longer be the committed ones — the contract really changed."""
+    assert _contract()[audit.CONTRACT_HASH_FIELD] != (
+        "db135128d5abc9c9695b770c50f66fd635efc1bb0cc18640f9c363e7ca40b395"
+    )
+    assert _physical()[audit.CONTRACT_HASH_FIELD] != (
+        "cb08322bdb9a8011327398bb235215ebbf230151b3661eaf7af4eb9a56d4ef71"
+    )

@@ -50,14 +50,22 @@ disk. Bloat is checked weekly with `pgstattuple` on those tables only.
 
 ## 3. Backups and recovery
 
-### 3.0 Before and after the migration (D1.2)
+### 3.0 Before and after the migration
 
 Until `0009` runs there is nowhere in the database to record a recovery set: V1 has no
 `catalog.backup_sets` and the V2 table does not exist yet. So the pre-migration record is an
-immutable **file**, `reports/database/recovery/R1_RECOVERY_MANIFEST.json` (phase **R1**), and it
-is registered into `dbv2_catalog.backup_sets` only after `0009` and before any transformation
-(phase **R2**), where it must re-read equal and carry `completeness = 'complete'`. The R1 file is
-retained afterwards: downgrading `0009` destroys the row but not the file.
+immutable **file** beneath `MINOS_DB_RECOVERY_ROOT` (phase **R1**), and it is registered into
+`dbv2_catalog.backup_sets` only after `0009` and before any transformation (phase **R2**), where
+it must re-read equal and carry `completeness = 'complete'`. The R1 file is retained afterwards:
+downgrading `0009` destroys the row but never the file.
+
+**`MINOS_DB_RECOVERY_ROOT`** has no default and no repository-relative fallback; if it is unset,
+recovery publication fails closed. It must already exist as an absolute, non-symlink directory the
+application never creates or repairs, mode `0o2750`, files `0o640`, on durable storage **separate
+from** the Git checkout, the PostgreSQL data directory and the active artifact payload root — so
+losing any one of those does not lose the recovery evidence. Layout is content-addressed:
+`recovery/<sha>.recovery.json`, `backups/<sha>.dump`, `snapshots/<sha>.snapshot.json`. Recovery
+files are never committed to Git.
 
 Once DB-V2 is live under canonical names, the ordinary schedule below applies to
 `catalog.backup_sets`.
@@ -150,7 +158,7 @@ real. `dbv2_*` never appears in application code.
 The operational revision path is `0005 → 0006 → 0007 → 0008 → 0009`. Migrations `0006`–`0008` are
 unapplied **today** and will execute as structural predecessors during a controlled preparation
 window; after each of them, every L2-F table must hold zero business rows, and no artifact
-publication, enqueue or execution may occur. No operational migration is authorized in D1.1.
+publication, enqueue or execution may occur. No operational migration is authorized in D1.3.
 
 ## 6. Migration windows
 

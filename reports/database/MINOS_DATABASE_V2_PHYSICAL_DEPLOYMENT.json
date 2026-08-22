@@ -1,5 +1,5 @@
 {
-  "contract_sha256": "cb08322bdb9a8011327398bb235215ebbf230151b3661eaf7af4eb9a56d4ef71",
+  "contract_sha256": "9611245a6bd9a4fd2bad7f73c44e6ec2cdc4b62974b6faa3f8ff40620854d61b",
   "counts": {
     "d2_tables_created": 37,
     "logical_tables": 38,
@@ -479,38 +479,69 @@
     "v1_retired_holds": "the rollback source - the untouched V1 objects under v1_retired_* names",
     "writes_to_retired_v1": "none. No retired V1 object is written during qualification."
   },
+  "r1_manifest_fields": [
+    "schema_version",
+    "recovery_set_id",
+    "database_name",
+    "source_alembic_revision",
+    "database_backup_kind",
+    "database_backup_sha256",
+    "database_backup_size_bytes",
+    "wal_start_lsn",
+    "wal_end_lsn",
+    "artifact_snapshot_sha256",
+    "artifact_count",
+    "artifact_total_bytes",
+    "created_at",
+    "postgresql_version",
+    "backup_tool_version",
+    "artifact_verification_tool_version"
+  ],
+  "recovery_media_types": {
+    "artifact_snapshot_manifest": "application/vnd.minos.artifact-snapshot+json",
+    "database_backup": "application/vnd.postgresql.dump",
+    "recovery_manifest": "application/vnd.minos.db-recovery-manifest+json"
+  },
   "recovery_set_protocol": {
     "ordering_invariants": [
       "R1 strictly precedes revision 0009.",
       "R2 strictly follows revision 0009 and strictly precedes any data transformation.",
       "No recovery row is ever written to a V1 relation.",
-      "No transformation or cutover may begin while completeness != 'complete'."
+      "No transformation or cutover may begin while completeness != 'complete'.",
+      "Downgrading 0009 never deletes an R1 recovery file."
     ],
     "phases": [
       {
-        "artifact_path": "reports/database/recovery/R1_RECOVERY_MANIFEST.json",
+        "artifact_path": "<MINOS_DB_RECOVERY_ROOT>/recovery/<recovery_manifest_sha256>.recovery.json",
         "bound_fields": [
-          "database_identity",
+          "schema_version",
+          "recovery_set_id",
+          "database_name",
           "source_alembic_revision",
           "database_backup_kind",
           "database_backup_sha256",
-          "database_size_bytes",
+          "database_backup_size_bytes",
           "wal_start_lsn",
           "wal_end_lsn",
+          "artifact_snapshot_sha256",
           "artifact_count",
           "artifact_total_bytes",
-          "artifact_snapshot_sha256",
           "created_at",
-          "tool_versions"
+          "postgresql_version",
+          "backup_tool_version",
+          "artifact_verification_tool_version"
         ],
+        "canonical_bytes_rule": "The manifest is serialized with the repository's canonical JSON encoder (sorted keys, tight separators, UTF-8, newline-terminated). recovery_manifest_sha256 = sha256(canonical_json_bytes(the complete R1 manifest)). The digest is over the WHOLE manifest, so no field can be altered without changing it.",
         "completeness_rule": "A database dump WITHOUT the matching artifact snapshot is incomplete and may not be used to authorize a migration.",
         "immutable": true,
+        "media_type": "application/vnd.minos.db-recovery-manifest+json",
         "name": "external recovery manifest",
         "occurs_after_revision": null,
         "occurs_before_revision": "0009_dbv2_shadow_schema",
         "phase": "R1",
-        "rationale": "dbv2_catalog.backup_sets does not exist yet, and V1 has no catalog.backup_sets at all. The manifest is a FILE, not a database row, and must not be described as one.",
-        "storage": "external file, outside PostgreSQL",
+        "rationale": "dbv2_catalog.backup_sets does not exist yet, and V1 has no catalog.backup_sets at all. The manifest is a FILE on durable storage outside the repository and outside the database, not a database row, and must not be described as one.",
+        "storage": "external file beneath MINOS_DB_RECOVERY_ROOT, outside PostgreSQL",
+        "storage_contract": "recovery_storage_contract",
         "verification": [
           "the database backup is restorable into a scratch cluster",
           "every artifact payload digests to its recorded content_sha256",
@@ -518,23 +549,137 @@
         ]
       },
       {
+        "artifact_bindings": {
+          "artifact_snapshot_manifest": {
+            "digest_column": "artifact_snapshot_sha256",
+            "id_column": "artifact_snapshot_manifest_artifact_id",
+            "media_type": "application/vnd.minos.artifact-snapshot+json"
+          },
+          "database_backup": {
+            "digest_column": "database_backup_sha256",
+            "id_column": "database_backup_artifact_id",
+            "media_type": "application/vnd.postgresql.dump"
+          },
+          "recovery_manifest": {
+            "digest_column": "recovery_manifest_sha256",
+            "id_column": "recovery_manifest_artifact_id",
+            "media_type": "application/vnd.minos.db-recovery-manifest+json"
+          }
+        },
+        "downgrade_rule": "Downgrading 0009 removes the dbv2_catalog.backup_sets rows but MUST NOT delete any R1 recovery file. The files under MINOS_DB_RECOVERY_ROOT are the authoritative pre-migration record and outlive every database object.",
         "forbidden_target": "catalog.backup_sets",
         "forbidden_target_reason": "V1 has no catalog.backup_sets relation; writing there is impossible, and the canonical name belongs to V2 only after cutover.",
+        "idempotency": "A re-run with the same recovery_set_id and the same immutable data is a no-op. The same recovery_set_id or backup_key with ANY differing immutable value fails closed; it never overwrites.",
         "name": "register the R1 manifest in the shadow schema",
         "occurs_after_revision": "0009_dbv2_shadow_schema",
         "occurs_before_step": "deterministic data transformation",
         "phase": "R2",
-        "retention_of_external_manifest": "The R1 file is kept for the life of the backup set it describes, under reports/database/recovery/. Downgrading 0009 destroys the database row but not the file, which is exactly why the file is the authoritative pre-migration record.",
+        "r1_field_to_column": {
+          "artifact_count": "artifact_count",
+          "artifact_snapshot_sha256": "artifact_snapshot_sha256",
+          "artifact_total_bytes": "artifact_total_bytes",
+          "artifact_verification_tool_version": "artifact_verification_tool_version",
+          "backup_tool_version": "backup_tool_version",
+          "created_at": "created_at",
+          "database_backup_kind": "database_backup_kind",
+          "database_backup_sha256": "database_backup_sha256",
+          "database_backup_size_bytes": "database_backup_size_bytes",
+          "database_name": "database_name",
+          "postgresql_version": "postgresql_version",
+          "recovery_set_id": "recovery_set_id",
+          "schema_version": "manifest_schema_version",
+          "source_alembic_revision": "alembic_revision",
+          "wal_end_lsn": "wal_end_lsn",
+          "wal_start_lsn": "wal_start_lsn"
+        },
+        "registration_steps": [
+          "Read the R1 manifest bytes from the recovery root.",
+          "Strictly parse them with duplicate-key rejection.",
+          "Recompute recovery_manifest_sha256 over the canonical bytes and require it to equal the published name and the recorded value.",
+          "Publish/register all THREE artifacts with get-or-verify behaviour: the recovery manifest, the database backup and the artifact-snapshot manifest.",
+          "Insert dbv2_catalog.backup_sets using their exact artifact ids, digests and media types.",
+          "Re-read the inserted row AND the three referenced catalog.artifacts rows.",
+          "Require exact equality with the R1 manifest, field for field.",
+          "Set completeness = 'complete' only after all three artifacts are verification_state = 'verified'."
+        ],
+        "representable_r1_fields": [
+          "schema_version",
+          "recovery_set_id",
+          "database_name",
+          "source_alembic_revision",
+          "database_backup_kind",
+          "database_backup_sha256",
+          "database_backup_size_bytes",
+          "wal_start_lsn",
+          "wal_end_lsn",
+          "artifact_snapshot_sha256",
+          "artifact_count",
+          "artifact_total_bytes",
+          "created_at",
+          "postgresql_version",
+          "backup_tool_version",
+          "artifact_verification_tool_version"
+        ],
+        "retention_of_external_manifest": "The R1 file is kept for the life of the backup set it describes, beneath MINOS_DB_RECOVERY_ROOT. Downgrading 0009 destroys the database row but not the file, which is exactly why the file is the authoritative pre-migration record.",
         "rules": [
-          "Insert exactly the R1 manifest's scientific fields; invent nothing.",
-          "Re-read the inserted row and require field-for-field equality with the verified R1 manifest file.",
+          "Insert exactly the R1 manifest's fields; invent nothing.",
+          "Re-read the inserted row and require field-for-field equality with the verified R1 manifest.",
           "Require completeness = 'complete' before any transformation or cutover.",
-          "The R1 file is retained unchanged as recovery evidence after registration; it is the only recovery record that survives a rollback of 0009."
+          "The R1 files are retained unchanged as recovery evidence after registration."
         ],
         "storage": "dbv2_catalog.backup_sets"
       }
     ],
     "summary": "A recovery set must exist BEFORE any migration, but the table that records it (dbv2_catalog.backup_sets) is created BY that migration. D1 required a catalog.backup_sets row at step 1, which is unexecutable: no such relation exists in V1 and the V2 one does not exist yet. The protocol is therefore two-phase."
+  },
+  "recovery_storage_contract": {
+    "default_note": "There is NO default and no repository-relative fallback. If the variable is unset, recovery publication fails closed. A default would silently select the source checkout, which is exactly the defect this replaces.",
+    "durability_separation": {
+      "must_differ_from": [
+        "the application Git checkout",
+        "the PostgreSQL data directory",
+        "the active artifact payload root (MINOS_L2F_RESULT_ARTIFACT_ROOT and the L2-D corpus)"
+      ],
+      "rule": "The recovery root must be on durable storage SEPARATE from all three of the following, so that losing any one of them does not lose the recovery evidence.",
+      "verification": "compare the resolved device and the resolved path prefix of each; a shared device or a containment relationship fails closed"
+    },
+    "env_var": "MINOS_DB_RECOVERY_ROOT",
+    "git_rules": {
+      "gitignore_entry_required": false,
+      "gitignore_note": "No .gitignore entry is added, because no repository-relative path is reachable at all. An entry would imply such a path exists.",
+      "never_committed": true,
+      "repository_relative_fallback": false
+    },
+    "has_default": false,
+    "immutability": "A published recovery file is never rewritten. A second publication of the same digest is a verified no-op; a different payload under the same digest is impossible by construction and a same-name different-digest collision fails closed on the no-clobber link.",
+    "layout": {
+      "artifact_snapshot": "<root>/snapshots/<artifact_snapshot_sha256>.snapshot.json",
+      "database_backup": "<root>/backups/<database_backup_sha256>.dump",
+      "file_mode": "0o640",
+      "manifest": "<root>/recovery/<recovery_manifest_sha256>.recovery.json",
+      "scheme": "content-addressed beneath the root"
+    },
+    "publication_protocol": [
+      "write to a mkstemp temporary file inside the destination directory",
+      "fsync the file",
+      "fchmod to 0o640 and verify the resulting credentials",
+      "hard-link into place with no-clobber semantics (link(2), never rename over)",
+      "fsync the destination directory",
+      "re-open and verify the published bytes digest to the expected sha256",
+      "remove only inodes this call proved it created"
+    ],
+    "root_requirements": [
+      "must already exist; the application never creates it",
+      "must never be silently repaired, chmod-ed or chown-ed by the application",
+      "must be an absolute path",
+      "must not be a symlink, and no component of it may be a symlink",
+      "must be a directory owned by the publishing user",
+      "root mode 0o2750"
+    ],
+    "supersedes": {
+      "previous_artifact_path": "reports/database/recovery/R1_RECOVERY_MANIFEST.json",
+      "why_wrong": "A source-repository path. Writing runtime recovery evidence there dirties the Git checkout and loses the evidence together with the application host - the two failures a recovery set exists to survive."
+    }
   },
   "report": "MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT",
   "retirement": {
@@ -743,7 +888,7 @@
   },
   "schema_version": "minos-db-v2-physical-deployment-v1",
   "shared_table": "public.alembic_version",
-  "stage": "DB-V2 D1.2 (design only; migration 0009 does not exist)",
+  "stage": "DB-V2 D1.3",
   "v1_objects_d2_must_preserve": {
     "relation_count": 33,
     "relations": [
@@ -798,6 +943,16 @@
       "replaced_by": "retirement targets in the v1_retired_* namespace only.",
       "statement": "final retirement drops canonical objects such as catalog.datasets and profiling.profiles",
       "why_wrong": "After cutover those canonical names are LIVE V2 tables. catalog.datasets is simultaneously a declared logical V2 table, so the instruction would drop the migrated system."
+    },
+    {
+      "replaced_by": "an externally provisioned MINOS_DB_RECOVERY_ROOT with no default and no repository-relative fallback.",
+      "statement": "the R1 recovery manifest lives at reports/database/recovery/R1_RECOVERY_MANIFEST.json",
+      "why_wrong": "That is a source-repository path. Runtime recovery evidence written there dirties the Git checkout and is lost together with the application host."
+    },
+    {
+      "replaced_by": "boundary-aware wording: pre-cutover downgrade 0009->0008; post-cutover transactional inverse schema rename.",
+      "statement": "the strategy table's rollback entry 'Point the application back; drop the shadow.'",
+      "why_wrong": "It contradicts the required post-cutover inverse schema rename and would delete the migrated system."
     }
   ]
 }

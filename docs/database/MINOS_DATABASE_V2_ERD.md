@@ -11,7 +11,7 @@ occupied by live V1 relations. A later cutover renames the schemas so these name
 See [`MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json`](../../reports/database/MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json).
 
 38 tables · 8 schemas · contract hash
-`db135128d5abc9c9695b770c50f66fd635efc1bb0cc18640f9c363e7ca40b395`.
+`20f8b6eaa19622c2fff7bcc67c9e58b1f4667dc90795c9c2f4fa18efcb6020ba`.
 
 ---
 
@@ -138,6 +138,7 @@ erDiagram
   artifacts        ||--o{ datasets           : "bam/bai/reference/fai"
   artifacts        ||--o{ bam_profiles       : "profile/manifest/windows"
   artifacts        ||--o{ execution_results  : "vcf/manifest"
+  artifacts        ||--o{ backup_sets        : "recovery manifest / backup / snapshot"
 
   storage_backends {
     uuid id PK
@@ -172,6 +173,21 @@ erDiagram
 
 `(backend_id, object_key)` and `(artifact_id, backend_id)` are both unique. `object_key` is
 constrained to be relative and free of `..`.
+
+### 2.1 Recovery sets bind three artifacts
+
+`catalog.backup_sets` references `catalog.artifacts` three times, each by **composite** foreign
+key through `uq_artifacts_id_sha_media (id, content_sha256, media_type)`, so a digest column can
+never name a different artifact than its id column:
+
+| Foreign key | Columns | Media type |
+|---|---|---|
+| `fk_backup_sets_recovery_manifest` | `recovery_manifest_artifact_id`, `recovery_manifest_sha256`, `recovery_manifest_media_type` | `application/vnd.minos.db-recovery-manifest+json` |
+| `fk_backup_sets_database_backup` | `database_backup_artifact_id`, `database_backup_sha256`, `database_backup_media_type` | `application/vnd.postgresql.dump` |
+| `fk_backup_sets_artifact_snapshot_manifest` | `artifact_snapshot_manifest_artifact_id`, `artifact_snapshot_sha256`, `artifact_snapshot_manifest_media_type` | `application/vnd.minos.artifact-snapshot+json` |
+
+`recovery_manifest_sha256 = sha256(canonical_json_bytes(R1 manifest))`, and `completeness` may
+become `'complete'` only once all three artifacts are `verified`.
 
 ---
 

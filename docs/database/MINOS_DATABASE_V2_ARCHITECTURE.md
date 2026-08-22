@@ -1,17 +1,17 @@
 # MINOS Database V2 — Canonical Architecture
 
-**Stage:** DB-V2 **D1.2** — design only. No migration exists; `0009` has not been created. No
+**Stage:** DB-V2 **D1.3** — design only. No migration exists; `0009` has not been created. No
 production source has changed.
 **Designed against:** `feature/L2-F` at `695d9227ed83c595e3ed03375a935fbe801aadbd`.
 **Operational database:** `minos_engine_db`, live at `0005_l2e_feature_view`, **untouched by this
 stage**.
-**Contract hash:** `db135128d5abc9c9695b770c50f66fd635efc1bb0cc18640f9c363e7ca40b395`
+**Contract hash:** `20f8b6eaa19622c2fff7bcc67c9e58b1f4667dc90795c9c2f4fa18efcb6020ba`
 (over [`MINOS_DATABASE_V2_CONTRACT.json`](../../reports/database/MINOS_DATABASE_V2_CONTRACT.json),
 excluding its own `contract_sha256` field).
 
 **Physical deployment contract:**
 [`MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json`](../../reports/database/MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json),
-hash `cb08322bdb9a8011327398bb235215ebbf230151b3661eaf7af4eb9a56d4ef71`.
+hash `9611245a6bd9a4fd2bad7f73c44e6ec2cdc4b62974b6faa3f8ff40620854d61b`.
 
 Companion documents: [ERD](MINOS_DATABASE_V2_ERD.md) ·
 [Migration plan](MINOS_DATABASE_V2_MIGRATION_PLAN.md) ·
@@ -147,7 +147,7 @@ Ten V1 views disappear. They exist because partition and snapshot identity were 
 several tables and had to be re-joined; in V2 a single indexed predicate on
 `profile_snapshot_members (snapshot_id, partition)` answers all of them.
 
-### 2.2 The physical shadow namespace (D1.1)
+### 2.2 The physical shadow namespace
 
 D1 said the V2 tables would be created alongside untouched V1 tables. That is not directly
 possible: **9 of the 38 logical identities are already occupied by live V1 relations** —
@@ -156,7 +156,7 @@ possible: **9 of the 38 logical identities are already occupied by live V1 relat
 `profiling.profile_snapshot_members` and `audit.events`. A tenth identity,
 `public.alembic_version`, is shared rather than colliding.
 
-D1.1 resolves this with a frozen **temporary physical schema namespace**:
+D1.1 resolved this with a frozen **temporary physical schema namespace**, still in force:
 
 | Canonical (final) | D2 physical (temporary) | After cutover |
 |---|---|---|
@@ -305,17 +305,26 @@ monthly range partitions.
 
 ---
 
-## 6a. Recovery, rollback and retirement (D1.2)
+## 6a. Recovery, rollback and retirement
 
 Three sequencing defects in the D1 runbook are corrected; each was an execution defect, not a
 wording preference.
 
 **The recovery set is two-phase.** D1 required a `catalog.backup_sets` row as step 1, but V1 has
 no such relation and the V2 one is created by the migration step 1 precedes. **R1** writes an
-immutable manifest *file* before any migration; **R2** registers that exact manifest into
-`dbv2_catalog.backup_sets` after `0009` and before any transformation, requiring
-`completeness = 'complete'`. The R1 file is retained — it is the only recovery record that
-survives a downgrade of `0009`.
+immutable manifest *file* before any migration, beneath the externally provisioned
+`MINOS_DB_RECOVERY_ROOT` — which has **no default and no repository-relative fallback**, and must
+sit on durable storage separate from the Git checkout, the PostgreSQL data directory and the
+artifact payload root. **R2** registers that exact manifest into `dbv2_catalog.backup_sets` after
+`0009` and before any transformation.
+
+`backup_sets` binds **three** artifacts by composite foreign key — the recovery manifest, the
+database backup and the artifact-snapshot manifest — each through
+`uq_artifacts_id_sha_media (id, content_sha256, media_type)`, so a digest column can never name a
+different artifact than its id column. `recovery_manifest_sha256` is
+`sha256(canonical_json_bytes(manifest))` over the whole manifest, making R1↔R2 byte-verifiable.
+`completeness` reaches `'complete'` only once all three artifacts are verified. R1 files are
+retained — downgrading `0009` removes the rows but never a recovery file.
 
 **There are three rollback boundaries, not one.** Before `0009` there is nothing to undo. After
 `0009` but before cutover, `alembic downgrade 0009 → 0008` removes only `dbv2_*` objects and never

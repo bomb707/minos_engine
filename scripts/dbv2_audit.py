@@ -65,6 +65,48 @@ EXPECTED_REVISION_PATH = (
     "0009_dbv2_shadow_schema",
 )
 
+#: the externally provisioned recovery root (DB-V2 D1.3). It has no default: a default would
+#: silently select the source checkout, which is the defect D1.3 exists to remove.
+RECOVERY_ROOT_ENV = "MINOS_DB_RECOVERY_ROOT"
+
+#: the exact media types the three recovery artifacts must carry.
+RECOVERY_MEDIA_TYPES = {
+    "recovery_manifest": "application/vnd.minos.db-recovery-manifest+json",
+    "database_backup": "application/vnd.postgresql.dump",
+    "artifact_snapshot_manifest": "application/vnd.minos.artifact-snapshot+json",
+}
+
+#: every immutable field the R1 manifest's canonical bytes must carry.
+REQUIRED_R1_FIELDS = (
+    "schema_version",
+    "recovery_set_id",
+    "database_name",
+    "source_alembic_revision",
+    "database_backup_kind",
+    "database_backup_sha256",
+    "database_backup_size_bytes",
+    "wal_start_lsn",
+    "wal_end_lsn",
+    "artifact_snapshot_sha256",
+    "artifact_count",
+    "artifact_total_bytes",
+    "created_at",
+    "postgresql_version",
+    "backup_tool_version",
+    "artifact_verification_tool_version",
+)
+
+#: top-level repository directories. A recovery path naming one of these is inside the checkout.
+REPO_RELATIVE_RE = re.compile(r"(?<![\w<./-])(reports|docs|src|scripts|tests|migrations)/")
+
+#: a paragraph that says post-cutover rollback drops the shadow schema is a defect UNLESS the
+#: paragraph explicitly records it as withdrawn or forbidden.
+DROP_SHADOW_RE = re.compile(r"drop(?:s|ping|ped)?\s+(?:the\s+)?shadow", re.IGNORECASE)
+WITHDRAWAL_MARKERS = ("withdrawn", "not dropped", "never drop", "must not", "would delete")
+
+#: markdown link targets that are not repository paths.
+EXTERNAL_LINK_RE = re.compile(r"^(https?:|mailto:|#)")
+
 
 # --------------------------------------------------------------------------- #
 # strict JSON
@@ -368,8 +410,8 @@ def scan_migrations(root: Path) -> list[dict[str, Any]]:
 # --------------------------------------------------------------------------- #
 # cross-document validation
 # --------------------------------------------------------------------------- #
-def validate(reports: Path) -> list[str]:
-    """Cross-reference the three reports. Returns the list of problems (empty means valid)."""
+def validate(reports: Path, root: Path = REPO_ROOT) -> list[str]:
+    """Cross-reference the reports. Returns the list of problems (empty means valid)."""
     problems: list[str] = []
     inventory_path = reports / "MINOS_DATABASE_V1_INVENTORY.json"
     contract_path = reports / "MINOS_DATABASE_V2_CONTRACT.json"
@@ -381,9 +423,17 @@ def validate(reports: Path) -> list[str]:
     if problems:
         return problems
 
-    inventory = load_strict(inventory_path)
-    contract = load_strict(contract_path)
-    mapping = load_strict(mapping_path)
+    documents: dict[str, Any] = {}
+    for path in (inventory_path, contract_path, mapping_path):
+        try:
+            documents[path.name] = load_strict(path)
+        except ValueError as exc:
+            problems.append(f"{path.name}: {exc}")
+    if problems:
+        return problems
+    inventory = documents[inventory_path.name]
+    contract = documents[contract_path.name]
+    mapping = documents[mapping_path.name]
 
     # 1) the contract hash must recompute
     recomputed = contract_hash(contract)
@@ -481,6 +531,21 @@ def validate(reports: Path) -> list[str]:
     # 9) the physical-deployment contract: shadow namespace, counts, revision path, inverses
     problems.extend(_validate_physical_deployment(reports, inventory, target_tables))
 
+    # 9a) DB-V2 D1.3: the recovery contract must be externally stored and byte-verifiable
+    physical_path = reports / "MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json"
+    if physical_path.is_file():
+        try:
+            physical = load_strict(physical_path)
+        except ValueError as exc:
+            problems.append(f"{physical_path.name}: {exc}")
+        else:
+            problems.extend(_validate_recovery_storage(physical))
+            problems.extend(_validate_recovery_bindings(contract, physical))
+
+    # 9b) stale rollback text, migration 0009 absence, documentation links, report integrity
+    problems.extend(_validate_docs_and_migrations(root))
+    problems.extend(_validate_report_integrity(root, reports))
+
     # 10) no secret-shaped material anywhere in the reports
     report_paths = [inventory_path, contract_path, mapping_path]
     physical_path = reports / "MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json"
@@ -514,10 +579,16 @@ def _validate_recovery_and_retirement(doc: dict[str, Any]) -> list[str]:
         r1, r2 = phases["R1"], phases["R2"]
         if r1.get("occurs_before_revision") != EXPECTED_REVISION_PATH[-1]:
             problems.append("R1 must occur before the planned D2 revision")
-        if r1.get("storage", "").startswith("dbv2_") or "." in r1.get("storage", ""):
-            problems.append(f"R1 must be stored outside the database, got {r1.get('storage')!r}")
-        if not r1.get("artifact_path", "").endswith(".json"):
-            problems.append("R1 must name an external manifest file")
+        storage = r1.get("storage", "")
+        if RECOVERY_ROOT_ENV not in storage or "outside PostgreSQL" not in storage:
+            problems.append(
+                f"R1 must be an external file beneath {RECOVERY_ROOT_ENV}, got {storage!r}"
+            )
+        artifact_path = r1.get("artifact_path", "")
+        if not artifact_path.startswith(f"<{RECOVERY_ROOT_ENV}>/"):
+            problems.append(f"R1 manifest path must be under the recovery root: {artifact_path!r}")
+        if not artifact_path.endswith(".recovery.json"):
+            problems.append("R1 must name a content-addressed external manifest file")
         if r2.get("occurs_after_revision") != EXPECTED_REVISION_PATH[-1]:
             problems.append("R2 must occur after the planned D2 revision")
         if r2.get("storage") != "dbv2_catalog.backup_sets":
@@ -559,7 +630,13 @@ def _validate_recovery_and_retirement(doc: dict[str, Any]) -> list[str]:
 
     # the withdrawn statements must be recorded, not silently deleted
     withdrawn = " ".join(w.get("statement", "") for w in doc.get("withdrawn_statements", []))
-    for fragment in ("dropping the shadow tables", "catalog.backup_sets", "canonical objects"):
+    for fragment in (
+        "dropping the shadow tables",
+        "catalog.backup_sets",
+        "canonical objects",
+        "reports/database/recovery/R1_RECOVERY_MANIFEST.json",
+        "Point the application back",
+    ):
         if fragment not in withdrawn:
             problems.append(f"withdrawn_statements must record {fragment!r}")
 
@@ -594,6 +671,284 @@ def _validate_recovery_and_retirement(doc: dict[str, Any]) -> list[str]:
         problems.append("qualification semantics must forbid writing retired V1 objects")
     if not semantics.get("deletions_of_v2", "").lower().startswith("none"):
         problems.append("qualification semantics must forbid deleting V2 objects")
+    return problems
+
+
+def _strings(value: Any) -> list[str]:
+    """Every string reachable inside a JSON-shaped value."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for item in value.values() for s in _strings(item)]
+    if isinstance(value, list):
+        return [s for item in value for s in _strings(item)]
+    return []
+
+
+def _backup_sets_table(contract: dict[str, Any]) -> dict[str, Any] | None:
+    for schema in contract.get("schemas", []):
+        if schema.get("schema") != "catalog":
+            continue
+        for table in schema.get("tables", []):
+            if table.get("table") == "backup_sets":
+                return cast("dict[str, Any]", table)
+    return None
+
+
+def _artifacts_table(contract: dict[str, Any]) -> dict[str, Any] | None:
+    for schema in contract.get("schemas", []):
+        if schema.get("schema") != "catalog":
+            continue
+        for table in schema.get("tables", []):
+            if table.get("table") == "artifacts":
+                return cast("dict[str, Any]", table)
+    return None
+
+
+def _validate_recovery_storage(physical: dict[str, Any]) -> list[str]:
+    """G1-G2: the recovery root is external, has no default, and no repository path survives."""
+    problems: list[str] = []
+    storage = physical.get("recovery_storage_contract")
+    if not isinstance(storage, dict):
+        return ["physical report declares no recovery_storage_contract"]
+
+    if storage.get("env_var") != RECOVERY_ROOT_ENV:
+        problems.append(
+            f"recovery root must be {RECOVERY_ROOT_ENV}, got {storage.get('env_var')!r}"
+        )
+    if storage.get("has_default") is not False:
+        problems.append(f"{RECOVERY_ROOT_ENV} must have no default")
+    git_rules = storage.get("git_rules", {})
+    if git_rules.get("repository_relative_fallback") is not False:
+        problems.append("no repository-relative recovery fallback may exist")
+    if git_rules.get("never_committed") is not True:
+        problems.append("recovery files must never be committed to Git")
+    for requirement in ("must already exist", "must be an absolute path", "must not be a symlink"):
+        if not any(requirement in item for item in storage.get("root_requirements", [])):
+            problems.append(f"recovery root requirements omit {requirement!r}")
+    separation = storage.get("durability_separation", {}).get("must_differ_from", [])
+    for needed in ("Git checkout", "PostgreSQL data directory", "artifact payload root"):
+        if not any(needed in item for item in separation):
+            problems.append(f"recovery root must be declared separate from the {needed}")
+    for step in ("fsync the file", "no-clobber", "fsync the destination directory"):
+        if not any(step in item for item in storage.get("publication_protocol", [])):
+            problems.append(f"recovery publication protocol omits {step!r}")
+
+    # G1: no live recovery path may point inside the repository. The recorded defect
+    # (``supersedes``) and the withdrawn statements deliberately quote the old path.
+    live = {k: v for k, v in storage.items() if k != "supersedes"}
+    phases = physical.get("recovery_set_protocol", {}).get("phases", [])
+    for text in _strings(live) + _strings(phases):
+        match = REPO_RELATIVE_RE.search(text)
+        if match:
+            problems.append(f"recovery path points inside the repository: {text!r}")
+    return problems
+
+
+def _validate_recovery_bindings(contract: dict[str, Any], physical: dict[str, Any]) -> list[str]:
+    """G3-G13: catalog.backup_sets can persist and independently recover the exact R1 manifest."""
+    problems: list[str] = []
+    table = _backup_sets_table(contract)
+    if table is None:
+        return ["contract declares no catalog.backup_sets table"]
+    artifacts = _artifacts_table(contract)
+    if artifacts is None:
+        return ["contract declares no catalog.artifacts table"]
+
+    columns = {column["name"]: column for column in table.get("columns", [])}
+    phases = {
+        p.get("phase"): p for p in physical.get("recovery_set_protocol", {}).get("phases", [])
+    }
+    bindings = phases.get("R2", {}).get("artifact_bindings", {})
+
+    # G3 / G6-G8: all three artifacts are bound by id + digest + exact media type.
+    for role, media_type in sorted(RECOVERY_MEDIA_TYPES.items()):
+        binding = bindings.get(role)
+        if not isinstance(binding, dict):
+            problems.append(f"R2 declares no artifact binding for {role}")
+            continue
+        if binding.get("media_type") != media_type:
+            problems.append(f"{role} media type {binding.get('media_type')!r} != {media_type!r}")
+        for key in ("id_column", "digest_column"):
+            name = binding.get(key)
+            if name not in columns:
+                problems.append(f"backup_sets has no {key} {name!r} for {role}")
+            elif columns[name].get("nullable") is not False:
+                problems.append(f"backup_sets.{name} must be NOT NULL")
+        if physical.get("recovery_media_types", {}).get(role) != media_type:
+            problems.append(f"physical recovery_media_types[{role}] != {media_type!r}")
+        if contract.get("recovery_media_types", {}).get(role) != media_type:
+            problems.append(f"contract recovery_media_types[{role}] != {media_type!r}")
+
+    # G4 / G5: each foreign key resolves to catalog.artifacts and carries the digest AND the
+    # media type in the SAME key, so a digest can never name a different artifact than its id.
+    artifact_columns = {column["name"] for column in artifacts.get("columns", [])}
+    unique_targets = {
+        tuple(unique["columns"]) for unique in artifacts.get("unique_constraints", [])
+    }
+    pk = artifacts.get("primary_key")
+    if isinstance(pk, dict):
+        unique_targets.add(tuple(pk.get("columns", [])))
+    by_id_column = {}
+    for fk in table.get("foreign_keys", []):
+        if fk.get("references") != "catalog.artifacts":
+            problems.append(f"backup_sets FK {fk.get('name')} does not reference catalog.artifacts")
+            continue
+        referenced = tuple(fk.get("referenced_columns", []))
+        for name in referenced:
+            if name not in artifact_columns:
+                problems.append(f"{fk['name']}: catalog.artifacts has no column {name!r}")
+        if referenced not in unique_targets:
+            problems.append(
+                f"{fk['name']}: referenced columns {list(referenced)} are not a declared "
+                "UNIQUE target on catalog.artifacts"
+            )
+        local = tuple(fk.get("columns", []))
+        if len(local) != 3:
+            problems.append(f"{fk['name']}: must bind id, digest and media type, got {list(local)}")
+            continue
+        by_id_column[local[0]] = (fk["name"], local)
+    for role, binding in sorted(bindings.items()):
+        if not isinstance(binding, dict):
+            continue
+        entry = by_id_column.get(binding.get("id_column"))
+        if entry is None:
+            problems.append(f"{role}: no composite FK binds {binding.get('id_column')!r}")
+            continue
+        _, local = entry
+        if local[1] != binding.get("digest_column"):
+            problems.append(
+                f"{role}: FK binds digest {local[1]!r}, protocol declares "
+                f"{binding.get('digest_column')!r} - the digest is not bound to the same artifact"
+            )
+
+    # the additive UNIQUE target must be declared explicitly in the logical contract
+    declared_target = contract.get("artifacts_unique_targets_required_by_backup_sets", {})
+    if tuple(declared_target.get("columns", [])) not in unique_targets:
+        problems.append("the additive UNIQUE target on catalog.artifacts is not declared")
+
+    # G10: every immutable R1 field maps to exactly one existing column.
+    mapping = table.get("r1_field_to_column", {})
+    if set(mapping) != set(REQUIRED_R1_FIELDS):
+        missing = sorted(set(REQUIRED_R1_FIELDS) - set(mapping))
+        extra = sorted(set(mapping) - set(REQUIRED_R1_FIELDS))
+        problems.append(f"r1_field_to_column missing {missing}, unexpected {extra}")
+    seen: dict[str, str] = {}
+    for field, column in sorted(mapping.items()):
+        if column not in columns:
+            problems.append(f"R1 field {field!r} maps to absent column {column!r}")
+        if column in seen:
+            problems.append(f"columns {column!r} represents both {seen[column]!r} and {field!r}")
+        seen[column] = field
+    if phases.get("R2", {}).get("r1_field_to_column") != mapping:
+        problems.append("the physical R2 phase and the logical contract disagree on the R1 mapping")
+    for field in REQUIRED_R1_FIELDS:
+        if field not in physical.get("r1_manifest_fields", []):
+            problems.append(f"r1_manifest_fields omits {field!r}")
+        if field not in phases.get("R1", {}).get("bound_fields", []):
+            problems.append(f"R1 bound_fields omits {field!r}")
+
+    # G11: completeness may only become 'complete' with all three artifacts verified.
+    rule = table.get("completeness_rule", "")
+    if "three" not in rule.lower() or "verified" not in rule.lower():
+        problems.append("backup_sets declares no all-three-verified completeness rule")
+    checks = {c["name"]: c["expression"] for c in table.get("check_constraints", [])}
+    if "ck_backup_sets_completeness" not in checks:
+        problems.append("backup_sets declares no completeness check constraint")
+
+    # G12 / G13: idempotent re-registration; conflicting immutable metadata fails closed.
+    for where, idempotency in (
+        ("the logical contract", table.get("idempotency_rule", "")),
+        ("the R2 phase", phases.get("R2", {}).get("idempotency", "")),
+    ):
+        if "no-op" not in idempotency:
+            problems.append(f"{where} does not declare idempotent re-registration")
+        if "fails closed" not in idempotency or "never overwrites" not in idempotency:
+            problems.append(
+                f"{where} does not declare that conflicting immutable metadata fails closed"
+            )
+    uniques = {tuple(u["columns"]) for u in table.get("unique_constraints", [])}
+    for column in ("backup_key", "recovery_set_id", "recovery_manifest_sha256"):
+        if (column,) not in uniques:
+            problems.append(f"backup_sets must declare UNIQUE({column}) to fail closed on conflict")
+
+    # G9: the R1 canonical-byte rule must be the whole-manifest digest, and it must be
+    # independently reproducible. Prove it here rather than asserting the sentence.
+    rule = phases.get("R1", {}).get("canonical_bytes_rule", "")
+    if "sha256(canonical_json_bytes" not in rule.replace(" ", ""):
+        problems.append("R1 does not define recovery_manifest_sha256 over the canonical bytes")
+    specimen = {field: f"value-of-{field}" for field in REQUIRED_R1_FIELDS}
+    reordered = dict(reversed(list(specimen.items())))
+    first = hashlib.sha256(canonical_bytes(specimen)).hexdigest()
+    if first != hashlib.sha256(canonical_bytes(reordered)).hexdigest():
+        problems.append("the R1 canonical encoding is not key-order independent")
+    perturbed = dict(specimen, artifact_count="value-of-artifact_count!")
+    if first == hashlib.sha256(canonical_bytes(perturbed)).hexdigest():
+        problems.append("the R1 canonical digest does not cover every manifest field")
+    if len(first) != 64 or not re.fullmatch(r"[0-9a-f]{64}", first):
+        problems.append("the R1 digest is not a 64-character lowercase hex string")
+    return problems
+
+
+def _validate_docs_and_migrations(root: Path) -> list[str]:
+    """G14, G16, G19: no stale rollback instruction, no 0009, every doc link resolves."""
+    problems: list[str] = []
+    docs = sorted((root / "docs" / "database").glob("*.md"))
+    if not docs:
+        return [f"no DB-V2 documentation found under {root / 'docs' / 'database'}"]
+
+    for doc in docs:
+        text = doc.read_text(encoding="utf-8")
+        # G14: paragraph-scoped, so a paragraph that records the withdrawal is not a defect.
+        for paragraph in re.split(r"\n\s*\n", text):
+            if not DROP_SHADOW_RE.search(paragraph):
+                continue
+            lowered = paragraph.lower()
+            if not any(marker in lowered for marker in WITHDRAWAL_MARKERS):
+                first = " ".join(paragraph.split())[:120]
+                problems.append(f"{doc.name}: stale drop-the-shadow rollback text: {first!r}")
+        # G19: every relative markdown link must resolve.
+        for target in re.findall(r"\]\(([^)]+)\)", text):
+            if EXTERNAL_LINK_RE.match(target):
+                continue
+            relative = target.split("#", 1)[0]
+            if not relative:
+                continue
+            if not (doc.parent / relative).resolve().exists():
+                problems.append(f"{doc.name}: broken link {target!r}")
+
+    # G16: migration 0009 must remain absent. A missing versions directory is itself a
+    # failure - the check must never pass by silently finding nothing to look at.
+    versions = root / "migrations" / "versions"
+    if not versions.is_dir():
+        problems.append(f"no migrations directory at {versions}")
+    else:
+        stray = sorted(p.name for p in versions.glob("0009*"))
+        if stray:
+            problems.append(f"migration 0009 must not exist yet: {stray}")
+    return problems
+
+
+def _validate_report_integrity(root: Path, reports: Path) -> list[str]:
+    """G17-G18: every committed JSON report parses strictly and its embedded hash recomputes."""
+    problems: list[str] = []
+    paths = sorted(reports.glob("*.json"))
+    inventory = root / "reports" / "testing" / "MINOS_TEST_INVENTORY.json"
+    if inventory.is_file():
+        paths.append(inventory)
+    for path in paths:
+        try:
+            document = load_strict(path)
+        except ValueError as exc:
+            problems.append(f"{path.name}: {exc}")
+            continue
+        if isinstance(document, dict) and CONTRACT_HASH_FIELD in document:
+            recomputed = contract_hash(document)
+            if document[CONTRACT_HASH_FIELD] != recomputed:
+                problems.append(
+                    f"{path.name}: stored {document[CONTRACT_HASH_FIELD]!r} != "
+                    f"recomputed {recomputed!r}"
+                )
     return problems
 
 
@@ -786,7 +1141,7 @@ def main(argv: list[str] | None = None) -> int:
         print(digest)
         return 0
 
-    problems = validate(args.reports)
+    problems = validate(args.reports, REPO_ROOT)
     for problem in problems:
         print(f"FAIL: {problem}", file=sys.stderr)
     print(f"validate: {len(problems)} problem(s)")

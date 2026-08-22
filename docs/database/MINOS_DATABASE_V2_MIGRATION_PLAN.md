@@ -4,7 +4,7 @@ Companion to [the architecture](MINOS_DATABASE_V2_ARCHITECTURE.md) and
 [the ERD](MINOS_DATABASE_V2_ERD.md). The complete object-by-object mapping is in
 [`MINOS_DATABASE_V2_CURRENT_TO_TARGET.json`](../../reports/database/MINOS_DATABASE_V2_CURRENT_TO_TARGET.json).
 
-**Nothing in this document has been executed.** D1.1 is design only; migration `0009` does not
+**Nothing in this document has been executed.** D1.3 is design only; migration `0009` does not
 exist. The physical deployment names and the revision path are frozen in
 [`MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json`](../../reports/database/MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json).
 
@@ -66,12 +66,12 @@ the time-bounded qualification window in §3.
 | # | Strategy | Data safety | Rollback | Downtime | Complexity | Reproducible | Verifies all 0005 data |
 |---|---|---|---|---|---|---|---|
 | 1 | In-place transformation | **Low** — DDL and DML against the only copy | Restore-from-backup only | Hours | Medium | No — one-shot | Only after the fact |
-| 2 | **Shadow DB-V2 tables in the same database, verified cutover** | **High** — V1 objects untouched until retirement | Point the application back; drop the shadow | **Minutes** | Medium | Yes — rerunnable | Yes, before cutover |
+| 2 | **Shadow DB-V2 tables in the same database, verified cutover** | **High** — V1 objects untouched until retirement | Boundary-aware: pre-cutover `downgrade 0009 → 0008`; post-cutover transactional inverse schema rename | **Minutes** | Medium | Yes — rerunnable | Yes, before cutover |
 | 3 | Restore/copy into a separate qualification database, then replace | High | Swap back | Hours | **High** — the database must end up named `minos_engine_db`, forcing a rename or a full reload | Yes | Yes |
 
 **Selected: strategy 2 — shadow tables in `minos_engine_db`, followed by verified cutover.**
 
-### 2.0 What D1 got wrong, and how D1.1 fixes it
+### 2.0 What D1 got wrong, and how D1.1 fixed it
 
 D1 described "shadow DB-V2 tables in the same database" as if the canonical names were free. They
 are not: **9 of the 38 logical identities are already occupied by live V1 relations**
@@ -134,7 +134,7 @@ Invariants for the intermediate revisions:
 3. After **each** intermediate revision, every L2-F table must hold **zero business rows**.
 4. No artifact publication, job enqueue or execution may occur during the intermediate revisions.
 5. No application path runs Alembic automatically; migration is an explicit operator action.
-6. **No operational migration is authorized in D1.1.**
+6. **No operational migration is authorized in D1.3.**
 
 None of the following is used, now or later: `alembic stamp`, a skipped revision, a rewrite of
 `0001`–`0008`, a manual edit of `alembic_version`, a permanent multiple-head graph, a destructive
@@ -154,18 +154,38 @@ D1 said "record a `catalog.backup_sets` row" as step 1. That is unexecutable: V1
 The recovery set is therefore captured in two phases.
 
 **R1 — before any operational migration.** Take the `pg_dump -Fc`, record the WAL position, and
-enumerate and verify the artifact snapshot. Write a strict, immutable **file** —
-`reports/database/recovery/R1_RECOVERY_MANIFEST.json` — binding database identity, source Alembic
-revision, backup digest, WAL start/end LSN, artifact count, artifact total bytes, aggregate
-artifact digest, creation time and tool versions. This is a file, **not** a database row, and must
-not be described as one. A dump without its matching artifact snapshot is **incomplete** and may
-not authorize a migration.
+enumerate and verify the artifact snapshot. Write a strict, immutable **file** beneath the
+externally provisioned recovery root, at
+`<MINOS_DB_RECOVERY_ROOT>/recovery/<recovery_manifest_sha256>.recovery.json`, binding all sixteen
+R1 fields: schema version, `recovery_set_id`, database name, source Alembic revision, backup kind,
+backup SHA-256 and size, WAL start/end LSN, artifact snapshot SHA-256, artifact count, artifact
+total bytes, creation time, PostgreSQL version, backup tool version and artifact verification tool
+version. This is a file, **not** a database row, and must not be described as one. A dump without
+its matching artifact snapshot is **incomplete** and may not authorize a migration.
 
-**R2 — after `0009` creates the shadow schema, before any transformation.** Register the exact R1
-manifest into `dbv2_catalog.backup_sets`, re-read the row and require field-for-field equality
-with the verified R1 file, and require `completeness = 'complete'` before any transformation or
-cutover. The row is **never** written to `catalog.backup_sets`. The R1 file is retained unchanged
-as recovery evidence — it is the only recovery record that survives a downgrade of `0009`.
+`MINOS_DB_RECOVERY_ROOT` has **no default and no repository-relative fallback** — a default would
+silently select the source checkout. The root must already exist as an absolute, non-symlink
+directory that the application never creates or repairs, on durable storage **separate from** the
+Git checkout, the PostgreSQL data directory and the active artifact payload root. Publication is
+atomic: temp file → fsync → credential verify → no-clobber hard link → directory fsync → re-read
+and verify the digest. Recovery files are never committed to Git.
+
+**R2 — after `0009` creates the shadow schema, before any transformation.** Read the R1 bytes,
+strictly parse them with duplicate-key rejection, recompute
+`recovery_manifest_sha256 = sha256(canonical_json_bytes(manifest))`, publish and get-or-verify
+**three** artifacts — the recovery manifest, the database backup and the artifact-snapshot
+manifest — then insert `dbv2_catalog.backup_sets` with their exact artifact ids, digests and media
+types. Re-read the row *and* the three artifact rows and require field-for-field equality with the
+R1 manifest. `completeness` becomes `'complete'` only once all three artifacts are `verified`.
+
+The three composite foreign keys resolve through the existing
+`uq_artifacts_id_sha_media (id, content_sha256, media_type)` target, so a digest column can never
+name a different artifact than its id column. Re-running R2 is idempotent; the same
+`recovery_set_id` or `backup_key` with any differing immutable value **fails closed**.
+
+The row is **never** written to `catalog.backup_sets`. Downgrading `0009` removes the rows but
+**must not delete any R1 recovery file** — those files outlive every database object and are the
+authoritative pre-migration record.
 
 ### 3.1 The ten steps
 
@@ -182,9 +202,10 @@ the `dbv2_*` namespace, with their constraints, indexes, functions and role gran
 `public.alembic_version` is shared, not duplicated. **No V1 object is touched** — not renamed, not
 altered, not deleted, not written.
 
-**4. R2 — register the recovery set.** Insert the R1 manifest into `dbv2_catalog.backup_sets`,
-re-read it, and require equality with the R1 file. Transformation may not begin until this passes
-and `completeness = 'complete'`.
+**4. R2 — register the recovery set.** Publish and register the three artifacts, insert
+`dbv2_catalog.backup_sets` bound to them, re-read the row and the artifacts, and require equality
+with the R1 file. Transformation may not begin until this passes and
+`completeness = 'complete'`.
 
 **5. Deterministic transformation.** Copy and transform V1 → the `dbv2_*` shadow tables, one
 transaction per source table, driven by the mapping report. Re-runnable: every insert is keyed and

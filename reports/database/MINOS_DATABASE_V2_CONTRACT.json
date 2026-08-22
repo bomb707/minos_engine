@@ -1,4 +1,14 @@
 {
+  "artifacts_unique_targets_required_by_backup_sets": {
+    "already_declared": true,
+    "columns": [
+      "id",
+      "content_sha256",
+      "media_type"
+    ],
+    "note": "The three composite foreign keys above resolve through this existing additive UNIQUE target on catalog.artifacts. No new unique target is needed.",
+    "target": "uq_artifacts_id_sha_media"
+  },
   "confirmed_v1_defects": [
     {
       "defect": "catalog.artifacts.size_bytes is integer, capping any payload at 2 GiB",
@@ -96,7 +106,7 @@
     "statement_timeout_ms": 30000,
     "verification_sessions": "default_transaction_read_only = on"
   },
-  "contract_sha256": "db135128d5abc9c9695b770c50f66fd635efc1bb0cc18640f9c363e7ca40b395",
+  "contract_sha256": "20f8b6eaa19622c2fff7bcc67c9e58b1f4667dc90795c9c2f4fa18efcb6020ba",
   "critical_queries": [
     {
       "async_allowed": false,
@@ -465,6 +475,11 @@
       "profiles": 75,
       "snapshots": 1
     }
+  },
+  "recovery_media_types": {
+    "artifact_snapshot_manifest": "application/vnd.minos.artifact-snapshot+json",
+    "database_backup": "application/vnd.postgresql.dump",
+    "recovery_manifest": "application/vnd.minos.db-recovery-manifest+json"
   },
   "report": "MINOS_DATABASE_V2_CONTRACT",
   "roles": [
@@ -1288,12 +1303,40 @@
               "name": "ck_backup_sets_artifact_hex"
             },
             {
+              "expression": "recovery_manifest_sha256 ~ '^[0-9a-f]{64}$'",
+              "name": "ck_backup_sets_manifest_hex"
+            },
+            {
               "expression": "completeness IN ('complete','database_only')",
               "name": "ck_backup_sets_completeness"
             },
             {
               "expression": "database_backup_kind IN ('pg_dump','basebackup')",
               "name": "ck_backup_sets_kind"
+            },
+            {
+              "expression": "recovery_manifest_media_type = 'application/vnd.minos.db-recovery-manifest+json'",
+              "name": "ck_backup_sets_manifest_media"
+            },
+            {
+              "expression": "database_backup_media_type = 'application/vnd.postgresql.dump'",
+              "name": "ck_backup_sets_db_media"
+            },
+            {
+              "expression": "artifact_snapshot_manifest_media_type = 'application/vnd.minos.artifact-snapshot+json'",
+              "name": "ck_backup_sets_snapshot_media"
+            },
+            {
+              "expression": "recovery_manifest_artifact_id <> database_backup_artifact_id AND recovery_manifest_artifact_id <> artifact_snapshot_manifest_artifact_id AND database_backup_artifact_id <> artifact_snapshot_manifest_artifact_id",
+              "name": "ck_backup_sets_distinct_artifacts"
+            },
+            {
+              "expression": "artifact_count >= 0 AND artifact_total_bytes >= 0",
+              "name": "ck_backup_sets_counts"
+            },
+            {
+              "expression": "length(manifest_schema_version) > 0 AND length(database_name) > 0",
+              "name": "ck_backup_sets_identity_nonempty"
             }
           ],
           "columns": [
@@ -1312,9 +1355,63 @@
             },
             {
               "mutability": "immutable",
+              "name": "recovery_set_id",
+              "note": "the R1 manifest's own identity; carried unchanged from the manifest bytes",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "alembic_revision",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "manifest_schema_version",
+              "note": "the R1 manifest's schema_version, carried unchanged",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "database_name",
+              "note": "the source database the R1 manifest describes; no host, port or credentials",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "recovery_manifest_artifact_id",
+              "note": "the canonical R1 manifest bytes, published as an artifact",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "recovery_manifest_sha256",
+              "note": "sha256(canonical_json_bytes(the complete R1 manifest))",
+              "nullable": false,
+              "type": "char(64)"
+            },
+            {
+              "default": "'application/vnd.minos.db-recovery-manifest+json'",
+              "mutability": "immutable",
+              "name": "recovery_manifest_media_type",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
               "name": "database_backup_kind",
               "nullable": false,
               "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "database_backup_artifact_id",
+              "nullable": false,
+              "type": "uuid"
             },
             {
               "mutability": "immutable",
@@ -1323,8 +1420,16 @@
               "type": "char(64)"
             },
             {
+              "default": "'application/vnd.postgresql.dump'",
               "mutability": "immutable",
-              "name": "database_size_bytes",
+              "name": "database_backup_media_type",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "database_backup_size_bytes",
+              "note": "carried unchanged from the R1 manifest field of the same name",
               "nullable": false,
               "type": "bigint"
             },
@@ -1342,10 +1447,23 @@
             },
             {
               "mutability": "immutable",
+              "name": "artifact_snapshot_manifest_artifact_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
               "name": "artifact_snapshot_sha256",
               "note": "digest over the sorted (content_sha256,size) manifest of active artifacts",
               "nullable": false,
               "type": "char(64)"
+            },
+            {
+              "default": "'application/vnd.minos.artifact-snapshot+json'",
+              "mutability": "immutable",
+              "name": "artifact_snapshot_manifest_media_type",
+              "nullable": false,
+              "type": "text"
             },
             {
               "mutability": "immutable",
@@ -1361,7 +1479,19 @@
             },
             {
               "mutability": "immutable",
-              "name": "alembic_revision",
+              "name": "postgresql_version",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "backup_tool_version",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "artifact_verification_tool_version",
               "nullable": false,
               "type": "text"
             },
@@ -1385,10 +1515,58 @@
               "type": "timestamptz"
             }
           ],
+          "completeness_rule": "completeness may become 'complete' only after all THREE referenced artifacts carry verification_state = 'verified' and lifecycle_state = 'active'. Until then the row is 'database_only' and may not authorize a transformation or a cutover.",
           "critical_queries": [
             "Q16"
           ],
-          "foreign_keys": [],
+          "foreign_keys": [
+            {
+              "columns": [
+                "recovery_manifest_artifact_id",
+                "recovery_manifest_sha256",
+                "recovery_manifest_media_type"
+              ],
+              "name": "fk_backup_sets_recovery_manifest",
+              "note": "binds the id AND the digest AND the media type to ONE artifact row via uq_artifacts_id_sha_media",
+              "referenced_columns": [
+                "id",
+                "content_sha256",
+                "media_type"
+              ],
+              "references": "catalog.artifacts"
+            },
+            {
+              "columns": [
+                "database_backup_artifact_id",
+                "database_backup_sha256",
+                "database_backup_media_type"
+              ],
+              "name": "fk_backup_sets_database_backup",
+              "note": "database_backup_sha256 is therefore provably the digest of the referenced artifact",
+              "referenced_columns": [
+                "id",
+                "content_sha256",
+                "media_type"
+              ],
+              "references": "catalog.artifacts"
+            },
+            {
+              "columns": [
+                "artifact_snapshot_manifest_artifact_id",
+                "artifact_snapshot_sha256",
+                "artifact_snapshot_manifest_media_type"
+              ],
+              "name": "fk_backup_sets_artifact_snapshot_manifest",
+              "note": "artifact_snapshot_sha256 is therefore provably the digest of the referenced artifact",
+              "referenced_columns": [
+                "id",
+                "content_sha256",
+                "media_type"
+              ],
+              "references": "catalog.artifacts"
+            }
+          ],
+          "idempotency_rule": "R2 is get-or-verify: re-running it with the same recovery_set_id and the same immutable data is a no-op. The same recovery_set_id or backup_key with ANY differing immutable value fails closed on a unique constraint or a typed conflict; it never overwrites.",
           "indexes": [
             {
               "columns": [
@@ -1404,7 +1582,26 @@
             ],
             "name": "pk_backup_sets"
           },
-          "purpose": "A recovery set identity: one PostgreSQL backup PLUS the artifact snapshot it must be restored with. A dump without its artifact snapshot is incomplete.",
+          "purpose": "A recovery set identity: one PostgreSQL backup, its artifact snapshot, and the exact R1 recovery manifest that describes both. All three are bound as artifacts by composite foreign key, so the row cannot name a digest that belongs to a different artifact. A dump without its artifact snapshot is not a valid MINOS recovery set.",
+          "r1_field_to_column": {
+            "artifact_count": "artifact_count",
+            "artifact_snapshot_sha256": "artifact_snapshot_sha256",
+            "artifact_total_bytes": "artifact_total_bytes",
+            "artifact_verification_tool_version": "artifact_verification_tool_version",
+            "backup_tool_version": "backup_tool_version",
+            "created_at": "created_at",
+            "database_backup_kind": "database_backup_kind",
+            "database_backup_sha256": "database_backup_sha256",
+            "database_backup_size_bytes": "database_backup_size_bytes",
+            "database_name": "database_name",
+            "postgresql_version": "postgresql_version",
+            "recovery_set_id": "recovery_set_id",
+            "schema_version": "manifest_schema_version",
+            "source_alembic_revision": "alembic_revision",
+            "wal_end_lsn": "wal_end_lsn",
+            "wal_start_lsn": "wal_start_lsn"
+          },
+          "r1_field_to_column_note": "Every immutable R1 manifest field maps to exactly one column, so the registered row represents the manifest completely. recovery_manifest_sha256 additionally binds the whole manifest's canonical bytes, so no mapped value can drift from the file.",
           "read_responsibility": "operations",
           "retention": "per backup policy",
           "table": "backup_sets",
@@ -1414,6 +1611,18 @@
                 "backup_key"
               ],
               "name": "uq_backup_sets_key"
+            },
+            {
+              "columns": [
+                "recovery_set_id"
+              ],
+              "name": "uq_backup_sets_recovery_set"
+            },
+            {
+              "columns": [
+                "recovery_manifest_sha256"
+              ],
+              "name": "uq_backup_sets_manifest"
             }
           ],
           "write_responsibility": "backup job (administrative connection)"
@@ -5383,7 +5592,7 @@
       ]
     }
   ],
-  "stage": "DB-V2 D1.1 (design only; migration 0009 does not exist)",
+  "stage": "DB-V2 D1.3",
   "table_counts": {
     "audit": 2,
     "catalog": 6,
