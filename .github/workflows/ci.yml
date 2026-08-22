@@ -1,14 +1,41 @@
-name: CI
+name: CI (full qualification)
+
+# Tier 2 of the two-tier CI. This is the gate for merging, releases and DB-V2 stage acceptance.
+# It runs the whole suite exactly ONCE, in a single invocation that produces both the JUnit XML
+# and the coverage report, then verifies each committed gate once.
+#
+# What was removed from the previous monolithic workflow, and why:
+#   * a second full pytest run purely for coverage    -> one invocation now emits both (-325s)
+#   * `pytest tests/integration/layer2_db`            -> already inside the full suite (-182s)
+#   * `pytest tests/integration/layer2_split{,_v2}`   -> already inside the full suite
+#   * `pytest tests/integration/layer2_ingest`        -> already inside the full suite
+#   * individual migration/role files run again       -> already inside the full suite
+#   * eight inline alembic downgrade heredocs         -> one step invoking the maintained
+#                                                        stepwise-chain test module
+#   * six CLI smoke invocations                       -> covered by tests/component/test_cli.py
+#
+# A test runs at most once per workflow. The static checks are the only thing shared with
+# ci-fast.yml, and they cost seconds.
 
 on:
-  push:
   pull_request:
+    branches: [main, master, integration]
   workflow_dispatch:
+  schedule:
+    # nightly qualification of the active integration branch
+    - cron: "0 3 * * *"
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: ci-full-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  quality:
-    name: quality (python-3.12)
+  qualification:
+    name: full qualification (python-3.12)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     # PostgreSQL 16 service for L2-B integration tests (real DB, never SQLite).
     services:
@@ -72,40 +99,42 @@ jobs:
       - name: mypy (strict)
         run: mypy src
 
-      - name: Pytest (JUnit XML)
-        run: pytest --junitxml=reports/ci-junit.xml
+      - name: Wait for PostgreSQL 16
+        run: |
+          for i in $(seq 1 30); do
+            pg_isready -h localhost -p 5432 -U postgres && break
+            sleep 2
+          done
+          psql "$MINOS_DATABASE_URL" -c "SELECT version();"
 
-      - name: Coverage (>= 90%)
+      # Stepwise Alembic lifecycle. The eight inline heredocs that used to live here are now
+      # tests/integration/layer2_db/test_stepwise_migration_chain.py, which walks
+      # head (0008_l2f_execution_results) -> 0005_l2e_feature_view -> 0004_l2d_profile_ingestion
+      # -> downgrade 0003_l2c_split_v2_epochs -> downgrade 0002_l2c_dataset_split
+      # -> downgrade 0001_l2b_initial -> downgrade base -> head, asserting at every stop both
+      # that the stage's objects are gone and that the previous stage's objects survive.
+      # It runs here, before the full suite, so a broken chain fails fast; pytest deselects it
+      # from the run below so no test executes twice.
+      - name: Alembic stepwise lifecycle (0008 -> 0005 -> 0004 -> 0003 -> 0002 -> 0001 -> base)
         run: >-
           pytest
+          tests/integration/layer2_db/test_stepwise_migration_chain.py
+          -q
+
+      # THE single full-suite invocation. It emits JUnit and coverage together; there is no
+      # second full pytest run anywhere in this workflow. The stepwise-chain module above is
+      # deselected here so it is executed exactly once per workflow.
+      # The suite includes tests/integration/layer2_split_v2 and tests/integration/layer2_ingest,
+      # which the previous workflow additionally re-ran as separate steps.
+      - name: Pytest — full suite, JUnit + coverage (>= 90%)
+        run: >-
+          pytest
+          --deselect tests/integration/layer2_db/test_stepwise_migration_chain.py
+          --junitxml=reports/ci-junit.xml
           --cov=src/minos_engine
           --cov-fail-under=90
           --cov-report=term-missing
           --cov-report=xml:reports/ci-coverage.xml
-
-      - name: CLI smoke — doctor
-        run: minos-engine doctor --json
-
-      - name: CLI smoke — protocol snapshot
-        run: minos-engine protocol snapshot --fixture tests/fixtures/api/valid_round.json
-
-      - name: CLI smoke — config validate
-        run: >-
-          minos-engine config validate
-          --config tests/fixtures/gatk/default_config.json
-          --parameter-space tests/fixtures/api/gatk_parameter_space.json
-
-      - name: CLI smoke — twin plan (no execution)
-        run: minos-engine twin plan --request tests/fixtures/twin/replay/valid.json --json
-
-      - name: CLI smoke — twin replay (fixture-backed)
-        run: minos-engine twin replay --fixture tests/fixtures/twin/replay/valid.json --json
-
-      - name: CLI smoke — twin parity
-        run: >-
-          minos-engine twin parity
-          --expected tests/fixtures/twin/parity/expectation.json
-          --observed tests/fixtures/twin/parity/observation_match.json
 
       - name: Gate — PROTOCOL-READY (git-bound evidence)
         run: minos-engine gate require-pass --gate gates/protocol-ready.json --base-dir .
@@ -116,219 +145,11 @@ jobs:
       - name: Gate — TWIN-READY non-mutating check (Commit A evidence + descent)
         run: minos-engine twin qualify --check --gate gates/twin-ready.json --base-dir .
 
-      # Layer 1 uses synthetic pysam fixtures in CI; the external real BAM is a
-      # separate qualification input recorded in the committed integration report.
-      - name: CLI smoke — Layer 1 synthetic profile
-        run: python scripts/layer1_smoke.py
-
       - name: Gate — L1-READY (accepted prerequisites + git-bound evidence)
         run: minos-engine layer1 gate require-pass --gate gates/l1-ready.json --base-dir .
 
       - name: Gate — L1-READY non-mutating check (Commit A evidence + descent)
         run: minos-engine layer1 qualify --check --gate gates/l1-ready.json --base-dir .
-
-      # --- L2-B PostgreSQL 16 storage foundation ---------------------------------
-      - name: Wait for PostgreSQL 16
-        run: |
-          for i in $(seq 1 30); do
-            pg_isready -h localhost -p 5432 -U postgres && break
-            sleep 2
-          done
-          psql "$MINOS_DATABASE_URL" -c "SELECT version();"
-
-      - name: Alembic upgrade head — confirm L2-F F5 head 0008_l2f_execution_results
-        run: |
-          alembic upgrade head
-          alembic current | grep 0008_l2f_execution_results
-
-      - name: Alembic downgrade to 0005 (L2-F removed, L2-E retained) then re-upgrade
-        run: |
-          alembic downgrade 0005_l2e_feature_view
-          alembic current | grep 0005_l2e_feature_view
-          python - <<'PY'
-          from sqlalchemy import create_engine, text
-          from minos_engine.storage.database import database_url
-          l2f = ("l2f_experiment_plans","l2f_experiment_plan_members","l2f_config_payloads",
-                 "l2f_experiment_plan_configs","l2f_experiment_jobs")
-          e = create_engine(database_url())
-          with e.connect() as c:
-              present = c.execute(text("SELECT count(*) FROM information_schema.tables WHERE table_schema='experiments' AND table_name = ANY(:n)"), {"n": list(l2f)}).scalar()
-              targets = c.execute(text("SELECT count(*) FROM pg_constraint WHERE conname LIKE 'uq_l2f%'")).scalar()
-          e.dispose()
-          assert present == 0, f"L2-F tables not removed on downgrade to 0005: {present}"
-          assert targets == 0, f"L2-F composite targets not removed on downgrade: {targets}"
-          PY
-          alembic upgrade 0006_l2f_experiment_plan
-          alembic current | grep 0006_l2f_experiment_plan
-
-      - name: Alembic downgrade to 0004_l2d_profile_ingestion (L2-E removed, L2-D retained)
-        run: |
-          alembic downgrade 0004_l2d_profile_ingestion
-          alembic current | grep 0004_l2d_profile_ingestion
-          python - <<'PY'
-          from sqlalchemy import create_engine, text
-          from minos_engine.storage.database import database_url
-          l2e = ("feature_sets", "feature_matrices", "feature_matrix_members")
-          l2d = ("bam_profiles", "profile_ingest_attempts", "profile_snapshots", "profile_snapshot_members")
-          eng = create_engine(database_url())
-          with eng.connect() as c:
-              present_l2e = c.execute(
-                  text("SELECT count(*) FROM information_schema.tables WHERE table_name = ANY(:n)"),
-                  {"n": list(l2e)},
-              ).scalar()
-              present_l2d = c.execute(
-                  text("SELECT count(*) FROM information_schema.tables WHERE table_name = ANY(:n)"),
-                  {"n": list(l2d)},
-              ).scalar()
-              trainer_artifacts = c.execute(
-                  text("SELECT has_table_privilege('minos_trainer','catalog.artifacts','SELECT')")
-              ).scalar()
-              evaluator_artifacts = c.execute(
-                  text("SELECT has_table_privilege('minos_evaluator','catalog.artifacts','SELECT')")
-              ).scalar()
-          eng.dispose()
-          assert present_l2e == 0, f"L2-E objects not removed on downgrade to 0004: {present_l2e}"
-          assert present_l2d == 4, f"L2-D objects lost on downgrade to 0004: {present_l2d}"
-          assert trainer_artifacts, "trainer catalog.artifacts SELECT not restored on downgrade"
-          assert not evaluator_artifacts, "evaluator must never gain catalog.artifacts SELECT"
-          PY
-
-      - name: Alembic downgrade to 0003_l2c_split_v2_epochs (L2-D removed, v2 retained)
-        run: |
-          alembic downgrade 0003_l2c_split_v2_epochs
-          alembic current | grep 0003_l2c_split_v2_epochs
-          python - <<'PY'
-          from sqlalchemy import create_engine, text
-          from minos_engine.storage.database import database_url
-          l2d = ("bam_profiles", "profile_ingest_attempts", "profile_snapshots", "profile_snapshot_members")
-          v2 = ("split_snapshots", "split_epoch_allocations")
-          eng = create_engine(database_url())
-          with eng.connect() as c:
-              present_l2d = c.execute(
-                  text("SELECT count(*) FROM information_schema.tables WHERE table_name = ANY(:n)"),
-                  {"n": list(l2d)},
-              ).scalar()
-              present_v2 = c.execute(
-                  text("SELECT count(*) FROM information_schema.tables WHERE table_name = ANY(:n)"),
-                  {"n": list(v2)},
-              ).scalar()
-              trainer_restored = c.execute(
-                  text("SELECT has_table_privilege('minos_trainer','profiling.profiles','SELECT')")
-              ).scalar()
-          eng.dispose()
-          assert present_l2d == 0, f"L2-D objects not removed on downgrade to 0003: {present_l2d}"
-          assert present_v2 == 2, f"v2 epoch objects lost on downgrade to 0003: {present_v2}"
-          assert trainer_restored, "legacy profiling.profiles trainer grant not restored"
-          PY
-
-      - name: Alembic downgrade to 0002_l2c_dataset_split (v2 removed, v1 retained)
-        run: |
-          alembic downgrade 0002_l2c_dataset_split
-          alembic current | grep 0002_l2c_dataset_split
-          python - <<'PY'
-          from sqlalchemy import create_engine, text
-          from minos_engine.storage.database import database_url
-          v2 = ("split_snapshots", "split_epoch_allocations")
-          v1 = ("dataset_registry", "split_allocations", "dataset_evaluation_identity")
-          e = create_engine(database_url())
-          with e.connect() as c:
-              present_v2 = c.execute(
-                  text("SELECT count(*) FROM information_schema.tables WHERE table_name = ANY(:n)"),
-                  {"n": list(v2)},
-              ).scalar()
-              present_v1 = c.execute(
-                  text("SELECT count(*) FROM information_schema.tables WHERE table_name = ANY(:n)"),
-                  {"n": list(v1)},
-              ).scalar()
-          assert present_v2 == 0, f"v2 epoch objects not removed on downgrade to 0002: {present_v2}"
-          assert present_v1 == 3, f"frozen v1 L2-C tables not retained (expected 3): {present_v1}"
-          PY
-
-      - name: Alembic downgrade to 0001_l2b_initial (L2-C removed, L2-B retained)
-        run: |
-          alembic downgrade 0001_l2b_initial
-          alembic current | grep 0001_l2b_initial
-          python - <<'PY'
-          from sqlalchemy import create_engine, text
-          from minos_engine.storage.database import database_url
-          l2c = ("dataset_registry", "split_allocations", "dataset_evaluation_identity")
-          l2b_schemas = ["catalog", "profiling", "experiments", "evaluation", "models", "runtime", "audit"]
-          e = create_engine(database_url())
-          with e.connect() as c:
-              present_l2c = c.execute(
-                  text("SELECT count(*) FROM information_schema.tables WHERE table_name = ANY(:n)"),
-                  {"n": list(l2c)},
-              ).scalar()
-              l2b_tables = c.execute(
-                  text(
-                      "SELECT count(*) FROM information_schema.tables "
-                      "WHERE table_schema = ANY(:s) AND table_name NOT IN "
-                      "('dataset_registry','split_allocations','dataset_evaluation_identity')"
-                  ),
-                  {"s": l2b_schemas},
-              ).scalar()
-          assert present_l2c == 0, f"L2-C objects not removed on downgrade to 0001: {present_l2c}"
-          assert l2b_tables == 10, f"L2-B tables not retained (expected 10): {l2b_tables}"
-          PY
-
-      - name: Alembic downgrade base (all stage-owned objects removed)
-        run: |
-          alembic downgrade base
-          python - <<'PY'
-          from sqlalchemy import create_engine, text
-          from minos_engine.storage.constants import SCHEMAS
-          from minos_engine.storage.database import database_url
-          e = create_engine(database_url())
-          with e.connect() as c:
-              n = c.execute(
-                  text("SELECT count(*) FROM pg_namespace WHERE nspname = ANY(:s)"),
-                  {"s": list(SCHEMAS)},
-              ).scalar()
-          assert n == 0, f"stage schemas not removed: {n}"
-          PY
-
-      - name: Alembic re-upgrade head — confirm L2-F F5 head 0008_l2f_execution_results
-        run: |
-          alembic upgrade head
-          alembic current | grep 0008_l2f_execution_results
-          python - <<'PY'
-          from sqlalchemy import create_engine, text
-          from minos_engine.storage.database import database_url
-          l2e = ("feature_sets", "feature_matrices", "feature_matrix_members")
-          eng = create_engine(database_url())
-          with eng.connect() as c:
-              present_l2e = c.execute(
-                  text("SELECT count(*) FROM information_schema.tables WHERE table_name = ANY(:n)"),
-                  {"n": list(l2e)},
-              ).scalar()
-              trainer_artifacts = c.execute(
-                  text("SELECT has_table_privilege('minos_trainer','catalog.artifacts','SELECT')")
-              ).scalar()
-          eng.dispose()
-          assert present_l2e == 3, f"L2-E objects missing at head: {present_l2e}"
-          assert not trainer_artifacts, "trainer catalog.artifacts SELECT must be revoked at 0005"
-          PY
-
-      - name: Migration immutability + frozen inventory tests
-        run: pytest tests/integration/layer2_db/test_migration_immutability.py -q
-
-      - name: Admin ownership / capability + role-denial tests
-        run: >-
-          pytest
-          tests/integration/layer2_db/test_admin_ownership.py
-          tests/integration/layer2_db/test_roles_isolation.py -q
-
-      - name: L2-B PostgreSQL integration tests (must not skip in CI)
-        run: pytest tests/integration/layer2_db -q
-
-      - name: L2-C PostgreSQL integration tests (must not skip in CI)
-        run: pytest tests/integration/layer2_split -q
-
-      - name: L2-C v2 (epoched split) PostgreSQL integration tests (must not skip in CI)
-        run: pytest tests/integration/layer2_split_v2 -q
-
-      - name: L2-D ingest integration suite (real PostgreSQL 16)
-        run: pytest tests/integration/layer2_ingest -q
 
       - name: Gate — DB-READY (immutable L2-B lineage base, if present)
         run: |

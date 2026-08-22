@@ -13,12 +13,10 @@ from typing import Any
 import pytest
 
 from minos_engine.storage import CANONICAL_OPERATIONAL_DATABASE_NAME as PKG_CANON
-from minos_engine.storage.constants import CANONICAL_OPERATIONAL_DATABASE_NAME, ENV_DATABASE_URL
+from minos_engine.storage.constants import CANONICAL_OPERATIONAL_DATABASE_NAME
 from minos_engine.storage.database import (
-    DatabaseNotConfiguredError,
     OperationalDatabaseIdentityError,
     connected_database_name,
-    database_url,
     verify_operational_database_identity,
 )
 
@@ -81,9 +79,3 @@ def test_decision_reads_connection_not_dsn() -> None:
     assert verify_operational_database_identity(_FakeConnection("minos_engine_db")) == (  # type: ignore[arg-type]
         "minos_engine_db"
     )
-
-
-def test_missing_database_url_still_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv(ENV_DATABASE_URL, raising=False)
-    with pytest.raises(DatabaseNotConfiguredError):
-        database_url()

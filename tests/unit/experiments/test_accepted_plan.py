@@ -17,7 +17,6 @@ from pathlib import Path
 import pytest
 
 from minos_engine.common.canonical_json import canonical_json_bytes
-from minos_engine.common.errors import StageNotReadyError
 from minos_engine.common.hashing import sha256_hex
 from minos_engine.experiments import accepted_plan as AP
 from minos_engine.experiments import plan as PLAN
@@ -216,13 +215,6 @@ def test_no_public_override_constructor_or_trust_anchor_injection() -> None:
         obj = getattr(AP, name)
         if callable(obj) and name.startswith("build"):
             assert list(inspect.signature(obj).parameters) == [], name
-
-
-def test_select_config_remains_blocked() -> None:
-    from minos_engine.layer2.service import Layer2Service
-
-    with pytest.raises(StageNotReadyError):
-        Layer2Service().select_config(None)
 
 
 # --------------------------------------------------------------------------- #

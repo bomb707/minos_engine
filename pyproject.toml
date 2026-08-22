@@ -85,3 +85,13 @@ minversion = "8.0"
 addopts = "-q"
 testpaths = ["tests"]
 pythonpath = ["src", "."]
+markers = [
+  "integration: exercises a real subsystem boundary end to end",
+  "postgres: requires a real PostgreSQL server (service container or bundled pgserver)",
+  "acceptance: proves an accepted stage contract or stage-gate posture",
+  "security: proves an isolation, injection, privilege or leakage boundary",
+  "migration: exercises Alembic upgrade/downgrade behaviour",
+  "slow: takes more than a few seconds even on a warm machine",
+  "privileged: needs host privileges an ordinary hosted runner does not have",
+  "gate: verifies a committed gate or its git-bound evidence ancestry",
+]

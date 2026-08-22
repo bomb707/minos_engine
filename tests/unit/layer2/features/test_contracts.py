@@ -370,11 +370,3 @@ def test_schema_parity_negative_matrix_and_set_cases() -> None:
         {"columns": [{**ms["columns"][0], "extra": 1}] + ms["columns"][1:]},
     ):
         _schema_rejects("feature-set-v1", {**ms, **tweak})
-
-
-def test_select_config_remains_blocked() -> None:
-    from minos_engine.common.errors import StageNotReadyError
-    from minos_engine.layer2.service import Layer2Service
-
-    with pytest.raises(StageNotReadyError):
-        Layer2Service().select_config(None)  # type: ignore[arg-type]

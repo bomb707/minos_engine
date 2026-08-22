@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from minos_engine.common.errors import MatrixAccessError, StageNotReadyError
+from minos_engine.common.errors import MatrixAccessError
 from minos_engine.layer2.features.contracts import build_feature_set_manifest
 from minos_engine.layer2.features.errors import MatrixArtifactIntegrityError
 from minos_engine.layer2.features.extraction import MATRIX_PARTITIONS
@@ -116,8 +116,3 @@ def test_artifact_uri_to_path_rejects_unsupported(bad: str) -> None:
 
 
 # (proof 11) select_config remains blocked
-def test_select_config_remains_blocked() -> None:
-    from minos_engine.layer2.service import Layer2Service
-
-    with pytest.raises(StageNotReadyError):
-        Layer2Service().select_config(None)  # type: ignore[arg-type]

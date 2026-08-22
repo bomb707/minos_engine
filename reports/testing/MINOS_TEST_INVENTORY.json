@@ -1,0 +1,4600 @@
+{
+  "files": [
+    {
+      "category": "acceptance",
+      "contract_protected": "accepted stage-gate posture and git-bound evidence ancestry",
+      "decision": "merge",
+      "dependencies": [
+        "pytest"
+      ],
+      "line_count": 52,
+      "path": "tests/acceptance/layer1/test_l1_ready.py",
+      "reason": "test_layer2_service_still_blocked had a byte-identical body to test_layer2_blocked.",
+      "recommended_tier": "full",
+      "replacement": "tests/acceptance/test_stage_gates.py::test_layer2_blocked",
+      "requires_filesystem": false,
+      "requires_gate_evidence": true,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer1.prerequisites",
+        "minos_engine.layer2.entry_gate",
+        "minos_engine.qualification.layer1_runner"
+      ],
+      "test_count": 4
+    },
+    {
+      "category": "acceptance",
+      "contract_protected": "accepted stage-gate posture and git-bound evidence ancestry",
+      "decision": "keep",
+      "dependencies": [
+        "ast",
+        "pathlib",
+        "scripts"
+      ],
+      "line_count": 102,
+      "path": "tests/acceptance/layer1/test_oracle.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer1.config",
+        "minos_engine.layer1.contracts",
+        "minos_engine.layer1.service"
+      ],
+      "test_count": 5
+    },
+    {
+      "category": "acceptance",
+      "contract_protected": "accepted stage-gate posture and git-bound evidence ancestry",
+      "decision": "keep",
+      "dependencies": [
+        "ast",
+        "json",
+        "pathlib",
+        "pyarrow",
+        "scripts"
+      ],
+      "line_count": 131,
+      "path": "tests/acceptance/layer1/test_oracle_v2.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer1.config",
+        "minos_engine.layer1.contracts",
+        "minos_engine.layer1.service"
+      ],
+      "test_count": 5
+    },
+    {
+      "category": "acceptance",
+      "contract_protected": "accepted stage-gate posture and git-bound evidence ancestry",
+      "decision": "keep",
+      "dependencies": [
+        "json",
+        "pathlib",
+        "pytest",
+        "subprocess"
+      ],
+      "line_count": 562,
+      "path": "tests/acceptance/layer2/test_db_ready_gate.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.gates.contracts",
+        "minos_engine.gates.required_checks",
+        "minos_engine.gates.verifier",
+        "minos_engine.layer2",
+        "minos_engine.qualification.coverage",
+        "minos_engine.qualification.layer2_db_runner",
+        "minos_engine.qualification.provenance",
+        "minos_engine.qualification.pytest_accounting",
+        "minos_engine.qualification.runner",
+        "minos_engine.storage.migration_contract"
+      ],
+      "test_count": 27
+    },
+    {
+      "category": "acceptance",
+      "contract_protected": "accepted stage-gate posture and git-bound evidence ancestry",
+      "decision": "keep",
+      "dependencies": [
+        "json",
+        "pytest"
+      ],
+      "line_count": 118,
+      "path": "tests/acceptance/layer2/test_entry_gate_content.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.gates.contracts",
+        "minos_engine.gates.required_checks",
+        "minos_engine.gates.verifier",
+        "minos_engine.layer2.entry_gate"
+      ],
+      "test_count": 9
+    },
+    {
+      "category": "acceptance",
+      "contract_protected": "accepted stage-gate posture and git-bound evidence ancestry",
+      "decision": "keep",
+      "dependencies": [
+        "pathlib",
+        "subprocess"
+      ],
+      "line_count": 202,
+      "path": "tests/acceptance/layer2/test_entry_gate_git.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.gates.contracts",
+        "minos_engine.gates.verifier",
+        "minos_engine.layer2.contracts",
+        "minos_engine.layer2.entry_gate"
+      ],
+      "test_count": 7
+    },
+    {
+      "category": "acceptance",
+      "contract_protected": "accepted stage-gate posture and git-bound evidence ancestry",
+      "decision": "keep",
+      "dependencies": [
+        "pathlib",
+        "pytest",
+        "subprocess"
+      ],
+      "line_count": 122,
+      "path": "tests/acceptance/layer2/test_ingest_ready_gate.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.gates.required_checks",
+        "minos_engine.layer2",
+        "minos_engine.qualification.layer2_ingest_runner"
+      ],
+      "test_count": 8
+    },
+    {
+      "category": "acceptance",
+      "contract_protected": "accepted stage-gate posture and git-bound evidence ancestry",
+      "decision": "keep",
+      "dependencies": [
+        "json",
+        "pydantic",
+        "pytest",
+        "re"
+      ],
+      "line_count": 90,
+      "path": "tests/acceptance/layer2/test_prerequisites.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer2",
+        "minos_engine.layer2.contracts"
+      ],
+      "test_count": 6
+    },
+    {
+      "category": "acceptance",
+      "contract_protected": "accepted stage-gate posture and git-bound evidence ancestry",
+      "decision": "keep",
+      "dependencies": [
+        "pydantic",
+        "pytest"
+      ],
+      "line_count": 73,
+      "path": "tests/acceptance/layer2/test_profile_identity.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer2.contracts"
+      ],
+      "test_count": 6
+    },
+    {
+      "category": "acceptance",
+      "contract_protected": "accepted stage-gate posture and git-bound evidence ancestry",
+      "decision": "keep",
+      "dependencies": [
+        "json",
+        "pathlib",
+        "pytest",
+        "shutil"
+      ],
+      "line_count": 358,
+      "path": "tests/acceptance/layer2/test_profile_snapshot_gate.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": true,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.hashing",
+        "minos_engine.gates.contracts",
+        "minos_engine.gates.required_checks",
+        "minos_engine.layer2",
+        "minos_engine.layer2.ingest.contracts",
+        "minos_engine.qualification.layer2_snapshot_runner"
+      ],
+      "test_count": 14
+    },
+    {
+      "category": "acceptance",
+      "contract_protected": "accepted stage-gate posture and git-bound evidence ancestry",
+      "decision": "keep",
+      "dependencies": [
+        "contextlib",
+        "inspect",
+        "pydantic",
+        "pytest"
+      ],
+      "line_count": 75,
+      "path": "tests/acceptance/layer2/test_promotion_security.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer2",
+        "minos_engine.layer2.contracts"
+      ],
+      "test_count": 6
+    },
+    {
+      "category": "acceptance",
+      "contract_protected": "accepted stage-gate posture and git-bound evidence ancestry",
+      "decision": "keep",
+      "dependencies": [
+        "os",
+        "pathlib",
+        "pytest"
+      ],
+      "line_count": 70,
+      "path": "tests/acceptance/layer2/test_real_corpus_split.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.canonical_json",
+        "minos_engine.layer2.split.generator",
+        "minos_engine.layer2.split.policy",
+        "minos_engine.layer2.split.verifier"
+      ],
+      "test_count": 2
+    },
+    {
+      "category": "acceptance",
+      "contract_protected": "accepted stage-gate posture and git-bound evidence ancestry",
+      "decision": "keep",
+      "dependencies": [
+        "json",
+        "pathlib",
+        "pydantic",
+        "pytest"
+      ],
+      "line_count": 347,
+      "path": "tests/acceptance/layer2/test_split_frozen_closure.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": true,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.gates.contracts",
+        "minos_engine.gates.required_checks",
+        "minos_engine.gates.verifier",
+        "minos_engine.qualification.layer2_split_runner"
+      ],
+      "test_count": 23
+    },
+    {
+      "category": "acceptance",
+      "contract_protected": "accepted stage-gate posture and git-bound evidence ancestry",
+      "decision": "keep",
+      "dependencies": [
+        "json",
+        "pathlib",
+        "pytest",
+        "subprocess"
+      ],
+      "line_count": 321,
+      "path": "tests/acceptance/layer2/test_split_frozen_gate.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.gates.contracts",
+        "minos_engine.gates.required_checks",
+        "minos_engine.gates.verifier",
+        "minos_engine.layer2",
+        "minos_engine.qualification.layer2_split_runner",
+        "minos_engine.storage.l2c_migration_contract"
+      ],
+      "test_count": 17
+    },
+    {
+      "category": "acceptance",
+      "contract_protected": "accepted stage-gate posture and git-bound evidence ancestry",
+      "decision": "keep",
+      "dependencies": [
+        "json",
+        "pathlib",
+        "pytest",
+        "subprocess"
+      ],
+      "line_count": 130,
+      "path": "tests/acceptance/layer2/test_split_frozen_pathid.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.hashing",
+        "minos_engine.gates.contracts",
+        "minos_engine.gates.verifier",
+        "minos_engine.layer2.split.contracts",
+        "minos_engine.qualification.layer2_split_runner"
+      ],
+      "test_count": 2
+    },
+    {
+      "category": "acceptance",
+      "contract_protected": "accepted stage-gate posture and git-bound evidence ancestry",
+      "decision": "keep",
+      "dependencies": [
+        "json",
+        "pathlib",
+        "pytest",
+        "subprocess"
+      ],
+      "line_count": 318,
+      "path": "tests/acceptance/layer2/test_split_frozen_v2_gate.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.gates.contracts",
+        "minos_engine.gates.required_checks",
+        "minos_engine.gates.verifier",
+        "minos_engine.layer2",
+        "minos_engine.qualification.layer2_split_v2_runner",
+        "minos_engine.storage.l2c_split_v2_migration_contract"
+      ],
+      "test_count": 19
+    },
+    {
+      "category": "acceptance",
+      "contract_protected": "accepted stage-gate posture and git-bound evidence ancestry",
+      "decision": "keep",
+      "dependencies": [
+        "json"
+      ],
+      "line_count": 57,
+      "path": "tests/acceptance/test_determinism.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.callers.gatk.config",
+        "minos_engine.callers.gatk.parameter_registry",
+        "minos_engine.gates.contracts",
+        "minos_engine.manifests.builder",
+        "minos_engine.protocol.client"
+      ],
+      "test_count": 5
+    },
+    {
+      "category": "acceptance",
+      "contract_protected": "accepted stage-gate posture and git-bound evidence ancestry",
+      "decision": "keep",
+      "dependencies": [
+        "json",
+        "pydantic",
+        "pytest"
+      ],
+      "line_count": 220,
+      "path": "tests/acceptance/test_l1_entry_gate.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": true,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.errors",
+        "minos_engine.gates.contracts",
+        "minos_engine.gates.verifier",
+        "minos_engine.layer2.entry_gate"
+      ],
+      "test_count": 20
+    },
+    {
+      "category": "acceptance",
+      "contract_protected": "accepted stage-gate posture and git-bound evidence ancestry",
+      "decision": "keep",
+      "dependencies": [
+        "hashlib",
+        "pathlib",
+        "pytest"
+      ],
+      "line_count": 102,
+      "path": "tests/acceptance/test_l2f_frozen_upstream_artifacts.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": true,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.callers.gatk.parameter_registry",
+        "minos_engine.experiments.gatk_live_space",
+        "minos_engine.storage.l2f_migration_contract"
+      ],
+      "test_count": 5
+    },
+    {
+      "category": "acceptance",
+      "contract_protected": "accepted stage-gate posture and git-bound evidence ancestry",
+      "decision": "keep",
+      "dependencies": [
+        "pytest"
+      ],
+      "line_count": 44,
+      "path": "tests/acceptance/test_stage_gates.py",
+      "reason": "Canonical home of the Layer2Service.select_config blocked proof; six byte-identical copies elsewhere were consolidated here.",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.errors",
+        "minos_engine.layer1.service",
+        "minos_engine.layer2.entry_gate",
+        "minos_engine.layer2.service",
+        "minos_engine.schema_registry"
+      ],
+      "test_count": 4
+    },
+    {
+      "category": "component",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "json",
+        "pathlib"
+      ],
+      "line_count": 132,
+      "path": "tests/component/layer1/test_cli_layer1.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.cli.main"
+      ],
+      "test_count": 5
+    },
+    {
+      "category": "component",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pathlib",
+        "pysam"
+      ],
+      "line_count": 111,
+      "path": "tests/component/layer1/test_pileup_evidence.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer1.pileup"
+      ],
+      "test_count": 3
+    },
+    {
+      "category": "component",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [],
+      "line_count": 103,
+      "path": "tests/component/layer1/test_qualification_layer1.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.gates.contracts",
+        "minos_engine.gates.required_checks",
+        "minos_engine.qualification",
+        "minos_engine.qualification.coverage",
+        "minos_engine.qualification.provenance",
+        "minos_engine.qualification.pytest_accounting",
+        "minos_engine.qualification.runner"
+      ],
+      "test_count": 5
+    },
+    {
+      "category": "component",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pathlib",
+        "pysam",
+        "pytest"
+      ],
+      "line_count": 120,
+      "path": "tests/component/layer1/test_scan_metrics.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer1.filters",
+        "minos_engine.layer1.scan"
+      ],
+      "test_count": 6
+    },
+    {
+      "category": "component",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "hashlib",
+        "json",
+        "pathlib",
+        "pyarrow",
+        "pytest"
+      ],
+      "line_count": 125,
+      "path": "tests/component/layer1/test_service_and_serializer.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.errors",
+        "minos_engine.layer1.config",
+        "minos_engine.layer1.contracts",
+        "minos_engine.layer1.prerequisites",
+        "minos_engine.layer1.serializer",
+        "minos_engine.layer1.service"
+      ],
+      "test_count": 8
+    },
+    {
+      "category": "component",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pathlib",
+        "pytest"
+      ],
+      "line_count": 94,
+      "path": "tests/component/layer1/test_validation.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer1.adapters.pysam_adapter",
+        "minos_engine.layer1.validation"
+      ],
+      "test_count": 8
+    },
+    {
+      "category": "component",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "json",
+        "pytest"
+      ],
+      "line_count": 147,
+      "path": "tests/component/test_cli.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": true,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.cli.main",
+        "minos_engine.gates.contracts",
+        "minos_engine.gates.verifier"
+      ],
+      "test_count": 11
+    },
+    {
+      "category": "component",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "json"
+      ],
+      "line_count": 77,
+      "path": "tests/component/test_gate_verifier.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.cli.main",
+        "minos_engine.gates.contracts",
+        "minos_engine.gates.verifier",
+        "minos_engine.qualification.evidence"
+      ],
+      "test_count": 4
+    },
+    {
+      "category": "component",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pathlib",
+        "pytest",
+        "subprocess"
+      ],
+      "line_count": 224,
+      "path": "tests/component/test_git_source_integrity.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.qualification",
+        "minos_engine.qualification.runner",
+        "minos_engine.settings"
+      ],
+      "test_count": 12
+    },
+    {
+      "category": "component",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pytest"
+      ],
+      "line_count": 83,
+      "path": "tests/component/test_protocol_client.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.errors",
+        "minos_engine.protocol.client",
+        "minos_engine.protocol.network_config",
+        "minos_engine.protocol.parameter_ranges",
+        "minos_engine.protocol.snapshot"
+      ],
+      "test_count": 8
+    },
+    {
+      "category": "component",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "json"
+      ],
+      "line_count": 176,
+      "path": "tests/component/test_qualification_runner.py",
+      "reason": "Shares a body with the twin runner test but drives a DIFFERENT production _assemble; distinct runtime boundaries need separate proof.",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.gates.contracts",
+        "minos_engine.qualification",
+        "minos_engine.qualification.coverage",
+        "minos_engine.qualification.fixtures",
+        "minos_engine.qualification.provenance",
+        "minos_engine.qualification.pytest_accounting",
+        "minos_engine.qualification.runner",
+        "minos_engine.twin.prerequisites"
+      ],
+      "test_count": 12
+    },
+    {
+      "category": "component",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "json",
+        "pytest"
+      ],
+      "line_count": 67,
+      "path": "tests/component/twin/test_cli.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.cli.main"
+      ],
+      "test_count": 5
+    },
+    {
+      "category": "component",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "json",
+        "pathlib",
+        "subprocess"
+      ],
+      "line_count": 167,
+      "path": "tests/component/twin/test_git_history.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.qualification",
+        "minos_engine.qualification.git_history"
+      ],
+      "test_count": 7
+    },
+    {
+      "category": "component",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "json",
+        "pathlib",
+        "subprocess"
+      ],
+      "line_count": 108,
+      "path": "tests/component/twin/test_prerequisite.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.gates.contracts",
+        "minos_engine.gates.required_checks",
+        "minos_engine.qualification.twin_runner",
+        "minos_engine.twin.prerequisites"
+      ],
+      "test_count": 7
+    },
+    {
+      "category": "component",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pytest"
+      ],
+      "line_count": 53,
+      "path": "tests/component/twin/test_service.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.errors",
+        "minos_engine.qualification.twin_checks",
+        "minos_engine.twin.identities",
+        "minos_engine.twin.service",
+        "minos_engine.twin.unavailable"
+      ],
+      "test_count": 4
+    },
+    {
+      "category": "component",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pathlib",
+        "subprocess",
+        "tempfile"
+      ],
+      "line_count": 133,
+      "path": "tests/component/twin/test_source_integrity_stage1.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": true,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.gates.contracts",
+        "minos_engine.qualification.runner",
+        "minos_engine.qualification.twin_runner"
+      ],
+      "test_count": 9
+    },
+    {
+      "category": "component",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "json",
+        "pathlib",
+        "subprocess"
+      ],
+      "line_count": 273,
+      "path": "tests/component/twin/test_twin_ancestry.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.qualification",
+        "minos_engine.qualification.ancestry",
+        "minos_engine.qualification.twin_runner"
+      ],
+      "test_count": 17
+    },
+    {
+      "category": "component",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pydantic",
+        "pytest"
+      ],
+      "line_count": 187,
+      "path": "tests/component/twin/test_twin_qualification.py",
+      "reason": "Shares a body with the protocol runner test but drives a DIFFERENT production _assemble; distinct runtime boundaries need separate proof.",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.gates.contracts",
+        "minos_engine.gates.required_checks",
+        "minos_engine.qualification.coverage",
+        "minos_engine.qualification.provenance",
+        "minos_engine.qualification.pytest_accounting",
+        "minos_engine.qualification.runner",
+        "minos_engine.qualification.twin_runner"
+      ],
+      "test_count": 11
+    },
+    {
+      "category": "determinism",
+      "contract_protected": "deterministic scientific identity",
+      "decision": "keep",
+      "dependencies": [
+        "pathlib"
+      ],
+      "line_count": 68,
+      "path": "tests/determinism/layer1/test_deadline_degradation.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer1.config",
+        "minos_engine.layer1.contracts",
+        "minos_engine.layer1.service"
+      ],
+      "test_count": 2
+    },
+    {
+      "category": "determinism",
+      "contract_protected": "deterministic scientific identity",
+      "decision": "keep",
+      "dependencies": [
+        "pathlib"
+      ],
+      "line_count": 83,
+      "path": "tests/determinism/layer1/test_determinism.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.canonical_json",
+        "minos_engine.layer1.config",
+        "minos_engine.layer1.contracts",
+        "minos_engine.layer1.fingerprint",
+        "minos_engine.layer1.service"
+      ],
+      "test_count": 4
+    },
+    {
+      "category": "determinism",
+      "contract_protected": "deterministic scientific identity",
+      "decision": "keep",
+      "dependencies": [],
+      "line_count": 43,
+      "path": "tests/determinism/twin/test_golden.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.intake.contracts",
+        "minos_engine.tools.happy",
+        "minos_engine.twin.comparison",
+        "minos_engine.twin.execution_plan",
+        "minos_engine.twin.fixtures",
+        "minos_engine.twin.identities"
+      ],
+      "test_count": 2
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "pytest",
+        "sqlalchemy"
+      ],
+      "line_count": 120,
+      "path": "tests/integration/layer2_db/test_admin_ownership.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage.constants"
+      ],
+      "test_count": 8
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "pytest",
+        "sqlalchemy"
+      ],
+      "line_count": 85,
+      "path": "tests/integration/layer2_db/test_append_only.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [],
+      "test_count": 8
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "pytest",
+        "sqlalchemy"
+      ],
+      "line_count": 47,
+      "path": "tests/integration/layer2_db/test_artifact_policy.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [],
+      "test_count": 3
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "conftest",
+        "os"
+      ],
+      "line_count": 26,
+      "path": "tests/integration/layer2_db/test_ci_guard.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [],
+      "test_count": 2
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "pytest",
+        "sqlalchemy"
+      ],
+      "line_count": 135,
+      "path": "tests/integration/layer2_db/test_constraints.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [],
+      "test_count": 12
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "collections",
+        "pytest",
+        "sqlalchemy"
+      ],
+      "line_count": 247,
+      "path": "tests/integration/layer2_db/test_l2f_attack_matrix.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage.database"
+      ],
+      "test_count": 5
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "hashlib",
+        "os",
+        "pathlib",
+        "pytest",
+        "sqlalchemy",
+        "typing",
+        "uuid"
+      ],
+      "line_count": 497,
+      "path": "tests/integration/layer2_db/test_l2f_execution.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.experiments.execution_contract",
+        "minos_engine.storage",
+        "minos_engine.storage.l2f_execution",
+        "minos_engine.storage.l2f_execution_inputs",
+        "minos_engine.storage.l2f_gatk_runner",
+        "minos_engine.storage.l2f_job_enqueue",
+        "minos_engine.storage.l2f_plan_store",
+        "minos_engine.storage.l2f_result_publisher"
+      ],
+      "test_count": 17
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "contextlib",
+        "dataclasses",
+        "hashlib",
+        "json",
+        "os",
+        "pathlib",
+        "pytest",
+        "sqlalchemy",
+        "subprocess",
+        "sys",
+        "threading",
+        "typing",
+        "uuid"
+      ],
+      "line_count": 1058,
+      "path": "tests/integration/layer2_db/test_l2f_execution_corrective.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": true,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.canonical_json",
+        "minos_engine.common.errors",
+        "minos_engine.experiments.execution_contract",
+        "minos_engine.layer2.service",
+        "minos_engine.storage",
+        "minos_engine.storage.l2f_execution",
+        "minos_engine.storage.l2f_execution_contract",
+        "minos_engine.storage.l2f_gatk_runner",
+        "minos_engine.storage.l2f_job_claim",
+        "minos_engine.storage.l2f_job_enqueue",
+        "minos_engine.storage.l2f_plan_store",
+        "minos_engine.storage.roles"
+      ],
+      "test_count": 33
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "hashlib",
+        "inspect",
+        "pathlib",
+        "pytest",
+        "sqlalchemy",
+        "typing"
+      ],
+      "line_count": 260,
+      "path": "tests/integration/layer2_db/test_l2f_execution_inputs.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.experiments.execution_contract",
+        "minos_engine.storage.l2f_execution_inputs",
+        "minos_engine.storage.l2f_plan_store"
+      ],
+      "test_count": 11
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "alembic",
+        "hashlib",
+        "pathlib",
+        "pytest",
+        "sqlalchemy",
+        "typing",
+        "uuid"
+      ],
+      "line_count": 449,
+      "path": "tests/integration/layer2_db/test_l2f_execution_migration.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage",
+        "minos_engine.storage.l2f_execution_contract",
+        "minos_engine.storage.l2f_execution_tables",
+        "minos_engine.storage.l2f_job_claim",
+        "minos_engine.storage.l2f_job_enqueue",
+        "minos_engine.storage.l2f_plan_store"
+      ],
+      "test_count": 13
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "dataclasses",
+        "hashlib",
+        "json",
+        "os",
+        "pathlib",
+        "pytest",
+        "sqlalchemy",
+        "typing"
+      ],
+      "line_count": 587,
+      "path": "tests/integration/layer2_db/test_l2f_forgery_matrix.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": true,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.canonical_json",
+        "minos_engine.experiments.execution_contract",
+        "minos_engine.experiments.gatk_live_space",
+        "minos_engine.storage",
+        "minos_engine.storage.l2f_execution",
+        "minos_engine.storage.l2f_gatk_runner",
+        "minos_engine.storage.l2f_job_claim"
+      ],
+      "test_count": 26
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "dataclasses",
+        "hashlib",
+        "json",
+        "os",
+        "pathlib",
+        "pytest",
+        "shutil",
+        "sqlalchemy",
+        "typing"
+      ],
+      "line_count": 429,
+      "path": "tests/integration/layer2_db/test_l2f_fs_safety.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": true,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.experiments.execution_contract",
+        "minos_engine.storage",
+        "minos_engine.storage.l2f_execution",
+        "minos_engine.storage.l2f_gatk_runner"
+      ],
+      "test_count": 18
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "os",
+        "pathlib",
+        "pytest",
+        "sqlalchemy",
+        "typing"
+      ],
+      "line_count": 564,
+      "path": "tests/integration/layer2_db/test_l2f_harness_verifier.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.experiments.plan",
+        "minos_engine.storage",
+        "minos_engine.storage.database",
+        "minos_engine.storage.l2f_harness_verifier",
+        "minos_engine.storage.l2f_plan_store"
+      ],
+      "test_count": 15
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "sqlalchemy"
+      ],
+      "line_count": 116,
+      "path": "tests/integration/layer2_db/test_l2f_introspect_regressions.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage.database"
+      ],
+      "test_count": 3
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "concurrent",
+        "pathlib",
+        "pytest",
+        "sqlalchemy",
+        "typing",
+        "uuid"
+      ],
+      "line_count": 971,
+      "path": "tests/integration/layer2_db/test_l2f_job_claim.py",
+      "reason": "",
+      "recommended_tier": "manual_privileged",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": true,
+      "source_modules_covered": [
+        "minos_engine.common.hashing",
+        "minos_engine.experiments.accepted_plan",
+        "minos_engine.layer2.features.extraction",
+        "minos_engine.layer2.features.feature_view",
+        "minos_engine.storage",
+        "minos_engine.storage.database",
+        "minos_engine.storage.l2f_job_claim",
+        "minos_engine.storage.l2f_job_enqueue",
+        "minos_engine.storage.l2f_migration_contract",
+        "minos_engine.storage.l2f_plan_store"
+      ],
+      "test_count": 27
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "concurrent",
+        "pathlib",
+        "pytest",
+        "sqlalchemy",
+        "typing"
+      ],
+      "line_count": 529,
+      "path": "tests/integration/layer2_db/test_l2f_job_enqueue.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.experiments.plan",
+        "minos_engine.storage",
+        "minos_engine.storage.database",
+        "minos_engine.storage.l2f_job_enqueue",
+        "minos_engine.storage.l2f_plan_store"
+      ],
+      "test_count": 16
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "alembic",
+        "hashlib",
+        "pathlib",
+        "pytest",
+        "sqlalchemy"
+      ],
+      "line_count": 181,
+      "path": "tests/integration/layer2_db/test_l2f_migration_lifecycle.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage.database",
+        "minos_engine.storage.l2f_migration_contract"
+      ],
+      "test_count": 4
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "collections",
+        "concurrent",
+        "contextlib",
+        "hashlib",
+        "inspect",
+        "os",
+        "pathlib",
+        "pytest",
+        "sqlalchemy",
+        "stat",
+        "typing"
+      ],
+      "line_count": 1440,
+      "path": "tests/integration/layer2_db/test_l2f_plan_store.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.canonical_json",
+        "minos_engine.common.hashing",
+        "minos_engine.experiments.accepted_plan",
+        "minos_engine.experiments.candidates",
+        "minos_engine.layer2.features.extraction",
+        "minos_engine.layer2.features.feature_view",
+        "minos_engine.storage",
+        "minos_engine.storage.database",
+        "minos_engine.storage.l2f_config_publisher",
+        "minos_engine.storage.l2f_migration_contract",
+        "minos_engine.storage.l2f_plan_store"
+      ],
+      "test_count": 27
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "pytest",
+        "sqlalchemy",
+        "typing"
+      ],
+      "line_count": 203,
+      "path": "tests/integration/layer2_db/test_l2f_populated_lifecycle.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage.database"
+      ],
+      "test_count": 1
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "pathlib",
+        "pytest",
+        "sqlalchemy",
+        "typing"
+      ],
+      "line_count": 423,
+      "path": "tests/integration/layer2_db/test_l2f_recovery.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.experiments.execution_contract",
+        "minos_engine.storage",
+        "minos_engine.storage.l2f_execution",
+        "minos_engine.storage.l2f_gatk_runner",
+        "minos_engine.storage.l2f_job_claim"
+      ],
+      "test_count": 21
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "pathlib",
+        "pytest",
+        "sqlalchemy",
+        "typing"
+      ],
+      "line_count": 199,
+      "path": "tests/integration/layer2_db/test_l2f_role_scope.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage",
+        "minos_engine.storage.roles"
+      ],
+      "test_count": 4
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "copy",
+        "hashlib",
+        "json",
+        "pathlib",
+        "sqlalchemy",
+        "typing"
+      ],
+      "line_count": 237,
+      "path": "tests/integration/layer2_db/test_l2f_static_inventory.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage",
+        "minos_engine.storage.database"
+      ],
+      "test_count": 16
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "pytest",
+        "sqlalchemy",
+        "typing"
+      ],
+      "line_count": 94,
+      "path": "tests/integration/layer2_db/test_l2f_tables_parity.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage.database",
+        "minos_engine.storage.l2f_tables"
+      ],
+      "test_count": 3
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "ast",
+        "conftest",
+        "hashlib",
+        "sqlalchemy"
+      ],
+      "line_count": 175,
+      "path": "tests/integration/layer2_db/test_migration_immutability.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage.constants",
+        "minos_engine.storage.database",
+        "minos_engine.storage.metadata",
+        "minos_engine.storage.migration_contract"
+      ],
+      "test_count": 7
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "conftest",
+        "contextlib",
+        "pgserver",
+        "sqlalchemy",
+        "tempfile"
+      ],
+      "line_count": 133,
+      "path": "tests/integration/layer2_db/test_migration_lifecycle.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage.constants",
+        "minos_engine.storage.database"
+      ],
+      "test_count": 3
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "collections",
+        "conftest",
+        "contextlib",
+        "pytest",
+        "sqlalchemy"
+      ],
+      "line_count": 100,
+      "path": "tests/integration/layer2_db/test_operational_db_identity.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage.constants",
+        "minos_engine.storage.database"
+      ],
+      "test_count": 4
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "pytest",
+        "sqlalchemy"
+      ],
+      "line_count": 170,
+      "path": "tests/integration/layer2_db/test_roles_isolation.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage.constants"
+      ],
+      "test_count": 11
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "sqlalchemy"
+      ],
+      "line_count": 76,
+      "path": "tests/integration/layer2_db/test_schema_inventory.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage.constants",
+        "minos_engine.storage.fingerprint",
+        "minos_engine.storage.triggers"
+      ],
+      "test_count": 6
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "conftest",
+        "pytest",
+        "sqlalchemy",
+        "typing"
+      ],
+      "line_count": 142,
+      "path": "tests/integration/layer2_db/test_stepwise_migration_chain.py",
+      "reason": "Replaces eight inline workflow steps that ran alembic downgrade plus a Python heredoc embedded in YAML; executed exactly once by the full tier.",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage.constants",
+        "minos_engine.storage.database"
+      ],
+      "test_count": 1
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "pytest",
+        "sqlalchemy"
+      ],
+      "line_count": 57,
+      "path": "tests/integration/layer2_db/test_transactions.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage.database",
+        "minos_engine.storage.repositories"
+      ],
+      "test_count": 3
+    },
+    {
+      "category": "integration",
+      "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
+      "decision": "keep",
+      "dependencies": [
+        "conftest",
+        "sqlalchemy"
+      ],
+      "line_count": 94,
+      "path": "tests/integration/layer2_db/test_worker_claim.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage.database",
+        "minos_engine.storage.repositories"
+      ],
+      "test_count": 3
+    },
+    {
+      "category": "integration",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "inspect",
+        "os",
+        "pathlib",
+        "pwd",
+        "pytest",
+        "sqlalchemy",
+        "stat",
+        "subprocess"
+      ],
+      "line_count": 583,
+      "path": "tests/integration/layer2_features/test_access_boundary.py",
+      "reason": "",
+      "recommended_tier": "manual_privileged",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": true,
+      "source_modules_covered": [
+        "minos_engine.common.errors",
+        "minos_engine.layer2.features.errors",
+        "minos_engine.layer2.features.extraction",
+        "minos_engine.storage",
+        "minos_engine.storage.feature_matrix",
+        "minos_engine.storage.matrix_access"
+      ],
+      "test_count": 24
+    },
+    {
+      "category": "integration",
+      "contract_protected": "module behaviour",
+      "decision": "merge",
+      "dependencies": [
+        "hashlib",
+        "json",
+        "pathlib",
+        "pytest",
+        "sqlalchemy"
+      ],
+      "line_count": 283,
+      "path": "tests/integration/layer2_features/test_builder.py",
+      "reason": "Byte-identical select_config-blocked body removed: same assertion, same public boundary.",
+      "recommended_tier": "full",
+      "replacement": "tests/acceptance/test_stage_gates.py::test_layer2_blocked",
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.hashing",
+        "minos_engine.layer2.features.errors",
+        "minos_engine.layer2.features.extraction",
+        "minos_engine.layer2.features.matrix_parquet",
+        "minos_engine.storage.feature_matrix"
+      ],
+      "test_count": 12
+    },
+    {
+      "category": "integration",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pathlib",
+        "sqlalchemy",
+        "threading"
+      ],
+      "line_count": 168,
+      "path": "tests/integration/layer2_features/test_concurrency.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer2.features.contracts",
+        "minos_engine.layer2.features.errors",
+        "minos_engine.layer2.features.extraction",
+        "minos_engine.storage.database",
+        "minos_engine.storage.feature_matrix"
+      ],
+      "test_count": 2
+    },
+    {
+      "category": "integration",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "hashlib",
+        "pytest",
+        "sqlalchemy"
+      ],
+      "line_count": 232,
+      "path": "tests/integration/layer2_features/test_e4_production_builder.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.errors",
+        "minos_engine.layer2.features.extraction",
+        "minos_engine.layer2.features.matrix_parquet",
+        "minos_engine.layer2.prerequisites",
+        "minos_engine.storage",
+        "minos_engine.storage.database",
+        "minos_engine.storage.feature_matrix",
+        "minos_engine.storage.feature_matrix_production",
+        "minos_engine.storage.matrix_access"
+      ],
+      "test_count": 10
+    },
+    {
+      "category": "integration",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "hashlib",
+        "pytest",
+        "sqlalchemy"
+      ],
+      "line_count": 198,
+      "path": "tests/integration/layer2_features/test_exact_connection_identity.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer2.features.extraction",
+        "minos_engine.layer2.features.matrix_parquet",
+        "minos_engine.storage",
+        "minos_engine.storage.database"
+      ],
+      "test_count": 4
+    },
+    {
+      "category": "integration",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "hashlib",
+        "pathlib",
+        "pytest",
+        "sqlalchemy"
+      ],
+      "line_count": 465,
+      "path": "tests/integration/layer2_features/test_feature_matrix_storage.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.errors",
+        "minos_engine.layer2.features.contracts",
+        "minos_engine.layer2.features.errors",
+        "minos_engine.layer2.features.extraction",
+        "minos_engine.layer2.features.matrix_parquet",
+        "minos_engine.storage",
+        "minos_engine.storage.feature_matrix"
+      ],
+      "test_count": 15
+    },
+    {
+      "category": "integration",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "sqlalchemy"
+      ],
+      "line_count": 77,
+      "path": "tests/integration/layer2_features/test_feature_view_membership.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer2.features.extraction"
+      ],
+      "test_count": 4
+    },
+    {
+      "category": "integration",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "inspect",
+        "pathlib",
+        "pytest"
+      ],
+      "line_count": 143,
+      "path": "tests/integration/layer2_features/test_feature_view_provenance.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.gates.contracts",
+        "minos_engine.gates.required_checks",
+        "minos_engine.gates.verifier",
+        "minos_engine.layer2",
+        "minos_engine.qualification",
+        "minos_engine.storage",
+        "minos_engine.storage.feature_view_verify"
+      ],
+      "test_count": 8
+    },
+    {
+      "category": "integration",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "hashlib",
+        "inspect"
+      ],
+      "line_count": 135,
+      "path": "tests/integration/layer2_features/test_feature_view_verify.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer2.features.contracts",
+        "minos_engine.layer2.features.extraction",
+        "minos_engine.layer2.features.matrix_parquet",
+        "minos_engine.storage",
+        "minos_engine.storage.feature_view_verify"
+      ],
+      "test_count": 8
+    },
+    {
+      "category": "integration",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "alembic",
+        "pytest",
+        "sqlalchemy"
+      ],
+      "line_count": 240,
+      "path": "tests/integration/layer2_features/test_migration_lifecycle.py",
+      "reason": "",
+      "recommended_tier": "manual_privileged",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": true,
+      "source_modules_covered": [
+        "minos_engine.storage.database"
+      ],
+      "test_count": 3
+    },
+    {
+      "category": "integration",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "concurrent",
+        "hashlib",
+        "json",
+        "pathlib",
+        "pyarrow",
+        "pytest",
+        "sqlalchemy",
+        "threading",
+        "typing"
+      ],
+      "line_count": 224,
+      "path": "tests/integration/layer2_ingest/test_concurrency.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.errors",
+        "minos_engine.layer2.ingest.validation",
+        "minos_engine.storage.database",
+        "minos_engine.storage.profile_ingest"
+      ],
+      "test_count": 3
+    },
+    {
+      "category": "integration",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "hashlib",
+        "json",
+        "pathlib",
+        "pyarrow",
+        "pytest",
+        "sqlalchemy",
+        "typing"
+      ],
+      "line_count": 522,
+      "path": "tests/integration/layer2_ingest/test_ingest.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.errors",
+        "minos_engine.intake.attestation",
+        "minos_engine.storage.profile_ingest"
+      ],
+      "test_count": 22
+    },
+    {
+      "category": "integration",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "sqlalchemy"
+      ],
+      "line_count": 118,
+      "path": "tests/integration/layer2_ingest/test_migration_lifecycle.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage.database"
+      ],
+      "test_count": 2
+    },
+    {
+      "category": "integration",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "sqlalchemy"
+      ],
+      "line_count": 92,
+      "path": "tests/integration/layer2_ingest/test_roles_and_views.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [],
+      "test_count": 6
+    },
+    {
+      "category": "integration",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "sqlalchemy"
+      ],
+      "line_count": 112,
+      "path": "tests/integration/layer2_split/test_migration_lifecycle.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage.database"
+      ],
+      "test_count": 2
+    },
+    {
+      "category": "integration",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "sqlalchemy"
+      ],
+      "line_count": 65,
+      "path": "tests/integration/layer2_split/test_role_isolation.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [],
+      "test_count": 6
+    },
+    {
+      "category": "integration",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pytest",
+        "sqlalchemy"
+      ],
+      "line_count": 89,
+      "path": "tests/integration/layer2_split/test_split_store.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage.dataset_split"
+      ],
+      "test_count": 4
+    },
+    {
+      "category": "integration",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "collections",
+        "hashlib",
+        "pytest",
+        "sqlalchemy"
+      ],
+      "line_count": 230,
+      "path": "tests/integration/layer2_split_v2/test_epoch_growth.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.errors",
+        "minos_engine.layer2.split.contracts",
+        "minos_engine.layer2.split_v2.generator",
+        "minos_engine.layer2.split_v2.policy",
+        "minos_engine.layer2.split_v2.verifier",
+        "minos_engine.storage.database",
+        "minos_engine.storage.dataset_split",
+        "minos_engine.storage.dataset_split_v2"
+      ],
+      "test_count": 5
+    },
+    {
+      "category": "integration",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pytest",
+        "sqlalchemy"
+      ],
+      "line_count": 271,
+      "path": "tests/integration/layer2_split_v2/test_epoch_store.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.errors",
+        "minos_engine.layer2.split_v2.generator",
+        "minos_engine.storage.dataset_split_v2"
+      ],
+      "test_count": 14
+    },
+    {
+      "category": "integration",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "sqlalchemy"
+      ],
+      "line_count": 112,
+      "path": "tests/integration/layer2_split_v2/test_migration_lifecycle.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage.database"
+      ],
+      "test_count": 2
+    },
+    {
+      "category": "integration",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "sqlalchemy"
+      ],
+      "line_count": 82,
+      "path": "tests/integration/layer2_split_v2/test_role_isolation.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [],
+      "test_count": 7
+    },
+    {
+      "category": "integration",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [],
+      "line_count": 38,
+      "path": "tests/integration/test_end_to_end.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.callers.gatk.config",
+        "minos_engine.common.hashing",
+        "minos_engine.manifests.builder",
+        "minos_engine.protocol.client",
+        "minos_engine.protocol.parameter_ranges",
+        "minos_engine.protocol.submission_contract"
+      ],
+      "test_count": 1
+    },
+    {
+      "category": "integration",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "hashlib",
+        "json",
+        "pytest"
+      ],
+      "line_count": 61,
+      "path": "tests/integration/twin/test_replay_fixtures.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.errors",
+        "minos_engine.twin.execution_plan",
+        "minos_engine.twin.fixtures",
+        "minos_engine.twin.identities",
+        "minos_engine.twin.service",
+        "minos_engine.twin.unavailable"
+      ],
+      "test_count": 5
+    },
+    {
+      "category": "leakage",
+      "contract_protected": "truth/scoring leakage isolation and architecture dependency boundaries",
+      "decision": "keep",
+      "dependencies": [
+        "pathlib"
+      ],
+      "line_count": 64,
+      "path": "tests/leakage/layer1/test_truth_isolation_layer1.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer1.config",
+        "minos_engine.layer1.contracts",
+        "minos_engine.layer1.service"
+      ],
+      "test_count": 2
+    },
+    {
+      "category": "leakage",
+      "contract_protected": "truth/scoring leakage isolation and architecture dependency boundaries",
+      "decision": "keep",
+      "dependencies": [
+        "ast",
+        "inspect",
+        "pathlib",
+        "pydantic",
+        "pytest"
+      ],
+      "line_count": 657,
+      "path": "tests/leakage/test_architecture_boundaries.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.callers.contracts",
+        "minos_engine.common.errors",
+        "minos_engine.experiments.execution_contract",
+        "minos_engine.layer2.service",
+        "minos_engine.protocol.submission_contract",
+        "minos_engine.settings",
+        "minos_engine.storage",
+        "minos_engine.storage.l2f_execution",
+        "minos_engine.storage.l2f_execution_contract",
+        "minos_engine.storage.l2f_execution_inputs",
+        "minos_engine.storage.l2f_gatk_runner",
+        "minos_engine.storage.l2f_harness_verifier",
+        "minos_engine.storage.l2f_job_claim"
+      ],
+      "test_count": 36
+    },
+    {
+      "category": "leakage",
+      "contract_protected": "truth/scoring leakage isolation and architecture dependency boundaries",
+      "decision": "keep",
+      "dependencies": [
+        "pydantic",
+        "pytest",
+        "typing"
+      ],
+      "line_count": 152,
+      "path": "tests/leakage/test_feature_view_boundary.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer2.feature_registry",
+        "minos_engine.layer2.features.contracts",
+        "minos_engine.layer2.features.errors",
+        "minos_engine.layer2.features.extraction"
+      ],
+      "test_count": 6
+    },
+    {
+      "category": "leakage",
+      "contract_protected": "truth/scoring leakage isolation and architecture dependency boundaries",
+      "decision": "keep",
+      "dependencies": [
+        "ast"
+      ],
+      "line_count": 83,
+      "path": "tests/leakage/test_truth_isolation.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.settings"
+      ],
+      "test_count": 2
+    },
+    {
+      "category": "leakage",
+      "contract_protected": "truth/scoring leakage isolation and architecture dependency boundaries",
+      "decision": "keep",
+      "dependencies": [
+        "ast",
+        "pytest"
+      ],
+      "line_count": 85,
+      "path": "tests/leakage/twin/test_truth_isolation.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.callers.gatk.config",
+        "minos_engine.common.errors",
+        "minos_engine.layer1.service",
+        "minos_engine.layer2.service",
+        "minos_engine.protocol.submission_contract",
+        "minos_engine.qualification.twin_checks",
+        "minos_engine.twin.offline.truth_loader"
+      ],
+      "test_count": 5
+    },
+    {
+      "category": "protocol_contract",
+      "contract_protected": "protocol contract stability",
+      "decision": "keep",
+      "dependencies": [
+        "json"
+      ],
+      "line_count": 30,
+      "path": "tests/protocol_contract/test_fixture_contract.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.protocol.client",
+        "minos_engine.schema_registry"
+      ],
+      "test_count": 3
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "merge",
+      "dependencies": [
+        "inspect",
+        "json",
+        "pathlib",
+        "pytest"
+      ],
+      "line_count": 450,
+      "path": "tests/unit/experiments/test_accepted_plan.py",
+      "reason": "Byte-identical select_config-blocked body removed; the E4 attack matrix is untouched.",
+      "recommended_tier": "fast",
+      "replacement": "tests/acceptance/test_stage_gates.py::test_layer2_blocked",
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.canonical_json",
+        "minos_engine.common.hashing",
+        "minos_engine.experiments",
+        "minos_engine.experiments.accepted_plan",
+        "minos_engine.experiments.candidates",
+        "minos_engine.experiments.plan",
+        "minos_engine.layer2",
+        "minos_engine.layer2.features.extraction"
+      ],
+      "test_count": 15
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "dataclasses",
+        "inspect",
+        "pytest"
+      ],
+      "line_count": 228,
+      "path": "tests/unit/experiments/test_candidates.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.callers.contracts",
+        "minos_engine.callers.gatk.config",
+        "minos_engine.callers.gatk.parameter_registry",
+        "minos_engine.common.errors",
+        "minos_engine.experiments",
+        "minos_engine.experiments.candidates",
+        "minos_engine.experiments.policy"
+      ],
+      "test_count": 16
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pydantic",
+        "pytest"
+      ],
+      "line_count": 474,
+      "path": "tests/unit/experiments/test_experiment_plan.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.canonical_json",
+        "minos_engine.common.hashing",
+        "minos_engine.experiments.candidates",
+        "minos_engine.experiments.plan"
+      ],
+      "test_count": 17
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "collections",
+        "hashlib",
+        "json",
+        "pathlib",
+        "pytest",
+        "typing"
+      ],
+      "line_count": 306,
+      "path": "tests/unit/experiments/test_gatk_live_provenance.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.experiments",
+        "minos_engine.experiments.gatk_live_space"
+      ],
+      "test_count": 21
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "hashlib",
+        "json",
+        "math",
+        "pathlib",
+        "pytest",
+        "typing"
+      ],
+      "line_count": 518,
+      "path": "tests/unit/experiments/test_gatk_live_space.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.callers.contracts",
+        "minos_engine.callers.gatk.parameter_registry",
+        "minos_engine.common.canonical_json",
+        "minos_engine.common.hashing",
+        "minos_engine.common.timestamps",
+        "minos_engine.experiments.candidates",
+        "minos_engine.experiments.gatk_live_space"
+      ],
+      "test_count": 39
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "json",
+        "pydantic",
+        "pytest",
+        "typing"
+      ],
+      "line_count": 257,
+      "path": "tests/unit/experiments/test_l2f_execution_contract.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.canonical_json",
+        "minos_engine.common.hashing",
+        "minos_engine.experiments.execution_contract"
+      ],
+      "test_count": 11
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "inspect",
+        "pydantic",
+        "pytest"
+      ],
+      "line_count": 237,
+      "path": "tests/unit/experiments/test_synthetic_snapshots.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.hashing",
+        "minos_engine.experiments",
+        "minos_engine.experiments.accepted_plan",
+        "minos_engine.experiments.candidates",
+        "minos_engine.experiments.plan",
+        "minos_engine.layer2.features.extraction",
+        "minos_engine.layer2.features.feature_view"
+      ],
+      "test_count": 4
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "gzip",
+        "hashlib",
+        "pathlib",
+        "pytest",
+        "struct"
+      ],
+      "line_count": 149,
+      "path": "tests/unit/intake/test_attestation.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.errors",
+        "minos_engine.common.hashing",
+        "minos_engine.intake.attestation",
+        "minos_engine.layer2.ingest.contracts",
+        "minos_engine.layer2.split.contracts"
+      ],
+      "test_count": 8
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "statistics"
+      ],
+      "line_count": 57,
+      "path": "tests/unit/layer1/test_aggregators.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer1.aggregators"
+      ],
+      "test_count": 6
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "math",
+        "pydantic",
+        "pytest"
+      ],
+      "line_count": 218,
+      "path": "tests/unit/layer1/test_contracts.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer1.contracts",
+        "minos_engine.schema_registry"
+      ],
+      "test_count": 12
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [],
+      "line_count": 67,
+      "path": "tests/unit/layer1/test_cost_and_config.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer1.config",
+        "minos_engine.layer1.contracts",
+        "minos_engine.layer1.cost_model"
+      ],
+      "test_count": 4
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "dataclasses",
+        "numpy"
+      ],
+      "line_count": 126,
+      "path": "tests/unit/layer1/test_filters_coverage_sampling.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer1.coverage",
+        "minos_engine.layer1.filters",
+        "minos_engine.layer1.sampling"
+      ],
+      "test_count": 7
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [],
+      "line_count": 53,
+      "path": "tests/unit/layer1/test_reference_profile.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer1.reference_profile"
+      ],
+      "test_count": 7
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pytest"
+      ],
+      "line_count": 70,
+      "path": "tests/unit/layer1/test_region.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer1.region"
+      ],
+      "test_count": 11
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "merge",
+      "dependencies": [
+        "pydantic",
+        "pytest"
+      ],
+      "line_count": 373,
+      "path": "tests/unit/layer2/features/test_contracts.py",
+      "reason": "Byte-identical select_config-blocked body removed.",
+      "recommended_tier": "fast",
+      "replacement": "tests/acceptance/test_stage_gates.py::test_layer2_blocked",
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.errors",
+        "minos_engine.layer2.features.contracts",
+        "minos_engine.schema_registry"
+      ],
+      "test_count": 24
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "merge",
+      "dependencies": [
+        "functools",
+        "hashlib",
+        "json",
+        "pytest",
+        "typing"
+      ],
+      "line_count": 1059,
+      "path": "tests/unit/layer2/features/test_extraction.py",
+      "reason": "Byte-identical select_config-blocked body removed.",
+      "recommended_tier": "fast",
+      "replacement": "tests/acceptance/test_stage_gates.py::test_layer2_blocked",
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.hashing",
+        "minos_engine.layer2.feature_registry",
+        "minos_engine.layer2.features.contracts",
+        "minos_engine.layer2.features.errors",
+        "minos_engine.layer2.features.extraction",
+        "minos_engine.layer2.ingest.contracts",
+        "minos_engine.layer2.ingest.validation",
+        "minos_engine.layer2.prerequisites",
+        "minos_engine.schema_registry"
+      ],
+      "test_count": 39
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "collections"
+      ],
+      "line_count": 103,
+      "path": "tests/unit/layer2/features/test_inventory.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer2",
+        "minos_engine.layer2.feature_registry",
+        "minos_engine.layer2.ingest.contracts"
+      ],
+      "test_count": 5
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "hashlib",
+        "os",
+        "pyarrow",
+        "pytest"
+      ],
+      "line_count": 446,
+      "path": "tests/unit/layer2/features/test_matrix_parquet.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer2.features.contracts",
+        "minos_engine.layer2.features.errors",
+        "minos_engine.layer2.features.matrix_parquet"
+      ],
+      "test_count": 18
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [],
+      "line_count": 78,
+      "path": "tests/unit/layer2/ingest/test_assemble.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.gates.contracts",
+        "minos_engine.gates.required_checks",
+        "minos_engine.qualification.coverage",
+        "minos_engine.qualification.layer2_ingest_runner",
+        "minos_engine.qualification.provenance",
+        "minos_engine.qualification.pytest_accounting",
+        "minos_engine.qualification.runner"
+      ],
+      "test_count": 1
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "hashlib",
+        "pytest"
+      ],
+      "line_count": 91,
+      "path": "tests/unit/layer2/ingest/test_contracts.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.canonical_json",
+        "minos_engine.layer2.ingest.contracts",
+        "minos_engine.schema_registry"
+      ],
+      "test_count": 7
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pytest"
+      ],
+      "line_count": 56,
+      "path": "tests/unit/layer2/ingest/test_validation.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.errors",
+        "minos_engine.common.hashing",
+        "minos_engine.layer1.fingerprint",
+        "minos_engine.layer2.feature_registry",
+        "minos_engine.layer2.ingest.contracts",
+        "minos_engine.layer2.ingest.validation"
+      ],
+      "test_count": 5
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [],
+      "line_count": 102,
+      "path": "tests/unit/layer2/split/test_assemble.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.gates.contracts",
+        "minos_engine.gates.required_checks",
+        "minos_engine.qualification.coverage",
+        "minos_engine.qualification.layer2_split_runner",
+        "minos_engine.qualification.provenance",
+        "minos_engine.qualification.pytest_accounting",
+        "minos_engine.qualification.runner"
+      ],
+      "test_count": 1
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pydantic",
+        "pytest"
+      ],
+      "line_count": 120,
+      "path": "tests/unit/layer2/split/test_contracts.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer2.split.contracts"
+      ],
+      "test_count": 9
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pathlib",
+        "pysam",
+        "pytest"
+      ],
+      "line_count": 114,
+      "path": "tests/unit/layer2/split/test_discovery.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer2.split.discovery",
+        "minos_engine.layer2.split.policy"
+      ],
+      "test_count": 8
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [],
+      "line_count": 98,
+      "path": "tests/unit/layer2/split/test_generator_verifier.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer2.split.contracts",
+        "minos_engine.layer2.split.generator",
+        "minos_engine.layer2.split.verifier"
+      ],
+      "test_count": 8
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "copy",
+        "pytest"
+      ],
+      "line_count": 311,
+      "path": "tests/unit/layer2/split/test_inventory_verifier.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.gates.contracts",
+        "minos_engine.layer2.split.contracts",
+        "minos_engine.qualification.layer2_split_runner"
+      ],
+      "test_count": 27
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "hashlib",
+        "pytest"
+      ],
+      "line_count": 84,
+      "path": "tests/unit/layer2/split/test_policy.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer2.split.policy"
+      ],
+      "test_count": 9
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "json"
+      ],
+      "line_count": 188,
+      "path": "tests/unit/layer2/split_v2/test_assemble.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.gates.contracts",
+        "minos_engine.gates.required_checks",
+        "minos_engine.gates.verifier",
+        "minos_engine.layer2.split_v2.generator",
+        "minos_engine.qualification.coverage",
+        "minos_engine.qualification.layer2_split_v2_runner",
+        "minos_engine.qualification.provenance",
+        "minos_engine.qualification.pytest_accounting",
+        "minos_engine.qualification.runner"
+      ],
+      "test_count": 5
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "json",
+        "pathlib",
+        "pytest"
+      ],
+      "line_count": 176,
+      "path": "tests/unit/layer2/split_v2/test_generator.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.canonical_json",
+        "minos_engine.common.errors",
+        "minos_engine.common.hashing",
+        "minos_engine.layer2.split_v2.generator",
+        "minos_engine.layer2.split_v2.policy"
+      ],
+      "test_count": 14
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "collections",
+        "json",
+        "pathlib",
+        "pytest",
+        "re"
+      ],
+      "line_count": 161,
+      "path": "tests/unit/layer2/split_v2/test_policy.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer2.split_v2.policy"
+      ],
+      "test_count": 13
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "copy",
+        "json",
+        "pathlib"
+      ],
+      "line_count": 166,
+      "path": "tests/unit/layer2/split_v2/test_verifier.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer2.split_v2.generator",
+        "minos_engine.layer2.split_v2.policy",
+        "minos_engine.layer2.split_v2.verifier"
+      ],
+      "test_count": 11
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pydantic",
+        "pytest"
+      ],
+      "line_count": 216,
+      "path": "tests/unit/layer2/test_contracts.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer2.contracts"
+      ],
+      "test_count": 15
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "decimal",
+        "math",
+        "pydantic",
+        "pytest"
+      ],
+      "line_count": 179,
+      "path": "tests/unit/layer2/test_count_validation.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer2",
+        "minos_engine.layer2.contracts"
+      ],
+      "test_count": 21
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "merge",
+      "dependencies": [
+        "inspect",
+        "pathlib",
+        "pytest"
+      ],
+      "line_count": 119,
+      "path": "tests/unit/layer2/test_e4_production_contract.py",
+      "reason": "Byte-identical select_config-blocked body removed.",
+      "recommended_tier": "fast",
+      "replacement": "tests/acceptance/test_stage_gates.py::test_layer2_blocked",
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.errors",
+        "minos_engine.layer2.features.contracts",
+        "minos_engine.layer2.features.errors",
+        "minos_engine.layer2.features.extraction",
+        "minos_engine.storage",
+        "minos_engine.storage.feature_matrix",
+        "minos_engine.storage.feature_matrix_production"
+      ],
+      "test_count": 8
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "hashlib",
+        "inspect",
+        "json",
+        "math",
+        "pytest"
+      ],
+      "line_count": 249,
+      "path": "tests/unit/layer2/test_feature_registry.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer2",
+        "minos_engine.layer2.contracts"
+      ],
+      "test_count": 27
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pytest"
+      ],
+      "line_count": 123,
+      "path": "tests/unit/layer2/test_feature_view_contract.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer2.features.contracts",
+        "minos_engine.layer2.features.feature_view"
+      ],
+      "test_count": 7
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "merge",
+      "dependencies": [
+        "pytest",
+        "typing"
+      ],
+      "line_count": 82,
+      "path": "tests/unit/layer2/test_operational_db_identity.py",
+      "reason": "test_missing_database_url_still_fails_closed asserted the same behaviour through the same boundary as test_storage_config.py::test_missing_env_fails_closed.",
+      "recommended_tier": "fast",
+      "replacement": "tests/unit/layer2/test_storage_config.py::test_missing_env_fails_closed",
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage",
+        "minos_engine.storage.constants",
+        "minos_engine.storage.database"
+      ],
+      "test_count": 5
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "importlib",
+        "json",
+        "pathlib"
+      ],
+      "line_count": 45,
+      "path": "tests/unit/layer2/test_reconciliation.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.layer2",
+        "minos_engine.schema_registry"
+      ],
+      "test_count": 2
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "importlib",
+        "pytest"
+      ],
+      "line_count": 79,
+      "path": "tests/unit/layer2/test_storage_config.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage",
+        "minos_engine.storage.constants",
+        "minos_engine.storage.database",
+        "minos_engine.storage.models"
+      ],
+      "test_count": 10
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "hashlib",
+        "os",
+        "pathlib",
+        "pytest",
+        "stat"
+      ],
+      "line_count": 138,
+      "path": "tests/unit/storage/test_l2f_config_publisher.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage.l2f_config_publisher"
+      ],
+      "test_count": 7
+    },
+    {
+      "category": "unit",
+      "contract_protected": "argv and environment injection resistance, workspace inode safety",
+      "decision": "keep",
+      "dependencies": [
+        "hashlib",
+        "os",
+        "pathlib",
+        "pytest",
+        "shutil",
+        "typing"
+      ],
+      "line_count": 587,
+      "path": "tests/unit/storage/test_l2f_execution_security.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": true,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.experiments.execution_contract",
+        "minos_engine.experiments.gatk_live_space",
+        "minos_engine.storage.l2f_execution",
+        "minos_engine.storage.l2f_gatk_runner"
+      ],
+      "test_count": 32
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "hashlib",
+        "inspect",
+        "pathlib",
+        "pytest",
+        "typing"
+      ],
+      "line_count": 321,
+      "path": "tests/unit/storage/test_l2f_gatk_runner.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": true,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.experiments.execution_contract",
+        "minos_engine.storage.l2f_gatk_runner"
+      ],
+      "test_count": 16
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "dataclasses",
+        "hashlib",
+        "inspect",
+        "pytest",
+        "typing"
+      ],
+      "line_count": 529,
+      "path": "tests/unit/storage/test_l2f_harness_verifier_attacks.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.canonical_json",
+        "minos_engine.experiments.accepted_plan",
+        "minos_engine.experiments.candidates",
+        "minos_engine.storage",
+        "minos_engine.storage.l2f_config_publisher",
+        "minos_engine.storage.l2f_harness_verifier",
+        "minos_engine.storage.l2f_migration_contract"
+      ],
+      "test_count": 30
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "inspect",
+        "pytest",
+        "uuid"
+      ],
+      "line_count": 144,
+      "path": "tests/unit/storage/test_l2f_job_claim_unit.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage",
+        "minos_engine.storage.l2f_job_claim"
+      ],
+      "test_count": 11
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "inspect",
+        "pytest"
+      ],
+      "line_count": 94,
+      "path": "tests/unit/storage/test_l2f_job_enqueue_unit.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.experiments.accepted_plan",
+        "minos_engine.experiments.plan",
+        "minos_engine.storage",
+        "minos_engine.storage.l2f_job_enqueue"
+      ],
+      "test_count": 6
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "hashlib",
+        "os",
+        "pathlib",
+        "pytest",
+        "stat"
+      ],
+      "line_count": 144,
+      "path": "tests/unit/storage/test_l2f_result_publisher.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage.l2f_execution_contract",
+        "minos_engine.storage.l2f_result_publisher"
+      ],
+      "test_count": 8
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [],
+      "line_count": 59,
+      "path": "tests/unit/storage/test_l2f_tables_fingerprint.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage.fingerprint",
+        "minos_engine.storage.l2f_tables",
+        "minos_engine.storage.roles"
+      ],
+      "test_count": 2
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pydantic",
+        "pytest"
+      ],
+      "line_count": 62,
+      "path": "tests/unit/test_artifact_identity.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.errors",
+        "minos_engine.intake.artifact_identity",
+        "minos_engine.intake.contracts"
+      ],
+      "test_count": 4
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "math",
+        "pytest"
+      ],
+      "line_count": 58,
+      "path": "tests/unit/test_canonical_json.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.canonical_json",
+        "minos_engine.common.errors",
+        "minos_engine.common.hashing"
+      ],
+      "test_count": 8
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pytest"
+      ],
+      "line_count": 66,
+      "path": "tests/unit/test_clock.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.clock"
+      ],
+      "test_count": 6
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pytest"
+      ],
+      "line_count": 111,
+      "path": "tests/unit/test_config_validation.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.callers.contracts",
+        "minos_engine.callers.gatk.config",
+        "minos_engine.callers.gatk.parameter_registry",
+        "minos_engine.common.errors"
+      ],
+      "test_count": 12
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pydantic",
+        "pytest"
+      ],
+      "line_count": 109,
+      "path": "tests/unit/test_gate_and_manifest.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.gates.contracts",
+        "minos_engine.manifests.release"
+      ],
+      "test_count": 8
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pydantic",
+        "pytest"
+      ],
+      "line_count": 87,
+      "path": "tests/unit/test_gate_required_checks.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.gates.contracts",
+        "minos_engine.gates.required_checks",
+        "minos_engine.gates.verifier"
+      ],
+      "test_count": 7
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pytest"
+      ],
+      "line_count": 50,
+      "path": "tests/unit/test_gatk_command_and_registry_extras.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.callers.gatk.command",
+        "minos_engine.callers.gatk.config",
+        "minos_engine.callers.gatk.parameter_registry",
+        "minos_engine.common.errors",
+        "minos_engine.common.versions",
+        "minos_engine.intake.reference_registry",
+        "minos_engine.protocol.upstream_adapter"
+      ],
+      "test_count": 5
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [],
+      "line_count": 50,
+      "path": "tests/unit/test_gatk_registry.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.callers.contracts",
+        "minos_engine.callers.gatk.parameter_registry"
+      ],
+      "test_count": 6
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pytest"
+      ],
+      "line_count": 119,
+      "path": "tests/unit/test_qualification.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.errors",
+        "minos_engine.qualification.coverage",
+        "minos_engine.qualification.evidence",
+        "minos_engine.qualification.pytest_accounting"
+      ],
+      "test_count": 14
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pydantic",
+        "pytest"
+      ],
+      "line_count": 61,
+      "path": "tests/unit/test_region.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.intake.contracts"
+      ],
+      "test_count": 8
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pytest"
+      ],
+      "line_count": 45,
+      "path": "tests/unit/test_runtime.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.errors",
+        "minos_engine.common.runtime"
+      ],
+      "test_count": 5
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pytest"
+      ],
+      "line_count": 42,
+      "path": "tests/unit/test_settings.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.errors",
+        "minos_engine.settings"
+      ],
+      "test_count": 5
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pydantic",
+        "pytest"
+      ],
+      "line_count": 56,
+      "path": "tests/unit/test_snapshot_contract.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.errors",
+        "minos_engine.protocol.snapshot"
+      ],
+      "test_count": 6
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pytest"
+      ],
+      "line_count": 48,
+      "path": "tests/unit/test_state_sync.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.errors",
+        "minos_engine.protocol.snapshot",
+        "minos_engine.protocol.state_sync"
+      ],
+      "test_count": 4
+    },
+    {
+      "category": "unit",
+      "contract_protected": "DB-V2 design-report integrity",
+      "decision": "keep",
+      "dependencies": [
+        "hashlib",
+        "importlib",
+        "json",
+        "pathlib",
+        "pytest",
+        "typing"
+      ],
+      "line_count": 258,
+      "path": "tests/unit/tools/test_dbv2_audit.py",
+      "reason": "Retained specifically for DB-V2: guards the design-report validator and contract hash.",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [],
+      "test_count": 23
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pytest"
+      ],
+      "line_count": 98,
+      "path": "tests/unit/twin/test_comparison.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.errors",
+        "minos_engine.intake.contracts",
+        "minos_engine.tools.happy",
+        "minos_engine.twin.comparison",
+        "minos_engine.twin.identities"
+      ],
+      "test_count": 9
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pydantic",
+        "pytest"
+      ],
+      "line_count": 138,
+      "path": "tests/unit/twin/test_contracts.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.intake.contracts",
+        "minos_engine.schema_registry",
+        "minos_engine.twin.contracts",
+        "minos_engine.twin.identities",
+        "minos_engine.twin.unavailable"
+      ],
+      "test_count": 11
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pytest",
+        "subprocess"
+      ],
+      "line_count": 87,
+      "path": "tests/unit/twin/test_execution_plan.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.callers.gatk.parameter_registry",
+        "minos_engine.common.errors",
+        "minos_engine.qualification.twin_checks",
+        "minos_engine.twin.execution_plan"
+      ],
+      "test_count": 9
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [],
+      "line_count": 51,
+      "path": "tests/unit/twin/test_identity.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.qualification.twin_checks",
+        "minos_engine.twin.contracts",
+        "minos_engine.twin.execution_plan",
+        "minos_engine.twin.identities",
+        "minos_engine.twin.parity"
+      ],
+      "test_count": 4
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pydantic",
+        "pytest"
+      ],
+      "line_count": 106,
+      "path": "tests/unit/twin/test_parity.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.twin.contracts",
+        "minos_engine.twin.parity"
+      ],
+      "test_count": 8
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "math",
+        "pytest"
+      ],
+      "line_count": 116,
+      "path": "tests/unit/twin/test_parser_hardening.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.errors",
+        "minos_engine.intake.contracts",
+        "minos_engine.tools.happy",
+        "minos_engine.twin.comparison",
+        "minos_engine.twin.identities"
+      ],
+      "test_count": 12
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pytest"
+      ],
+      "line_count": 61,
+      "path": "tests/unit/twin/test_scoring.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.intake.contracts",
+        "minos_engine.tools.happy",
+        "minos_engine.twin.comparison",
+        "minos_engine.twin.identities",
+        "minos_engine.twin.scoring",
+        "minos_engine.twin.unavailable"
+      ],
+      "test_count": 4
+    },
+    {
+      "category": "unit",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "pytest"
+      ],
+      "line_count": 60,
+      "path": "tests/unit/twin/test_tool_ports.py",
+      "reason": "",
+      "recommended_tier": "fast",
+      "replacement": null,
+      "requires_filesystem": false,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": false,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.common.errors",
+        "minos_engine.intake.contracts",
+        "minos_engine.tools.gatk",
+        "minos_engine.tools.happy",
+        "minos_engine.twin.contracts",
+        "minos_engine.twin.identities"
+      ],
+      "test_count": 4
+    }
+  ],
+  "redundancy": {
+    "exact_duplicate_functions": 4,
+    "exact_duplicate_groups": [
+      {
+        "body_digest": "d71dcf18",
+        "distinct_names": [
+          "test_assemble_reject_when_a_tool_fails",
+          "test_reject_when_tool_fails"
+        ],
+        "members": [
+          "tests/component/test_qualification_runner.py::test_assemble_reject_when_a_tool_fails",
+          "tests/component/twin/test_twin_qualification.py::test_reject_when_tool_fails"
+        ],
+        "occurrences": 2
+      },
+      {
+        "body_digest": "f4812d95",
+        "distinct_names": [
+          "test_malformed_e4_report_fails_via_typed_error",
+          "test_noncanonical_or_wrong_schema_key_is_rejected"
+        ],
+        "members": [
+          "tests/unit/experiments/test_accepted_plan.py::test_malformed_e4_report_fails_via_typed_error",
+          "tests/unit/experiments/test_accepted_plan.py::test_noncanonical_or_wrong_schema_key_is_rejected"
+        ],
+        "occurrences": 2
+      }
+    ],
+    "permanently_skipped_modules": [],
+    "unused_fixtures": [],
+    "unused_helper_modules": []
+  },
+  "removals": {
+    "detail": [
+      "6 x byte-identical Layer2Service.select_config blocked assertion (consolidated)",
+      "1 x byte-identical database_url() missing-env assertion (consolidated)",
+      "2 x tests/conftest.py fixtures no test or conftest ever requested"
+    ],
+    "files_removed": 0,
+    "fixtures_removed": 2,
+    "test_functions_removed": 7
+  },
+  "report": "MINOS_TEST_INVENTORY",
+  "schema_version": "minos-test-inventory-v1",
+  "tier_commands": {
+    "fast": "pytest tests/unit tests/leakage tests/determinism tests/protocol_contract",
+    "full": "pytest --junitxml=reports/ci-junit.xml --cov=src/minos_engine --cov-fail-under=90 --cov-report=term-missing --cov-report=xml:reports/ci-coverage.xml",
+    "manual_privileged": "sudo -E pytest -m privileged  # see docs/testing/TEST_STRATEGY.md"
+  },
+  "tier_totals": {
+    "fast": {
+      "files": 78,
+      "tests": 830
+    },
+    "full": {
+      "files": 90,
+      "tests": 785
+    },
+    "manual_privileged": {
+      "files": 3,
+      "tests": 54
+    },
+    "retire_after_dbv2": {
+      "files": 0,
+      "tests": 0
+    }
+  },
+  "totals": {
+    "conftest_files": 6,
+    "fixtures": 25,
+    "test_files": 171,
+    "test_functions": 1669,
+    "test_lines": 33506
+  }
+}

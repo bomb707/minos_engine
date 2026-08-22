@@ -280,11 +280,3 @@ def test_zero_row_matrix_exposed_by_authorized_view_only(
             text("SELECT count(*) FROM profiling.feature_matrices WHERE partition = 'test'")
         ).scalar_one()
     assert n == 0
-
-
-def test_select_config_remains_blocked() -> None:
-    from minos_engine.common.errors import StageNotReadyError
-    from minos_engine.layer2.service import Layer2Service
-
-    with pytest.raises(StageNotReadyError):
-        Layer2Service().select_config(None)  # type: ignore[arg-type]

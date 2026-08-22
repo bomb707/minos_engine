@@ -971,14 +971,6 @@ def test_payload_verifier_detects_byte_divergence(snap_a) -> None:
     assert "feature_values_hashes_recomputed_from_bytes" in result2.failed()
 
 
-def test_select_config_remains_blocked() -> None:
-    from minos_engine.common.errors import StageNotReadyError
-    from minos_engine.layer2.service import Layer2Service
-
-    with pytest.raises(StageNotReadyError):
-        Layer2Service().select_config(None)  # type: ignore[arg-type]
-
-
 # --------------------------------------------------------------------------- #
 # accepted epoch-1 trust anchors (pinned; NO hashes supplied by these tests)
 # --------------------------------------------------------------------------- #

@@ -42,13 +42,3 @@ __all__ = [
 @pytest.fixture
 def valid_round_path() -> Path:
     return API_FIXTURES / "valid_round.json"
-
-
-@pytest.fixture
-def parameter_space_path() -> Path:
-    return API_FIXTURES / "gatk_parameter_space.json"
-
-
-@pytest.fixture
-def default_config_path() -> Path:
-    return GATK_FIXTURES / "default_config.json"
