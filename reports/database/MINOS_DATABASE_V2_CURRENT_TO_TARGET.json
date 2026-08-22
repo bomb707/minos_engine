@@ -1,0 +1,793 @@
+{
+  "action_totals": {
+    "ARCHIVE": 1,
+    "DROP AFTER VERIFICATION": 3,
+    "KEEP": 7,
+    "MERGE": 5,
+    "RENAME": 3,
+    "REPLACE": 15,
+    "SPLIT": 6
+  },
+  "live_alembic_revision": "0005_l2e_feature_view",
+  "mapping_count": 40,
+  "mappings": [
+    {
+      "action": "SPLIT",
+      "application_code_affected": [
+        "storage/repositories/artifacts.py",
+        "storage/l2f_result_publisher.py",
+        "storage/l2f_config_publisher.py",
+        "storage/l2f_harness_verifier.py"
+      ],
+      "column_mapping": {
+        "(new)": "artifact_kind, schema_version, storage_mode='external', lifecycle_state='active', retention_class, verification_state='unverified'",
+        "created_at": "created_at",
+        "id": "id",
+        "media_type": "media_type",
+        "provenance": "provenance (text -> jsonb {'v1_provenance': ...})",
+        "sha256": "content_sha256",
+        "size_bytes": "size_bytes (integer -> bigint)",
+        "uri": "-> catalog.artifact_locations.object_key (root stripped) + storage_backends.logical_root"
+      },
+      "data_loss_risk": "none: every V1 column is carried; the URI is decomposed, not discarded",
+      "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
+      "source": "catalog.artifacts",
+      "target": "catalog.artifacts",
+      "transformation": "One local-fs backend row is created from the common prefix of all 227 URIs; each URI becomes a relative object_key. artifact_kind is derived from media_type and the producing table.",
+      "validation_query": "SELECT count(*) FROM catalog.artifacts;  -- must equal 227, and every location must reconstruct its original URI byte-for-byte"
+    },
+    {
+      "action": "MERGE",
+      "application_code_affected": [
+        "storage/models/catalog.py",
+        "storage/repositories/artifacts.py",
+        "storage/l2f_execution_inputs.py",
+        "storage/dataset_split_v2.py"
+      ],
+      "column_mapping": {
+        "allocation_digest": "-> profiling.profile_snapshots.snapshot_hash",
+        "bai_sha256": "-> bai_artifact_id (FK)",
+        "bam_sha256": "-> bam_artifact_id (FK)",
+        "bam_size_bytes": "-> catalog.artifacts.size_bytes of the BAM",
+        "chromosome": "chromosome",
+        "created_at": "created_at",
+        "dataset_id": "dataset_key",
+        "fai_sha256": "-> fai_artifact_id (FK)",
+        "feature_registry_hash": "DROPPED here; lives on profiling.feature_sets",
+        "id": "id",
+        "identity_tuple_hash": "identity_hash",
+        "manifest_hash": "DROPPED here; the manifest is an artifact",
+        "parameter_space_hash": "DROPPED here; lives on experiments.parameter_spaces",
+        "reference_sha256": "-> reference_artifact_id (FK)",
+        "region_coordinate_system": "region_coordinate_system",
+        "region_end0_exclusive": "region_end0_exclusive",
+        "region_hash": "region_hash",
+        "region_length_bp": "DERIVED (region_end0_exclusive - region_start0); not stored",
+        "region_source": "region_source",
+        "region_start0": "region_start0",
+        "round_id": "round_id",
+        "split_algorithm_version": "-> profiling.profile_snapshots.split_algorithm_version",
+        "split_salt": "-> profiling.profile_snapshots (not a dataset property)"
+      },
+      "data_loss_risk": "medium: four hash columns move tables. Every value is preserved somewhere and the move is verified by the identity query below before the V1 table is retired.",
+      "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
+      "source": "catalog.dataset_registry",
+      "target": "catalog.datasets",
+      "transformation": "24 columns become 15. Four component digests become artifact foreign keys; five hashes move to the entity that actually owns them; one column is derived.",
+      "validation_query": "SELECT count(*) FROM catalog.datasets;  -- 75. Then: every V1 identity_tuple_hash must appear exactly once as catalog.datasets.identity_hash, and each of the four sha256 values must equal the content_sha256 of the artifact its new FK points at."
+    },
+    {
+      "action": "MERGE",
+      "application_code_affected": [
+        "storage/models/catalog.py"
+      ],
+      "column_mapping": {
+        "chromosome": "(unused)",
+        "created_at": "(unused)",
+        "dataset_id": "(unused)",
+        "id": "(unused)"
+      },
+      "data_loss_risk": "none: 0 rows",
+      "note": "Confirms defect D04: two tables modelled the same entity and the 4-column one was never used.",
+      "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
+      "source": "catalog.datasets",
+      "target": "catalog.datasets",
+      "transformation": "No transformation: the V1 table holds 0 rows and is fully subsumed by dataset_registry.",
+      "validation_query": "SELECT count(*) FROM catalog.datasets;  -- V1 count must be 0 before retirement"
+    },
+    {
+      "action": "REPLACE",
+      "application_code_affected": [
+        "storage/models/catalog.py",
+        "storage/l2f_harness_verifier.py (legacy-overlap probe)"
+      ],
+      "column_mapping": {
+        "(new)": "parameter_space_id, payload_artifact_id",
+        "config_hash": "config_hash",
+        "created_at": "created_at",
+        "id": "id",
+        "parameter_space_hash": "parameter_space_hash"
+      },
+      "data_loss_risk": "none: 0 rows",
+      "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
+      "source": "catalog.gatk_configs",
+      "target": "experiments.candidate_configs",
+      "transformation": "0 rows to copy. The target adds the FK to the parameter space and to the canonical payload artifact that V1 never recorded.",
+      "validation_query": "SELECT count(*) FROM catalog.gatk_configs;  -- must be 0 before retirement"
+    },
+    {
+      "action": "MERGE",
+      "application_code_affected": [
+        "storage/dataset_split_v2.py",
+        "storage/models/catalog.py"
+      ],
+      "column_mapping": {
+        "(other)": "epoch, split_algorithm_version, member_count, state",
+        "id": "id",
+        "manifest_hash": "(dropped; artifact)",
+        "registry_snapshot_hash": "snapshot_hash"
+      },
+      "data_loss_risk": "low: 1 row",
+      "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
+      "source": "catalog.split_snapshots",
+      "target": "profiling.profile_snapshots",
+      "transformation": "Split identity and profile snapshot identity are the same concept in V1 and are unified.",
+      "validation_query": "SELECT count(*) FROM profiling.profile_snapshots;  -- 1"
+    },
+    {
+      "action": "MERGE",
+      "application_code_affected": [
+        "storage/dataset_split.py",
+        "storage/dataset_split_v2.py"
+      ],
+      "column_mapping": {
+        "(allocation columns)": "partition, member_index",
+        "id": "id",
+        "manifest_hash": "(dropped)"
+      },
+      "data_loss_risk": "low: 75 rows, 1:1",
+      "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
+      "source": "catalog.split_allocations",
+      "target": "profiling.profile_snapshot_members",
+      "transformation": "Allocation rows become snapshot membership rows with an explicit partition.",
+      "validation_query": "SELECT count(*) FROM profiling.profile_snapshot_members;  -- 75"
+    },
+    {
+      "action": "MERGE",
+      "application_code_affected": [
+        "storage/dataset_split_v2.py"
+      ],
+      "column_mapping": {
+        "(allocation)": "partition, member_index",
+        "epoch": "-> profile_snapshots.epoch",
+        "id": "id"
+      },
+      "data_loss_risk": "low: 75 rows",
+      "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
+      "source": "catalog.split_epoch_allocations",
+      "target": "profiling.profile_snapshot_members",
+      "transformation": "Epoch is a property of the snapshot, not of each allocation row.",
+      "validation_query": "SELECT count(*) FROM profiling.profile_snapshot_members m JOIN profiling.profile_snapshots s ON s.id = m.snapshot_id;  -- 75"
+    },
+    {
+      "action": "SPLIT",
+      "application_code_affected": [
+        "storage/profile_ingest.py",
+        "storage/models/profiling.py",
+        "storage/feature_matrix.py"
+      ],
+      "column_mapping": {
+        "bam_sha256/bai_sha256/reference_sha256/fai_sha256/region_hash": "DROPPED: reachable through catalog.datasets and its artifact FKs",
+        "created_at": "created_at",
+        "dataset_registry_id": "dataset_id",
+        "eligible_value_count": "eligible_value_count",
+        "feature_values_hash": "feature_values_hash",
+        "id": "id",
+        "identity_tuple_hash": "identity_hash",
+        "integrity_degraded": "integrity_degraded",
+        "m5_status/attestation_hash/registry_snapshot_hash/l1_feature_values_hash/ingestion_key/content_hash": "-> profiling.bam_profiles provenance, or dropped where duplicated",
+        "profile_artifact_id": "profile_artifact_id",
+        "profile_document": "-> catalog.artifacts (inline if <= 64 KiB, else external)",
+        "profile_id": "profile_key",
+        "profile_manifest_artifact_id": "manifest_artifact_id",
+        "profile_sha256/profile_manifest_sha256/windows_sha256": "DROPPED: each equals catalog.artifacts.content_sha256 of the artifact already referenced",
+        "profile_status": "profile_status",
+        "profiler_config_hash": "profiler_config_hash",
+        "profiler_version": "profiler_version",
+        "windows_artifact_id": "windows_artifact_id",
+        "windows_row_count": "windows_row_count"
+      },
+      "data_loss_risk": "medium: the jsonb document moves out of the row. It is written as an artifact with the same content_sha256 the V1 row already recorded, so identity is provable both before and after.",
+      "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
+      "source": "profiling.bam_profiles",
+      "target": "profiling.bam_profiles",
+      "transformation": "29 columns become 15. The embedded jsonb profile_document becomes an artifact; nine copied digests are replaced by traversal.",
+      "validation_query": "SELECT count(*) FROM profiling.bam_profiles;  -- 75. Then every V1 profile_sha256 must equal the content_sha256 of the artifact its new profile_artifact_id points at."
+    },
+    {
+      "action": "DROP AFTER VERIFICATION",
+      "application_code_affected": [
+        "storage/models/profiling.py",
+        "storage/l2f_harness_verifier.py (legacy-overlap probe)"
+      ],
+      "column_mapping": {
+        "(all)": "none"
+      },
+      "data_loss_risk": "none: 0 rows",
+      "note": "Confirms defect D05.",
+      "rollback": "the V1 table is retained untouched until the qualification period ends",
+      "source": "profiling.profiles",
+      "target": null,
+      "transformation": "Superseded by profiling.bam_profiles. 0 rows.",
+      "validation_query": "SELECT count(*) FROM profiling.profiles;  -- must be 0 at retirement"
+    },
+    {
+      "action": "KEEP",
+      "application_code_affected": [
+        "storage/models/profiling.py"
+      ],
+      "column_mapping": {
+        "id": "id",
+        "registry_snapshot_hash": "(dropped; equals snapshot_hash)",
+        "snapshot_hash": "snapshot_hash",
+        "split_manifest_hash": "(dropped; artifact)"
+      },
+      "data_loss_risk": "low: 1 row",
+      "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
+      "source": "profiling.profile_snapshots",
+      "target": "profiling.profile_snapshots",
+      "transformation": "Structure retained; two redundant digests removed.",
+      "validation_query": "SELECT count(*) FROM profiling.profile_snapshots;  -- 1"
+    },
+    {
+      "action": "KEEP",
+      "application_code_affected": [
+        "storage/models/profiling.py",
+        "storage/feature_view_access.py"
+      ],
+      "column_mapping": {
+        "(membership)": "snapshot_id, bam_profile_id, dataset_id, partition, member_index",
+        "feature_values_hash": "DROPPED: reachable via bam_profiles",
+        "id": "id"
+      },
+      "data_loss_risk": "low: 75 rows",
+      "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
+      "source": "profiling.profile_snapshot_members",
+      "target": "profiling.profile_snapshot_members",
+      "transformation": "Structure retained; the copied feature_values_hash is replaced by a foreign key traversal.",
+      "validation_query": "SELECT count(*) FROM profiling.profile_snapshot_members;  -- 75"
+    },
+    {
+      "action": "KEEP",
+      "application_code_affected": [
+        "storage/models/profiling.py",
+        "storage/feature_matrix.py"
+      ],
+      "column_mapping": {
+        "feature_set_hash": "feature_set_hash",
+        "id": "id",
+        "registry_hash": "(dropped; duplicate)"
+      },
+      "data_loss_risk": "low: 1 row",
+      "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
+      "source": "profiling.feature_sets",
+      "target": "profiling.feature_sets",
+      "transformation": "Structure retained.",
+      "validation_query": "SELECT count(*) FROM profiling.feature_sets;  -- 1"
+    },
+    {
+      "action": "KEEP",
+      "application_code_affected": [
+        "storage/feature_matrix.py",
+        "storage/matrix_access.py"
+      ],
+      "column_mapping": {
+        "artifact_sha256": "-> matrix_artifact_id (FK)",
+        "id": "id",
+        "matrix_hash": "matrix_hash",
+        "registry_hash": "(dropped; duplicate)"
+      },
+      "data_loss_risk": "low: 2 rows",
+      "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
+      "source": "profiling.feature_matrices",
+      "target": "profiling.feature_matrices",
+      "transformation": "The copied artifact digest becomes a foreign key.",
+      "validation_query": "SELECT count(*) FROM profiling.feature_matrices;  -- 2"
+    },
+    {
+      "action": "KEEP",
+      "application_code_affected": [
+        "storage/feature_matrix.py",
+        "storage/matrix_access.py"
+      ],
+      "column_mapping": {
+        "feature_values_hash": "DROPPED: reachable via bam_profiles",
+        "id": "id",
+        "matrix_id": "matrix_id",
+        "vector_hash": "vector_hash"
+      },
+      "data_loss_risk": "low: 60 rows",
+      "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
+      "source": "profiling.feature_matrix_members",
+      "target": "profiling.feature_matrix_members",
+      "transformation": "Structure retained.",
+      "validation_query": "SELECT count(*) FROM profiling.feature_matrix_members;  -- 60"
+    },
+    {
+      "action": "ARCHIVE",
+      "application_code_affected": [
+        "storage/profile_ingest.py"
+      ],
+      "column_mapping": {
+        "(all)": "retained as-is in an archive schema"
+      },
+      "data_loss_risk": "none: rows are copied, not transformed",
+      "rollback": "the archive copy is dropped; the V1 table is untouched",
+      "source": "profiling.profile_ingest_attempts",
+      "target": null,
+      "transformation": "75 historical ingest attempts. Not part of the operational V2 model, but genuine evidence.",
+      "validation_query": "SELECT count(*) FROM profiling.profile_ingest_attempts;  -- 75 in both V1 and the archive"
+    },
+    {
+      "action": "DROP AFTER VERIFICATION",
+      "application_code_affected": [
+        "storage/models/experiments.py",
+        "storage/l2f_harness_verifier.py (legacy-overlap probe)"
+      ],
+      "column_mapping": {
+        "(all)": "none"
+      },
+      "data_loss_risk": "none: 0 rows",
+      "note": "Confirms defect D06.",
+      "rollback": "the V1 table is retained untouched until the qualification period ends",
+      "source": "experiments.jobs",
+      "target": null,
+      "transformation": "Legacy L2-B job model, superseded by the L2-F design. 0 rows.",
+      "validation_query": "SELECT count(*) FROM experiments.jobs;  -- must be 0 at retirement"
+    },
+    {
+      "action": "DROP AFTER VERIFICATION",
+      "application_code_affected": [
+        "storage/models/experiments.py"
+      ],
+      "column_mapping": {
+        "(all)": "none"
+      },
+      "data_loss_risk": "none: 0 rows",
+      "rollback": "the V1 table is retained untouched until the qualification period ends",
+      "source": "experiments.results",
+      "target": null,
+      "transformation": "Legacy result model. 0 rows.",
+      "validation_query": "SELECT count(*) FROM experiments.results;  -- must be 0 at retirement"
+    },
+    {
+      "action": "REPLACE",
+      "application_code_affected": [
+        "storage/models/evaluation.py"
+      ],
+      "column_mapping": {
+        "created_at": "created_at",
+        "dataset_registry_id": "dataset_id",
+        "id": "id",
+        "mutations_tbi_sha256": "(dropped; index artifact of the mutations VCF)",
+        "mutations_vcf_sha256": "-> mutations_vcf_artifact_id (FK)",
+        "truth_tbi_sha256": "-> truth_index_artifact_id (FK)",
+        "truth_vcf_sha256": "-> truth_vcf_artifact_id (FK)"
+      },
+      "data_loss_risk": "none: 0 rows",
+      "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
+      "source": "evaluation.dataset_evaluation_identity",
+      "target": "evaluation.truth_bindings",
+      "transformation": "Loose digests become artifact foreign keys, so truth payloads acquire the same lifecycle and verification guarantees as every other artifact.",
+      "validation_query": "SELECT count(*) FROM evaluation.truth_bindings;  -- 0 today"
+    },
+    {
+      "action": "REPLACE",
+      "application_code_affected": [
+        "storage/models/evaluation.py"
+      ],
+      "column_mapping": {
+        "(new)": "truth_binding_id, evaluator_version, state, completed_at",
+        "created_at": "created_at",
+        "evaluation_hash": "evaluation_hash",
+        "experiment_result_id": "execution_result_id",
+        "id": "id"
+      },
+      "data_loss_risk": "none: 0 rows",
+      "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
+      "source": "evaluation.evaluations",
+      "target": "evaluation.evaluation_runs",
+      "transformation": "The single V1 row type is split into a run plus its metrics and final score.",
+      "validation_query": "SELECT count(*) FROM evaluation.evaluation_runs;  -- 0 today"
+    },
+    {
+      "action": "SPLIT",
+      "application_code_affected": [
+        "storage/models/models.py"
+      ],
+      "column_mapping": {
+        "artifact_id": "bundle_artifact_id",
+        "bundle_key": "version_key",
+        "created_at": "created_at",
+        "feature_schema_hash": "-> models.model_definitions.feature_set_id (FK)",
+        "id": "id",
+        "registry_hash": "(dropped; duplicate)",
+        "split_manifest_hash": "-> models.training_runs.train_matrix_id (FK)",
+        "training_provenance_hash": "-> models.training_runs.training_identity_hash"
+      },
+      "data_loss_risk": "none: 0 rows",
+      "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
+      "source": "models.model_bundles",
+      "target": "models.model_versions",
+      "transformation": "One flat table becomes model_definitions + training_runs + model_versions, so a retrained model does not overwrite its predecessor's provenance.",
+      "validation_query": "SELECT count(*) FROM models.model_bundles;  -- 0 today"
+    },
+    {
+      "action": "REPLACE",
+      "application_code_affected": [
+        "storage/models/runtime.py",
+        "layer2/service.py"
+      ],
+      "column_mapping": {
+        "config_id": "candidate_config_id",
+        "created_at": "effective_from",
+        "decision_hash": "(dropped)",
+        "decision_manifest_hash": "(dropped)",
+        "id": "id",
+        "model_bundle_id": "model_version_id",
+        "profile_id": "(dropped; not part of a selection)",
+        "round_id": "(dropped; a decision is not per-round in V2)"
+      },
+      "data_loss_risk": "none: 0 rows",
+      "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
+      "source": "runtime.decisions",
+      "target": "runtime.active_selections",
+      "transformation": "A per-round decision log becomes an append-only active-selection history with a single active row enforced by a partial unique index.",
+      "validation_query": "SELECT count(*) FROM runtime.active_selections;  -- 0 today"
+    },
+    {
+      "action": "KEEP",
+      "application_code_affected": [
+        "storage/models/audit.py",
+        "storage/repositories/append_only.py"
+      ],
+      "column_mapping": {
+        "action": "action",
+        "actor_role": "actor_role",
+        "created_at": "occurred_at",
+        "id": "id",
+        "object_id": "object_id",
+        "object_kind": "-> object_schema + object_table",
+        "payload_hash": "payload_hash"
+      },
+      "data_loss_risk": "none: 0 rows",
+      "rollback": "the shadow table is dropped; the V1 object is untouched until the retirement step",
+      "source": "audit.events",
+      "target": "audit.events",
+      "transformation": "The polymorphic object_kind text is split into an explicit schema/table pair.",
+      "validation_query": "SELECT count(*) FROM audit.events;  -- 0 today"
+    },
+    {
+      "action": "KEEP",
+      "application_code_affected": [
+        "migrations/env.py",
+        "storage/database.py"
+      ],
+      "column_mapping": {
+        "version_num": "version_num"
+      },
+      "data_loss_risk": "none",
+      "rollback": "the revision is reset to the pre-cutover value on rollback",
+      "source": "public.alembic_version",
+      "target": "public.alembic_version",
+      "transformation": "Owned by Alembic; carried through the cutover unchanged except for its value.",
+      "validation_query": "SELECT version_num FROM public.alembic_version;  -- exactly one row"
+    },
+    {
+      "action": "REPLACE",
+      "application_code_affected": [
+        "storage/feature_view_access.py",
+        "storage/feature_view_verify.py",
+        "storage/matrix_access.py"
+      ],
+      "column_mapping": {
+        "(view columns)": "resolved by an indexed query over the target table"
+      },
+      "data_loss_risk": "none: views hold no data",
+      "rollback": "read-only view over V1 data; nothing to roll back",
+      "source": "catalog.training_dataset_allocations",
+      "target": "profiling.profile_snapshot_members",
+      "transformation": "The V1 view exists because partition and snapshot identity were spread over several tables and had to be re-joined. In V2 a single indexed predicate on profile_snapshot_members(snapshot_id, partition) answers it, so the view is unnecessary.",
+      "validation_query": "Compare row counts: SELECT count(*) FROM catalog.training_dataset_allocations;  must equal the equivalent V2 predicate"
+    },
+    {
+      "action": "REPLACE",
+      "application_code_affected": [
+        "storage/feature_view_access.py",
+        "storage/feature_view_verify.py",
+        "storage/matrix_access.py"
+      ],
+      "column_mapping": {
+        "(view columns)": "resolved by an indexed query over the target table"
+      },
+      "data_loss_risk": "none: views hold no data",
+      "rollback": "read-only view over V1 data; nothing to roll back",
+      "source": "catalog.training_epoch_allocations",
+      "target": "profiling.profile_snapshot_members",
+      "transformation": "The V1 view exists because partition and snapshot identity were spread over several tables and had to be re-joined. In V2 a single indexed predicate on profile_snapshot_members(snapshot_id, partition) answers it, so the view is unnecessary.",
+      "validation_query": "Compare row counts: SELECT count(*) FROM catalog.training_epoch_allocations;  must equal the equivalent V2 predicate"
+    },
+    {
+      "action": "REPLACE",
+      "application_code_affected": [
+        "storage/feature_view_access.py",
+        "storage/feature_view_verify.py",
+        "storage/matrix_access.py"
+      ],
+      "column_mapping": {
+        "(view columns)": "resolved by an indexed query over the target table"
+      },
+      "data_loss_risk": "none: views hold no data",
+      "rollback": "read-only view over V1 data; nothing to roll back",
+      "source": "evaluation.locked_allocations",
+      "target": "profiling.profile_snapshot_members",
+      "transformation": "The V1 view exists because partition and snapshot identity were spread over several tables and had to be re-joined. In V2 a single indexed predicate on profile_snapshot_members(snapshot_id, partition) answers it, so the view is unnecessary.",
+      "validation_query": "Compare row counts: SELECT count(*) FROM evaluation.locked_allocations;  must equal the equivalent V2 predicate"
+    },
+    {
+      "action": "REPLACE",
+      "application_code_affected": [
+        "storage/feature_view_access.py",
+        "storage/feature_view_verify.py",
+        "storage/matrix_access.py"
+      ],
+      "column_mapping": {
+        "(view columns)": "resolved by an indexed query over the target table"
+      },
+      "data_loss_risk": "none: views hold no data",
+      "rollback": "read-only view over V1 data; nothing to roll back",
+      "source": "evaluation.sealed_test_epoch_allocations",
+      "target": "profiling.profile_snapshot_members",
+      "transformation": "The V1 view exists because partition and snapshot identity were spread over several tables and had to be re-joined. In V2 a single indexed predicate on profile_snapshot_members(snapshot_id, partition) answers it, so the view is unnecessary.",
+      "validation_query": "Compare row counts: SELECT count(*) FROM evaluation.sealed_test_epoch_allocations;  must equal the equivalent V2 predicate"
+    },
+    {
+      "action": "REPLACE",
+      "application_code_affected": [
+        "storage/feature_view_access.py",
+        "storage/feature_view_verify.py",
+        "storage/matrix_access.py"
+      ],
+      "column_mapping": {
+        "(view columns)": "resolved by an indexed query over the target table"
+      },
+      "data_loss_risk": "none: views hold no data",
+      "rollback": "read-only view over V1 data; nothing to roll back",
+      "source": "evaluation.sealed_test_profile_members",
+      "target": "profiling.profile_snapshot_members",
+      "transformation": "The V1 view exists because partition and snapshot identity were spread over several tables and had to be re-joined. In V2 a single indexed predicate on profile_snapshot_members(snapshot_id, partition) answers it, so the view is unnecessary.",
+      "validation_query": "Compare row counts: SELECT count(*) FROM evaluation.sealed_test_profile_members;  must equal the equivalent V2 predicate"
+    },
+    {
+      "action": "REPLACE",
+      "application_code_affected": [
+        "storage/feature_view_access.py",
+        "storage/feature_view_verify.py",
+        "storage/matrix_access.py"
+      ],
+      "column_mapping": {
+        "(view columns)": "resolved by an indexed query over the target table"
+      },
+      "data_loss_risk": "none: views hold no data",
+      "rollback": "read-only view over V1 data; nothing to roll back",
+      "source": "evaluation.validation_epoch_allocations",
+      "target": "profiling.profile_snapshot_members",
+      "transformation": "The V1 view exists because partition and snapshot identity were spread over several tables and had to be re-joined. In V2 a single indexed predicate on profile_snapshot_members(snapshot_id, partition) answers it, so the view is unnecessary.",
+      "validation_query": "Compare row counts: SELECT count(*) FROM evaluation.validation_epoch_allocations;  must equal the equivalent V2 predicate"
+    },
+    {
+      "action": "REPLACE",
+      "application_code_affected": [
+        "storage/feature_view_access.py",
+        "storage/feature_view_verify.py",
+        "storage/matrix_access.py"
+      ],
+      "column_mapping": {
+        "(view columns)": "resolved by an indexed query over the target table"
+      },
+      "data_loss_risk": "none: views hold no data",
+      "rollback": "read-only view over V1 data; nothing to roll back",
+      "source": "evaluation.validation_profile_members",
+      "target": "profiling.profile_snapshot_members",
+      "transformation": "The V1 view exists because partition and snapshot identity were spread over several tables and had to be re-joined. In V2 a single indexed predicate on profile_snapshot_members(snapshot_id, partition) answers it, so the view is unnecessary.",
+      "validation_query": "Compare row counts: SELECT count(*) FROM evaluation.validation_profile_members;  must equal the equivalent V2 predicate"
+    },
+    {
+      "action": "REPLACE",
+      "application_code_affected": [
+        "storage/feature_view_access.py",
+        "storage/feature_view_verify.py",
+        "storage/matrix_access.py"
+      ],
+      "column_mapping": {
+        "(view columns)": "resolved by an indexed query over the target table"
+      },
+      "data_loss_risk": "none: views hold no data",
+      "rollback": "read-only view over V1 data; nothing to roll back",
+      "source": "profiling.training_profile_members",
+      "target": "profiling.profile_snapshot_members",
+      "transformation": "The V1 view exists because partition and snapshot identity were spread over several tables and had to be re-joined. In V2 a single indexed predicate on profile_snapshot_members(snapshot_id, partition) answers it, so the view is unnecessary.",
+      "validation_query": "Compare row counts: SELECT count(*) FROM profiling.training_profile_members;  must equal the equivalent V2 predicate"
+    },
+    {
+      "action": "REPLACE",
+      "application_code_affected": [
+        "storage/feature_view_access.py",
+        "storage/feature_view_verify.py",
+        "storage/matrix_access.py"
+      ],
+      "column_mapping": {
+        "(view columns)": "resolved by an indexed query over the target table"
+      },
+      "data_loss_risk": "none: views hold no data",
+      "rollback": "read-only view over V1 data; nothing to roll back",
+      "source": "evaluation.validation_matrix",
+      "target": "profiling.feature_matrices",
+      "transformation": "The V1 view exists because partition and snapshot identity were spread over several tables and had to be re-joined. In V2 a single indexed predicate on profile_snapshot_members(snapshot_id, partition) answers it, so the view is unnecessary.",
+      "validation_query": "Compare row counts: SELECT count(*) FROM evaluation.validation_matrix;  must equal the equivalent V2 predicate"
+    },
+    {
+      "action": "REPLACE",
+      "application_code_affected": [
+        "storage/feature_view_access.py",
+        "storage/feature_view_verify.py",
+        "storage/matrix_access.py"
+      ],
+      "column_mapping": {
+        "(view columns)": "resolved by an indexed query over the target table"
+      },
+      "data_loss_risk": "none: views hold no data",
+      "rollback": "read-only view over V1 data; nothing to roll back",
+      "source": "profiling.training_matrix",
+      "target": "profiling.feature_matrices",
+      "transformation": "The V1 view exists because partition and snapshot identity were spread over several tables and had to be re-joined. In V2 a single indexed predicate on profile_snapshot_members(snapshot_id, partition) answers it, so the view is unnecessary.",
+      "validation_query": "Compare row counts: SELECT count(*) FROM profiling.training_matrix;  must equal the equivalent V2 predicate"
+    },
+    {
+      "action": "RENAME",
+      "application_code_affected": [
+        "storage/l2f_plan_store.py",
+        "storage/l2f_job_claim.py",
+        "storage/l2f_execution.py",
+        "storage/l2f_harness_verifier.py"
+      ],
+      "column_mapping": {
+        "(source migration)": "defined by 0006-0008; NEVER applied to minos_engine_db"
+      },
+      "data_loss_risk": "none: the source object has never existed operationally",
+      "note": "0006-0008 are accepted, CI-verified source migrations that were deliberately never applied to the operational database, so DB-V2 can supersede them without rewriting their frozen bytes or invalidating their evidence.",
+      "rollback": "migrations 0006-0008 remain byte-identical and simply stay unapplied",
+      "source": "(planned) experiments.l2f_experiment_plans",
+      "target": "experiments.experiment_plans",
+      "transformation": "Renamed without the stage prefix; snapshot/candidate-set/parameter-space FKs replace copied hashes.",
+      "validation_query": "SELECT count(*) FROM information_schema.tables WHERE table_schema='experiments' AND table_name='l2f_experiment_plans';  -- must be 0 in minos_engine_db"
+    },
+    {
+      "action": "RENAME",
+      "application_code_affected": [
+        "storage/l2f_plan_store.py",
+        "storage/l2f_job_claim.py",
+        "storage/l2f_execution.py",
+        "storage/l2f_harness_verifier.py"
+      ],
+      "column_mapping": {
+        "(source migration)": "defined by 0006-0008; NEVER applied to minos_engine_db"
+      },
+      "data_loss_risk": "none: the source object has never existed operationally",
+      "note": "0006-0008 are accepted, CI-verified source migrations that were deliberately never applied to the operational database, so DB-V2 can supersede them without rewriting their frozen bytes or invalidating their evidence.",
+      "rollback": "migrations 0006-0008 remain byte-identical and simply stay unapplied",
+      "source": "(planned) experiments.l2f_experiment_plan_members",
+      "target": "experiments.experiment_plan_members",
+      "transformation": "Renamed; the copied member digests become a composite FK to bam_profiles.",
+      "validation_query": "SELECT count(*) FROM information_schema.tables WHERE table_schema='experiments' AND table_name='l2f_experiment_plan_members';  -- must be 0 in minos_engine_db"
+    },
+    {
+      "action": "RENAME",
+      "application_code_affected": [
+        "storage/l2f_plan_store.py",
+        "storage/l2f_job_claim.py",
+        "storage/l2f_execution.py",
+        "storage/l2f_harness_verifier.py"
+      ],
+      "column_mapping": {
+        "(source migration)": "defined by 0006-0008; NEVER applied to minos_engine_db"
+      },
+      "data_loss_risk": "none: the source object has never existed operationally",
+      "note": "0006-0008 are accepted, CI-verified source migrations that were deliberately never applied to the operational database, so DB-V2 can supersede them without rewriting their frozen bytes or invalidating their evidence.",
+      "rollback": "migrations 0006-0008 remain byte-identical and simply stay unapplied",
+      "source": "(planned) experiments.l2f_experiment_plan_configs",
+      "target": "experiments.experiment_plan_configs",
+      "transformation": "Renamed; config identity moves to the shared candidate_configs table.",
+      "validation_query": "SELECT count(*) FROM information_schema.tables WHERE table_schema='experiments' AND table_name='l2f_experiment_plan_configs';  -- must be 0 in minos_engine_db"
+    },
+    {
+      "action": "REPLACE",
+      "application_code_affected": [
+        "storage/l2f_plan_store.py",
+        "storage/l2f_job_claim.py",
+        "storage/l2f_execution.py",
+        "storage/l2f_harness_verifier.py"
+      ],
+      "column_mapping": {
+        "(source migration)": "defined by 0006-0008; NEVER applied to minos_engine_db"
+      },
+      "data_loss_risk": "none: the source object has never existed operationally",
+      "note": "0006-0008 are accepted, CI-verified source migrations that were deliberately never applied to the operational database, so DB-V2 can supersede them without rewriting their frozen bytes or invalidating their evidence.",
+      "rollback": "migrations 0006-0008 remain byte-identical and simply stay unapplied",
+      "source": "(planned) experiments.l2f_config_payloads",
+      "target": "experiments.candidate_configs",
+      "transformation": "The payload table is subsumed: a config IS its canonical payload artifact.",
+      "validation_query": "SELECT count(*) FROM information_schema.tables WHERE table_schema='experiments' AND table_name='l2f_config_payloads';  -- must be 0 in minos_engine_db"
+    },
+    {
+      "action": "SPLIT",
+      "application_code_affected": [
+        "storage/l2f_plan_store.py",
+        "storage/l2f_job_claim.py",
+        "storage/l2f_execution.py",
+        "storage/l2f_harness_verifier.py"
+      ],
+      "column_mapping": {
+        "(source migration)": "defined by 0006-0008; NEVER applied to minos_engine_db"
+      },
+      "data_loss_risk": "none: the source object has never existed operationally",
+      "note": "0006-0008 are accepted, CI-verified source migrations that were deliberately never applied to the operational database, so DB-V2 can supersede them without rewriting their frozen bytes or invalidating their evidence.",
+      "rollback": "migrations 0006-0008 remain byte-identical and simply stay unapplied",
+      "source": "(planned) experiments.l2f_experiment_jobs",
+      "target": "experiments.experiment_jobs",
+      "transformation": "Split into a narrow current-state row plus execution_attempts and job_events, so a retry never overwrites history.",
+      "validation_query": "SELECT count(*) FROM information_schema.tables WHERE table_schema='experiments' AND table_name='l2f_experiment_jobs';  -- must be 0 in minos_engine_db"
+    },
+    {
+      "action": "SPLIT",
+      "application_code_affected": [
+        "storage/l2f_plan_store.py",
+        "storage/l2f_job_claim.py",
+        "storage/l2f_execution.py",
+        "storage/l2f_harness_verifier.py"
+      ],
+      "column_mapping": {
+        "(source migration)": "defined by 0006-0008; NEVER applied to minos_engine_db"
+      },
+      "data_loss_risk": "none: the source object has never existed operationally",
+      "note": "0006-0008 are accepted, CI-verified source migrations that were deliberately never applied to the operational database, so DB-V2 can supersede them without rewriting their frozen bytes or invalidating their evidence.",
+      "rollback": "migrations 0006-0008 remain byte-identical and simply stay unapplied",
+      "source": "(planned) experiments.l2f_execution_results",
+      "target": "experiments.execution_results",
+      "transformation": "Bound to an attempt rather than directly to the job, and the copied component digests become artifact FKs.",
+      "validation_query": "SELECT count(*) FROM information_schema.tables WHERE table_schema='experiments' AND table_name='l2f_execution_results';  -- must be 0 in minos_engine_db"
+    },
+    {
+      "action": "SPLIT",
+      "application_code_affected": [
+        "storage/l2f_plan_store.py",
+        "storage/l2f_job_claim.py",
+        "storage/l2f_execution.py",
+        "storage/l2f_harness_verifier.py"
+      ],
+      "column_mapping": {
+        "(source migration)": "defined by 0006-0008; NEVER applied to minos_engine_db"
+      },
+      "data_loss_risk": "none: the source object has never existed operationally",
+      "note": "0006-0008 are accepted, CI-verified source migrations that were deliberately never applied to the operational database, so DB-V2 can supersede them without rewriting their frozen bytes or invalidating their evidence.",
+      "rollback": "migrations 0006-0008 remain byte-identical and simply stay unapplied",
+      "source": "(planned) experiments.l2f_execution_failures",
+      "target": "experiments.execution_failures",
+      "transformation": "Bound to an attempt rather than directly to the job.",
+      "validation_query": "SELECT count(*) FROM information_schema.tables WHERE table_schema='experiments' AND table_name='l2f_execution_failures';  -- must be 0 in minos_engine_db"
+    }
+  ],
+  "operational_database": "minos_engine_db",
+  "report": "MINOS_DATABASE_V2_CURRENT_TO_TARGET",
+  "schema_version": "minos-db-v2-mapping-v1"
+}

@@ -1,0 +1,5374 @@
+{
+  "confirmed_v1_defects": [
+    {
+      "defect": "catalog.artifacts.size_bytes is integer, capping any payload at 2 GiB",
+      "evidence": "live schema: catalog.artifacts.size_bytes = integer",
+      "id": "D01",
+      "resolution": "bigint in catalog.artifacts",
+      "severity": "high"
+    },
+    {
+      "defect": "catalog.artifacts stores a raw absolute file:// URI, coupling artifact identity to one host filesystem layout",
+      "evidence": "227 rows, all uri = 'file:///home/hr/bittensor/minos_l2d_corpus/...'",
+      "id": "D02",
+      "resolution": "catalog.storage_backends + catalog.artifact_locations with a relative object_key",
+      "severity": "high"
+    },
+    {
+      "defect": "no artifact lifecycle, retention, verification or provenance state",
+      "evidence": "catalog.artifacts has 7 columns: id, uri, sha256, media_type, size_bytes, provenance, created_at",
+      "id": "D03",
+      "resolution": "lifecycle_state, retention_class, verification_state, first/last verified_at",
+      "severity": "high"
+    },
+    {
+      "defect": "duplicate dataset representation",
+      "evidence": "catalog.datasets (0 rows, 4 columns) and catalog.dataset_registry (75 rows, 24 columns) both model a dataset",
+      "id": "D04",
+      "resolution": "one catalog.datasets table",
+      "severity": "high"
+    },
+    {
+      "defect": "duplicate profile representation",
+      "evidence": "profiling.profiles (0 rows) and profiling.bam_profiles (75 rows)",
+      "id": "D05",
+      "resolution": "one profiling.bam_profiles table",
+      "severity": "high"
+    },
+    {
+      "defect": "duplicate job/result representation",
+      "evidence": "experiments.jobs/results (0 rows, legacy) coexist with the L2-F l2f_experiment_jobs/l2f_execution_results defined by migrations 0006-0008",
+      "id": "D06",
+      "resolution": "one experiments.experiment_jobs + execution_attempts/results/failures",
+      "severity": "high"
+    },
+    {
+      "defect": "superseded configuration table",
+      "evidence": "catalog.gatk_configs (0 rows) duplicates candidate config identity",
+      "id": "D07",
+      "resolution": "experiments.candidate_configs",
+      "severity": "medium"
+    },
+    {
+      "defect": "no execution attempt history; a retry would overwrite the only record",
+      "evidence": "no attempts table exists in 0001-0008",
+      "id": "D08",
+      "resolution": "experiments.execution_attempts, append-only",
+      "severity": "high"
+    },
+    {
+      "defect": "runtime paths elevate to the object owner",
+      "evidence": "4 SET LOCAL ROLE and 1 SET ROLE occurrence in src/",
+      "id": "D09",
+      "resolution": "minos_owner is a NOLOGIN definer principal; runtime roles call narrow SECURITY DEFINER functions and never elevate",
+      "severity": "high"
+    },
+    {
+      "defect": "scientific hashes are copied across many tables",
+      "evidence": "141 char(64) columns over 46 distinct names; 21 names repeat in 2-9 tables (registry_snapshot_hash x9; region_hash, bam_sha256, bai_sha256, reference_sha256, fai_sha256, manifest_hash, feature_values_hash x8)",
+      "id": "D10",
+      "resolution": "one aggregate identity hash per frozen entity; component digests live on the artifact row and are reached by foreign key",
+      "severity": "medium"
+    },
+    {
+      "defect": "no backup/recovery identity binds a database dump to its artifact snapshot",
+      "evidence": "no backup table exists; catalog.artifacts rows reference files outside any recorded snapshot",
+      "id": "D11",
+      "resolution": "catalog.backup_sets with completeness = complete|database_only",
+      "severity": "medium"
+    },
+    {
+      "defect": "unused schemas carry tables that no production path writes",
+      "evidence": "10 tables hold 0 rows: audit.events, catalog.datasets, catalog.gatk_configs, evaluation.dataset_evaluation_identity, evaluation.evaluations, experiments.jobs, experiments.results, models.model_bundles, profiling.profiles, runtime.decisions",
+      "id": "D12",
+      "resolution": "replaced by designed tables or dropped after verification",
+      "severity": "low"
+    }
+  ],
+  "connection_model": {
+    "default_isolation": "READ COMMITTED",
+    "identity_guard": "Every production connection verifies current_database() = 'minos_engine_db' and the exact expected Alembic revision as its FIRST statements, before any other query, file access or mutation.",
+    "idle_in_transaction_session_timeout_ms": 15000,
+    "lock_timeout_ms": 3000,
+    "pool_max_per_process": 8,
+    "role_elevation": "prohibited — no SET ROLE or SET LOCAL ROLE on any runtime path",
+    "serializable_required_for": [],
+    "statement_timeout_ms": 30000,
+    "verification_sessions": "default_transaction_read_only = on"
+  },
+  "contract_sha256": "40910accde3ff3eda77e45b3ed3217c6ace8fce0cde7e70079d2ed413754803c",
+  "critical_queries": [
+    {
+      "async_allowed": false,
+      "cardinality": "1 row from 75",
+      "id": "Q1",
+      "indexes": [
+        "uq_datasets_key"
+      ],
+      "latency_critical": true,
+      "locking": "none (read committed)",
+      "name": "Resolve accepted dataset",
+      "sql": "SELECT ... FROM catalog.datasets WHERE dataset_key = $1"
+    },
+    {
+      "async_allowed": false,
+      "cardinality": "50 rows",
+      "id": "Q2",
+      "indexes": [
+        "ix_snapshot_members_partition"
+      ],
+      "latency_critical": true,
+      "locking": "none",
+      "name": "Load accepted snapshot membership",
+      "sql": "SELECT ... FROM profiling.profile_snapshot_members m JOIN profiling.bam_profiles p ON p.id = m.bam_profile_id WHERE m.snapshot_id = $1 AND m.partition = 'train' ORDER BY m.member_index"
+    },
+    {
+      "async_allowed": true,
+      "cardinality": "row_count rows",
+      "id": "Q3",
+      "indexes": [
+        "ix_matrix_members_matrix"
+      ],
+      "latency_critical": false,
+      "locking": "none",
+      "name": "Load a feature matrix",
+      "sql": "SELECT ... FROM profiling.feature_matrix_members WHERE matrix_id = $1 ORDER BY row_index"
+    },
+    {
+      "async_allowed": false,
+      "cardinality": "1 row from 39",
+      "id": "Q4",
+      "indexes": [
+        "pk_candidate_configs"
+      ],
+      "latency_critical": true,
+      "locking": "none",
+      "name": "Resolve configuration by ID",
+      "sql": "SELECT ... FROM experiments.candidate_configs WHERE id = $1"
+    },
+    {
+      "async_allowed": true,
+      "cardinality": "1 + 50 + 39 rows",
+      "id": "Q5",
+      "indexes": [
+        "uq_plans_hash",
+        "uq_plan_members_index",
+        "uq_plan_configs_index"
+      ],
+      "latency_critical": false,
+      "locking": "pg_advisory_xact_lock(plan_hash) — no table lock",
+      "name": "Persist or replay an experiment plan",
+      "sql": "INSERT ... ON CONFLICT DO NOTHING into plans/members/configs, then re-read by plan_hash under a plan-scoped advisory lock"
+    },
+    {
+      "async_allowed": true,
+      "cardinality": "<= 64 rows per call",
+      "id": "Q6",
+      "indexes": [
+        "uq_jobs_job_key"
+      ],
+      "latency_critical": false,
+      "locking": "row locks on inserted keys only",
+      "name": "Enqueue a bounded job slice",
+      "sql": "INSERT INTO experiments.experiment_jobs ... ON CONFLICT (job_key) DO NOTHING for a bounded slice"
+    },
+    {
+      "async_allowed": false,
+      "cardinality": "1 row from <= 1,950 pending",
+      "id": "Q7",
+      "indexes": [
+        "ix_jobs_claim"
+      ],
+      "latency_critical": true,
+      "locking": "single row, SKIP LOCKED, never a table lock",
+      "name": "Claim next pending job",
+      "sql": "SELECT id FROM experiments.experiment_jobs WHERE plan_id = $1 AND status = 'PENDING' ORDER BY created_at, id FOR UPDATE SKIP LOCKED LIMIT 1"
+    },
+    {
+      "async_allowed": false,
+      "cardinality": "exactly 1 row",
+      "id": "Q8",
+      "indexes": [
+        "pk_experiment_jobs"
+      ],
+      "latency_critical": true,
+      "locking": "one row",
+      "name": "Start or release a claim",
+      "sql": "UPDATE experiments.experiment_jobs SET status = $2 WHERE id = $1 AND claimed_by = $3 AND status = $4"
+    },
+    {
+      "async_allowed": false,
+      "cardinality": "1 job + 1 attempt + 1 outcome",
+      "id": "Q9",
+      "indexes": [
+        "pk_experiment_jobs",
+        "uq_attempts_job_number",
+        "uq_results_attempt"
+      ],
+      "latency_critical": true,
+      "locking": "one job row FOR UPDATE; serializes success vs failure",
+      "name": "Record success or failure",
+      "sql": "Lock the job row FOR UPDATE, insert the attempt outcome row, then UPDATE the job to its terminal status requiring exactly one affected row"
+    },
+    {
+      "async_allowed": true,
+      "cardinality": "1 row",
+      "id": "Q10",
+      "indexes": [
+        "uq_results_job",
+        "ix_artifact_locations_artifact"
+      ],
+      "latency_critical": false,
+      "locking": "none",
+      "name": "Retrieve result and artifacts",
+      "sql": "SELECT ... FROM experiments.execution_results r JOIN catalog.artifacts a ON a.id = r.vcf_artifact_id JOIN catalog.artifact_locations l ON l.artifact_id = a.id AND l.is_primary WHERE r.job_id = $1"
+    },
+    {
+      "async_allowed": true,
+      "cardinality": "1 + 50 + 39 + <= 1,950 rows",
+      "id": "Q11",
+      "indexes": [
+        "ix_plan_members_plan",
+        "ix_plan_configs_plan",
+        "ix_jobs_plan_status"
+      ],
+      "latency_critical": false,
+      "locking": "none; rolled back",
+      "name": "Verify a plan graph",
+      "sql": "Read plan, members, configs and jobs for one plan_id in a single read-only transaction that is rolled back"
+    },
+    {
+      "async_allowed": true,
+      "cardinality": "0 normally",
+      "id": "Q12",
+      "indexes": [
+        "ix_jobs_stale_leases"
+      ],
+      "latency_critical": false,
+      "locking": "none",
+      "name": "List stale claims",
+      "sql": "SELECT id FROM experiments.experiment_jobs WHERE status IN ('CLAIMED','RUNNING') AND lease_expires_at < now()"
+    },
+    {
+      "async_allowed": true,
+      "cardinality": "bounded batch",
+      "id": "Q13",
+      "indexes": [
+        "ix_artifacts_needs_verification",
+        "ix_artifact_locations_artifact"
+      ],
+      "latency_critical": false,
+      "locking": "none",
+      "name": "Reconcile missing or corrupt artifacts",
+      "sql": "SELECT a.id, l.object_key FROM catalog.artifacts a JOIN catalog.artifact_locations l ON l.artifact_id = a.id WHERE a.lifecycle_state = 'active' AND (a.last_verified_at IS NULL OR a.last_verified_at < $1) ORDER BY a.last_verified_at"
+    },
+    {
+      "async_allowed": true,
+      "cardinality": "bounded top-N",
+      "id": "Q14",
+      "indexes": [
+        "ix_evaluation_scores_ranking"
+      ],
+      "latency_critical": false,
+      "locking": "none",
+      "name": "Evaluate scores",
+      "sql": "SELECT s.score FROM evaluation.evaluation_scores s WHERE s.scoring_version = $1 ORDER BY s.score DESC LIMIT $2"
+    },
+    {
+      "async_allowed": false,
+      "cardinality": "2 rows",
+      "id": "Q15",
+      "indexes": [
+        "uq_model_activations_single_active",
+        "uq_active_selections_single"
+      ],
+      "latency_critical": false,
+      "locking": "partial unique index serializes activation",
+      "name": "Activate a model or config",
+      "sql": "UPDATE models.model_activations SET deactivated_at = now() WHERE deactivated_at IS NULL; INSERT the new activation row"
+    },
+    {
+      "async_allowed": true,
+      "cardinality": "aggregate",
+      "id": "Q16",
+      "indexes": [
+        "ix_jobs_plan_status",
+        "ix_attempts_open",
+        "ix_artifacts_needs_verification",
+        "ix_backup_sets_created",
+        "ix_service_instances_heartbeat"
+      ],
+      "latency_critical": false,
+      "locking": "none",
+      "name": "Produce an operational health report",
+      "sql": "Aggregate job status counts, open attempts, unverified artifacts, latest backup set and service heartbeats"
+    }
+  ],
+  "designed_against": {
+    "branch": "feature/L2-F",
+    "commit": "695d9227ed83c595e3ed03375a935fbe801aadbd",
+    "live_alembic_revision": "0005_l2e_feature_view",
+    "source_alembic_head": "0008_l2f_execution_results"
+  },
+  "inline_payload_policy": {
+    "hashing": "content_sha256 is always computed over the exact stored bytes, whether inline or external, so an artifact's identity is independent of storage mode.",
+    "max_inline_bytes": 65536,
+    "rule": "A payload may be stored inline only when it is canonical JSON, <= 65536 bytes, and required on a latency-critical read path. Inline payloads are stored as bytea holding the EXACT canonical bytes, never as JSONB, so the content SHA-256 stays byte-deterministic. JSONB is used only for bounded descriptive documents (provenance, feature definitions) that are never hashed."
+  },
+  "operational_database": "minos_engine_db",
+  "partitioning_policy": {
+    "identifier_strategy": "UUIDv7 for the three append-only high-volume tables above, so index locality follows insertion time without exposing a bigint externally. All other tables use random UUIDv4.",
+    "rule": "No table is partitioned at design time. Partitioning is enabled per table only when a measured threshold is crossed.",
+    "thresholds": [
+      {
+        "enable_when": "row count > 50,000,000 OR table size > 50 GB",
+        "strategy": "RANGE on occurred_at, monthly",
+        "table": "experiments.job_events"
+      },
+      {
+        "enable_when": "row count > 50,000,000",
+        "strategy": "RANGE on created_at, monthly",
+        "table": "experiments.execution_attempts"
+      },
+      {
+        "enable_when": "row count > 50,000,000",
+        "strategy": "RANGE on occurred_at, monthly",
+        "table": "audit.events"
+      }
+    ]
+  },
+  "performance_targets": [
+    {
+      "metric": "Q1 dataset resolution",
+      "scale": "75 datasets",
+      "target_p95_ms": 5
+    },
+    {
+      "metric": "Q2 snapshot membership load",
+      "scale": "50 members",
+      "target_p95_ms": 15
+    },
+    {
+      "metric": "Q5 plan persistence or replay",
+      "scale": "1 plan + 50 members + 39 configs",
+      "target_p95_ms": 750
+    },
+    {
+      "metric": "Q6 bounded enqueue of 64 jobs",
+      "scale": "64 rows",
+      "target_p95_ms": 250
+    },
+    {
+      "metric": "Q7 claim next pending job, 8 concurrent workers",
+      "scale": "1,950 pending",
+      "target_p95_ms": 25
+    },
+    {
+      "metric": "Q8 job transition",
+      "scale": "1 row",
+      "target_p95_ms": 15
+    },
+    {
+      "metric": "Q9 result persistence excluding GATK runtime",
+      "scale": "1 job + 1 attempt + 1 result + 2 artifacts",
+      "target_p95_ms": 120
+    },
+    {
+      "metric": "Q10 artifact metadata lookup",
+      "scale": "227 artifacts",
+      "target_p95_ms": 10
+    },
+    {
+      "metric": "Q11 verifier throughput",
+      "scale": "full 1,950-job plan graph",
+      "target_p95_ms": 5000
+    },
+    {
+      "metric": "database connections at steady state",
+      "scale": "8 workers x 4 pooled",
+      "target_max": 32
+    },
+    {
+      "metric": "lock wait on the claim path",
+      "scale": "SKIP LOCKED never waits",
+      "target_p95_ms": 0
+    },
+    {
+      "metric": "backup duration",
+      "scale": "current corpus",
+      "target_max_minutes": 10
+    },
+    {
+      "metric": "restore duration to a qualification database",
+      "scale": "current corpus",
+      "target_max_minutes": 30
+    },
+    {
+      "metric": "database growth attributable to artifacts",
+      "scale": "all scales",
+      "target": "0 bytes of payload; metadata only, <= 2 KB per artifact row"
+    }
+  ],
+  "principles": [
+    "One authoritative operational database; ephemeral clusters for tests only.",
+    "Large immutable payloads live outside PostgreSQL, fully managed by artifact records.",
+    "UUID primary keys for every externally referenced entity; foreign keys for relationships.",
+    "Exactly one aggregate scientific hash per frozen entity; one content SHA-256 per artifact.",
+    "Current job state is a narrow mutable row; history is append-only and never replayed to derive current state.",
+    "No runtime path issues SET ROLE; the object owner is unreachable by runtime credentials.",
+    "Constraints first, narrow functions second, triggers only where neither can enforce the invariant safely."
+  ],
+  "projected_scale": {
+    "note": "No partitioning is created for the projected scale; the thresholds in partitioning_policy govern when it is enabled.",
+    "one_year": {
+      "artifact_bytes": "10-50 TB external",
+      "artifacts": 900000,
+      "attempts": 500000,
+      "datasets": 5000,
+      "job_events": 2500000,
+      "logical_jobs": 400000,
+      "plans": 200,
+      "profiles": 5000,
+      "snapshots": 50
+    },
+    "today": {
+      "artifact_bytes": 5452595,
+      "artifacts": 227,
+      "candidate_configs": 39,
+      "datasets": 75,
+      "logical_jobs": 1950,
+      "matrices": 2,
+      "plans": 1,
+      "profiles": 75,
+      "snapshots": 1
+    }
+  },
+  "report": "MINOS_DATABASE_V2_CONTRACT",
+  "roles": [
+    {
+      "may_login": true,
+      "notes": "Used exclusively by the migration entry point; never by a service process.",
+      "purpose": "Alembic only. Owns DDL.",
+      "role": "minos_migrate",
+      "schema_privileges": "DDL on all MINOS schemas"
+    },
+    {
+      "may_login": false,
+      "notes": "Replaces V1 minos_admin as the definer principal. No runtime credential can reach it, and no runtime path issues SET ROLE.",
+      "purpose": "Object owner. NOT a login role.",
+      "role": "minos_owner",
+      "schema_privileges": "owns every MINOS object and SECURITY DEFINER function"
+    },
+    {
+      "may_login": true,
+      "notes": "No direct write on experiments.experiment_jobs.",
+      "purpose": "Plan and config persistence.",
+      "role": "minos_planner",
+      "schema_privileges": "SELECT on catalog/profiling/experiments; EXECUTE on plan functions"
+    },
+    {
+      "may_login": true,
+      "notes": "Cannot claim, transition or delete.",
+      "purpose": "Bounded job enqueue.",
+      "role": "minos_enqueue",
+      "schema_privileges": "EXECUTE on the enqueue function only"
+    },
+    {
+      "may_login": true,
+      "notes": "No direct INSERT/UPDATE/DELETE on any experiments table. No access to evaluation.truth_bindings.",
+      "purpose": "Claim, transition and record outcomes.",
+      "role": "minos_runner",
+      "schema_privileges": "SELECT on plan/config/dataset reads; EXECUTE on the execution functions"
+    },
+    {
+      "may_login": true,
+      "notes": "default_transaction_read_only = on; cannot mutate anything.",
+      "purpose": "Read-only verification.",
+      "role": "minos_verifier",
+      "schema_privileges": "SELECT only, on a read-only session"
+    },
+    {
+      "may_login": true,
+      "notes": "No access to experiments job state.",
+      "purpose": "Training.",
+      "role": "minos_trainer",
+      "schema_privileges": "SELECT on profiling/evaluation; INSERT on models"
+    },
+    {
+      "may_login": true,
+      "notes": "The ONLY role permitted to read truth bindings.",
+      "purpose": "Scoring.",
+      "role": "minos_evaluator",
+      "schema_privileges": "SELECT on experiments.execution_results and evaluation.truth_bindings; INSERT on evaluation"
+    },
+    {
+      "may_login": true,
+      "notes": "No experiments or evaluation access.",
+      "purpose": "Live serving.",
+      "role": "minos_live",
+      "schema_privileges": "SELECT on catalog.releases, models.model_versions, runtime.active_selections; INSERT/UPDATE on runtime.service_instances"
+    }
+  ],
+  "schema_version": "minos-db-v2-contract-v1",
+  "schemas": [
+    {
+      "purpose": "Datasets, artifacts, storage backends, releases, backups.",
+      "schema": "catalog",
+      "tables": [
+        {
+          "access_pattern": "read-mostly, cached per process",
+          "archival": "none",
+          "cardinality": "1-5 rows",
+          "check_constraints": [
+            {
+              "expression": "backend_type IN ('local_fs','s3','minio')",
+              "name": "ck_storage_backends_type"
+            },
+            {
+              "expression": "length(backend_key) > 0",
+              "name": "ck_storage_backends_key_nonempty"
+            },
+            {
+              "expression": "length(logical_root) > 0",
+              "name": "ck_storage_backends_root_nonempty"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "backend_key",
+              "note": "stable operator-chosen key, e.g. 'local-corpus'",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "backend_type",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "logical_root",
+              "note": "filesystem path or bucket/prefix; no credentials",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "default": "true",
+              "mutability": "mutable",
+              "name": "is_enabled",
+              "nullable": false,
+              "type": "boolean"
+            },
+            {
+              "default": "false",
+              "mutability": "mutable",
+              "name": "is_read_only",
+              "nullable": false,
+              "type": "boolean"
+            },
+            {
+              "mutability": "mutable",
+              "name": "notes",
+              "nullable": true,
+              "type": "text"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            },
+            {
+              "default": "now()",
+              "mutability": "mutable",
+              "name": "updated_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q13"
+          ],
+          "foreign_keys": [],
+          "indexes": [],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_storage_backends"
+          },
+          "purpose": "Named payload storage backends. Holds the logical root only — never a credential, key or endpoint secret.",
+          "read_responsibility": "artifact resolver",
+          "retention": "permanent",
+          "table": "storage_backends",
+          "unique_constraints": [
+            {
+              "columns": [
+                "backend_key"
+              ],
+              "name": "uq_storage_backends_key"
+            }
+          ],
+          "write_responsibility": "migration / administrative connection"
+        },
+        {
+          "access_pattern": "point lookup by id or content_sha256",
+          "archival": "lifecycle_state transitions; rows are never deleted",
+          "cardinality": "227 today; 10^4-10^5 at full L2-F execution scale",
+          "check_constraints": [
+            {
+              "expression": "content_sha256 ~ '^[0-9a-f]{64}$'",
+              "name": "ck_artifacts_sha_hex"
+            },
+            {
+              "expression": "size_bytes >= 0",
+              "name": "ck_artifacts_size_nonneg"
+            },
+            {
+              "expression": "storage_mode IN ('external','inline')",
+              "name": "ck_artifacts_storage_mode"
+            },
+            {
+              "expression": "lifecycle_state IN ('active','archived','quarantined','deleted')",
+              "name": "ck_artifacts_lifecycle"
+            },
+            {
+              "expression": "verification_state IN ('unverified','verified','missing','corrupt')",
+              "name": "ck_artifacts_verification"
+            },
+            {
+              "expression": "retention_class IN ('permanent','long','standard','ephemeral')",
+              "name": "ck_artifacts_retention"
+            },
+            {
+              "expression": "(storage_mode = 'inline' AND inline_payload IS NOT NULL AND size_bytes <= 65536) OR (storage_mode = 'external' AND inline_payload IS NULL)",
+              "name": "ck_artifacts_inline_bounded"
+            },
+            {
+              "expression": "length(artifact_kind) > 0",
+              "name": "ck_artifacts_kind"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "artifact_kind",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "content_sha256",
+              "nullable": false,
+              "type": "char(64)"
+            },
+            {
+              "mutability": "immutable",
+              "name": "size_bytes",
+              "note": "bigint: the V1 integer column caps payloads at 2 GiB",
+              "nullable": false,
+              "type": "bigint"
+            },
+            {
+              "mutability": "immutable",
+              "name": "media_type",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "schema_version",
+              "nullable": true,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "storage_mode",
+              "note": "'external' or 'inline'",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "inline_payload",
+              "note": "only when storage_mode='inline' and size_bytes <= INLINE_MAX_BYTES",
+              "nullable": true,
+              "type": "bytea"
+            },
+            {
+              "default": "'active'",
+              "mutability": "mutable",
+              "name": "lifecycle_state",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "mutable",
+              "name": "retention_class",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "provenance",
+              "note": "bounded producer description; never free-form logs",
+              "nullable": false,
+              "type": "jsonb"
+            },
+            {
+              "mutability": "mutable",
+              "name": "first_verified_at",
+              "nullable": true,
+              "type": "timestamptz"
+            },
+            {
+              "mutability": "mutable",
+              "name": "last_verified_at",
+              "nullable": true,
+              "type": "timestamptz"
+            },
+            {
+              "default": "'unverified'",
+              "mutability": "mutable",
+              "name": "verification_state",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q10",
+            "Q13"
+          ],
+          "foreign_keys": [],
+          "indexes": [
+            {
+              "columns": [
+                "artifact_kind",
+                "created_at"
+              ],
+              "method": "btree",
+              "name": "ix_artifacts_kind_created"
+            },
+            {
+              "columns": [
+                "last_verified_at"
+              ],
+              "method": "btree",
+              "name": "ix_artifacts_needs_verification",
+              "where": "lifecycle_state = 'active'"
+            }
+          ],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_artifacts"
+          },
+          "purpose": "THE logical artifact record. One row per distinct content SHA-256. Owns lifecycle, retention and verification state. A payload without an active verified row here is unusable.",
+          "read_responsibility": "every resolver",
+          "retention": "governed by retention_class",
+          "table": "artifacts",
+          "unique_constraints": [
+            {
+              "columns": [
+                "content_sha256"
+              ],
+              "name": "uq_artifacts_content_sha256"
+            },
+            {
+              "columns": [
+                "id",
+                "content_sha256",
+                "media_type"
+              ],
+              "name": "uq_artifacts_id_sha_media"
+            }
+          ],
+          "write_responsibility": "publisher connections (INSERT only)"
+        },
+        {
+          "access_pattern": "lookup by artifact_id",
+          "archival": "state transition to 'evacuated'",
+          "cardinality": "1-3 per artifact",
+          "check_constraints": [
+            {
+              "expression": "location_state IN ('present','missing','corrupt','evacuated')",
+              "name": "ck_artifact_locations_state"
+            },
+            {
+              "expression": "object_key !~ '^/' AND object_key !~ '\\.\\.' AND length(object_key) > 0",
+              "name": "ck_artifact_locations_key_relative"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "artifact_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "backend_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "object_key",
+              "note": "relative to the backend root; never absolute",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "default": "'present'",
+              "mutability": "mutable",
+              "name": "location_state",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "default": "true",
+              "mutability": "mutable",
+              "name": "is_primary",
+              "nullable": false,
+              "type": "boolean"
+            },
+            {
+              "mutability": "mutable",
+              "name": "last_verified_at",
+              "nullable": true,
+              "type": "timestamptz"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q10",
+            "Q13"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "artifact_id"
+              ],
+              "name": "fk_artifact_locations_artifact",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "catalog.artifacts"
+            },
+            {
+              "columns": [
+                "backend_id"
+              ],
+              "name": "fk_artifact_locations_backend",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "catalog.storage_backends"
+            }
+          ],
+          "indexes": [
+            {
+              "columns": [
+                "artifact_id"
+              ],
+              "method": "btree",
+              "name": "ix_artifact_locations_artifact"
+            },
+            {
+              "columns": [
+                "location_state"
+              ],
+              "method": "btree",
+              "name": "ix_artifact_locations_unhealthy",
+              "where": "location_state <> 'present'"
+            }
+          ],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_artifact_locations"
+          },
+          "purpose": "Where an artifact's bytes physically are. Many locations per artifact allows replication and a local-to-object-store migration without changing identity.",
+          "read_responsibility": "artifact resolver",
+          "retention": "follows the artifact",
+          "table": "artifact_locations",
+          "unique_constraints": [
+            {
+              "columns": [
+                "backend_id",
+                "object_key"
+              ],
+              "name": "uq_artifact_locations_backend_key"
+            },
+            {
+              "columns": [
+                "artifact_id",
+                "backend_id"
+              ],
+              "name": "uq_artifact_locations_artifact_backend"
+            }
+          ],
+          "write_responsibility": "publisher and reconciliation connections"
+        },
+        {
+          "access_pattern": "point lookup by dataset_key or id",
+          "archival": "none",
+          "cardinality": "75 today",
+          "check_constraints": [
+            {
+              "expression": "region_end0_exclusive > region_start0",
+              "name": "ck_datasets_region"
+            },
+            {
+              "expression": "region_hash ~ '^[0-9a-f]{64}$'",
+              "name": "ck_datasets_region_hash_hex"
+            },
+            {
+              "expression": "identity_hash ~ '^[0-9a-f]{64}$'",
+              "name": "ck_datasets_identity_hex"
+            },
+            {
+              "expression": "region_coordinate_system = 'half_open_0_based'",
+              "name": "ck_datasets_coord"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "dataset_key",
+              "note": "business identifier, formerly dataset_id",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "round_id",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "chromosome",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "region_source",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "region_start0",
+              "nullable": false,
+              "type": "bigint"
+            },
+            {
+              "mutability": "immutable",
+              "name": "region_end0_exclusive",
+              "nullable": false,
+              "type": "bigint"
+            },
+            {
+              "mutability": "immutable",
+              "name": "region_coordinate_system",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "region_hash",
+              "nullable": false,
+              "type": "char(64)"
+            },
+            {
+              "mutability": "immutable",
+              "name": "bam_artifact_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "bai_artifact_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "reference_artifact_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "fai_artifact_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "identity_hash",
+              "note": "the ONE aggregate scientific identity for this dataset",
+              "nullable": false,
+              "type": "char(64)"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q1"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "bam_artifact_id"
+              ],
+              "name": "fk_datasets_bam",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "catalog.artifacts"
+            },
+            {
+              "columns": [
+                "bai_artifact_id"
+              ],
+              "name": "fk_datasets_bai",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "catalog.artifacts"
+            },
+            {
+              "columns": [
+                "reference_artifact_id"
+              ],
+              "name": "fk_datasets_reference",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "catalog.artifacts"
+            },
+            {
+              "columns": [
+                "fai_artifact_id"
+              ],
+              "name": "fk_datasets_fai",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "catalog.artifacts"
+            }
+          ],
+          "indexes": [
+            {
+              "columns": [
+                "round_id",
+                "chromosome"
+              ],
+              "method": "btree",
+              "name": "ix_datasets_round_chrom"
+            }
+          ],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_datasets"
+          },
+          "purpose": "THE single dataset identity. Replaces the V1 pair catalog.datasets (0 rows, 4 columns) and catalog.dataset_registry (75 rows, 24 columns).",
+          "read_responsibility": "planner, executor, verifier",
+          "retention": "permanent",
+          "table": "datasets",
+          "unique_constraints": [
+            {
+              "columns": [
+                "dataset_key"
+              ],
+              "name": "uq_datasets_key"
+            },
+            {
+              "columns": [
+                "identity_hash"
+              ],
+              "name": "uq_datasets_identity_hash"
+            }
+          ],
+          "write_responsibility": "ingestion connection"
+        },
+        {
+          "access_pattern": "lookup active release",
+          "archival": "state transition",
+          "cardinality": "10s",
+          "check_constraints": [
+            {
+              "expression": "release_hash ~ '^[0-9a-f]{64}$'",
+              "name": "ck_releases_hash_hex"
+            },
+            {
+              "expression": "state IN ('draft','qualified','active','superseded')",
+              "name": "ck_releases_state"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "release_key",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "release_hash",
+              "nullable": false,
+              "type": "char(64)"
+            },
+            {
+              "mutability": "immutable",
+              "name": "component_manifest",
+              "note": "bounded map of component -> identity",
+              "nullable": false,
+              "type": "jsonb"
+            },
+            {
+              "default": "'draft'",
+              "mutability": "mutable",
+              "name": "state",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "created_by_role",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q15"
+          ],
+          "foreign_keys": [],
+          "indexes": [
+            {
+              "columns": [
+                "state"
+              ],
+              "method": "btree",
+              "name": "ix_releases_state",
+              "where": "state = 'active'"
+            }
+          ],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_releases"
+          },
+          "purpose": "A named, immutable bundle of accepted identities that runtime may deploy.",
+          "read_responsibility": "runtime",
+          "retention": "permanent",
+          "table": "releases",
+          "unique_constraints": [
+            {
+              "columns": [
+                "release_key"
+              ],
+              "name": "uq_releases_key"
+            },
+            {
+              "columns": [
+                "release_hash"
+              ],
+              "name": "uq_releases_hash"
+            }
+          ],
+          "write_responsibility": "administrative connection"
+        },
+        {
+          "access_pattern": "most recent complete set",
+          "archival": "old rows retained; media expires separately",
+          "cardinality": "100s",
+          "check_constraints": [
+            {
+              "expression": "database_backup_sha256 ~ '^[0-9a-f]{64}$'",
+              "name": "ck_backup_sets_db_hex"
+            },
+            {
+              "expression": "artifact_snapshot_sha256 ~ '^[0-9a-f]{64}$'",
+              "name": "ck_backup_sets_artifact_hex"
+            },
+            {
+              "expression": "completeness IN ('complete','database_only')",
+              "name": "ck_backup_sets_completeness"
+            },
+            {
+              "expression": "database_backup_kind IN ('pg_dump','basebackup')",
+              "name": "ck_backup_sets_kind"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "backup_key",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "database_backup_kind",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "database_backup_sha256",
+              "nullable": false,
+              "type": "char(64)"
+            },
+            {
+              "mutability": "immutable",
+              "name": "database_size_bytes",
+              "nullable": false,
+              "type": "bigint"
+            },
+            {
+              "mutability": "immutable",
+              "name": "wal_start_lsn",
+              "nullable": true,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "wal_end_lsn",
+              "nullable": true,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "artifact_snapshot_sha256",
+              "note": "digest over the sorted (content_sha256,size) manifest of active artifacts",
+              "nullable": false,
+              "type": "char(64)"
+            },
+            {
+              "mutability": "immutable",
+              "name": "artifact_count",
+              "nullable": false,
+              "type": "bigint"
+            },
+            {
+              "mutability": "immutable",
+              "name": "artifact_total_bytes",
+              "nullable": false,
+              "type": "bigint"
+            },
+            {
+              "mutability": "immutable",
+              "name": "alembic_revision",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "mutable",
+              "name": "completeness",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "mutable",
+              "name": "restore_tested_at",
+              "nullable": true,
+              "type": "timestamptz"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q16"
+          ],
+          "foreign_keys": [],
+          "indexes": [
+            {
+              "columns": [
+                "created_at"
+              ],
+              "method": "btree",
+              "name": "ix_backup_sets_created"
+            }
+          ],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_backup_sets"
+          },
+          "purpose": "A recovery set identity: one PostgreSQL backup PLUS the artifact snapshot it must be restored with. A dump without its artifact snapshot is incomplete.",
+          "read_responsibility": "operations",
+          "retention": "per backup policy",
+          "table": "backup_sets",
+          "unique_constraints": [
+            {
+              "columns": [
+                "backup_key"
+              ],
+              "name": "uq_backup_sets_key"
+            }
+          ],
+          "write_responsibility": "backup job (administrative connection)"
+        }
+      ]
+    },
+    {
+      "purpose": "Profiles, snapshots, feature definitions and matrices.",
+      "schema": "profiling",
+      "tables": [
+        {
+          "access_pattern": "join from dataset",
+          "archival": "none",
+          "cardinality": "75 today, 1:1 with datasets",
+          "check_constraints": [
+            {
+              "expression": "identity_hash ~ '^[0-9a-f]{64}$'",
+              "name": "ck_bam_profiles_identity_hex"
+            },
+            {
+              "expression": "feature_values_hash ~ '^[0-9a-f]{64}$'",
+              "name": "ck_bam_profiles_values_hex"
+            },
+            {
+              "expression": "profile_status IN ('accepted','rejected','degraded')",
+              "name": "ck_bam_profiles_status"
+            },
+            {
+              "expression": "windows_row_count >= 0 AND eligible_value_count >= 0",
+              "name": "ck_bam_profiles_counts"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "dataset_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "profile_key",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "profiler_version",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "profiler_config_hash",
+              "nullable": false,
+              "type": "char(64)"
+            },
+            {
+              "mutability": "immutable",
+              "name": "profile_status",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "default": "false",
+              "mutability": "immutable",
+              "name": "integrity_degraded",
+              "nullable": false,
+              "type": "boolean"
+            },
+            {
+              "mutability": "immutable",
+              "name": "windows_row_count",
+              "nullable": false,
+              "type": "bigint"
+            },
+            {
+              "mutability": "immutable",
+              "name": "eligible_value_count",
+              "nullable": false,
+              "type": "bigint"
+            },
+            {
+              "mutability": "immutable",
+              "name": "feature_values_hash",
+              "nullable": false,
+              "type": "char(64)"
+            },
+            {
+              "mutability": "immutable",
+              "name": "identity_hash",
+              "note": "the ONE aggregate identity for this profile",
+              "nullable": false,
+              "type": "char(64)"
+            },
+            {
+              "mutability": "immutable",
+              "name": "profile_artifact_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "manifest_artifact_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "windows_artifact_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q2"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "dataset_id"
+              ],
+              "name": "fk_bam_profiles_dataset",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "catalog.datasets"
+            },
+            {
+              "columns": [
+                "profile_artifact_id"
+              ],
+              "name": "fk_bam_profiles_profile",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "catalog.artifacts"
+            },
+            {
+              "columns": [
+                "manifest_artifact_id"
+              ],
+              "name": "fk_bam_profiles_manifest",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "catalog.artifacts"
+            },
+            {
+              "columns": [
+                "windows_artifact_id"
+              ],
+              "name": "fk_bam_profiles_windows",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "catalog.artifacts"
+            }
+          ],
+          "indexes": [
+            {
+              "columns": [
+                "dataset_id"
+              ],
+              "method": "btree",
+              "name": "ix_bam_profiles_dataset"
+            }
+          ],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_bam_profiles"
+          },
+          "purpose": "THE profile of one dataset. Replaces the V1 pair profiling.profiles (0 rows) and profiling.bam_profiles (75 rows).",
+          "read_responsibility": "planner, executor, verifier",
+          "retention": "permanent",
+          "table": "bam_profiles",
+          "unique_constraints": [
+            {
+              "columns": [
+                "profile_key"
+              ],
+              "name": "uq_bam_profiles_key"
+            },
+            {
+              "columns": [
+                "dataset_id"
+              ],
+              "name": "uq_bam_profiles_dataset"
+            },
+            {
+              "columns": [
+                "identity_hash"
+              ],
+              "name": "uq_bam_profiles_identity"
+            },
+            {
+              "columns": [
+                "id",
+                "dataset_id"
+              ],
+              "name": "uq_bam_profiles_id_dataset"
+            }
+          ],
+          "write_responsibility": "ingestion connection"
+        },
+        {
+          "access_pattern": "point lookup by key",
+          "archival": "state transition",
+          "cardinality": "1 today, 10s over time",
+          "check_constraints": [
+            {
+              "expression": "snapshot_hash ~ '^[0-9a-f]{64}$'",
+              "name": "ck_profile_snapshots_hash_hex"
+            },
+            {
+              "expression": "epoch >= 1",
+              "name": "ck_profile_snapshots_epoch"
+            },
+            {
+              "expression": "state IN ('frozen','superseded')",
+              "name": "ck_profile_snapshots_state"
+            },
+            {
+              "expression": "member_count > 0",
+              "name": "ck_profile_snapshots_members"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "snapshot_key",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "epoch",
+              "nullable": false,
+              "type": "integer"
+            },
+            {
+              "mutability": "immutable",
+              "name": "parent_snapshot_id",
+              "nullable": true,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "split_algorithm_version",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "member_count",
+              "nullable": false,
+              "type": "integer"
+            },
+            {
+              "mutability": "immutable",
+              "name": "snapshot_hash",
+              "note": "the ONE aggregate identity for this snapshot",
+              "nullable": false,
+              "type": "char(64)"
+            },
+            {
+              "default": "'frozen'",
+              "mutability": "mutable",
+              "name": "state",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q2"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "parent_snapshot_id"
+              ],
+              "name": "fk_profile_snapshots_parent",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "profiling.profile_snapshots"
+            }
+          ],
+          "indexes": [],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_profile_snapshots"
+          },
+          "purpose": "A frozen set of profiles with a partition allocation.",
+          "read_responsibility": "planner, evaluator",
+          "retention": "permanent",
+          "table": "profile_snapshots",
+          "unique_constraints": [
+            {
+              "columns": [
+                "snapshot_key"
+              ],
+              "name": "uq_profile_snapshots_key"
+            },
+            {
+              "columns": [
+                "snapshot_hash"
+              ],
+              "name": "uq_profile_snapshots_hash"
+            },
+            {
+              "columns": [
+                "epoch"
+              ],
+              "name": "uq_profile_snapshots_epoch"
+            }
+          ],
+          "write_responsibility": "split connection"
+        },
+        {
+          "access_pattern": "range scan by (snapshot, partition)",
+          "archival": "none",
+          "cardinality": "75 per snapshot",
+          "check_constraints": [
+            {
+              "expression": "partition IN ('train','validation','test')",
+              "name": "ck_snapshot_members_partition"
+            },
+            {
+              "expression": "member_index >= 0",
+              "name": "ck_snapshot_members_index"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "snapshot_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "bam_profile_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "dataset_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "partition",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "member_index",
+              "nullable": false,
+              "type": "integer"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q2"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "snapshot_id"
+              ],
+              "name": "fk_snapshot_members_snapshot",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "profiling.profile_snapshots"
+            },
+            {
+              "columns": [
+                "bam_profile_id",
+                "dataset_id"
+              ],
+              "name": "fk_snapshot_members_profile_dataset",
+              "referenced_columns": [
+                "id",
+                "dataset_id"
+              ],
+              "references": "profiling.bam_profiles"
+            }
+          ],
+          "indexes": [
+            {
+              "columns": [
+                "snapshot_id",
+                "partition",
+                "member_index"
+              ],
+              "method": "btree",
+              "name": "ix_snapshot_members_partition"
+            }
+          ],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_profile_snapshot_members"
+          },
+          "purpose": "Membership and partition allocation of one snapshot.",
+          "read_responsibility": "planner, evaluator",
+          "retention": "permanent",
+          "table": "profile_snapshot_members",
+          "unique_constraints": [
+            {
+              "columns": [
+                "snapshot_id",
+                "bam_profile_id"
+              ],
+              "name": "uq_snapshot_members_profile"
+            },
+            {
+              "columns": [
+                "snapshot_id",
+                "partition",
+                "member_index"
+              ],
+              "name": "uq_snapshot_members_index"
+            }
+          ],
+          "write_responsibility": "split connection"
+        },
+        {
+          "access_pattern": "point lookup",
+          "archival": "none",
+          "cardinality": "1 today",
+          "check_constraints": [
+            {
+              "expression": "feature_set_hash ~ '^[0-9a-f]{64}$'",
+              "name": "ck_feature_sets_hash_hex"
+            },
+            {
+              "expression": "feature_count > 0",
+              "name": "ck_feature_sets_count"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "feature_set_key",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "feature_count",
+              "nullable": false,
+              "type": "integer"
+            },
+            {
+              "mutability": "immutable",
+              "name": "feature_set_hash",
+              "nullable": false,
+              "type": "char(64)"
+            },
+            {
+              "mutability": "immutable",
+              "name": "definition",
+              "note": "bounded ordered feature definition",
+              "nullable": false,
+              "type": "jsonb"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q3"
+          ],
+          "foreign_keys": [],
+          "indexes": [],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_feature_sets"
+          },
+          "purpose": "The frozen feature definition a matrix is computed under.",
+          "read_responsibility": "trainer, planner",
+          "retention": "permanent",
+          "table": "feature_sets",
+          "unique_constraints": [
+            {
+              "columns": [
+                "feature_set_key"
+              ],
+              "name": "uq_feature_sets_key"
+            },
+            {
+              "columns": [
+                "feature_set_hash"
+              ],
+              "name": "uq_feature_sets_hash"
+            }
+          ],
+          "write_responsibility": "matrix builder"
+        },
+        {
+          "access_pattern": "point lookup by scope",
+          "archival": "none",
+          "cardinality": "2 today",
+          "check_constraints": [
+            {
+              "expression": "matrix_hash ~ '^[0-9a-f]{64}$'",
+              "name": "ck_feature_matrices_hash_hex"
+            },
+            {
+              "expression": "partition IN ('train','validation','test')",
+              "name": "ck_feature_matrices_partition"
+            },
+            {
+              "expression": "row_count > 0",
+              "name": "ck_feature_matrices_rows"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "matrix_key",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "snapshot_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "feature_set_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "partition",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "row_count",
+              "nullable": false,
+              "type": "integer"
+            },
+            {
+              "mutability": "immutable",
+              "name": "matrix_hash",
+              "nullable": false,
+              "type": "char(64)"
+            },
+            {
+              "mutability": "immutable",
+              "name": "matrix_artifact_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q3"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "snapshot_id"
+              ],
+              "name": "fk_feature_matrices_snap",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "profiling.profile_snapshots"
+            },
+            {
+              "columns": [
+                "feature_set_id"
+              ],
+              "name": "fk_feature_matrices_set",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "profiling.feature_sets"
+            },
+            {
+              "columns": [
+                "matrix_artifact_id"
+              ],
+              "name": "fk_feature_matrices_artifact",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "catalog.artifacts"
+            }
+          ],
+          "indexes": [],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_feature_matrices"
+          },
+          "purpose": "A materialized feature matrix over one snapshot partition.",
+          "read_responsibility": "trainer, planner, verifier",
+          "retention": "permanent",
+          "table": "feature_matrices",
+          "unique_constraints": [
+            {
+              "columns": [
+                "matrix_key"
+              ],
+              "name": "uq_feature_matrices_key"
+            },
+            {
+              "columns": [
+                "matrix_hash"
+              ],
+              "name": "uq_feature_matrices_hash"
+            },
+            {
+              "columns": [
+                "snapshot_id",
+                "feature_set_id",
+                "partition"
+              ],
+              "name": "uq_feature_matrices_scope"
+            }
+          ],
+          "write_responsibility": "matrix builder"
+        },
+        {
+          "access_pattern": "ordered scan by matrix",
+          "archival": "none",
+          "cardinality": "60 today; row_count per matrix",
+          "check_constraints": [
+            {
+              "expression": "vector_hash ~ '^[0-9a-f]{64}$'",
+              "name": "ck_matrix_members_vector_hex"
+            },
+            {
+              "expression": "row_index >= 0",
+              "name": "ck_matrix_members_index"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "matrix_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "bam_profile_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "row_index",
+              "nullable": false,
+              "type": "integer"
+            },
+            {
+              "mutability": "immutable",
+              "name": "vector_hash",
+              "nullable": false,
+              "type": "char(64)"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q3"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "matrix_id"
+              ],
+              "name": "fk_matrix_members_matrix",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "profiling.feature_matrices"
+            },
+            {
+              "columns": [
+                "bam_profile_id"
+              ],
+              "name": "fk_matrix_members_profile",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "profiling.bam_profiles"
+            }
+          ],
+          "indexes": [
+            {
+              "columns": [
+                "matrix_id",
+                "row_index"
+              ],
+              "method": "btree",
+              "name": "ix_matrix_members_matrix"
+            }
+          ],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_feature_matrix_members"
+          },
+          "purpose": "One row of a matrix, bound to the profile it was computed from.",
+          "read_responsibility": "trainer, verifier",
+          "retention": "permanent",
+          "table": "feature_matrix_members",
+          "unique_constraints": [
+            {
+              "columns": [
+                "matrix_id",
+                "bam_profile_id"
+              ],
+              "name": "uq_matrix_members_profile"
+            },
+            {
+              "columns": [
+                "matrix_id",
+                "row_index"
+              ],
+              "name": "uq_matrix_members_index"
+            }
+          ],
+          "write_responsibility": "matrix builder"
+        }
+      ]
+    },
+    {
+      "purpose": "Parameter spaces, candidates, plans, jobs, attempts, results, failures, events.",
+      "schema": "experiments",
+      "tables": [
+        {
+          "access_pattern": "point lookup",
+          "archival": "none",
+          "cardinality": "1-5",
+          "check_constraints": [
+            {
+              "expression": "parameter_space_hash ~ '^[0-9a-f]{64}$'",
+              "name": "ck_parameter_spaces_hash_hex"
+            },
+            {
+              "expression": "caller = 'gatk'",
+              "name": "ck_parameter_spaces_caller"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "space_key",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "caller",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "parameter_space_hash",
+              "nullable": false,
+              "type": "char(64)"
+            },
+            {
+              "mutability": "immutable",
+              "name": "definition_artifact_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "source_retrieved_at",
+              "nullable": true,
+              "type": "timestamptz"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q4"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "definition_artifact_id"
+              ],
+              "name": "fk_parameter_spaces_art",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "catalog.artifacts"
+            }
+          ],
+          "indexes": [],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_parameter_spaces"
+          },
+          "purpose": "A frozen caller parameter space (currently the committed live GATK domain).",
+          "read_responsibility": "planner, executor, verifier",
+          "retention": "permanent",
+          "table": "parameter_spaces",
+          "unique_constraints": [
+            {
+              "columns": [
+                "space_key"
+              ],
+              "name": "uq_parameter_spaces_key"
+            },
+            {
+              "columns": [
+                "parameter_space_hash"
+              ],
+              "name": "uq_parameter_spaces_hash"
+            },
+            {
+              "columns": [
+                "id",
+                "parameter_space_hash"
+              ],
+              "name": "uq_parameter_spaces_id_hash"
+            }
+          ],
+          "write_responsibility": "administrative connection"
+        },
+        {
+          "access_pattern": "point lookup by id or config_hash",
+          "archival": "none",
+          "cardinality": "39 today",
+          "check_constraints": [
+            {
+              "expression": "config_hash ~ '^[0-9a-f]{64}$'",
+              "name": "ck_candidate_configs_hash_hex"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "parameter_space_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "config_hash",
+              "nullable": false,
+              "type": "char(64)"
+            },
+            {
+              "mutability": "immutable",
+              "name": "parameter_space_hash",
+              "nullable": false,
+              "type": "char(64)"
+            },
+            {
+              "mutability": "immutable",
+              "name": "payload_artifact_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q4"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "parameter_space_id",
+                "parameter_space_hash"
+              ],
+              "name": "fk_candidate_configs_space",
+              "referenced_columns": [
+                "id",
+                "parameter_space_hash"
+              ],
+              "references": "experiments.parameter_spaces"
+            },
+            {
+              "columns": [
+                "payload_artifact_id"
+              ],
+              "name": "fk_candidate_configs_payload",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "catalog.artifacts"
+            }
+          ],
+          "indexes": [
+            {
+              "columns": [
+                "parameter_space_id"
+              ],
+              "method": "btree",
+              "name": "ix_candidate_configs_space"
+            }
+          ],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_candidate_configs"
+          },
+          "purpose": "One canonical caller configuration, deduplicated by config_hash across sets.",
+          "read_responsibility": "executor, verifier",
+          "retention": "permanent",
+          "table": "candidate_configs",
+          "unique_constraints": [
+            {
+              "columns": [
+                "config_hash"
+              ],
+              "name": "uq_candidate_configs_hash"
+            },
+            {
+              "columns": [
+                "id",
+                "config_hash"
+              ],
+              "name": "uq_candidate_configs_id_hash"
+            }
+          ],
+          "write_responsibility": "plan persistence connection"
+        },
+        {
+          "access_pattern": "point lookup",
+          "archival": "none",
+          "cardinality": "1 today",
+          "check_constraints": [
+            {
+              "expression": "candidate_set_hash ~ '^[0-9a-f]{64}$'",
+              "name": "ck_candidate_sets_hash_hex"
+            },
+            {
+              "expression": "candidate_count > 0",
+              "name": "ck_candidate_sets_count"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "candidate_set_hash",
+              "nullable": false,
+              "type": "char(64)"
+            },
+            {
+              "mutability": "immutable",
+              "name": "parameter_space_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "candidate_count",
+              "nullable": false,
+              "type": "integer"
+            },
+            {
+              "mutability": "immutable",
+              "name": "generator_version",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q4"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "parameter_space_id"
+              ],
+              "name": "fk_candidate_sets_space",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "experiments.parameter_spaces"
+            }
+          ],
+          "indexes": [],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_candidate_sets"
+          },
+          "purpose": "A frozen, ordered inventory of candidate configurations.",
+          "read_responsibility": "planner, verifier",
+          "retention": "permanent",
+          "table": "candidate_sets",
+          "unique_constraints": [
+            {
+              "columns": [
+                "candidate_set_hash"
+              ],
+              "name": "uq_candidate_sets_hash"
+            },
+            {
+              "columns": [
+                "id",
+                "candidate_set_hash"
+              ],
+              "name": "uq_candidate_sets_id_hash"
+            }
+          ],
+          "write_responsibility": "plan persistence connection"
+        },
+        {
+          "access_pattern": "ordered scan by set",
+          "archival": "none",
+          "cardinality": "39 today",
+          "check_constraints": [
+            {
+              "expression": "config_index >= 0",
+              "name": "ck_csc_index"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "candidate_set_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "candidate_config_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "config_index",
+              "nullable": false,
+              "type": "integer"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q4",
+            "Q5"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "candidate_set_id"
+              ],
+              "name": "fk_csc_set",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "experiments.candidate_sets"
+            },
+            {
+              "columns": [
+                "candidate_config_id"
+              ],
+              "name": "fk_csc_config",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "experiments.candidate_configs"
+            }
+          ],
+          "indexes": [],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_candidate_set_configs"
+          },
+          "purpose": "The ordered membership of a candidate set. Explicit join table, so one config may belong to several sets without duplicating its payload.",
+          "read_responsibility": "planner, verifier",
+          "retention": "permanent",
+          "table": "candidate_set_configs",
+          "unique_constraints": [
+            {
+              "columns": [
+                "candidate_set_id",
+                "config_index"
+              ],
+              "name": "uq_csc_index"
+            },
+            {
+              "columns": [
+                "candidate_set_id",
+                "candidate_config_id"
+              ],
+              "name": "uq_csc_member"
+            }
+          ],
+          "write_responsibility": "plan persistence connection"
+        },
+        {
+          "access_pattern": "point lookup by plan_hash",
+          "archival": "none",
+          "cardinality": "1 today",
+          "check_constraints": [
+            {
+              "expression": "plan_hash ~ '^[0-9a-f]{64}$'",
+              "name": "ck_plans_hash_hex"
+            },
+            {
+              "expression": "partition = 'train'",
+              "name": "ck_plans_partition"
+            },
+            {
+              "expression": "logical_job_count = member_count::bigint * candidate_count",
+              "name": "ck_plans_job_count"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "plan_hash",
+              "nullable": false,
+              "type": "char(64)"
+            },
+            {
+              "mutability": "immutable",
+              "name": "snapshot_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "candidate_set_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "parameter_space_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "partition",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "member_count",
+              "nullable": false,
+              "type": "integer"
+            },
+            {
+              "mutability": "immutable",
+              "name": "candidate_count",
+              "nullable": false,
+              "type": "integer"
+            },
+            {
+              "mutability": "immutable",
+              "name": "logical_job_count",
+              "nullable": false,
+              "type": "bigint"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q5",
+            "Q11"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "snapshot_id"
+              ],
+              "name": "fk_plans_snapshot",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "profiling.profile_snapshots"
+            },
+            {
+              "columns": [
+                "candidate_set_id"
+              ],
+              "name": "fk_plans_candidate_set",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "experiments.candidate_sets"
+            },
+            {
+              "columns": [
+                "parameter_space_id"
+              ],
+              "name": "fk_plans_space",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "experiments.parameter_spaces"
+            }
+          ],
+          "indexes": [],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_experiment_plans"
+          },
+          "purpose": "One frozen experiment plan over a snapshot partition and a candidate set.",
+          "read_responsibility": "enqueue, executor, verifier",
+          "retention": "permanent",
+          "table": "experiment_plans",
+          "unique_constraints": [
+            {
+              "columns": [
+                "plan_hash"
+              ],
+              "name": "uq_plans_hash"
+            },
+            {
+              "columns": [
+                "id",
+                "plan_hash"
+              ],
+              "name": "uq_plans_id_hash"
+            },
+            {
+              "columns": [
+                "snapshot_id",
+                "candidate_set_id",
+                "partition"
+              ],
+              "name": "uq_plans_scope"
+            }
+          ],
+          "write_responsibility": "plan persistence connection"
+        },
+        {
+          "access_pattern": "ordered scan by plan",
+          "archival": "none",
+          "cardinality": "50 today",
+          "check_constraints": [
+            {
+              "expression": "member_index >= 0",
+              "name": "ck_plan_members_index"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "plan_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "snapshot_member_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "bam_profile_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "dataset_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "member_index",
+              "nullable": false,
+              "type": "integer"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q5",
+            "Q11"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "plan_id"
+              ],
+              "name": "fk_plan_members_plan",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "experiments.experiment_plans"
+            },
+            {
+              "columns": [
+                "snapshot_member_id"
+              ],
+              "name": "fk_plan_members_snapshot_member",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "profiling.profile_snapshot_members"
+            },
+            {
+              "columns": [
+                "bam_profile_id",
+                "dataset_id"
+              ],
+              "name": "fk_plan_members_profile_dataset",
+              "referenced_columns": [
+                "id",
+                "dataset_id"
+              ],
+              "references": "profiling.bam_profiles"
+            }
+          ],
+          "indexes": [
+            {
+              "columns": [
+                "plan_id",
+                "member_index"
+              ],
+              "method": "btree",
+              "name": "ix_plan_members_plan"
+            }
+          ],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_experiment_plan_members"
+          },
+          "purpose": "The plan's ordered member inventory, bound to the snapshot membership row.",
+          "read_responsibility": "enqueue, executor, verifier",
+          "retention": "permanent",
+          "table": "experiment_plan_members",
+          "unique_constraints": [
+            {
+              "columns": [
+                "plan_id",
+                "member_index"
+              ],
+              "name": "uq_plan_members_index"
+            },
+            {
+              "columns": [
+                "plan_id",
+                "snapshot_member_id"
+              ],
+              "name": "uq_plan_members_member"
+            },
+            {
+              "columns": [
+                "id",
+                "plan_id"
+              ],
+              "name": "uq_plan_members_id_plan"
+            }
+          ],
+          "write_responsibility": "plan persistence connection"
+        },
+        {
+          "access_pattern": "ordered scan by plan",
+          "archival": "none",
+          "cardinality": "39 today",
+          "check_constraints": [
+            {
+              "expression": "config_index >= 0",
+              "name": "ck_plan_configs_index"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "plan_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "candidate_config_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "config_hash",
+              "nullable": false,
+              "type": "char(64)"
+            },
+            {
+              "mutability": "immutable",
+              "name": "config_index",
+              "nullable": false,
+              "type": "integer"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q5",
+            "Q11"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "plan_id"
+              ],
+              "name": "fk_plan_configs_plan",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "experiments.experiment_plans"
+            },
+            {
+              "columns": [
+                "candidate_config_id",
+                "config_hash"
+              ],
+              "name": "fk_plan_configs_config_identity",
+              "referenced_columns": [
+                "id",
+                "config_hash"
+              ],
+              "references": "experiments.candidate_configs"
+            }
+          ],
+          "indexes": [
+            {
+              "columns": [
+                "plan_id",
+                "config_index"
+              ],
+              "method": "btree",
+              "name": "ix_plan_configs_plan"
+            }
+          ],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_experiment_plan_configs"
+          },
+          "purpose": "The plan's ordered config inventory.",
+          "read_responsibility": "enqueue, executor, verifier",
+          "retention": "permanent",
+          "table": "experiment_plan_configs",
+          "unique_constraints": [
+            {
+              "columns": [
+                "plan_id",
+                "config_index"
+              ],
+              "name": "uq_plan_configs_index"
+            },
+            {
+              "columns": [
+                "plan_id",
+                "candidate_config_id"
+              ],
+              "name": "uq_plan_configs_config"
+            },
+            {
+              "columns": [
+                "id",
+                "plan_id"
+              ],
+              "name": "uq_plan_configs_id_plan"
+            }
+          ],
+          "write_responsibility": "plan persistence connection"
+        },
+        {
+          "access_pattern": "partial-index claim; point lookup by id",
+          "archival": "none — state only, bounded by plan size",
+          "cardinality": "1,950 per plan today",
+          "check_constraints": [
+            {
+              "expression": "job_key ~ '^[0-9a-f]{64}$'",
+              "name": "ck_jobs_job_key_hex"
+            },
+            {
+              "expression": "status IN ('PENDING','CLAIMED','RUNNING','SUCCEEDED','FAILED')",
+              "name": "ck_jobs_status"
+            },
+            {
+              "expression": "(status = 'PENDING' AND claimed_by IS NULL AND claimed_at IS NULL) OR (status <> 'PENDING' AND claimed_by IS NOT NULL AND claimed_at IS NOT NULL)",
+              "name": "ck_jobs_claim_invariant"
+            },
+            {
+              "expression": "attempt_count >= 0",
+              "name": "ck_jobs_attempt_count"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "plan_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "plan_member_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "plan_config_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "job_key",
+              "nullable": false,
+              "type": "char(64)"
+            },
+            {
+              "default": "'PENDING'",
+              "mutability": "mutable",
+              "name": "status",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "default": "0",
+              "mutability": "mutable",
+              "name": "attempt_count",
+              "nullable": false,
+              "type": "integer"
+            },
+            {
+              "mutability": "mutable",
+              "name": "claimed_by",
+              "nullable": true,
+              "type": "text"
+            },
+            {
+              "mutability": "mutable",
+              "name": "claimed_at",
+              "nullable": true,
+              "type": "timestamptz"
+            },
+            {
+              "mutability": "mutable",
+              "name": "lease_expires_at",
+              "nullable": true,
+              "type": "timestamptz"
+            },
+            {
+              "mutability": "mutable",
+              "name": "terminal_attempt_id",
+              "nullable": true,
+              "type": "uuid"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            },
+            {
+              "default": "now()",
+              "mutability": "mutable",
+              "name": "updated_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q6",
+            "Q7",
+            "Q8",
+            "Q12"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "plan_id"
+              ],
+              "name": "fk_jobs_plan",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "experiments.experiment_plans"
+            },
+            {
+              "columns": [
+                "plan_member_id",
+                "plan_id"
+              ],
+              "name": "fk_jobs_member_plan",
+              "referenced_columns": [
+                "id",
+                "plan_id"
+              ],
+              "references": "experiments.experiment_plan_members"
+            },
+            {
+              "columns": [
+                "plan_config_id",
+                "plan_id"
+              ],
+              "name": "fk_jobs_config_plan",
+              "referenced_columns": [
+                "id",
+                "plan_id"
+              ],
+              "references": "experiments.experiment_plan_configs"
+            }
+          ],
+          "indexes": [
+            {
+              "columns": [
+                "plan_id",
+                "created_at",
+                "id"
+              ],
+              "method": "btree",
+              "name": "ix_jobs_claim",
+              "where": "status = 'PENDING'"
+            },
+            {
+              "columns": [
+                "plan_id",
+                "status"
+              ],
+              "method": "btree",
+              "name": "ix_jobs_plan_status"
+            },
+            {
+              "columns": [
+                "claimed_by",
+                "status"
+              ],
+              "method": "btree",
+              "name": "ix_jobs_worker_status",
+              "where": "claimed_by IS NOT NULL"
+            },
+            {
+              "columns": [
+                "lease_expires_at"
+              ],
+              "method": "btree",
+              "name": "ix_jobs_stale_leases",
+              "where": "status IN ('CLAIMED','RUNNING')"
+            }
+          ],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_experiment_jobs"
+          },
+          "purpose": "CURRENT operational state of one logical job. Narrow and hot: this is the claim table. History lives in job_events and execution_attempts.",
+          "read_responsibility": "runner, verifier, operations",
+          "retention": "permanent",
+          "table": "experiment_jobs",
+          "unique_constraints": [
+            {
+              "columns": [
+                "job_key"
+              ],
+              "name": "uq_jobs_job_key"
+            },
+            {
+              "columns": [
+                "plan_id",
+                "plan_member_id",
+                "plan_config_id"
+              ],
+              "name": "uq_jobs_logical_identity"
+            },
+            {
+              "columns": [
+                "id",
+                "plan_id"
+              ],
+              "name": "uq_jobs_id_plan"
+            },
+            {
+              "columns": [
+                "id",
+                "job_key"
+              ],
+              "name": "uq_jobs_id_job_key"
+            }
+          ],
+          "write_responsibility": "runner connection, via narrow functions only"
+        },
+        {
+          "access_pattern": "append; scan by job",
+          "archival": "time-partition when > 50M rows (see partitioning_policy)",
+          "cardinality": ">= job count; grows with retries",
+          "check_constraints": [
+            {
+              "expression": "attempt_number >= 1",
+              "name": "ck_attempts_number"
+            },
+            {
+              "expression": "outcome IS NULL OR outcome IN ('SUCCEEDED','FAILED','ABANDONED')",
+              "name": "ck_attempts_outcome"
+            },
+            {
+              "expression": "runtime_ms IS NULL OR runtime_ms >= 0",
+              "name": "ck_attempts_runtime"
+            },
+            {
+              "expression": "length(worker_id) > 0",
+              "name": "ck_attempts_worker"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "job_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "plan_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "attempt_number",
+              "nullable": false,
+              "type": "integer"
+            },
+            {
+              "mutability": "immutable",
+              "name": "worker_id",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "started_at",
+              "nullable": false,
+              "type": "timestamptz"
+            },
+            {
+              "mutability": "mutable",
+              "name": "finished_at",
+              "nullable": true,
+              "type": "timestamptz"
+            },
+            {
+              "mutability": "mutable",
+              "name": "outcome",
+              "nullable": true,
+              "type": "text"
+            },
+            {
+              "mutability": "mutable",
+              "name": "runtime_ms",
+              "nullable": true,
+              "type": "bigint"
+            },
+            {
+              "mutability": "mutable",
+              "name": "gatk_executable_sha256",
+              "nullable": true,
+              "type": "char(64)"
+            },
+            {
+              "mutability": "mutable",
+              "name": "gatk_version",
+              "nullable": true,
+              "type": "text"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q9",
+            "Q12"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "job_id",
+                "plan_id"
+              ],
+              "name": "fk_attempts_job_plan",
+              "referenced_columns": [
+                "id",
+                "plan_id"
+              ],
+              "references": "experiments.experiment_jobs"
+            }
+          ],
+          "indexes": [
+            {
+              "columns": [
+                "job_id",
+                "attempt_number"
+              ],
+              "method": "btree",
+              "name": "ix_attempts_job"
+            },
+            {
+              "columns": [
+                "started_at"
+              ],
+              "method": "btree",
+              "name": "ix_attempts_open",
+              "where": "finished_at IS NULL"
+            }
+          ],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_execution_attempts"
+          },
+          "purpose": "One execution attempt of one job. Append-only: a retry NEVER overwrites history. This is what V1 lacks entirely.",
+          "read_responsibility": "operations, verifier",
+          "retention": "long",
+          "table": "execution_attempts",
+          "unique_constraints": [
+            {
+              "columns": [
+                "job_id",
+                "attempt_number"
+              ],
+              "name": "uq_attempts_job_number"
+            },
+            {
+              "columns": [
+                "id",
+                "job_id"
+              ],
+              "name": "uq_attempts_id_job"
+            }
+          ],
+          "write_responsibility": "runner connection, via narrow functions only"
+        },
+        {
+          "access_pattern": "point lookup by job_id",
+          "archival": "none",
+          "cardinality": "<= job count",
+          "check_constraints": [
+            {
+              "expression": "result_hash ~ '^[0-9a-f]{64}$'",
+              "name": "ck_results_result_hex"
+            },
+            {
+              "expression": "input_identity_hash ~ '^[0-9a-f]{64}$'",
+              "name": "ck_results_input_hex"
+            },
+            {
+              "expression": "logical_argv_hash ~ '^[0-9a-f]{64}$'",
+              "name": "ck_results_argv_hex"
+            },
+            {
+              "expression": "vcf_artifact_id <> manifest_artifact_id",
+              "name": "ck_results_distinct_artifacts"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "attempt_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "job_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "plan_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "job_key",
+              "nullable": false,
+              "type": "char(64)"
+            },
+            {
+              "mutability": "immutable",
+              "name": "result_hash",
+              "nullable": false,
+              "type": "char(64)"
+            },
+            {
+              "mutability": "immutable",
+              "name": "input_identity_hash",
+              "nullable": false,
+              "type": "char(64)"
+            },
+            {
+              "mutability": "immutable",
+              "name": "logical_argv_hash",
+              "nullable": false,
+              "type": "char(64)"
+            },
+            {
+              "mutability": "immutable",
+              "name": "vcf_artifact_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "manifest_artifact_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q9",
+            "Q10",
+            "Q14"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "attempt_id",
+                "job_id"
+              ],
+              "name": "fk_results_attempt_job",
+              "referenced_columns": [
+                "id",
+                "job_id"
+              ],
+              "references": "experiments.execution_attempts"
+            },
+            {
+              "columns": [
+                "job_id",
+                "plan_id"
+              ],
+              "name": "fk_results_job_plan",
+              "referenced_columns": [
+                "id",
+                "plan_id"
+              ],
+              "references": "experiments.experiment_jobs"
+            },
+            {
+              "columns": [
+                "job_id",
+                "job_key"
+              ],
+              "name": "fk_results_job_key",
+              "referenced_columns": [
+                "id",
+                "job_key"
+              ],
+              "references": "experiments.experiment_jobs"
+            },
+            {
+              "columns": [
+                "vcf_artifact_id"
+              ],
+              "name": "fk_results_vcf_artifact",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "catalog.artifacts"
+            },
+            {
+              "columns": [
+                "manifest_artifact_id"
+              ],
+              "name": "fk_results_manifest_artifact",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "catalog.artifacts"
+            }
+          ],
+          "indexes": [
+            {
+              "columns": [
+                "plan_id"
+              ],
+              "method": "btree",
+              "name": "ix_results_plan"
+            }
+          ],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_execution_results"
+          },
+          "purpose": "The scientific success record of ONE attempt. Immutable.",
+          "read_responsibility": "evaluator, verifier",
+          "retention": "permanent",
+          "table": "execution_results",
+          "unique_constraints": [
+            {
+              "columns": [
+                "attempt_id"
+              ],
+              "name": "uq_results_attempt"
+            },
+            {
+              "columns": [
+                "job_id"
+              ],
+              "name": "uq_results_job"
+            },
+            {
+              "columns": [
+                "result_hash"
+              ],
+              "name": "uq_results_result_hash"
+            }
+          ],
+          "write_responsibility": "runner connection, via narrow functions only"
+        },
+        {
+          "access_pattern": "scan by job or code",
+          "archival": "with attempts",
+          "cardinality": "one per failed attempt",
+          "check_constraints": [
+            {
+              "expression": "failure_code IN ('PREPARATION_FAILED','GATK_NONZERO_EXIT','GATK_TIMEOUT','GATK_OUTPUT_INVALID','GATK_OUTPUT_MISSING','EXECUTION_ERROR')",
+              "name": "ck_failures_code_bounded"
+            },
+            {
+              "expression": "stderr_sha256 IS NULL OR stderr_sha256 ~ '^[0-9a-f]{64}$'",
+              "name": "ck_failures_stderr_hex"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "attempt_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "job_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "plan_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "failure_code",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "exit_code",
+              "nullable": true,
+              "type": "integer"
+            },
+            {
+              "mutability": "immutable",
+              "name": "stderr_sha256",
+              "nullable": true,
+              "type": "char(64)"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q9",
+            "Q16"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "attempt_id",
+                "job_id"
+              ],
+              "name": "fk_failures_attempt_job",
+              "referenced_columns": [
+                "id",
+                "job_id"
+              ],
+              "references": "experiments.execution_attempts"
+            },
+            {
+              "columns": [
+                "job_id",
+                "plan_id"
+              ],
+              "name": "fk_failures_job_plan",
+              "referenced_columns": [
+                "id",
+                "plan_id"
+              ],
+              "references": "experiments.experiment_jobs"
+            }
+          ],
+          "indexes": [
+            {
+              "columns": [
+                "job_id"
+              ],
+              "method": "btree",
+              "name": "ix_failures_job"
+            },
+            {
+              "columns": [
+                "failure_code"
+              ],
+              "method": "btree",
+              "name": "ix_failures_code"
+            }
+          ],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_execution_failures"
+          },
+          "purpose": "The bounded failure record of ONE attempt. Never free text, never raw stderr.",
+          "read_responsibility": "operations, verifier",
+          "retention": "long",
+          "table": "execution_failures",
+          "unique_constraints": [
+            {
+              "columns": [
+                "attempt_id"
+              ],
+              "name": "uq_failures_attempt"
+            }
+          ],
+          "write_responsibility": "runner connection, via narrow functions only"
+        },
+        {
+          "access_pattern": "append; scan by job",
+          "archival": "time-partition when > 50M rows (see partitioning_policy)",
+          "cardinality": "3-6 per attempt; the highest-volume table",
+          "check_constraints": [
+            {
+              "expression": "to_status IN ('PENDING','CLAIMED','RUNNING','SUCCEEDED','FAILED')",
+              "name": "ck_job_events_to_status"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "job_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "attempt_id",
+              "nullable": true,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "from_status",
+              "nullable": true,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "to_status",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "actor_role",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "worker_id",
+              "nullable": true,
+              "type": "text"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "occurred_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q16"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "job_id"
+              ],
+              "name": "fk_job_events_job",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "experiments.experiment_jobs"
+            },
+            {
+              "columns": [
+                "attempt_id"
+              ],
+              "name": "fk_job_events_attempt",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "experiments.execution_attempts"
+            }
+          ],
+          "indexes": [
+            {
+              "columns": [
+                "job_id",
+                "occurred_at"
+              ],
+              "method": "btree",
+              "name": "ix_job_events_job_time"
+            }
+          ],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_job_events"
+          },
+          "purpose": "Append-only transition log. NOT the source of current state — jobs.status is. This exists for audit and diagnosis, never for state reconstruction.",
+          "read_responsibility": "operations, audit",
+          "retention": "standard",
+          "table": "job_events",
+          "unique_constraints": [],
+          "write_responsibility": "runner connection, via narrow functions only"
+        }
+      ]
+    },
+    {
+      "purpose": "Truth bindings, scoring runs, metrics and final scores.",
+      "schema": "evaluation",
+      "tables": [
+        {
+          "access_pattern": "point lookup",
+          "archival": "none",
+          "cardinality": "<= dataset count",
+          "check_constraints": [
+            {
+              "expression": "binding_hash ~ '^[0-9a-f]{64}$'",
+              "name": "ck_truth_bindings_hash_hex"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "dataset_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "truth_vcf_artifact_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "truth_index_artifact_id",
+              "nullable": true,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "mutations_vcf_artifact_id",
+              "nullable": true,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "binding_hash",
+              "nullable": false,
+              "type": "char(64)"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q14"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "dataset_id"
+              ],
+              "name": "fk_truth_bindings_dataset",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "catalog.datasets"
+            },
+            {
+              "columns": [
+                "truth_vcf_artifact_id"
+              ],
+              "name": "fk_truth_bindings_vcf",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "catalog.artifacts"
+            },
+            {
+              "columns": [
+                "truth_index_artifact_id"
+              ],
+              "name": "fk_truth_bindings_index",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "catalog.artifacts"
+            },
+            {
+              "columns": [
+                "mutations_vcf_artifact_id"
+              ],
+              "name": "fk_truth_bindings_mut",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "catalog.artifacts"
+            }
+          ],
+          "indexes": [],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_truth_bindings"
+          },
+          "purpose": "Binds a dataset to its truth artifacts. STRICTLY off the execution path: no L2-F execution role may read this table.",
+          "read_responsibility": "evaluator ONLY",
+          "retention": "permanent",
+          "table": "truth_bindings",
+          "unique_constraints": [
+            {
+              "columns": [
+                "dataset_id"
+              ],
+              "name": "uq_truth_bindings_dataset"
+            }
+          ],
+          "write_responsibility": "evaluator connection"
+        },
+        {
+          "access_pattern": "point lookup by result",
+          "archival": "none",
+          "cardinality": "<= result count",
+          "check_constraints": [
+            {
+              "expression": "evaluation_hash ~ '^[0-9a-f]{64}$'",
+              "name": "ck_evaluation_runs_hash_hex"
+            },
+            {
+              "expression": "state IN ('pending','running','complete','failed')",
+              "name": "ck_evaluation_runs_state"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "execution_result_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "truth_binding_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "evaluator_version",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "evaluation_hash",
+              "nullable": false,
+              "type": "char(64)"
+            },
+            {
+              "default": "'pending'",
+              "mutability": "mutable",
+              "name": "state",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            },
+            {
+              "mutability": "mutable",
+              "name": "completed_at",
+              "nullable": true,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q14"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "execution_result_id"
+              ],
+              "name": "fk_evaluation_runs_result",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "experiments.execution_results"
+            },
+            {
+              "columns": [
+                "truth_binding_id"
+              ],
+              "name": "fk_evaluation_runs_truth",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "evaluation.truth_bindings"
+            }
+          ],
+          "indexes": [
+            {
+              "columns": [
+                "state"
+              ],
+              "method": "btree",
+              "name": "ix_evaluation_runs_state",
+              "where": "state <> 'complete'"
+            }
+          ],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_evaluation_runs"
+          },
+          "purpose": "One scoring run over one execution result.",
+          "read_responsibility": "trainer, operations",
+          "retention": "permanent",
+          "table": "evaluation_runs",
+          "unique_constraints": [
+            {
+              "columns": [
+                "execution_result_id",
+                "evaluator_version"
+              ],
+              "name": "uq_evaluation_runs_result_version"
+            },
+            {
+              "columns": [
+                "evaluation_hash"
+              ],
+              "name": "uq_evaluation_runs_hash"
+            }
+          ],
+          "write_responsibility": "evaluator connection"
+        },
+        {
+          "access_pattern": "scan by run",
+          "archival": "none",
+          "cardinality": "10-30 per run",
+          "check_constraints": [
+            {
+              "expression": "metric_value = metric_value AND metric_value <> 'Infinity'::double precision AND metric_value <> '-Infinity'::double precision",
+              "name": "ck_evaluation_metrics_finite"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "evaluation_run_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "metric_name",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "metric_value",
+              "nullable": false,
+              "type": "double precision"
+            },
+            {
+              "mutability": "immutable",
+              "name": "variant_class",
+              "nullable": true,
+              "type": "text"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q14"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "evaluation_run_id"
+              ],
+              "name": "fk_evaluation_metrics_run",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "evaluation.evaluation_runs"
+            }
+          ],
+          "indexes": [
+            {
+              "columns": [
+                "evaluation_run_id"
+              ],
+              "method": "btree",
+              "name": "ix_evaluation_metrics_run"
+            }
+          ],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_evaluation_metrics"
+          },
+          "purpose": "Individual metric components of a run, one row per named metric.",
+          "read_responsibility": "trainer",
+          "retention": "permanent",
+          "table": "evaluation_metrics",
+          "unique_constraints": [
+            {
+              "columns": [
+                "evaluation_run_id",
+                "metric_name",
+                "variant_class"
+              ],
+              "name": "uq_evaluation_metrics_named"
+            }
+          ],
+          "write_responsibility": "evaluator connection"
+        },
+        {
+          "access_pattern": "ordered scan for ranking",
+          "archival": "none",
+          "cardinality": "<= run count",
+          "check_constraints": [
+            {
+              "expression": "score = score",
+              "name": "ck_evaluation_scores_finite"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "evaluation_run_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "execution_result_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "score",
+              "nullable": false,
+              "type": "double precision"
+            },
+            {
+              "mutability": "immutable",
+              "name": "scoring_version",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q14",
+            "Q15"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "evaluation_run_id"
+              ],
+              "name": "fk_evaluation_scores_run",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "evaluation.evaluation_runs"
+            },
+            {
+              "columns": [
+                "execution_result_id"
+              ],
+              "name": "fk_evaluation_scores_result",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "experiments.execution_results"
+            }
+          ],
+          "indexes": [
+            {
+              "columns": [
+                "scoring_version",
+                "score"
+              ],
+              "method": "btree",
+              "name": "ix_evaluation_scores_ranking"
+            }
+          ],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_evaluation_scores"
+          },
+          "purpose": "The single final score of a run, separated so ranking never scans metrics.",
+          "read_responsibility": "trainer",
+          "retention": "permanent",
+          "table": "evaluation_scores",
+          "unique_constraints": [
+            {
+              "columns": [
+                "evaluation_run_id"
+              ],
+              "name": "uq_evaluation_scores_run"
+            }
+          ],
+          "write_responsibility": "evaluator connection"
+        }
+      ]
+    },
+    {
+      "purpose": "Model definitions, training runs, versions and activation.",
+      "schema": "models",
+      "tables": [
+        {
+          "access_pattern": "point lookup",
+          "archival": "none",
+          "cardinality": "single digits",
+          "check_constraints": [
+            {
+              "expression": "length(model_key) > 0",
+              "name": "ck_model_definitions_key"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "model_key",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "feature_set_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "model_kind",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q15"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "feature_set_id"
+              ],
+              "name": "fk_model_definitions_fs",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "profiling.feature_sets"
+            }
+          ],
+          "indexes": [],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_model_definitions"
+          },
+          "purpose": "A model family and its input feature-set contract.",
+          "read_responsibility": "runtime",
+          "retention": "permanent",
+          "table": "model_definitions",
+          "unique_constraints": [
+            {
+              "columns": [
+                "model_key"
+              ],
+              "name": "uq_model_definitions_key"
+            }
+          ],
+          "write_responsibility": "trainer connection"
+        },
+        {
+          "access_pattern": "scan by definition",
+          "archival": "none",
+          "cardinality": "10s-100s",
+          "check_constraints": [
+            {
+              "expression": "training_identity_hash ~ '^[0-9a-f]{64}$'",
+              "name": "ck_training_runs_hash_hex"
+            },
+            {
+              "expression": "state IN ('running','complete','failed')",
+              "name": "ck_training_runs_state"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "model_definition_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "train_matrix_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "validation_matrix_id",
+              "nullable": true,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "trainer_version",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "training_identity_hash",
+              "nullable": false,
+              "type": "char(64)"
+            },
+            {
+              "default": "'running'",
+              "mutability": "mutable",
+              "name": "state",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            },
+            {
+              "mutability": "mutable",
+              "name": "completed_at",
+              "nullable": true,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q15"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "model_definition_id"
+              ],
+              "name": "fk_training_runs_def",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "models.model_definitions"
+            },
+            {
+              "columns": [
+                "train_matrix_id"
+              ],
+              "name": "fk_training_runs_train",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "profiling.feature_matrices"
+            },
+            {
+              "columns": [
+                "validation_matrix_id"
+              ],
+              "name": "fk_training_runs_validation",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "profiling.feature_matrices"
+            }
+          ],
+          "indexes": [
+            {
+              "columns": [
+                "model_definition_id",
+                "created_at"
+              ],
+              "method": "btree",
+              "name": "ix_training_runs_def"
+            }
+          ],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_training_runs"
+          },
+          "purpose": "One training execution and the exact inputs it consumed.",
+          "read_responsibility": "operations",
+          "retention": "permanent",
+          "table": "training_runs",
+          "unique_constraints": [
+            {
+              "columns": [
+                "training_identity_hash"
+              ],
+              "name": "uq_training_runs_identity"
+            }
+          ],
+          "write_responsibility": "trainer connection"
+        },
+        {
+          "access_pattern": "point lookup",
+          "archival": "none",
+          "cardinality": "10s-100s",
+          "check_constraints": [
+            {
+              "expression": "model_hash ~ '^[0-9a-f]{64}$'",
+              "name": "ck_model_versions_hash_hex"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "model_definition_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "training_run_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "version_key",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "bundle_artifact_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "model_hash",
+              "nullable": false,
+              "type": "char(64)"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q15"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "model_definition_id"
+              ],
+              "name": "fk_model_versions_def",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "models.model_definitions"
+            },
+            {
+              "columns": [
+                "training_run_id"
+              ],
+              "name": "fk_model_versions_run",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "models.training_runs"
+            },
+            {
+              "columns": [
+                "bundle_artifact_id"
+              ],
+              "name": "fk_model_versions_bundle",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "catalog.artifacts"
+            }
+          ],
+          "indexes": [],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_model_versions"
+          },
+          "purpose": "One immutable trained model version and its bundle artifact.",
+          "read_responsibility": "runtime",
+          "retention": "permanent",
+          "table": "model_versions",
+          "unique_constraints": [
+            {
+              "columns": [
+                "model_definition_id",
+                "version_key"
+              ],
+              "name": "uq_model_versions_key"
+            },
+            {
+              "columns": [
+                "model_hash"
+              ],
+              "name": "uq_model_versions_hash"
+            }
+          ],
+          "write_responsibility": "trainer connection"
+        },
+        {
+          "access_pattern": "partial-index lookup of the active row",
+          "archival": "none",
+          "cardinality": "100s",
+          "check_constraints": [
+            {
+              "expression": "deactivated_at IS NULL OR deactivated_at >= activated_at",
+              "name": "ck_model_activations_window"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "model_version_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "release_id",
+              "nullable": true,
+              "type": "uuid"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "activated_at",
+              "nullable": false,
+              "type": "timestamptz"
+            },
+            {
+              "mutability": "mutable",
+              "name": "deactivated_at",
+              "nullable": true,
+              "type": "timestamptz"
+            },
+            {
+              "mutability": "immutable",
+              "name": "activated_by_role",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "reason",
+              "nullable": true,
+              "type": "text"
+            }
+          ],
+          "critical_queries": [
+            "Q15"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "model_version_id"
+              ],
+              "name": "fk_model_activations_ver",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "models.model_versions"
+            },
+            {
+              "columns": [
+                "release_id"
+              ],
+              "name": "fk_model_activations_release",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "catalog.releases"
+            }
+          ],
+          "indexes": [
+            {
+              "columns": [
+                "model_version_id"
+              ],
+              "method": "btree",
+              "name": "ix_model_activations_current",
+              "where": "deactivated_at IS NULL"
+            },
+            {
+              "columns": [
+                "deactivated_at"
+              ],
+              "method": "btree",
+              "name": "uq_model_activations_single_active",
+              "where": "deactivated_at IS NULL"
+            }
+          ],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_model_activations"
+          },
+          "purpose": "Append-only activation history. The CURRENT active model is the row with deactivated_at IS NULL, enforced by a partial unique index.",
+          "read_responsibility": "runtime",
+          "retention": "permanent",
+          "table": "model_activations",
+          "unique_constraints": [],
+          "write_responsibility": "administrative connection"
+        }
+      ]
+    },
+    {
+      "purpose": "Service instances, leases and active selection.",
+      "schema": "runtime",
+      "tables": [
+        {
+          "access_pattern": "heartbeat update; health scan",
+          "archival": "stopped rows pruned after retention",
+          "cardinality": "single digits",
+          "check_constraints": [
+            {
+              "expression": "state IN ('starting','healthy','degraded','stopped')",
+              "name": "ck_service_instances_state"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "instance_key",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "service_name",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "mutable",
+              "name": "release_id",
+              "nullable": true,
+              "type": "uuid"
+            },
+            {
+              "default": "'starting'",
+              "mutability": "mutable",
+              "name": "state",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "mutable",
+              "name": "last_heartbeat_at",
+              "nullable": true,
+              "type": "timestamptz"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "created_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q16"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "release_id"
+              ],
+              "name": "fk_service_instances_release",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "catalog.releases"
+            }
+          ],
+          "indexes": [
+            {
+              "columns": [
+                "last_heartbeat_at"
+              ],
+              "method": "btree",
+              "name": "ix_service_instances_heartbeat",
+              "where": "state <> 'stopped'"
+            }
+          ],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_service_instances"
+          },
+          "purpose": "A registered live service process.",
+          "read_responsibility": "operations",
+          "retention": "standard",
+          "table": "service_instances",
+          "unique_constraints": [
+            {
+              "columns": [
+                "instance_key"
+              ],
+              "name": "uq_service_instances_key"
+            }
+          ],
+          "write_responsibility": "live connection"
+        },
+        {
+          "access_pattern": "point upsert by lease_key",
+          "archival": "expired rows reclaimed",
+          "cardinality": "10s",
+          "check_constraints": [
+            {
+              "expression": "expires_at > acquired_at",
+              "name": "ck_leases_window"
+            },
+            {
+              "expression": "fence_token >= 0",
+              "name": "ck_leases_fence"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "lease_key",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "mutable",
+              "name": "holder",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "default": "now()",
+              "mutability": "mutable",
+              "name": "acquired_at",
+              "nullable": false,
+              "type": "timestamptz"
+            },
+            {
+              "mutability": "mutable",
+              "name": "expires_at",
+              "nullable": false,
+              "type": "timestamptz"
+            },
+            {
+              "mutability": "mutable",
+              "name": "fence_token",
+              "nullable": false,
+              "type": "bigint"
+            }
+          ],
+          "critical_queries": [
+            "Q12"
+          ],
+          "foreign_keys": [],
+          "indexes": [
+            {
+              "columns": [
+                "expires_at"
+              ],
+              "method": "btree",
+              "name": "ix_leases_expiry"
+            }
+          ],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_leases"
+          },
+          "purpose": "Generic bounded leases (singleton jobs, reconciliation, cron guards). Jobs carry their own lease column; this covers everything else.",
+          "read_responsibility": "operations",
+          "retention": "ephemeral",
+          "table": "leases",
+          "unique_constraints": [
+            {
+              "columns": [
+                "lease_key"
+              ],
+              "name": "uq_leases_key"
+            }
+          ],
+          "write_responsibility": "live and runner connections"
+        },
+        {
+          "access_pattern": "partial-index lookup of the active row",
+          "archival": "none",
+          "cardinality": "100s over time",
+          "check_constraints": [
+            {
+              "expression": "effective_to IS NULL OR effective_to >= effective_from",
+              "name": "ck_active_selections_window"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "release_id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "model_version_id",
+              "nullable": true,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "candidate_config_id",
+              "nullable": true,
+              "type": "uuid"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "effective_from",
+              "nullable": false,
+              "type": "timestamptz"
+            },
+            {
+              "mutability": "mutable",
+              "name": "effective_to",
+              "nullable": true,
+              "type": "timestamptz"
+            },
+            {
+              "mutability": "immutable",
+              "name": "selected_by_role",
+              "nullable": false,
+              "type": "text"
+            }
+          ],
+          "critical_queries": [
+            "Q15"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "release_id"
+              ],
+              "name": "fk_active_selections_release",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "catalog.releases"
+            },
+            {
+              "columns": [
+                "model_version_id"
+              ],
+              "name": "fk_active_selections_model",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "models.model_versions"
+            },
+            {
+              "columns": [
+                "candidate_config_id"
+              ],
+              "name": "fk_active_selections_config",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "experiments.candidate_configs"
+            }
+          ],
+          "indexes": [
+            {
+              "columns": [
+                "effective_to"
+              ],
+              "method": "btree",
+              "name": "uq_active_selections_single",
+              "where": "effective_to IS NULL"
+            }
+          ],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_active_selections"
+          },
+          "purpose": "What the live service is currently serving. Append-only with a single active row enforced by a partial unique index.",
+          "read_responsibility": "live",
+          "retention": "permanent",
+          "table": "active_selections",
+          "unique_constraints": [],
+          "write_responsibility": "administrative connection"
+        }
+      ]
+    },
+    {
+      "purpose": "Immutable audit and administrative evidence.",
+      "schema": "audit",
+      "tables": [
+        {
+          "access_pattern": "append; time-range scan",
+          "archival": "time-partition when > 50M rows",
+          "cardinality": "grows with operations",
+          "check_constraints": [
+            {
+              "expression": "payload_hash IS NULL OR payload_hash ~ '^[0-9a-f]{64}$'",
+              "name": "ck_audit_events_payload_hex"
+            },
+            {
+              "expression": "length(action) > 0",
+              "name": "ck_audit_events_action"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "actor_role",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "action",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "object_schema",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "object_table",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "object_id",
+              "nullable": true,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "payload_hash",
+              "nullable": true,
+              "type": "char(64)"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "occurred_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q16"
+          ],
+          "foreign_keys": [],
+          "indexes": [
+            {
+              "columns": [
+                "occurred_at"
+              ],
+              "method": "btree",
+              "name": "ix_audit_events_time"
+            },
+            {
+              "columns": [
+                "object_schema",
+                "object_table",
+                "object_id"
+              ],
+              "method": "btree",
+              "name": "ix_audit_events_object"
+            }
+          ],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_audit_events"
+          },
+          "purpose": "Immutable audit events for security-relevant transitions.",
+          "read_responsibility": "operations",
+          "retention": "long",
+          "table": "events",
+          "unique_constraints": [],
+          "write_responsibility": "all connections (INSERT only)"
+        },
+        {
+          "access_pattern": "time-range scan",
+          "archival": "none",
+          "cardinality": "100s",
+          "check_constraints": [
+            {
+              "expression": "operation_kind IN ('migration','restore','restore_drill','cutover','rollback')",
+              "name": "ck_admin_operations_kind"
+            },
+            {
+              "expression": "outcome IN ('succeeded','failed','aborted')",
+              "name": "ck_admin_operations_outcome"
+            }
+          ],
+          "columns": [
+            {
+              "default": "gen_random_uuid()",
+              "mutability": "immutable",
+              "name": "id",
+              "nullable": false,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "operation_kind",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "alembic_revision_from",
+              "nullable": true,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "alembic_revision_to",
+              "nullable": true,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "backup_set_id",
+              "nullable": true,
+              "type": "uuid"
+            },
+            {
+              "mutability": "immutable",
+              "name": "outcome",
+              "nullable": false,
+              "type": "text"
+            },
+            {
+              "mutability": "immutable",
+              "name": "evidence_hash",
+              "nullable": true,
+              "type": "char(64)"
+            },
+            {
+              "default": "now()",
+              "mutability": "immutable",
+              "name": "occurred_at",
+              "nullable": false,
+              "type": "timestamptz"
+            }
+          ],
+          "critical_queries": [
+            "Q16"
+          ],
+          "foreign_keys": [
+            {
+              "columns": [
+                "backup_set_id"
+              ],
+              "name": "fk_admin_operations_backup",
+              "referenced_columns": [
+                "id"
+              ],
+              "references": "catalog.backup_sets"
+            }
+          ],
+          "indexes": [
+            {
+              "columns": [
+                "occurred_at"
+              ],
+              "method": "btree",
+              "name": "ix_admin_operations_time"
+            }
+          ],
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "pk_admin_operations"
+          },
+          "purpose": "Administrative and migration evidence, including restore drills.",
+          "read_responsibility": "operations",
+          "retention": "permanent",
+          "table": "admin_operations",
+          "unique_constraints": [],
+          "write_responsibility": "administrative connection"
+        }
+      ]
+    },
+    {
+      "purpose": "PostgreSQL/Alembic necessities only.",
+      "schema": "public",
+      "tables": [
+        {
+          "access_pattern": "single-row read",
+          "archival": "none",
+          "cardinality": "1 row",
+          "check_constraints": [],
+          "columns": [
+            {
+              "mutability": "immutable",
+              "name": "version_num",
+              "nullable": false,
+              "type": "varchar(32)"
+            }
+          ],
+          "critical_queries": [
+            "Q16"
+          ],
+          "foreign_keys": [],
+          "indexes": [],
+          "primary_key": {
+            "columns": [
+              "version_num"
+            ],
+            "name": "alembic_version_pkc"
+          },
+          "purpose": "Alembic's own revision marker. Owned by Alembic; never read by application code except the revision guard.",
+          "read_responsibility": "every production connection (revision guard)",
+          "retention": "permanent",
+          "table": "alembic_version",
+          "unique_constraints": [],
+          "write_responsibility": "migration connection only"
+        }
+      ]
+    }
+  ],
+  "stage": "DB-V2 D1 (design only; no migration exists yet)",
+  "table_counts": {
+    "audit": 2,
+    "catalog": 6,
+    "evaluation": 4,
+    "experiments": 12,
+    "models": 4,
+    "profiling": 6,
+    "public": 1,
+    "runtime": 3
+  }
+}
