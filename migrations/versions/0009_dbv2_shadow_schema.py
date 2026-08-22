@@ -9,9 +9,9 @@ The migration is self-contained. It reads no report, calls no generator and touc
 or network; the SQL below is the complete executable result of
 ``scripts/gen_dbv2_migration.py``, which is a pure function of the three committed contracts:
 
-    logical  8975aa19d6f48ac4b6e6ea083b3970de0aa25162ce5ace3fbb6e57b37ca804d0
-    physical b612845b5807991d6ccc75923e6baf63007e321b83633a3d8649f9282ed34b7e
-    api      7ee16f2dd94791f7143e8b81dfbc80a6fa6d9167d78b253913f0a3bef2ab1d5c
+    logical  68be636de5b9f85bc6bf051bf42a78f8cc6a72b774c17f36aacd696ac628ae2d
+    physical 4b8e0525f0f688d5bdc01f85664c54183c2a8b4685b34abf153aff819a927b1e
+    api      03aa18cef09b4ab7f9fb58313bada7e2212fd2ba00a06ae43ad47f9548a84e91
 
 Role handling. PostgreSQL roles are CLUSTER objects, so this migration creates, alters and drops
 none of them. It preflights: it records the original migration identity, requires all nine roles
@@ -1032,13 +1032,15 @@ BEGIN
     FOR binding IN
         SELECT * FROM (VALUES
             ('recovery manifest', NEW.recovery_manifest_artifact_id,
-             NEW.recovery_manifest_sha256, NEW.recovery_manifest_media_type, 'inline'),
+             NEW.recovery_manifest_sha256, NEW.recovery_manifest_media_type, 'inline',
+             'minos-db-recovery-manifest-v1'),
             ('database backup', NEW.database_backup_artifact_id,
-             NEW.database_backup_sha256, NEW.database_backup_media_type, 'external'),
+             NEW.database_backup_sha256, NEW.database_backup_media_type, 'external',
+             NULL),
             ('artifact snapshot manifest', NEW.artifact_snapshot_manifest_artifact_id,
              NEW.artifact_snapshot_manifest_sha256,
-             NEW.artifact_snapshot_manifest_media_type, 'inline')
-        ) AS v(label, artifact_id, digest, media_type, storage)
+             NEW.artifact_snapshot_manifest_media_type, 'inline', 'minos-artifact-snapshot-v1')
+        ) AS v(label, artifact_id, digest, media_type, storage, schema_version)
         WHERE v.artifact_id IS NOT NULL
     LOOP
         SELECT * INTO art FROM dbv2_catalog.artifacts
@@ -1069,6 +1071,12 @@ BEGIN
         END IF;
         IF art.storage_mode <> binding.storage THEN
             RAISE EXCEPTION '% is not stored in its declared storage mode: % (expected %)', binding.label, art.storage_mode, binding.storage
+                USING ERRCODE = 'check_violation';
+        END IF;
+        IF binding.schema_version IS NOT NULL
+           AND art.schema_version IS DISTINCT FROM binding.schema_version THEN
+            RAISE EXCEPTION '% declares schema_version %, not %',
+                binding.label, art.schema_version, binding.schema_version
                 USING ERRCODE = 'check_violation';
         END IF;
         IF binding.storage = 'inline' THEN

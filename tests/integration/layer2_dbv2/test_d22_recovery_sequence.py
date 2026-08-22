@@ -26,6 +26,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.postgres, pytest.mark.migrati
 SNAPSHOT_DOMAIN = b"minos:db-v2-artifact-snapshot:v1\n"
 SNAPSHOT_MEDIA = "application/vnd.minos.artifact-snapshot+json"
 RECOVERY_MEDIA = "application/vnd.minos.db-recovery-manifest+json"
+RECOVERY_SCHEMA_VERSION = "minos-db-recovery-manifest-v1"
 BACKUP_MEDIA = "application/vnd.postgresql.dump"
 PREDICATE = "lifecycle_state = 'active' AND backup_scope = 'operational'"
 SNAPSHOT_SCHEMA_VERSION = "minos-artifact-snapshot-v1"
@@ -153,7 +154,12 @@ def r2_manifest(
     recovery_set_id = recovery_set_id or str(uuid.uuid4())
     payload, snapshot_raw, snapshot_scientific = snapshot_bytes(entries, recovery_set_id)
     snapshot_id = publish_inline(
-        connection, payload, "artifact_snapshot", SNAPSHOT_MEDIA, "recovery"
+        connection,
+        payload,
+        "artifact_snapshot",
+        SNAPSHOT_MEDIA,
+        "recovery",
+        schema_version=SNAPSHOT_SCHEMA_VERSION,
     )
     dump_digest = hashlib.sha256(f"dump-{recovery_set_id}".encode()).hexdigest()
     dump_id = register_external(
@@ -196,7 +202,12 @@ def r2_manifest(
     }
     manifest_payload = _canonical(manifest)
     manifest_id = publish_inline(
-        connection, manifest_payload, "recovery_manifest", RECOVERY_MEDIA, "recovery"
+        connection,
+        manifest_payload,
+        "recovery_manifest",
+        RECOVERY_MEDIA,
+        "recovery",
+        schema_version=RECOVERY_SCHEMA_VERSION,
     )
     call = dict(manifest)
     call.update(
@@ -353,7 +364,14 @@ def test_a_snapshot_count_that_disagrees_with_the_database_fails(conn: Connectio
     payload = _canonical(manifest)
     snapshot_raw = hashlib.sha256(payload).hexdigest()
     snapshot_scientific = hashlib.sha256(SNAPSHOT_DOMAIN + payload).hexdigest()
-    snapshot_id = publish_inline(conn, payload, "artifact_snapshot", SNAPSHOT_MEDIA, "recovery")
+    snapshot_id = publish_inline(
+        conn,
+        payload,
+        "artifact_snapshot",
+        SNAPSHOT_MEDIA,
+        "recovery",
+        schema_version=SNAPSHOT_SCHEMA_VERSION,
+    )
     call = r2_manifest(conn, entries, recovery_set_id=recovery_set_id)
     call["artifact_snapshot_manifest_artifact_id"] = str(snapshot_id)
     call["artifact_snapshot_manifest_sha256"] = snapshot_raw
@@ -373,7 +391,14 @@ def test_a_snapshot_count_that_disagrees_with_the_database_fails(conn: Connectio
     }
     r1_payload = _canonical(r1)
     call["recovery_manifest_artifact_id"] = str(
-        publish_inline(conn, r1_payload, "recovery_manifest", RECOVERY_MEDIA, "recovery")
+        publish_inline(
+            conn,
+            r1_payload,
+            "recovery_manifest",
+            RECOVERY_MEDIA,
+            "recovery",
+            schema_version=RECOVERY_SCHEMA_VERSION,
+        )
     )
     call["recovery_manifest_sha256"] = hashlib.sha256(r1_payload).hexdigest()
     with pytest.raises(Exception, match="snapshot entry count <> artifact_count"):

@@ -513,6 +513,8 @@ def _backup_set_gate_body(contracts: Contracts) -> tuple[str, str]:
     digest_contract = contracts.logical["artifact_snapshot_digest"]
     domain_literal = "E" + _lit(digest_contract["domain"].replace("\n", "\\n"))
     schema_version = _lit(digest_contract["snapshot_schema_version"])
+    snapshot_version = schema_version
+    recovery_schema_version = _lit(contracts.physical["recovery_manifest_schema_version"])
     sort_sql = "e ->> 'content_sha256', (e ->> 'size_bytes')::bigint, e ->> 'artifact_kind'"
     normalized = (
         "SELECT e ->> 'content_sha256' AS content_sha256,\n"
@@ -555,13 +557,15 @@ def _backup_set_gate_body(contracts: Contracts) -> tuple[str, str]:
         "    FOR binding IN\n"
         "        SELECT * FROM (VALUES\n"
         "            ('recovery manifest', NEW.recovery_manifest_artifact_id,\n"
-        "             NEW.recovery_manifest_sha256, NEW.recovery_manifest_media_type, 'inline'),\n"
+        "             NEW.recovery_manifest_sha256, NEW.recovery_manifest_media_type, 'inline',\n"
+        f"             {recovery_schema_version}),\n"
         "            ('database backup', NEW.database_backup_artifact_id,\n"
-        "             NEW.database_backup_sha256, NEW.database_backup_media_type, 'external'),\n"
+        "             NEW.database_backup_sha256, NEW.database_backup_media_type, 'external',\n"
+        "             NULL),\n"
         "            ('artifact snapshot manifest', NEW.artifact_snapshot_manifest_artifact_id,\n"
         "             NEW.artifact_snapshot_manifest_sha256,\n"
-        "             NEW.artifact_snapshot_manifest_media_type, 'inline')\n"
-        "        ) AS v(label, artifact_id, digest, media_type, storage)\n"
+        f"             NEW.artifact_snapshot_manifest_media_type, 'inline', {snapshot_version})\n"
+        "        ) AS v(label, artifact_id, digest, media_type, storage, schema_version)\n"
         "        WHERE v.artifact_id IS NOT NULL\n"
         "    LOOP\n"
         f"        SELECT * INTO art FROM {shadow['catalog']}.artifacts\n"
@@ -593,6 +597,12 @@ def _backup_set_gate_body(contracts: Contracts) -> tuple[str, str]:
         "        IF art.storage_mode <> binding.storage THEN\n"
         "            RAISE EXCEPTION '% is not stored in its declared storage mode: % (expected "
         "%)', binding.label, art.storage_mode, binding.storage\n"
+        "                USING ERRCODE = 'check_violation';\n"
+        "        END IF;\n"
+        "        IF binding.schema_version IS NOT NULL\n"
+        "           AND art.schema_version IS DISTINCT FROM binding.schema_version THEN\n"
+        "            RAISE EXCEPTION '% declares schema_version %, not %',\n"
+        "                binding.label, art.schema_version, binding.schema_version\n"
         "                USING ERRCODE = 'check_violation';\n"
         "        END IF;\n"
         "        IF binding.storage = 'inline' THEN\n"

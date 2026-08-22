@@ -56,7 +56,7 @@
       "verification": "created 'verified', because PostgreSQL possesses the authoritative bytes and derives the digest itself"
     }
   },
-  "contract_sha256": "b612845b5807991d6ccc75923e6baf63007e321b83633a3d8649f9282ed34b7e",
+  "contract_sha256": "4b8e0525f0f688d5bdc01f85664c54183c2a8b4685b34abf153aff819a927b1e",
   "counts": {
     "d2_tables_created": 37,
     "logical_tables": 38,
@@ -176,7 +176,7 @@
     }
   },
   "database_api": {
-    "contract_sha256": "7ee16f2dd94791f7143e8b81dfbc80a6fa6d9167d78b253913f0a3bef2ab1d5c",
+    "contract_sha256": "03aa18cef09b4ab7f9fb58313bada7e2212fd2ba00a06ae43ad47f9548a84e91",
     "d2_physical_acl_records": 810,
     "functions": 37,
     "note": "The executable half of the contract: every function, trigger, state transition and grant migration 0009 must create. Frozen in DB-V2 D1.4.",
@@ -869,6 +869,7 @@
     "backup_tool_version",
     "artifact_verification_tool_version"
   ],
+  "recovery_manifest_schema_version": "minos-db-recovery-manifest-v1",
   "recovery_media_types": {
     "artifact_snapshot_manifest": "application/vnd.minos.artifact-snapshot+json",
     "database_backup": "application/vnd.postgresql.dump",

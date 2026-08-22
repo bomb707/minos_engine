@@ -1087,6 +1087,72 @@
     },
     {
       "category": "integration",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "conftest",
+        "hashlib",
+        "importlib",
+        "os",
+        "pathlib",
+        "pytest",
+        "sqlalchemy",
+        "threading",
+        "typing",
+        "uuid"
+      ],
+      "line_count": 642,
+      "path": "tests/integration/layer2_d3a/test_d3a_bootstrap.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": false,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage.dbv2_artifact_bootstrap",
+        "minos_engine.storage.dbv2_d3a_verifier",
+        "minos_engine.storage.dbv2_recovery",
+        "minos_engine.storage.dbv2_recovery_store"
+      ],
+      "test_count": 25
+    },
+    {
+      "category": "integration",
+      "contract_protected": "module behaviour",
+      "decision": "keep",
+      "dependencies": [
+        "conftest",
+        "hashlib",
+        "os",
+        "pathlib",
+        "pytest",
+        "sqlalchemy",
+        "stat",
+        "typing",
+        "uuid"
+      ],
+      "line_count": 390,
+      "path": "tests/integration/layer2_d3a/test_d3a_r1.py",
+      "reason": "",
+      "recommended_tier": "full",
+      "replacement": null,
+      "requires_filesystem": true,
+      "requires_gate_evidence": false,
+      "requires_posix": true,
+      "requires_postgres": true,
+      "requires_privileged": false,
+      "source_modules_covered": [
+        "minos_engine.storage",
+        "minos_engine.storage.dbv2_recovery",
+        "minos_engine.storage.dbv2_recovery_store"
+      ],
+      "test_count": 15
+    },
+    {
+      "category": "integration",
       "contract_protected": "PostgreSQL role separation, migration lifecycle, concurrency, commit ambiguity and descriptor-bound filesystem safety",
       "decision": "keep",
       "dependencies": [
@@ -1963,7 +2029,7 @@
         "typing",
         "uuid"
       ],
-      "line_count": 770,
+      "line_count": 772,
       "path": "tests/integration/layer2_dbv2/test_d21_artifact_identity.py",
       "reason": "",
       "recommended_tier": "full",
@@ -1995,7 +2061,7 @@
         "typing",
         "uuid"
       ],
-      "line_count": 867,
+      "line_count": 892,
       "path": "tests/integration/layer2_dbv2/test_d22_recovery_sequence.py",
       "reason": "",
       "recommended_tier": "full",
@@ -2025,7 +2091,7 @@
         "typing",
         "uuid"
       ],
-      "line_count": 779,
+      "line_count": 786,
       "path": "tests/integration/layer2_dbv2/test_d2_behavior.py",
       "reason": "",
       "recommended_tier": "full",
@@ -4819,8 +4885,8 @@
       "tests": 853
     },
     "full": {
-      "files": 95,
-      "tests": 876
+      "files": 97,
+      "tests": 916
     },
     "manual_privileged": {
       "files": 5,
@@ -4832,10 +4898,10 @@
     }
   },
   "totals": {
-    "conftest_files": 7,
-    "fixtures": 29,
-    "test_files": 179,
-    "test_functions": 1976,
-    "test_lines": 39634
+    "conftest_files": 8,
+    "fixtures": 34,
+    "test_files": 181,
+    "test_functions": 2016,
+    "test_lines": 40700
   }
 }

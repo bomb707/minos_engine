@@ -68,6 +68,7 @@ def _artifact(
     verification: str = "verified",
     lifecycle: str = "active",
     present: bool = True,
+    schema_version: str | None = None,
 ) -> tuple[uuid.UUID, str, int]:
     """Publish one artifact, optionally inline, optionally with a present location."""
     if payload is not None:
@@ -82,9 +83,11 @@ def _artifact(
         connection,
         "INSERT INTO dbv2_catalog.artifacts (artifact_kind, content_sha256, size_bytes, "
         "media_type, storage_mode, inline_payload, lifecycle_state, retention_class, "
-        "backup_scope, provenance, verification_state, first_verified_at, last_verified_at) "
-        "VALUES (:k, :d, :s, :m, :store, :p, :life, 'standard', :scope, '{}'::jsonb, :ver, "
+        "backup_scope, schema_version, provenance, verification_state, first_verified_at, "
+        "last_verified_at) "
+        "VALUES (:k, :d, :s, :m, :store, :p, :life, 'standard', :scope, :sv, '{}'::jsonb, :ver, "
         "        now(), now()) RETURNING id",
+        sv=schema_version,
         k=kind,
         d=digest,
         s=size,
@@ -539,6 +542,7 @@ def _insert_backup_set(
             media_type=SNAPSHOT_MEDIA,
             scope=snapshot_scope,
             kind="artifact_snapshot",
+            schema_version="minos-artifact-snapshot-v1",
         )
     r1 = _recovery_manifest(
         recovery_set_id=recovery_set_id,
@@ -556,6 +560,7 @@ def _insert_backup_set(
         media_type=RECOVERY_MEDIA,
         scope="recovery",
         kind="recovery_manifest",
+        schema_version="minos-db-recovery-manifest-v1",
     )
     _sql(
         connection,
@@ -646,6 +651,7 @@ def _unverified_backup_set(connection: Connection, entries: list[dict[str, Any]]
         media_type=SNAPSHOT_MEDIA,
         scope="recovery",
         kind="artifact_snapshot",
+        schema_version="minos-artifact-snapshot-v1",
     )
     r1 = _recovery_manifest(
         recovery_set_id=recovery_set_id,
@@ -663,6 +669,7 @@ def _unverified_backup_set(connection: Connection, entries: list[dict[str, Any]]
         media_type=RECOVERY_MEDIA,
         scope="recovery",
         kind="recovery_manifest",
+        schema_version="minos-db-recovery-manifest-v1",
     )
     _sql(
         connection,

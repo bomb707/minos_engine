@@ -55,8 +55,10 @@ disk. Bloat is checked weekly with `pgstattuple` on those tables only.
 Until `0009` runs there is nowhere in the database to record a recovery set: V1 has no
 `catalog.backup_sets` and the V2 table does not exist yet. So the pre-migration record is an
 immutable **file** beneath `MINOS_DB_RECOVERY_ROOT` (phase **R1**), and it is registered into
-`dbv2_catalog.backup_sets` only after `0009` and before any transformation (phase **R2**), where
-it must re-read equal and carry `completeness = 'complete'`. The R1 file is retained afterwards:
+`dbv2_catalog.backup_sets` only after `0009` **and after the B0 artifact-catalog bootstrap**
+(phase **R2**), where it must re-read equal and carry `completeness = 'complete'`. R2 cannot come
+straight after `0009`: `0009` creates the shadow artifact catalog empty, so a complete snapshot has
+nothing to be exact against. Nothing beyond B0 may be transformed until R2 has passed. The R1 file is retained afterwards:
 downgrading `0009` destroys the row but never the file.
 
 R1 runs inside a **write quiesce**: stop writes and artifact publication, drain write transactions
@@ -120,6 +122,29 @@ A backup set that has never passed a drill is treated as unproven.
 
 ---
 
+## 3a. D3-A: preparing a recovery set
+
+*(Implemented and exercised on scratch PostgreSQL only. No operational R1 has been published and
+no migration has been applied.)*
+
+```bash
+python scripts/dbv2_prepare_recovery.py build-r1
+python scripts/dbv2_prepare_recovery.py bootstrap-artifacts --recovery-manifest-sha256 <sha>
+python scripts/dbv2_prepare_recovery.py register-r2 --recovery-manifest-sha256 <sha>
+python scripts/dbv2_prepare_recovery.py verify --recovery-manifest-sha256 <sha>
+```
+
+Four separate invocations, in that order, with the Alembic upgrade performed by an operator
+between `build-r1` and `bootstrap-artifacts`. **No subcommand runs Alembic**, and there is no
+combined command: each phase verifies the previous one against the database.
+
+`build-r1` requires `0005_l2e_feature_view`; `bootstrap-artifacts` and `register-r2` require
+`0009_dbv2_shadow_schema`. Environment: `MINOS_DATABASE_URL`, `MINOS_DB_RECOVERY_ROOT`,
+`MINOS_DBV2_ARTIFACT_ROOTS` (`key=/absolute/path`, comma-separated) and `MINOS_DBV2_PG_DUMP`
+(absolute). None of them has a default.
+
+B1 — every transformation beyond the artifact catalog — is **not implemented**.
+
 ## 3a. Roles
 
 *(D2: the preflight below is implemented and exercised.)* The nine cluster roles are **not**
@@ -132,7 +157,7 @@ test — authentication is a cluster concern.
 `minos_owner`; the migration session issues `SET ROLE minos_owner` as its first statement so every
 created object is owned by the definer. No runtime path ever issues `SET ROLE`.
 
-The exact grants are the 800-record ACL matrix in
+The exact grants are the 830-record logical ACL matrix in
 [`MINOS_DATABASE_V2_DATABASE_API.json`](../../reports/database/MINOS_DATABASE_V2_DATABASE_API.json),
 not the prose in the role table. `PUBLIC` holds nothing; no runtime role holds any DDL privilege;
 `evaluation.truth_bindings` is readable by `minos_evaluator` alone.

@@ -1,23 +1,23 @@
 # MINOS Database V2 — Canonical Architecture
 
-**Stage:** DB-V2 **D2.2** — migration `0009` implemented, corrected twice and exercised on
-**scratch PostgreSQL only**. D1 through D1.4 are accepted and frozen. The operational
-database is untouched.
-**Designed against:** `feature/L2-F` at `651cf3d3bc02e610aa4c70ace3db7a67a8049c0c`.
+**Stage:** DB-V2 **D3-A** — R1, B0 and R2 implemented and exercised on **scratch
+PostgreSQL only**. D1 through D2.2 are accepted and frozen. B1 is absent. The operational
+database is untouched at `0005_l2e_feature_view`.
+**Designed against:** `feature/L2-F` at `de2ad5418120d86e607724962cd54dc3f8d57c54`.
 **Operational database:** `minos_engine_db`, live at `0005_l2e_feature_view`, **untouched by this
 stage**.
-**Contract hash:** `8975aa19d6f48ac4b6e6ea083b3970de0aa25162ce5ace3fbb6e57b37ca804d0`
+**Contract hash:** `68be636de5b9f85bc6bf051bf42a78f8cc6a72b774c17f36aacd696ac628ae2d`
 (over [`MINOS_DATABASE_V2_CONTRACT.json`](../../reports/database/MINOS_DATABASE_V2_CONTRACT.json),
 excluding its own `contract_sha256` field).
 
 **Physical deployment contract:**
 [`MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json`](../../reports/database/MINOS_DATABASE_V2_PHYSICAL_DEPLOYMENT.json),
-hash `b612845b5807991d6ccc75923e6baf63007e321b83633a3d8649f9282ed34b7e`.
+hash `4b8e0525f0f688d5bdc01f85664c54183c2a8b4685b34abf153aff819a927b1e`.
 
 **Database API contract:**
 [`MINOS_DATABASE_V2_DATABASE_API.json`](../../reports/database/MINOS_DATABASE_V2_DATABASE_API.json),
-hash `7ee16f2dd94791f7143e8b81dfbc80a6fa6d9167d78b253913f0a3bef2ab1d5c` — 37 functions, 89 triggers,
-16 state machines and an 800-record ACL matrix. Both contracts above pin this hash; this document
+hash `03aa18cef09b4ab7f9fb58313bada7e2212fd2ba00a06ae43ad47f9548a84e91` — 37 functions, 89 triggers,
+16 state machines and an 830-record logical ACL matrix. Both contracts above pin this hash; this document
 pins neither of theirs, so the three hashes form a one-way graph.
 
 Companion documents: [ERD](MINOS_DATABASE_V2_ERD.md) ·
@@ -319,7 +319,7 @@ Connection discipline: pool of 8 per process, `statement_timeout` 30 s, `lock_ti
 
 Prose privilege summaries are not enforceable. The authoritative grant set is the ACL matrix in the
 database API contract: **800 records**, one for every (object, principal) pair over 8 schemas, 38
-tables and 34 functions × 9 roles plus `PUBLIC`. Every privilege not recorded true is denied, and
+tables and 37 functions × 9 roles plus `PUBLIC`. Every privilege not recorded true is denied, and
 `ALTER DEFAULT PRIVILEGES` closes anything added later.
 
 The rules the matrix is checked against:
@@ -385,7 +385,7 @@ immutable manifest *file* before any migration, beneath the externally provision
 `MINOS_DB_RECOVERY_ROOT` — which has **no default and no repository-relative fallback**, and must
 sit on durable storage separate from the Git checkout, the PostgreSQL data directory and the
 artifact payload root. **R2** registers that exact manifest into `dbv2_catalog.backup_sets` after
-`0009` and before any transformation.
+`0009` and after the B0 artifact-catalog bootstrap, before every remaining transformation.
 
 `backup_sets` binds **three** artifacts by composite foreign key — the recovery manifest, the
 database backup and the artifact-snapshot manifest — each through
@@ -415,7 +415,7 @@ physical deployment contract.
 ## 6b. Enforcement: what makes the contract executable (D1.4)
 
 286 immutable-column annotations are documentation until something rejects the UPDATE. The database
-API contract freezes **34 functions and 89 triggers** that do:
+API contract freezes **37 functions and 89 triggers** that do:
 
 - three reusable generic guards — `audit.reject_immutable_column_update()` (the immutable column
   names arrive as trigger arguments), `audit.reject_update()` for the 23 fully immutable tables, and
@@ -488,7 +488,7 @@ safety boundary: an abort anywhere leaves no elevated session behind, with no `R
 forget. The body's last statement returns the connection to the original identity so Alembic's own
 version-table update, which runs inside the same transaction, is not attempted as the definer.
 
-**D2 grants only what D2 creates.** The 800-record logical ACL is the *final* matrix, applied by
+**D2 grants only what D2 creates.** The 830-record logical ACL is the *final* matrix, applied by
 the later cutover/security stage. What `0009` applies is the **D2 physical ACL**: the same matrix
 restricted to the shadow namespace — 7 schemas, 37 tables, 37 functions × 9 roles and `PUBLIC` =
 810 records. It executes no `REVOKE` on the database, none on schema `public`, none on
@@ -588,7 +588,63 @@ writes no event — classified explicitly as a non-state-changing observation. T
 verification captures row counts, executes the function, and asserts exactly the declared tables
 changed.
 
-### 6c.3 What D2, D2.1 and D2.2 did not do
+### 6c.3 D3-A — R1, B0 and R2 are implemented
+
+Four narrow modules and one administrative CLI, all exercised on scratch PostgreSQL only.
+
+| Module | Phase |
+|---|---|
+| `storage/dbv2_recovery_store.py` | the recovery root and its atomic, no-clobber publication |
+| `storage/dbv2_recovery.py` | R1 construction, and R2 registration |
+| `storage/dbv2_artifact_bootstrap.py` | B0, the artifact catalog and its locations |
+| `storage/dbv2_d3a_verifier.py` | the non-mutating verifier |
+| `scripts/dbv2_prepare_recovery.py` | `build-r1`, `bootstrap-artifacts`, `register-r2`, `verify` |
+
+There is deliberately no `all` subcommand and no `--yes`. Each phase is a separate invocation that
+verifies the previous phase **against the database**, not against a flag the caller passed, and
+**no command runs Alembic**. Each phase opens its own connection, verifies that connection's
+identity before any other query, and requires its exact revision — `build-r1` only at
+`0005_l2e_feature_view`, `bootstrap-artifacts` and `register-r2` only at `0009_dbv2_shadow_schema`.
+Authorization is never carried across connections.
+
+**R1** takes a V1 fingerprint, runs the provisioned `pg_dump`, scans every artifact, and takes the
+fingerprint again; any difference rejects the whole attempt. It does not claim quiescence — equal
+fingerprints only prove nothing moved *while it looked*, and external write quiescence stays a
+deployment prerequisite. The dump runs with a tokenized argv, `shell=False`, an absolute
+digest-pinned executable and a sanitized environment; the connection reaches it through discrete
+libpq variables, never on argv, so no DSN or password can appear in `ps`, a log, a manifest or an
+audit row. A nonzero exit, a timeout or an empty dump fails closed.
+
+Every artifact is read through `O_NOFOLLOW | O_NONBLOCK`, required to be a regular file, hashed
+once, and re-`fstat`-ed on the same descriptor — a symlink, a FIFO, a directory or a mid-read
+replacement is refused rather than hashed. Its locator must resolve beneath exactly one provisioned
+root (`MINOS_DBV2_ARTIFACT_ROOTS`), in either the `file://` or bare-absolute form the V1 catalog
+actually contains. Nothing is ever written, renamed, chmod-ed or repaired.
+
+**B0** transforms only `catalog.artifacts` into `dbv2_catalog.storage_backends`,
+`dbv2_catalog.artifacts` and `dbv2_catalog.artifact_locations`. It refuses to run if any other
+shadow business table already holds a row, re-reads every payload rather than trusting R1's word,
+goes entirely through the declared get-or-verify APIs — so it is idempotent, concurrency-safe and
+fail-closed by construction — and finishes by re-reading the whole graph and requiring exact
+equality with R1 as a set, not as a count.
+
+**R2** re-reads and re-hashes the published dump, publishes the two manifests as inline recovery
+artifacts and the dump as an external one, registers its location, records verification, calls
+`catalog.register_backup_set`, and then re-reads the row, the three artifacts and the
+administrative audit row and requires equality with R1. An exact replay returns the same ids and
+creates no second row of anything.
+
+**The verifier** is 29 named checks over the R1 files, the V1 catalog, the B0 graph and the R2
+registration, and it always rolls back — three consecutive runs leave the database byte-identical.
+
+### 6c.4 What D3-A did not do
+
+B1 is absent: no profile, matrix, plan, job, result, evaluation, model or runtime row is
+transformed. Nothing was applied to the operational database, which remains at
+`0005_l2e_feature_view`; no operational R1 was published, no cluster role provisioned, no cutover
+authorized.
+
+### 6c.5 What D2, D2.1 and D2.2 did not do
 
 No data was moved or transformed. No artifact was published, no job enqueued, no job executed: all
 37 shadow tables are created and remain **empty**. No canonical schema was renamed, no

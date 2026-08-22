@@ -150,6 +150,7 @@ GATE_REQUIRED_CHECKS = (
     "lifecycle_state = 'active'",
     "backup_scope = 'recovery'",
     "is not stored in its declared storage mode",
+    "declares the wrong schema_version",
     "inline manifest bytes do not recompute to their raw digest",
     "inline manifest byte size does not match the stored payload",
     "snapshot manifest bytes do not recompute to artifact_snapshot_sha256",

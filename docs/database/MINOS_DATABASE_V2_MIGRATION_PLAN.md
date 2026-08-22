@@ -181,7 +181,8 @@ Git checkout, the PostgreSQL data directory and the active artifact payload root
 atomic: temp file → fsync → credential verify → no-clobber hard link → directory fsync → re-read
 and verify the digest. Recovery files are never committed to Git.
 
-**R2 — after `0009` creates the shadow schema, before any transformation.** Read the R1 bytes,
+**R2 — after `0009` creates the shadow schema AND after the B0 artifact-catalog bootstrap, before
+every remaining transformation.** Read the R1 bytes,
 strictly parse them with duplicate-key rejection, recompute
 `recovery_manifest_sha256 = sha256(canonical_json_bytes(manifest))`, publish and get-or-verify
 **three** artifacts — the recovery manifest, the database backup and the artifact-snapshot
@@ -210,8 +211,8 @@ write the R1 manifest file with the snapshot digest, count and total bytes. `com
 
 **3. Create the V2 shadow schema.** *(Implemented in D2, exercised on scratch PostgreSQL.)*
 Forward migration `0009` creating the **37 shadow tables** in
-the `dbv2_*` namespace, with their constraints, indexes, **34 functions, 89 triggers** and the
-800-record ACL matrix. `public.alembic_version` is shared, not duplicated. **No V1 object is
+the `dbv2_*` namespace, with their constraints, indexes, **37 functions, 89 triggers** and the
+810-record D2 physical ACL. `public.alembic_version` is shared, not duplicated. **No V1 object is
 touched** — not renamed, not altered, not deleted, not written.
 
 `0009` begins with a **role preflight**: `SET ROLE minos_owner`, then verify every required cluster
@@ -299,6 +300,14 @@ cutover transaction itself, immediately after the renames and before revalidatio
 qualified against the canonical names; the rollback transaction restores the `dbv2_*`-qualified
 bodies at the same point. Triggers track their table and function by OID and survive the rename
 untouched — it is only the text inside the bodies that has to be rewritten.
+
+### 3.3c D3-A: R1, B0 and R2 are implemented
+
+`scripts/dbv2_prepare_recovery.py` implements `build-r1`, `bootstrap-artifacts`, `register-r2` and
+`verify` as four separate, individually authorized invocations. None of them runs Alembic; the
+operator applies `0006 → 0007 → 0008 → 0009` between R1 and B0. B0 transforms the artifact catalog
+and its locations only. **B1 remains unimplemented**, and the operational database remains at
+`0005_l2e_feature_view`.
 
 ### 3.4 Final retirement
 

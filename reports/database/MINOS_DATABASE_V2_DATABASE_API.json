@@ -14370,7 +14370,7 @@
       "note": "These functions declare no audit table and write none. Job and lease state changes are already fully reconstructible from experiments.job_events and the monotonic runtime.leases fence token, so a parallel audit row would duplicate an existing history rather than record a new fact."
     }
   },
-  "contract_sha256": "7ee16f2dd94791f7143e8b81dfbc80a6fa6d9167d78b253913f0a3bef2ab1d5c",
+  "contract_sha256": "03aa18cef09b4ab7f9fb58313bada7e2212fd2ba00a06ae43ad47f9548a84e91",
   "counts": {
     "acl_function_records": 370,
     "acl_objects": 83,
@@ -28621,6 +28621,7 @@
         "minos_live"
       ],
       "rows_locked": "the referenced catalog.artifacts rows",
+      "schema_version_rule": "The recovery manifest artifact must carry schema_version = 'minos-db-recovery-manifest-v1' and the snapshot manifest artifact 'minos-artifact-snapshot-v1'. A media type says how to parse the bytes; the schema version says which contract they satisfy, and the gate now requires both.",
       "security_mode": "DEFINER",
       "signature": "catalog.enforce_backup_set_shape()",
       "sqlstates": [
@@ -28630,6 +28631,7 @@
         "23514 referenced artifact is not lifecycle_state = 'active'",
         "23514 referenced artifact is not backup_scope = 'recovery'",
         "23514 an artifact is not stored in its declared storage mode",
+        "23514 a referenced manifest declares the wrong schema_version",
         "23514 inline manifest bytes do not recompute to their raw digest",
         "23514 inline manifest byte size does not match the stored payload",
         "23514 snapshot manifest bytes do not recompute to artifact_snapshot_sha256",

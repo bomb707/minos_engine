@@ -280,6 +280,7 @@ def _complete_recovery_set(connection: Connection, *, give_dump_location: bool =
         kind="artifact_snapshot",
         media=SNAPSHOT_MEDIA,
         scope="recovery",
+        schema_version="minos-artifact-snapshot-v1",
     )
     dump_digest = hashlib.sha256(f"dump-{recovery_set_id}".encode()).hexdigest()
     dump_id = _register_external(
@@ -330,6 +331,7 @@ def _complete_recovery_set(connection: Connection, *, give_dump_location: bool =
         kind="recovery_manifest",
         media=RECOVERY_MEDIA,
         scope="recovery",
+        schema_version="minos-db-recovery-manifest-v1",
     )
     _sql(
         connection,
