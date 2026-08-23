@@ -29,16 +29,23 @@ from minos_engine.qualification.git_tree import (
     is_git_repo,
     repo_root,
 )
+from minos_engine.qualification.l2f_accepted_identities import (
+    recompute_accepted_identities,
+    verify_accepted_identities,
+)
 from minos_engine.qualification.l2f_failure_inventory import verify_failure_inventory
 from minos_engine.qualification.l2f_harness_ready_contract import (
     ACCEPTED_CANDIDATE_COUNT,
     ACCEPTED_CANDIDATE_SET_HASH,
     ACCEPTED_F5_CONTRACT_HASH,
     ACCEPTED_F6_CORRECTIVE_COMMIT,
+    ACCEPTED_LIVE_GATK_PARAMETER_SPACE_ARTIFACT_SHA256,
+    ACCEPTED_LIVE_GATK_SOURCE_ARTIFACT_SHA256,
     ACCEPTED_LOGICAL_JOB_COUNT,
     ACCEPTED_MIGRATION_SHAS,
     ACCEPTED_PARAMETER_SPACE_HASH,
     ACCEPTED_PLAN_HASH,
+    ACCEPTED_POLICY_HASH,
     HARNESS_READY_GATE,
     HARNESS_READY_GATE_PATH,
     HARNESS_READY_QUALIFIER_SCHEMA,
@@ -58,7 +65,7 @@ __all__ = [
     "OperationalDatabaseRefused",
     "refuse_operational_database",
     "derive_checks",
-    "assemble_harness_ready_gate",
+    "assemble_gate_from_trusted_qualification",
     "write_qualification_outputs",
     "verify_committed_harness_ready_gate",
 ]
@@ -161,6 +168,9 @@ def derive_checks(result: HarnessReadyQualification) -> dict[str, bool]:
     ver = result.artifact_verification
     inv = result.failure_inventory
     bnd = result.boundaries
+    # every accepted identity is compared against values RECOMPUTED from the committed bytes,
+    # never against a shape check such as bool(...) or "is 64 hex characters".
+    recomputed = recompute_accepted_identities()
 
     checks: dict[str, bool] = {
         "qualified_source_present": bool(src.qualified_source_git_sha),
@@ -169,14 +179,25 @@ def derive_checks(result: HarnessReadyQualification) -> dict[str, bool]:
             src.descends_f6_corrective and src.f6_corrective_commit == ACCEPTED_F6_CORRECTIVE_COMMIT
         ),
         "worktree_matches_qualified_source": src.worktree_matches_qualified_source,
-        "accepted_e5_gates_bound": bool(acc.e5_gate_hashes)
-        and all(len(v) == 64 for v in acc.e5_gate_hashes.values()),
-        "accepted_migrations_unchanged": acc.migration_sha256 == ACCEPTED_MIGRATION_SHAS,
+        "accepted_e5_gates_bound": acc.e5_gate_hashes == recomputed.e5_gate_hashes,
+        "accepted_migrations_unchanged": (
+            acc.migration_sha256 == ACCEPTED_MIGRATION_SHAS
+            and acc.migration_sha256 == recomputed.migration_sha256
+        ),
         "accepted_f5_contract_bound": acc.f5_contract_hash == ACCEPTED_F5_CONTRACT_HASH,
         "accepted_parameter_space_bound": (
             acc.parameter_space_hash == ACCEPTED_PARAMETER_SPACE_HASH
+            and acc.parameter_space_hash == recomputed.parameter_space_hash
+            and acc.live_gatk_source_artifact_sha256 == ACCEPTED_LIVE_GATK_SOURCE_ARTIFACT_SHA256
+            and acc.live_gatk_parameter_space_artifact_sha256
+            == ACCEPTED_LIVE_GATK_PARAMETER_SPACE_ARTIFACT_SHA256
+            and acc.live_gatk_source_artifact_sha256 == recomputed.live_gatk_source_artifact_sha256
+            and acc.live_gatk_parameter_space_artifact_sha256
+            == recomputed.live_gatk_parameter_space_artifact_sha256
         ),
-        "accepted_policy_hash_bound": bool(acc.policy_hash),
+        "accepted_policy_hash_bound": (
+            acc.policy_hash == ACCEPTED_POLICY_HASH and acc.policy_hash == recomputed.policy_hash
+        ),
         "accepted_candidate_set_bound": (
             acc.candidate_set_hash == ACCEPTED_CANDIDATE_SET_HASH
             and acc.candidate_count == ACCEPTED_CANDIDATE_COUNT
@@ -250,17 +271,28 @@ def derive_checks(result: HarnessReadyQualification) -> dict[str, bool]:
     return checks
 
 
-def assemble_harness_ready_gate(
-    result: HarnessReadyQualification,
+def assemble_gate_from_trusted_qualification(
+    trusted: Any,
     *,
     created_at: str | None = None,
     evidence: tuple[EvidenceItem, ...] = (),
 ) -> GateArtifact:
-    """Deterministically assemble the HARNESS-READY gate from a qualification result.
+    """Assemble the HARNESS-READY gate from a TRUSTED qualification.
 
-    The status is DERIVED: PASS only when every required check derived from the observations is
-    true. A caller cannot request PASS, and cannot inject a check value.
+    ``trusted`` must be a :class:`~minos_engine.qualification.l2f_harness_ready_qualifier.
+    TrustedQualification`, which only the production qualifier can mint. A caller-constructed
+    ``HarnessReadyQualification`` is refused here, so a synthetic observation document can never
+    grant HARNESS-READY. The status is still DERIVED: PASS only when every required check derived
+    from the observations is true.
     """
+    from minos_engine.qualification.l2f_harness_ready_qualifier import TrustedQualification
+
+    if not isinstance(trusted, TrustedQualification):
+        raise HarnessReadyQualificationError(
+            "HARNESS-READY may only be assembled from a TrustedQualification minted by the "
+            "production qualifier; a caller-supplied qualification document is refused"
+        )
+    result = trusted.result
     verify_failure_inventory(result.failure_inventory)
     checks = derive_checks(result)
     required = required_checks_for(HARNESS_READY_GATE)
@@ -317,6 +349,7 @@ def verify_committed_harness_ready_gate(
     base_dir: str | Path = ".",
     gate_path: str | Path = HARNESS_READY_GATE_PATH,
     qualification_path: str | Path | None = None,
+    require_qualification_result: bool = True,
 ) -> dict[str, Any]:
     """Verify an already-committed HARNESS-READY gate offline. Fails closed on every deficiency.
 
@@ -373,7 +406,13 @@ def verify_committed_harness_ready_gate(
                     f"{ACCEPTED_F6_CORRECTIVE_COMMIT}"
                 )
 
-    # optional: the canonical qualification bytes must reproduce the bound qualification hash.
+    # the canonical qualification result is MANDATORY: a PASS gate is never sufficient on its
+    # own, because its embedded mandatory_checks are exactly what an attacker would forge.
+    if qualification_path is None and require_qualification_result:
+        reasons.append(
+            "missing qualification evidence: a HARNESS-READY PASS requires the canonical "
+            "qualification result alongside the gate"
+        )
     if qualification_path is not None:
         qpath = Path(qualification_path)
         if not qpath.is_absolute():
@@ -395,6 +434,16 @@ def verify_committed_harness_ready_gate(
                 derived = derive_checks(parsed)
                 if {k: gate.mandatory_checks.get(k) for k in derived} != derived:
                     reasons.append("gate checks do not equal the checks derived from the result")
+                # the committed repository must still carry the accepted identities the result
+                # claims, recomputed here from real bytes (offline: no GATK, no database).
+                try:
+                    verify_accepted_identities(parsed.accepted)
+                except MinosEngineError as exc:
+                    reasons.append(f"accepted identity closure failed: {exc}")
+                if parsed.source.qualified_source_git_sha != gate.qualified_source_git_sha:
+                    reasons.append(
+                        "the qualification result and the gate disagree on the qualified source"
+                    )
 
     return {
         "gate_name": HARNESS_READY_GATE,

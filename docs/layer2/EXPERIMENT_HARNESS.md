@@ -58,7 +58,9 @@ selection, `HARNESS-READY` and F7 remain absent**, `Layer2Service.select_config`
 `0005_l2e_feature_view` with zero `l2f%` tables — F6 applies no migration and runs no operational
 job.
 
-**F7-A (this commit) implements the HARNESS-READY qualification framework — and issues no gate.**
+**F7-A implements the HARNESS-READY qualification framework — and issues no gate.** This
+corrective commit supersedes the unaccepted attempt `8ddc4c63`, which allowed a synthetic
+qualification document to assemble a PASS gate and never entered a real qualifier.
 `HARNESS-READY` **has not been issued**: this is a source/framework commit only. The official
 GATK qualification run and the committed evidence (`gates/harness-ready.json` plus the canonical
 qualification result) belong to the separate **F7-B** commit, which is generated from this
@@ -84,6 +86,17 @@ bytes into PostgreSQL, creates database maps, renames schemas, nor migrates any 
 `HARNESS-READY` proves four things, and the framework makes each one **executable and
 fail-closed**: official GATK execution with GATK/Twin invocation parity; idempotent resume;
 independent artifact-hash verification; and complete typed failure classification.
+
+**Production authority (corrected).** `run_harness_ready_qualification()` is the ONLY path to a
+HARNESS-READY gate. It takes a single `base_dir` argument and accepts **no** qualification
+document, check dictionary, source/tree, accepted hash, plan, candidate set, member, candidate,
+GATK result, parity result, resume result, artifact-verification result, failure-inventory result,
+leakage result, trust bundle or runner override — every one is derived internally. The gate
+assembler requires a `TrustedQualification`, whose constructor is guarded by a module-private
+token that only the qualifier holds, so a caller-constructed `HarnessReadyQualification` — however
+internally consistent — is refused and can never grant HARNESS-READY. The immutable qualification
+model remains the canonical *output record* and a serialization contract for unit tests; it is
+never a production *input* capable of granting PASS.
 
 **Derived, never asserted.** `qualification.l2f_harness_ready_runner.derive_checks` computes all
 **40** required checks from an immutable `HarnessReadyQualification` observation set. The
@@ -138,9 +151,39 @@ missing Git history, a wrong source tree, wrong ancestry, a missing binary, a wr
 wrong revision or unavailable qualification inputs all fail closed. No command runs Alembic, and
 none accepts a plan, hashes, a result, a trust bundle or a runner override.
 
+**Accepted identities are recomputed, not shape-checked.** `l2f_accepted_identities` re-derives
+both E5 gate hashes (loading the committed gates and re-running their integrity closure), the
+`0006`/`0007`/`0008` migration byte hashes, the F5 contract hash, the committed live-GATK **source
+artifact** and **normalized parameter-space artifact** byte hashes, the parameter-space hash, the
+accepted policy hash, the candidate-set hash and count, the accepted plan hash and logical-job
+count, and the single Alembic head — each from real committed bytes — and requires equality with
+the accepted constants. `bool(policy_hash)` and "is 64 hex characters" are used nowhere as proof:
+an arbitrary well-formed hash HOLDs the gate.
+
+**The GATK binary is observed.** The qualifier hashes the ACTUAL executable bytes and requires
+them to equal the provisioned digest, after requiring an absolute, existing, non-symlink, regular,
+executable file. A mismatched provisioned digest, a swapped binary, a symlink, a relative path or
+a `FakeGatkRunner` each fail official qualification outright. The version remains provisioned
+metadata bound to that verified digest — no probe is performed or claimed.
+
+**Enforced boundaries.** An offline guard replaces `socket.socket`/`socket.create_connection` for
+the duration of the run, so a network attempt *raises* rather than being assumed absent; a
+path-level leakage guard refuses any truth, mutation, hap.py, score, label, leaderboard,
+validation or test material that is actually offered; the operational database is refused by name
+and an isolated `MINOS_L2F_QUALIFICATION_DATABASE_URL` scratch endpoint is required; and the
+operational store is read read-only purely to observe that it remains at `0005`.
+
+**Committed-gate verification binds the result.** A PASS gate alone is never sufficient:
+`require-pass` demands the canonical qualification result, verifies its hash against the gate's
+binding, re-derives the checks from it, requires them to equal the gate's, re-verifies the
+accepted identity closure from repository bytes, and requires the gate and result to agree on the
+qualified source — all offline, with no GATK, no database mutation and no Alembic.
+
 **Official GATK environment status.** At F7-A the official GATK qualification environment is
 **not provisioned** in this workspace, so no official run was performed and **no HARNESS-READY
-evidence exists**. The framework tests all pass; F7-B remains blocked until the official run
+evidence exists**. The live `qualify` path is nevertheless real and reachable: it fails closed on
+the first genuinely missing input (scratch endpoint, clean tree, provisioned binary, provisioned
+roots) rather than on a blanket stage refusal. F7-B remains blocked until the official run
 succeeds.
 
 ### F6 execution recovery contract

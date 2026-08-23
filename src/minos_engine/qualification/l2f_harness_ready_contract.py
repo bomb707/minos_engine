@@ -45,6 +45,11 @@ __all__ = [
     "ACCEPTED_CANDIDATE_COUNT",
     "ACCEPTED_PLAN_HASH",
     "ACCEPTED_LOGICAL_JOB_COUNT",
+    "ACCEPTED_LIVE_GATK_SOURCE_ARTIFACT_SHA256",
+    "ACCEPTED_LIVE_GATK_PARAMETER_SPACE_ARTIFACT_SHA256",
+    "ACCEPTED_POLICY_HASH",
+    "ACCEPTED_E5_GATE_HASHES",
+    "ACCEPTED_ALEMBIC_HEAD",
     "HarnessReadyContractError",
     "SourceProvenance",
     "AcceptedIdentities",
@@ -98,6 +103,22 @@ ACCEPTED_CANDIDATE_SET_HASH = "50d5f36918758de204e4b34cdd3fc8560a14debfcdb25869f
 ACCEPTED_CANDIDATE_COUNT = 39
 ACCEPTED_PLAN_HASH = "eb8de84db2e35074957ed2f812cbb4f9495195cadb99563780d00d3cfe2b5d0a"
 ACCEPTED_LOGICAL_JOB_COUNT = 1950
+
+#: byte SHA-256 of the two committed live-GATK artifacts. These are CHECKED, not merely stored.
+ACCEPTED_LIVE_GATK_SOURCE_ARTIFACT_SHA256 = (
+    "14b97a52ee82e05ed49606cdf9d41ae52ab9ce7a267be62c50b63e38f7498a94"
+)
+ACCEPTED_LIVE_GATK_PARAMETER_SPACE_ARTIFACT_SHA256 = (
+    "b6a65cebbf120e24b409499fb95b28b80e2eb2c7404131133d1d17bf7172f6cd"
+)
+#: the accepted experiment-parameter policy identity bound by the candidate set.
+ACCEPTED_POLICY_HASH = "a40321a676422121460bb110250812eacc8f1e203e788d244c661ec7c854daed"
+#: the accepted L2-E gate hashes, recomputed from the committed gate artifacts.
+ACCEPTED_E5_GATE_HASHES: dict[str, str] = {
+    "FEATURE-VIEW-READY": "c0ff49856689c994499dd3a7c04d7a1fb8ba0992b2eb1e099672bf828d515234",
+    "FEATURE-MATRIX-FROZEN-1": "cd34bdf96f3e7853039b2719e74a12a95740904c1b15f2f5c747516e0260d3ef",
+}
+ACCEPTED_ALEMBIC_HEAD = "0008_l2f_execution_results"
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _HEX40 = re.compile(r"^[0-9a-f]{40}$")

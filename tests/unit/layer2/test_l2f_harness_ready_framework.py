@@ -21,6 +21,11 @@ from minos_engine.experiments.gatk_live_space import canonicalize_live_gatk_conf
 from minos_engine.gates.contracts import GateStatus
 from minos_engine.gates.required_checks import required_checks_for
 from minos_engine.qualification import l2f_harness_ready_runner as R
+from minos_engine.qualification.l2f_accepted_identities import (
+    AcceptedIdentityError,
+    recompute_accepted_identities,
+    verify_accepted_identities,
+)
 from minos_engine.qualification.l2f_failure_inventory import (
     FailureInventoryError,
     build_failure_inventory,
@@ -34,16 +39,9 @@ from minos_engine.qualification.l2f_gatk_twin_parity import (
 )
 from minos_engine.qualification.l2f_harness_ready_contract import (
     ACCEPTED_CANDIDATE_COUNT,
-    ACCEPTED_CANDIDATE_SET_HASH,
-    ACCEPTED_F5_CONTRACT_HASH,
     ACCEPTED_F6_CORRECTIVE_COMMIT,
-    ACCEPTED_LOGICAL_JOB_COUNT,
-    ACCEPTED_MIGRATION_SHAS,
-    ACCEPTED_PARAMETER_SPACE_HASH,
-    ACCEPTED_PLAN_HASH,
     HARNESS_READY_GATE,
     HARNESS_READY_GATE_PATH,
-    AcceptedIdentities,
     ArtifactVerificationResult,
     BoundaryResult,
     GatkBinaryIdentity,
@@ -130,20 +128,9 @@ def _qualification(**over: Any) -> HarnessReadyQualification:
             descends_f6_corrective=True,
             worktree_matches_qualified_source=True,
         ),
-        "accepted": AcceptedIdentities(
-            e5_gate_hashes={"FEATURE-VIEW-READY": _H["1"], "FEATURE-MATRIX-FROZEN-1": _H["2"]},
-            migration_sha256=dict(ACCEPTED_MIGRATION_SHAS),
-            f5_contract_hash=ACCEPTED_F5_CONTRACT_HASH,
-            live_gatk_source_artifact_sha256=_H["3"],
-            live_gatk_parameter_space_artifact_sha256=_H["4"],
-            parameter_space_hash=ACCEPTED_PARAMETER_SPACE_HASH,
-            policy_hash=_H["5"],
-            candidate_set_hash=ACCEPTED_CANDIDATE_SET_HASH,
-            candidate_count=ACCEPTED_CANDIDATE_COUNT,
-            plan_hash=ACCEPTED_PLAN_HASH,
-            logical_job_count=ACCEPTED_LOGICAL_JOB_COUNT,
-            alembic_head="0008_l2f_execution_results",
-        ),
+        # the accepted block is RECOMPUTED from the real committed bytes: arbitrary 64-hex
+        # values no longer satisfy the accepted-identity checks (see the negative controls).
+        "accepted": recompute_accepted_identities(),
         "gatk_binary": GatkBinaryIdentity(executable_sha256=_H["b"], version="4.5.0.0"),
         "qualification_input": QualificationInputIdentity(
             member_index=0,
@@ -267,7 +254,7 @@ def test_every_required_check_is_derived_from_observations() -> None:
 
 
 def test_a_consistent_result_assembles_a_pass_gate() -> None:
-    gate = R.assemble_harness_ready_gate(_qualification())
+    gate = _assemble(_qualification())
     assert gate.gate_name == HARNESS_READY_GATE
     assert gate.status is GateStatus.PASS
     assert set(gate.mandatory_checks) == frozenset(R.HARNESS_READY_REQUIRED_CHECKS)
@@ -275,8 +262,8 @@ def test_a_consistent_result_assembles_a_pass_gate() -> None:
 
 def test_gate_assembly_is_deterministic_for_a_fixed_timestamp() -> None:
     stamp = "2026-01-01T00:00:00+00:00"
-    a = R.assemble_harness_ready_gate(_qualification(), created_at=stamp)
-    b = R.assemble_harness_ready_gate(_qualification(), created_at=stamp)
+    a = _assemble(_qualification(), created_at=stamp)
+    b = _assemble(_qualification(), created_at=stamp)
     assert a.gate_hash == b.gate_hash
 
 
@@ -316,7 +303,7 @@ def test_any_deficient_observation_holds_the_gate(field: str, mutation: dict[str
     result = _qualification()
     replaced = getattr(result, field).model_copy(update=mutation)
     degraded = _qualification(**{field: replaced})
-    gate = R.assemble_harness_ready_gate(degraded)
+    gate = _assemble(degraded)
     assert gate.status is GateStatus.HOLD
     assert not all(gate.mandatory_checks.values())
 
@@ -336,7 +323,7 @@ def test_any_deficient_observation_holds_the_gate(field: str, mutation: dict[str
 )
 def test_a_wrong_accepted_identity_holds_the_gate(mutation: dict[str, Any]) -> None:
     degraded = _qualification(accepted=_qualification().accepted.model_copy(update=mutation))
-    assert R.assemble_harness_ready_gate(degraded).status is GateStatus.HOLD
+    assert _assemble(degraded).status is GateStatus.HOLD
 
 
 # --------------------------------------------------------------------------- #
@@ -346,7 +333,7 @@ def test_a_fake_runner_can_never_satisfy_the_official_check() -> None:
     fake = _qualification().official_execution.model_copy(
         update={"runner_class": "FakeGatkRunner", "used_official_runner": False}
     )
-    gate = R.assemble_harness_ready_gate(_qualification(official_execution=fake))
+    gate = _assemble(_qualification(official_execution=fake))
     assert gate.mandatory_checks["official_gatk_runner_used"] is False
     assert gate.status is GateStatus.HOLD
 
@@ -356,13 +343,13 @@ def test_a_fake_runner_name_alone_is_not_enough() -> None:
     lying = _qualification().official_execution.model_copy(
         update={"runner_class": "FakeGatkRunner", "used_official_runner": True}
     )
-    gate = R.assemble_harness_ready_gate(_qualification(official_execution=lying))
+    gate = _assemble(_qualification(official_execution=lying))
     assert gate.mandatory_checks["official_gatk_runner_used"] is False
 
 
 def test_a_symlinked_or_unpinned_binary_holds_the_gate() -> None:
     binary = _qualification().gatk_binary.model_copy(update={"absolute_path_is_symlink": True})
-    gate = R.assemble_harness_ready_gate(_qualification(gatk_binary=binary))
+    gate = _assemble(_qualification(gatk_binary=binary))
     assert gate.mandatory_checks["official_gatk_binary_pinned"] is False
 
 
@@ -476,7 +463,7 @@ def test_a_parity_mismatch_holds_the_gate() -> None:
     plan, invocation, config_hash = _twin_and_execution()
     forged = _mutate_argv(plan, tuple(plan.invocation.argv)[:-2])
     bad = compare_invocation_parity(forged, invocation, execution_config_hash=config_hash)
-    gate = R.assemble_harness_ready_gate(_qualification(twin_parity=bad))
+    gate = _assemble(_qualification(twin_parity=bad))
     assert gate.mandatory_checks["gatk_twin_semantic_parity"] is False
     assert gate.status is GateStatus.HOLD
 
@@ -569,7 +556,7 @@ def test_only_bounded_failure_codes_may_appear() -> None:
 def test_gate_assembly_refuses_a_broken_inventory() -> None:
     inventory = build_failure_inventory().model_copy(update={"complete": False})
     with pytest.raises(FailureInventoryError):
-        R.assemble_harness_ready_gate(_qualification(failure_inventory=inventory))
+        _assemble(_qualification(failure_inventory=inventory))
 
 
 # --------------------------------------------------------------------------- #
@@ -599,8 +586,23 @@ def _head_tree() -> str:
     ).stdout.strip()
 
 
+def _trusted(result: HarnessReadyQualification) -> Any:
+    """Mint a TrustedQualification the way ONLY the production qualifier can.
+
+    Tests reach into the module-private token deliberately, to exercise gate assembly. That the
+    token is unreachable from ordinary code is itself asserted by the authority tests below.
+    """
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    return Q.TrustedQualification(Q._MINT, result)
+
+
+def _assemble(result: HarnessReadyQualification, **kw: Any) -> Any:
+    return R.assemble_gate_from_trusted_qualification(_trusted(result), **kw)
+
+
 def _write_gate(tmp_path: Path, result: HarnessReadyQualification) -> Path:
-    gate = R.assemble_harness_ready_gate(result, created_at="2026-01-01T00:00:00+00:00")
+    gate = _assemble(result, created_at="2026-01-01T00:00:00+00:00")
     path = tmp_path / "harness-ready.json"
     from minos_engine.gates.verifier import write_gate
 
@@ -630,7 +632,9 @@ def test_a_real_head_gate_verifies_against_real_git_history(tmp_path: Path) -> N
         }
     )
     path = _write_gate(tmp_path, _qualification(source=source))
-    result = R.verify_committed_harness_ready_gate(base_dir=_repo_root(), gate_path=path)
+    result = R.verify_committed_harness_ready_gate(
+        base_dir=_repo_root(), gate_path=path, require_qualification_result=False
+    )
     history = [
         r
         for r in result["reasons"]
@@ -644,21 +648,27 @@ def test_a_wrong_source_tree_fails_closed(tmp_path: Path) -> None:
         update={"qualified_source_git_sha": _head_sha(), "qualified_source_tree_sha": _GIT["0"]}
     )
     path = _write_gate(tmp_path, _qualification(source=source))
-    result = R.verify_committed_harness_ready_gate(base_dir=_repo_root(), gate_path=path)
+    result = R.verify_committed_harness_ready_gate(
+        base_dir=_repo_root(), gate_path=path, require_qualification_result=False
+    )
     assert result["ok"] is False
     assert any("wrong source tree" in r for r in result["reasons"])
 
 
 def test_an_absent_source_commit_fails_closed(tmp_path: Path) -> None:
     path = _write_gate(tmp_path, _qualification())  # a synthetic 40-hex sha, not in history
-    result = R.verify_committed_harness_ready_gate(base_dir=_repo_root(), gate_path=path)
+    result = R.verify_committed_harness_ready_gate(
+        base_dir=_repo_root(), gate_path=path, require_qualification_result=False
+    )
     assert result["ok"] is False
     assert any("absent from history" in r for r in result["reasons"])
 
 
 def test_missing_git_history_fails_closed(tmp_path: Path) -> None:
     path = _write_gate(tmp_path, _qualification())
-    result = R.verify_committed_harness_ready_gate(base_dir=tmp_path, gate_path=path)
+    result = R.verify_committed_harness_ready_gate(
+        base_dir=tmp_path, gate_path=path, require_qualification_result=False
+    )
     assert result["ok"] is False
     assert any("missing Git history" in r for r in result["reasons"])
 
@@ -668,30 +678,36 @@ def test_a_held_gate_never_verifies(tmp_path: Path) -> None:
         resume=_qualification().resume.model_copy(update={"nonterminal_jobs_remaining": 3})
     )
     path = _write_gate(tmp_path, degraded)
-    result = R.verify_committed_harness_ready_gate(base_dir=_repo_root(), gate_path=path)
+    result = R.verify_committed_harness_ready_gate(
+        base_dir=_repo_root(), gate_path=path, require_qualification_result=False
+    )
     assert result["ok"] is False
     assert any("not PASS" in r for r in result["reasons"])
 
 
 def test_a_stripped_required_check_cannot_even_be_loaded_as_pass(tmp_path: Path) -> None:
-    """A PASS gate missing a required check is refused by the gate contract itself."""
-    gate = R.assemble_harness_ready_gate(_qualification(), created_at="2026-01-01T00:00:00+00:00")
+    """A gate whose checks were edited after assembly is refused by the gate contract itself."""
+    gate = _assemble(_qualification(), created_at="2026-01-01T00:00:00+00:00")
     document = json.loads(json.dumps(gate.model_dump(mode="json")))
     document["mandatory_checks"].pop("gatk_twin_semantic_parity")
     path = tmp_path / "harness-ready.json"
     path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     with pytest.raises(Exception, match="missing required checks"):
-        R.verify_committed_harness_ready_gate(base_dir=_repo_root(), gate_path=path)
+        R.verify_committed_harness_ready_gate(
+            base_dir=_repo_root(), gate_path=path, require_qualification_result=False
+        )
 
 
 def test_a_falsified_required_check_cannot_be_a_pass_gate(tmp_path: Path) -> None:
-    gate = R.assemble_harness_ready_gate(_qualification(), created_at="2026-01-01T00:00:00+00:00")
+    gate = _assemble(_qualification(), created_at="2026-01-01T00:00:00+00:00")
     document = json.loads(json.dumps(gate.model_dump(mode="json")))
     document["mandatory_checks"]["gatk_twin_semantic_parity"] = False
     path = tmp_path / "harness-ready.json"
     path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     with pytest.raises(Exception):  # noqa: B017 - the contract refuses a PASS with a false check
-        R.verify_committed_harness_ready_gate(base_dir=_repo_root(), gate_path=path)
+        R.verify_committed_harness_ready_gate(
+            base_dir=_repo_root(), gate_path=path, require_qualification_result=False
+        )
 
 
 def test_a_committed_qualification_result_must_reproduce_its_bound_hash(tmp_path: Path) -> None:
@@ -816,8 +832,14 @@ def test_no_db_v2_contract_symbol_exists() -> None:
         capture_output=True,
         text=True,
         check=False,
-    ).stdout.strip()
-    assert hits == "", hits
+    ).stdout.split()
+    # This guard file and the harness document NAME the forbidden tokens in order to exclude
+    # them; they are the denylist, not DB-V2 work. Every other match is a real violation.
+    allowed = {
+        "tests/unit/layer2/test_l2f_harness_ready_framework.py",
+        "docs/layer2/EXPERIMENT_HARNESS.md",
+    }
+    assert set(hits) <= allowed, sorted(set(hits) - allowed)
 
 
 # --------------------------------------------------------------------------- #
@@ -873,3 +895,436 @@ def test_cli_check_accepts_a_real_gate_file(tmp_path: Path) -> None:
     assert payload["gate"] == HARNESS_READY_GATE
     # every git-history reason must be absent for a genuinely HEAD-bound gate
     assert not any("descend" in r or "wrong source tree" in r for r in payload["reasons"])
+
+
+# --------------------------------------------------------------------------- #
+# CORRECTIVE 1-2 — the production authority cannot consume a synthetic qualification
+# --------------------------------------------------------------------------- #
+def test_a_synthetic_qualification_cannot_reach_the_gate_assembler() -> None:
+    """The central corrective: a caller-built qualification is REFUSED by the authority."""
+    with pytest.raises(Exception, match="TrustedQualification"):
+        R.assemble_gate_from_trusted_qualification(_qualification())
+
+
+@pytest.mark.parametrize("payload", [None, {}, {"official_gatk_runner_used": True}, "PASS", 1])
+def test_the_assembler_refuses_every_non_trusted_payload(payload: Any) -> None:
+    with pytest.raises(Exception):  # noqa: B017 - refused before any check is derived
+        R.assemble_gate_from_trusted_qualification(payload)
+
+
+def test_a_forged_trusted_wrapper_cannot_be_minted() -> None:
+    """Minting requires the module-private token; a look-alike object is refused."""
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    class _FakeToken:
+        pass
+
+    with pytest.raises(Q.QualificationEnvironmentError, match="only be minted"):
+        Q.TrustedQualification(_FakeToken(), _qualification())  # type: ignore[arg-type]
+
+
+def test_the_public_qualifier_api_accepts_no_qualification_input() -> None:
+    """`run_harness_ready_qualification` exposes only `base_dir` — nothing injectable."""
+    import inspect
+
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    params = set(inspect.signature(Q.run_harness_ready_qualification).parameters)
+    assert params == {"base_dir"}
+    forbidden = {
+        "result",
+        "qualification",
+        "checks",
+        "mandatory_checks",
+        "runner",
+        "plan",
+        "candidate_set",
+        "member",
+        "candidate",
+        "source",
+        "trust",
+        "hashes",
+    }
+    assert params & forbidden == set()
+
+
+def test_the_cli_exposes_no_qualification_or_check_injection() -> None:
+    """The production CLI has no flag by which a result or check dictionary can be supplied."""
+    import argparse
+
+    from minos_engine.cli.layer2_harness_commands import add_harness_subparser
+
+    parser = argparse.ArgumentParser()
+    add_harness_subparser(parser.add_subparsers(dest="cmd", required=True))
+    flags = {
+        action.option_strings[0]
+        for action in parser._subparsers._group_actions[0]  # type: ignore[union-attr]
+        .choices["harness"]
+        ._subparsers._group_actions[0]
+        .choices["qualify"]
+        ._actions
+        if action.option_strings
+    }
+    for forbidden in ("--result", "--checks", "--runner", "--plan", "--trust", "--observations"):
+        assert forbidden not in flags, forbidden
+
+
+# --------------------------------------------------------------------------- #
+# CORRECTIVE 10-14 — accepted identities must EQUAL recomputed values
+# --------------------------------------------------------------------------- #
+def test_recomputed_accepted_identities_verify() -> None:
+    verify_accepted_identities(recompute_accepted_identities())
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"e5_gate_hashes": {"FEATURE-VIEW-READY": _H["1"], "FEATURE-MATRIX-FROZEN-1": _H["2"]}},
+        {"policy_hash": _H["5"]},
+        {"live_gatk_source_artifact_sha256": _H["3"]},
+        {"live_gatk_parameter_space_artifact_sha256": _H["4"]},
+        {"migration_sha256": {"migrations/versions/0006_l2f_experiment_plan.py": _H["0"]}},
+        {"f5_contract_hash": _H["0"]},
+        {"parameter_space_hash": _H["0"]},
+        {"candidate_set_hash": _H["0"]},
+        {"plan_hash": _H["0"]},
+        {"alembic_head": "0009_not_real"},
+    ],
+)
+def test_arbitrary_well_formed_identities_are_not_accepted_bindings(
+    mutation: dict[str, Any],
+) -> None:
+    """A 64-hex string is NOT an accepted identity: it must equal the recomputed value."""
+    forged = recompute_accepted_identities().model_copy(update=mutation)
+    with pytest.raises(AcceptedIdentityError):
+        verify_accepted_identities(forged)
+    gate = _assemble(_qualification(accepted=forged))
+    assert gate.status is GateStatus.HOLD
+
+
+# --------------------------------------------------------------------------- #
+# CORRECTIVE 5-9 — the GATK binary is verified from ACTUAL bytes
+# --------------------------------------------------------------------------- #
+def _fixture_binary(tmp_path: Path, body: str = "#!/bin/sh\nexit 0\n") -> Path:
+    path = tmp_path / "gatk"
+    path.write_text(body, encoding="utf-8")
+    path.chmod(0o700)
+    return path.resolve()
+
+
+def _runner(path: Path, *, digest: str | None = None, version: str = "4.5.0.0") -> Any:
+    import hashlib as _h
+
+    from minos_engine.storage.l2f_gatk_runner import SubprocessGatkRunner
+
+    return SubprocessGatkRunner(
+        executable=path,
+        expected_sha256=digest or _h.sha256(path.read_bytes()).hexdigest(),
+        expected_version=version,
+    )
+
+
+def test_the_actual_executable_bytes_are_hashed(tmp_path: Path) -> None:
+    import hashlib as _h
+
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    path = _fixture_binary(tmp_path)
+    identity = Q.verify_official_gatk_binary(_runner(path))
+    assert identity.executable_sha256 == _h.sha256(path.read_bytes()).hexdigest()
+    assert identity.version_provenance == "provisioned_metadata_bound_to_digest"
+
+
+def test_a_wrong_provisioned_digest_fails_official_qualification(tmp_path: Path) -> None:
+    """The corrective test: a mismatched provisioned digest CANNOT qualify."""
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    path = _fixture_binary(tmp_path)
+    with pytest.raises(Q.QualificationEnvironmentError, match="does not equal the provisioned"):
+        Q.verify_official_gatk_binary(_runner(path, digest=_H["0"]))
+
+
+def test_a_swapped_executable_after_pinning_fails(tmp_path: Path) -> None:
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    path = _fixture_binary(tmp_path)
+    runner = _runner(path)
+    path.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")  # swapped after pinning
+    with pytest.raises(Q.QualificationEnvironmentError, match="sha256"):
+        Q.verify_official_gatk_binary(runner)
+
+
+def test_a_symlinked_executable_fails(tmp_path: Path) -> None:
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    real = _fixture_binary(tmp_path)
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    with pytest.raises(Q.QualificationEnvironmentError, match="symlink"):
+        Q.verify_official_gatk_binary(_runner(link))
+
+
+def test_a_relative_executable_fails(tmp_path: Path) -> None:
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+    from minos_engine.storage.l2f_gatk_runner import SubprocessGatkRunner
+
+    runner = SubprocessGatkRunner(
+        executable=Path("gatk"), expected_sha256=_H["0"], expected_version="v"
+    )
+    with pytest.raises(Q.QualificationEnvironmentError, match="absolute"):
+        Q.verify_official_gatk_binary(runner)
+
+
+def test_a_fake_runner_cannot_enter_the_production_qualifier() -> None:
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+    from minos_engine.storage.l2f_gatk_runner import FakeGatkRunner
+
+    with pytest.raises(Q.QualificationEnvironmentError, match="SubprocessGatkRunner"):
+        Q.verify_official_gatk_binary(FakeGatkRunner())
+
+
+# --------------------------------------------------------------------------- #
+# CORRECTIVE 18-20 — the qualification job is DERIVED, never supplied
+# --------------------------------------------------------------------------- #
+def test_the_qualification_job_is_derived_from_the_accepted_train_plan() -> None:
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    job = Q.derive_qualification_job()
+    assert job.partition == "train"
+    assert job.candidate_index == 0
+    assert len(job.job_key) == 64
+    assert job.config_hash == _accepted_candidate_hash()
+    again = Q.derive_qualification_job()
+    assert (again.job_key, again.member_index) == (job.job_key, job.member_index)
+
+
+def _accepted_candidate_hash() -> str:
+    from minos_engine.experiments.candidates import generate_accepted_candidate_set
+
+    return generate_accepted_candidate_set().configs[0].config_hash
+
+
+def test_the_derived_job_matches_the_accepted_plan_member() -> None:
+    from minos_engine.experiments.accepted_plan import build_accepted_experiment_plan
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    plan = build_accepted_experiment_plan()
+    job = Q.derive_qualification_job()
+    member = plan.members[job.member_index]
+    assert (member.dataset_id, member.profile_id) == (job.dataset_id, job.profile_id)
+
+
+def test_no_api_accepts_a_caller_member_or_candidate() -> None:
+    import inspect
+
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    assert inspect.signature(Q.derive_qualification_job).parameters == {}
+
+
+# --------------------------------------------------------------------------- #
+# CORRECTIVE 30-32 — leakage and network guards are ENFORCED
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/data/truth/chr18.vcf",
+        "/data/mutations/chr18.bed",
+        "/data/happy/summary.csv",
+        "/data/scores/run.json",
+        "/data/validation/input.bam",
+        "/data/test/input.bam",
+        "/data/labels/y.parquet",
+    ],
+)
+def test_evaluation_material_is_refused_when_actually_offered(path: str) -> None:
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    with pytest.raises(Q.QualificationLeakageError):
+        Q.leakage_denied_paths(path)
+
+
+def test_the_accepted_train_layout_is_permitted() -> None:
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    Q.leakage_denied_paths("/data/practice/round_r1/input.bam", "/data/reference/chr18/chr18.fa")
+
+
+def test_a_network_attempt_is_blocked_not_assumed() -> None:
+    import socket as _socket
+
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    with Q.network_denied():
+        with pytest.raises(Q.QualificationNetworkError):
+            _socket.create_connection(("127.0.0.1", 9))
+        with pytest.raises(Q.QualificationNetworkError):
+            _socket.socket().connect(("127.0.0.1", 9))
+    # the guard is removed afterwards, so it never leaks into the rest of the suite
+    assert _socket.create_connection is not None
+
+
+def test_the_qualifier_refuses_the_operational_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    monkeypatch.setenv("MINOS_DATABASE_URL", "postgresql://u@h:5433/minos_engine_db")
+    with pytest.raises(R.OperationalDatabaseRefused):
+        Q.run_harness_ready_qualification(base_dir=_repo_root())
+
+
+def test_the_qualifier_requires_an_isolated_scratch_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    monkeypatch.delenv("MINOS_DATABASE_URL", raising=False)
+    monkeypatch.delenv("MINOS_L2F_QUALIFICATION_DATABASE_URL", raising=False)
+    with pytest.raises(Q.QualificationEnvironmentError, match="isolated scratch"):
+        Q.run_harness_ready_qualification(base_dir=_repo_root())
+
+
+def test_the_qualifier_refuses_a_scratch_url_naming_the_operational_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    monkeypatch.delenv("MINOS_DATABASE_URL", raising=False)
+    monkeypatch.setenv(
+        "MINOS_L2F_QUALIFICATION_DATABASE_URL", "postgresql://u@h:5433/minos_engine_db"
+    )
+    with pytest.raises(R.OperationalDatabaseRefused):
+        Q.run_harness_ready_qualification(base_dir=_repo_root())
+
+
+# --------------------------------------------------------------------------- #
+# CORRECTIVE 3-4/15-17 — real source acquisition and fail-closed live path
+# --------------------------------------------------------------------------- #
+def test_source_provenance_is_acquired_from_real_git() -> None:
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    source = Q.acquire_source_provenance(_repo_root(), require_clean_worktree=False)
+    assert source.qualified_source_git_sha == _head_sha()
+    assert source.qualified_source_tree_sha == _head_tree()
+    assert source.descends_f6_corrective is True
+    assert source.f6_corrective_commit == ACCEPTED_F6_CORRECTIVE_COMMIT
+
+
+def test_a_dirty_worktree_is_refused_for_live_qualification() -> None:
+    """A live result must speak for an exact commit, so a dirty tree fails closed."""
+    import subprocess as _sp
+
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    dirty = _sp.run(  # noqa: S603 - fixed argv, no shell
+        ["git", "status", "--porcelain"],  # noqa: S607
+        cwd=_repo_root(),
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    if not dirty:
+        pytest.skip("the worktree is clean; the refusal is exercised during development")
+    with pytest.raises(Q.QualificationEnvironmentError, match="clean tree"):
+        Q.acquire_source_provenance(_repo_root())
+
+
+def test_missing_git_history_fails_source_acquisition(tmp_path: Path) -> None:
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    with pytest.raises(Q.QualificationEnvironmentError, match="missing Git history"):
+        Q.acquire_source_provenance(tmp_path)
+
+
+def test_the_live_path_fails_closed_without_the_official_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """With a scratch endpoint but no provisioned GATK, the qualifier reaches the binary step."""
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    monkeypatch.delenv("MINOS_DATABASE_URL", raising=False)
+    monkeypatch.setenv("MINOS_L2F_QUALIFICATION_DATABASE_URL", "postgresql://u@h:5555/f7_scratch")
+    for name in ("MINOS_L2F_GATK_EXECUTABLE", "MINOS_L2F_GATK_EXECUTABLE_SHA256"):
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(Q.QualificationEnvironmentError) as excinfo:
+        Q.run_harness_ready_qualification(base_dir=_repo_root())
+    # it reached a REAL environment requirement (clean tree or provisioned GATK), never a
+    # blanket "F7-A only ships the framework" refusal.
+    assert "clean tree" in str(excinfo.value) or "not provisioned" in str(excinfo.value)
+
+
+def test_the_cli_enters_the_real_qualifier(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`qualify` must call the production orchestrator, not print a canned F7-A refusal."""
+    calls: list[Any] = []
+
+    from minos_engine.cli import layer2_harness_commands as C
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    def _spy(*, base_dir: Any) -> Any:
+        calls.append(base_dir)
+        raise Q.QualificationEnvironmentError("spy: environment unavailable")
+
+    monkeypatch.setattr(Q, "run_harness_ready_qualification", _spy)
+    args = argparse_namespace(
+        check=False, base_dir=".", gate="g.json", qualification=None, write_outputs=False
+    )
+    assert C._cmd_qualify(args) == 3
+    assert len(calls) == 1  # the real orchestrator WAS entered
+
+
+def argparse_namespace(**kw: Any) -> Any:
+    import argparse
+
+    return argparse.Namespace(**kw)
+
+
+def test_the_cli_does_not_write_outputs_without_an_explicit_flag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from minos_engine.cli import layer2_harness_commands as C
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    monkeypatch.setattr(
+        Q, "run_harness_ready_qualification", lambda *, base_dir: _trusted(_qualification())
+    )
+    gate_path = tmp_path / "harness-ready.json"
+    args = argparse_namespace(
+        check=False, base_dir=".", gate=str(gate_path), qualification=None, write_outputs=False
+    )
+    C._cmd_qualify(args)
+    assert not gate_path.exists()
+
+
+# --------------------------------------------------------------------------- #
+# CORRECTIVE 14 — require-pass demands the canonical qualification result
+# --------------------------------------------------------------------------- #
+def test_require_pass_demands_the_qualification_result(tmp_path: Path) -> None:
+    source = _qualification().source.model_copy(
+        update={
+            "qualified_source_git_sha": _head_sha(),
+            "qualified_source_tree_sha": _head_tree(),
+        }
+    )
+    path = _write_gate(tmp_path, _qualification(source=source))
+    result = R.verify_committed_harness_ready_gate(base_dir=_repo_root(), gate_path=path)
+    assert result["ok"] is False
+    assert any("missing qualification evidence" in r for r in result["reasons"])
+
+
+def test_a_gate_and_result_that_disagree_on_the_source_fail(tmp_path: Path) -> None:
+    source = _qualification().source.model_copy(
+        update={
+            "qualified_source_git_sha": _head_sha(),
+            "qualified_source_tree_sha": _head_tree(),
+        }
+    )
+    result = _qualification(source=source)
+    gate_path = _write_gate(tmp_path, result)
+    other = result.model_copy(
+        update={"source": source.model_copy(update={"qualified_source_git_sha": _GIT["c"]})}
+    )
+    qual_path = tmp_path / "qualification.json"
+    qual_path.write_bytes(canonical_qualification_bytes(other) + b"\n")
+    verified = R.verify_committed_harness_ready_gate(
+        base_dir=_repo_root(), gate_path=gate_path, qualification_path=qual_path
+    )
+    assert verified["ok"] is False
