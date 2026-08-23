@@ -506,6 +506,55 @@ REQUIRED_CHECKS: dict[str, frozenset[str]] = {
             "feature_columns_exactly_129",
         }
     ),
+    # HARNESS-READY — L2-F stage F7 executable harness qualification.
+    # Proves official GATK execution + GATK/Twin invocation parity, idempotent resume,
+    # independent artifact-hash verification and complete typed failure classification.
+    # Every check is DERIVED from an observation by
+    # qualification.l2f_harness_ready_runner.derive_checks; none may be supplied by a caller.
+    "HARNESS-READY": frozenset(
+        {
+            "qualified_source_present",
+            "qualified_source_tree_matches",
+            "source_descends_f6_corrective",
+            "worktree_matches_qualified_source",
+            "accepted_e5_gates_bound",
+            "accepted_migrations_unchanged",
+            "accepted_f5_contract_bound",
+            "accepted_parameter_space_bound",
+            "accepted_policy_hash_bound",
+            "accepted_candidate_set_bound",
+            "accepted_plan_identity_bound",
+            "alembic_head_is_0008",
+            "official_gatk_runner_used",
+            "official_gatk_binary_pinned",
+            "official_execution_succeeded",
+            "official_execution_artifacts_published",
+            "gatk_twin_semantic_parity",
+            "gatk_only_policy",
+            "resume_after_restart_verified",
+            "resume_creates_no_duplicates",
+            "resume_preserves_terminal_jobs",
+            "resume_conflicting_replay_rejected",
+            "resume_exhausted_queue_returns_none",
+            "no_stranded_jobs",
+            "no_automatic_retry",
+            "artifact_bytes_independently_verified",
+            "content_addressed_names_verified",
+            "media_types_verified",
+            "input_identity_recomputed",
+            "logical_argv_recomputed",
+            "result_hash_recomputed",
+            "harness_verifier_all_checks_pass",
+            "verification_non_mutating",
+            "failure_inventory_complete",
+            "failure_inventory_unambiguous",
+            "no_truth_or_scoring_access",
+            "train_partition_only",
+            "operational_database_untouched",
+            "select_config_still_blocked",
+            "no_network_access",
+        }
+    ),
 }
 
 

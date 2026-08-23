@@ -6,7 +6,7 @@ terminal outcome. It does **not** score, rank, select, optimize, train, or activ
 `Layer2Service.select_config`. `HARNESS-READY` (F7) is not implemented and is **not** claimed
 anywhere below.
 
-## Scope (F3-A … F5 accepted; F6 recovery + security)
+## Scope (F3-A … F6 accepted; F7-A qualification framework)
 
 **F3-A is accepted** at commit `ff8daa4bf9bd9891e46017e3f7bcb4ea9a8edb6d`. The accepted
 identities are the migration `0006_l2f_experiment_plan` byte SHA-256
@@ -48,14 +48,100 @@ identities are the corrected `0008` byte SHA-256
 `95614d67fbfbafb735a0651275dd06f1949ae513b43b96b3776a5a90c436f3ff` and the F5 contract hash
 `8b7d8e8961934f46d295646b4bc049bf118ba352c644d6e5d4d5d256dd201bdc`.
 
-**F6 (this commit) adds execution recovery, security hardening, injection resistance, leakage
-enforcement and consistent-forgery verification.** It changes **no** migration (0001-0008 stay
+**F6 is accepted** at commit `695d9227ed83c595e3ed03375a935fbe801aadbd`: execution recovery,
+security hardening, injection resistance, leakage enforcement and consistent-forgery
+verification. It changes **no** migration (0001-0008 stay
 byte-identical, no `0009` exists), **no** scientific identity or hash formula, and **no**
 candidate generation. **Scoring, hap.py, truth comparison, optimization, training, model
 selection, `HARNESS-READY` and F7 remain absent**, `Layer2Service.select_config` still raises
 `StageNotReadyError`, and the operational `minos_engine_db` remains exactly at
 `0005_l2e_feature_view` with zero `l2f%` tables — F6 applies no migration and runs no operational
 job.
+
+**F7-A (this commit) implements the HARNESS-READY qualification framework — and issues no gate.**
+`HARNESS-READY` **has not been issued**: this is a source/framework commit only. The official
+GATK qualification run and the committed evidence (`gates/harness-ready.json` plus the canonical
+qualification result) belong to the separate **F7-B** commit, which is generated from this
+committed F7-A source after it is pushed and CI succeeds. A source commit cannot truthfully bind
+its own final commit and tree before that commit exists, so F7-A deliberately ships neither.
+
+**F5 and F6 remain accepted and unchanged.** F7-A adds no migration (0001-0008 stay
+byte-identical, **no `0009` exists**), changes no scientific identity or hash formula, and alters
+no candidate generation. **`BASELINE-QUALIFIED`, scoring, hap.py / truth comparison, training,
+optimization, ranking, model selection, HARNESS-READY promotion and `select_config` activation all
+remain absent**, `Layer2Service.select_config` still raises `StageNotReadyError`, and the
+operational `minos_engine_db` remains at `0005_l2e_feature_view` with zero `l2f%` tables — F7-A
+applies no migration and runs no operational job.
+
+**The restored pre-DB-V2 database/storage model remains authoritative**: PostgreSQL owns
+identities, metadata, state and artifact references; content-addressed filesystem roots own the
+payload bytes; `catalog.artifacts` binds URI, digest, media type and size; and repository
+manifests and gates remain committed evidence. F7-A neither redesigns storage, centralizes payload
+bytes into PostgreSQL, creates database maps, renames schemas, nor migrates any database.
+
+### F7-A HARNESS-READY qualification framework
+
+`HARNESS-READY` proves four things, and the framework makes each one **executable and
+fail-closed**: official GATK execution with GATK/Twin invocation parity; idempotent resume;
+independent artifact-hash verification; and complete typed failure classification.
+
+**Derived, never asserted.** `qualification.l2f_harness_ready_runner.derive_checks` computes all
+**40** required checks from an immutable `HarnessReadyQualification` observation set. The
+assembler accepts no dictionary of booleans, no caller-supplied scientific hash, no caller plan or
+candidate set, and no "the tests passed" claim; the gate's PASS/HOLD status is derived, so a
+caller cannot request PASS. Qualification JSON rejects duplicate keys and unknown fields, and its
+canonical serialization is deterministic and timestamp-free.
+
+**Official GATK only.** The official-execution check is satisfied only by the existing
+`SubprocessGatkRunner` — absolute non-symlink executable, verified SHA-256, `shell=False`, the
+current environment allowlist, and the existing bounded-stream, timeout, workspace and
+descriptor-bound output protections. `FakeGatkRunner` can never satisfy it, and naming a fake
+runner while claiming `used_official_runner` still fails. As in F6, the GATK **version is
+provisioned metadata bound to the verified executable digest** — no `--version` probe is
+performed and none is claimed.
+
+**GATK/Twin parity, defined exactly.** The additive, versioned adapter
+(`l2f-gatk-twin-parity-v1`) builds the accepted Stage-1 Twin plan from the SAME effective CONFIG,
+parameter-space identity, region, BAM identity, reference identity and output role as the F5
+logical invocation, then compares them token by token in order. Parity requires: GATK-only caller;
+the `HaplotypeCaller` subcommand; the same 1-based-inclusive `-L` region convention; the same
+fixed `-R`/`-I`/`-L`/`-O` arguments; the same effective parameter flags, values and ordering; and
+the same CONFIG identity on both sides. **Exactly two documented symbolic normalizations** are
+permitted — the leading `gatk` caller token (F5 prepends the pinned executable instead) and the
+symbolic path-token spelling (`{reference}`/`{bam}`/`{output}` vs `<reference.fa>`/`<input.bam>`/
+`<output.vcf>`, mapped onto the roles `reference`/`bam`/`output`). Nothing is dropped, renamed,
+clamped, coerced or defaulted to obtain parity, and a mismatch yields a structured
+first-difference (field, index, both values) that can never become PASS. All **39 accepted
+candidates** pass through the Twin boundary value-for-value and reach exact parity, and the
+accepted Stage-1 Twin contracts and TWIN-READY evidence are untouched.
+
+**Typed failure closure.** One deterministic inventory maps every public F5/F6 outcome to its
+exception type, bounded failure code, state before failure, required final state, whether an
+outcome row exists, whether artifacts are retained, whether the commit outcome is known or
+ambiguous, and `automatic_retry_allowed: false`. The inventory is **closed against the
+implementation**: it re-derives the exported typed exceptions and fails if any is unclassified,
+if a case is classified twice, if a non-ambiguous RUNNING failure lacks a durable FAILED row, if a
+preparation failure does not return to PENDING, if an ambiguous commit claims a definite state, if
+a post-commit wrapper error changes the committed result, or if any case would strand a job. Only
+bounded failure codes may appear — no free-text failure payload ever reaches the database.
+
+**Boundaries.** F7 qualification is offline and train-only: it resolves no truth VCF/BED, mutation
+manifest, hap.py output, TP/FP/FN, score, leaderboard, validation/test payload, label or training
+target. Every database-backed F7 test and rehearsal uses isolated scratch PostgreSQL, and
+`refuse_operational_database()` is an **additional** deterministic refusal of the canonical
+`minos_engine_db` endpoint that never weakens the production identity checks.
+
+**CLI.** `minos-engine layer2 harness qualify` (live, explicit invocation only),
+`… qualify --check` (offline committed-gate verification: no GATK, no database) and
+`… gate require-pass` (integrity + PASS + the complete required-check set). Missing evidence,
+missing Git history, a wrong source tree, wrong ancestry, a missing binary, a wrong digest, a
+wrong revision or unavailable qualification inputs all fail closed. No command runs Alembic, and
+none accepts a plan, hashes, a result, a trust bundle or a runner override.
+
+**Official GATK environment status.** At F7-A the official GATK qualification environment is
+**not provisioned** in this workspace, so no official run was performed and **no HARNESS-READY
+evidence exists**. The framework tests all pass; F7-B remains blocked until the official run
+succeeds.
 
 ### F6 execution recovery contract
 
