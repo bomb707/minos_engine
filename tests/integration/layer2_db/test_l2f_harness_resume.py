@@ -379,3 +379,157 @@ def test_the_operational_database_is_never_the_qualification_target(env: Any) ->
     assert name != R.OPERATIONAL_DATABASE_NAME
     with pytest.raises(R.OperationalDatabaseRefused):
         R.refuse_operational_database(f"postgresql://u@h/{R.OPERATIONAL_DATABASE_NAME}")
+
+
+# --------------------------------------------------------------------------- #
+# CLOSURE-2 FIX 2 — the executed job must BE the derived F7 qualification job
+# --------------------------------------------------------------------------- #
+def test_a_contaminated_scratch_slice_refuses_qualification(env: Any) -> None:
+    """Another claimable PENDING job must cause a refusal, not a mislabelled F7 execution."""
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    with env.engine.connect() as c:
+        rows = c.execute(
+            text(
+                f"SELECT j.job_key FROM {_JOBS} j ORDER BY j.created_at, j.id"  # noqa: S608
+            )
+        ).all()
+    assert len(rows) >= 2, "the fixture enqueues several claimable jobs"
+    derived = type("J", (), {"job_key": str(rows[0][0])})()
+    with pytest.raises(Q.QualificationEnvironmentError, match="does not contain exactly"):
+        Q._require_exact_qualification_slice(env.engine, env.plan, derived)
+
+
+def test_an_exact_single_job_slice_is_accepted(env: Any) -> None:
+    """Control: once every other job is terminal, the remaining derived job is accepted."""
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    for _ in range(3):
+        assert env.run() is not None
+    with env.engine.connect() as c:
+        remaining = [
+            str(r[0])
+            for r in c.execute(
+                text(
+                    f"SELECT job_key FROM {_JOBS} "  # noqa: S608
+                    "WHERE status NOT IN ('SUCCEEDED','FAILED')"
+                )
+            ).all()
+        ]
+    assert len(remaining) == 1
+    derived = type("J", (), {"job_key": remaining[0]})()
+    Q._require_exact_qualification_slice(env.engine, env.plan, derived)  # must not raise
+
+
+def test_a_dispatched_job_that_is_not_the_derived_job_is_refused(env: Any) -> None:
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+    from minos_engine.qualification.l2f_harness_ready_qualifier import DerivedQualificationJob
+
+    dispatched = env.run()
+    assert dispatched is not None
+    wrong = DerivedQualificationJob(
+        member_index=0,
+        candidate_index=0,
+        dataset_id="d",
+        profile_id="p",
+        partition="train",
+        job_key="f" * 64,
+        config_hash="e" * 64,
+        effective_config={},
+    )
+    with pytest.raises(Q.QualificationEnvironmentError, match="is not the derived"):
+        Q._require_dispatched_is_derived(env.engine, env.plan, wrong, dispatched)
+
+
+# --------------------------------------------------------------------------- #
+# CLOSURE-2 FIX 3 — real resume evidence
+# --------------------------------------------------------------------------- #
+def test_every_tracked_table_is_unchanged_across_a_restart_and_replay(env: Any) -> None:
+    """Pre/post counts on EVERY table a replay could duplicate, not just the enqueue report."""
+    from minos_engine.qualification.l2f_harness_ready_qualifier import row_counts
+
+    assert env.run() is not None
+    before = row_counts(env.engine)
+    assert set(before) == {
+        "plans",
+        "members",
+        "config_payloads",
+        "configs",
+        "jobs",
+        "results",
+        "failures",
+        "artifacts",
+    }
+    artifacts_before = _artifact_fingerprint(env.result_root)
+
+    env.engine.dispose()
+    env.engine = _engine(env.url)
+    _enqueue_experiment_jobs_with_trust(env.engine, env.plan, _CS, start=0, count=4)
+
+    after = row_counts(env.engine)
+    assert after == before, (before, after)
+    assert _artifact_fingerprint(env.result_root) == artifacts_before
+
+
+def test_a_conflicting_replay_actually_reaches_the_persistence_boundary(
+    env: Any, tmp_path: Path
+) -> None:
+    """The forged candidate set really hits _persist_experiment_plan_with_trust and is rejected."""
+    from minos_engine.qualification.l2f_harness_ready_qualifier import (
+        attempt_conflicting_replay,
+        row_counts,
+    )
+
+    assert env.run() is not None
+    before = row_counts(env.engine)
+    artifacts_before = _artifact_fingerprint(env.result_root)
+    db_before = _database_fingerprint(env.engine)
+
+    rejected, created = attempt_conflicting_replay(
+        env.engine, env.plan, _replay_publisher(tmp_path)
+    )
+    assert rejected is True
+    assert created == 0
+    assert row_counts(env.engine) == before
+    assert _artifact_fingerprint(env.result_root) == artifacts_before
+    assert _database_fingerprint(env.engine) == db_before
+
+
+def test_a_failed_job_survives_restart_and_is_never_auto_retried(env: Any) -> None:
+    """Control (deterministic FakeGatkRunner): FAILED stays FAILED and is never reclaimed."""
+    from minos_engine.qualification.l2f_harness_ready_qualifier import observe_no_automatic_retry
+
+    failed = env.run(runner=FakeGatkRunner(exit_code=3))
+    assert failed is not None and failed.status == "FAILED"
+
+    env.engine.dispose()
+    env.engine = _engine(env.url)
+
+    remained, reclaimed = observe_no_automatic_retry(env.engine, env.plan)
+    assert remained is True
+    assert reclaimed is False
+
+    # resuming the worker takes a DIFFERENT job and never re-runs the failed one
+    following = env.run()
+    assert following is not None and following.job_id != failed.job_id
+    remained_after, reclaimed_after = observe_no_automatic_retry(env.engine, env.plan)
+    assert remained_after is True and reclaimed_after is False
+    with env.engine.connect() as c:
+        status = str(
+            c.execute(
+                text(f"SELECT status FROM {_JOBS} WHERE id=:i"),  # noqa: S608
+                {"i": failed.job_id},
+            ).scalar_one()
+        )
+    assert status == "FAILED"
+
+
+def test_the_operational_fingerprint_requires_a_read_only_transaction(env: Any) -> None:
+    """A scratch connection is writable, so the operational observer refuses it."""
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    fingerprint, revision, l2f_tables = Q.operational_fingerprint(env.engine)
+    # the scratch DB is at 0008 with L2-F tables; the operational assertions are what reject it
+    assert revision == "0008_l2f_execution_results"
+    assert l2f_tables > 0
+    assert len(fingerprint) == 64

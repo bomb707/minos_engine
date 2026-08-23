@@ -158,8 +158,18 @@ def refuse_operational_database(database_url: str | None = None) -> None:
 # --------------------------------------------------------------------------- #
 # check derivation — every value comes from an OBSERVATION, never from a caller
 # --------------------------------------------------------------------------- #
-def derive_checks(result: HarnessReadyQualification) -> dict[str, bool]:
-    """Derive the complete required-check map from an immutable qualification observation set."""
+def derive_checks(
+    result: HarnessReadyQualification,
+    *,
+    recomputed_accepted: Any = None,
+    root: Path | None = None,
+) -> dict[str, bool]:
+    """Derive the complete required-check map from an immutable qualification observation set.
+
+    ``recomputed_accepted``/``root`` make the accepted-identity closure explicit about WHICH
+    checkout it recomputes from. Offline verification of another checkout must pass its own root,
+    so the closure can never silently fall back to this module's repository.
+    """
     src = result.source
     acc = result.accepted
     ex = result.official_execution
@@ -170,7 +180,11 @@ def derive_checks(result: HarnessReadyQualification) -> dict[str, bool]:
     bnd = result.boundaries
     # every accepted identity is compared against values RECOMPUTED from the committed bytes,
     # never against a shape check such as bool(...) or "is 64 hex characters".
-    recomputed = recompute_accepted_identities()
+    recomputed = (
+        recomputed_accepted
+        if recomputed_accepted is not None
+        else recompute_accepted_identities(root)
+    )
 
     checks: dict[str, bool] = {
         "qualified_source_present": bool(src.qualified_source_git_sha),
@@ -431,7 +445,19 @@ def verify_committed_harness_ready_gate(
                     reasons.append(
                         f"qualification hash mismatch: gate binds {expected}, bytes yield {actual}"
                     )
-                derived = derive_checks(parsed)
+                # recompute the accepted closure from the SUPPLIED verification root, never
+                # from this module's own repository.
+                try:
+                    recomputed = recompute_accepted_identities(root)
+                except MinosEngineError as exc:
+                    reasons.append(f"accepted identity recomputation failed at {root}: {exc}")
+                    recomputed = None
+                if recomputed is not None and parsed.accepted != recomputed:
+                    reasons.append(
+                        "the qualification result's accepted identities do not equal those "
+                        f"recomputed from the verification root {root}"
+                    )
+                derived = derive_checks(parsed, recomputed_accepted=recomputed, root=root)
                 if {k: gate.mandatory_checks.get(k) for k in derived} != derived:
                     reasons.append("gate checks do not equal the checks derived from the result")
                 # the committed repository must still carry the accepted identities the result

@@ -87,16 +87,29 @@ def recompute_live_gatk_artifact_sha256(root: Path | None = None) -> tuple[str, 
 
 
 def recompute_e5_gate_hashes(root: Path | None = None) -> dict[str, str]:
-    """Load both accepted L2-E gates and recompute their real gate hashes + integrity closure."""
+    """Recompute both accepted E5 gate hashes and run their ESTABLISHED ancestry closure.
+
+    Generic ``verify_gate_integrity`` alone is not enough: each accepted L2-E gate has its own
+    verifier that additionally proves qualified source/tree, ancestry and evidence closure, and
+    those are what F7 requires. Both are run here, and neither accepted gate is modified.
+    """
     from minos_engine.gates.contracts import GateStatus
     from minos_engine.gates.verifier import load_gate, verify_gate_integrity
+    from minos_engine.qualification.layer2_feature_view_runner import (
+        verify_feature_matrix_frozen_1_gate,
+        verify_feature_view_ready_gate,
+    )
 
     base = root or repository_root()
+    closures = {
+        "FEATURE-VIEW-READY": ("gates/feature-view-ready.json", verify_feature_view_ready_gate),
+        "FEATURE-MATRIX-FROZEN-1": (
+            "gates/feature-matrix-frozen-1.json",
+            verify_feature_matrix_frozen_1_gate,
+        ),
+    }
     out: dict[str, str] = {}
-    for gate_name, relative in (
-        ("FEATURE-VIEW-READY", "gates/feature-view-ready.json"),
-        ("FEATURE-MATRIX-FROZEN-1", "gates/feature-matrix-frozen-1.json"),
-    ):
+    for gate_name, (relative, closure) in closures.items():
         path = base / relative
         if not path.is_file():
             raise AcceptedIdentityError(f"accepted E5 gate is missing: {relative}")
@@ -111,6 +124,13 @@ def recompute_e5_gate_hashes(root: Path | None = None) -> dict[str, str]:
         if not integrity.ok:
             raise AcceptedIdentityError(
                 f"accepted E5 gate {gate_name} failed integrity: {integrity.reasons}"
+            )
+        # the ESTABLISHED gate-specific closure (source/tree/ancestry/evidence), not just integrity
+        established = closure(base, path)
+        if not established.ok:
+            raise AcceptedIdentityError(
+                f"accepted E5 gate {gate_name} failed its established ancestry closure: "
+                f"{tuple(established.reasons)}"
             )
         out[gate_name] = gate.gate_hash
     return out

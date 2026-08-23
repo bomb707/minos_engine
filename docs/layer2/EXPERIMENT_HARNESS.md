@@ -58,9 +58,10 @@ selection, `HARNESS-READY` and F7 remain absent**, `Layer2Service.select_config`
 `0005_l2e_feature_view` with zero `l2f%` tables — F6 applies no migration and runs no operational
 job.
 
-**F7-A implements the HARNESS-READY qualification framework — and issues no gate.** This
-corrective commit supersedes the unaccepted attempt `8ddc4c63`, which allowed a synthetic
-qualification document to assemble a PASS gate and never entered a real qualifier.
+**F7-A implements the HARNESS-READY qualification framework — and issues no gate.** The corrective
+commit `e16f7122` superseded the unaccepted attempt `8ddc4c63` (synthetic qualification documents
+could assemble PASS; the CLI never entered a real qualifier), and this closure commit fixes the
+remaining semantic defects listed below.
 `HARNESS-READY` **has not been issued**: this is a source/framework commit only. The official
 GATK qualification run and the committed evidence (`gates/harness-ready.json` plus the canonical
 qualification result) belong to the separate **F7-B** commit, which is generated from this
@@ -150,6 +151,27 @@ target. Every database-backed F7 test and rehearsal uses isolated scratch Postgr
 missing Git history, a wrong source tree, wrong ancestry, a missing binary, a wrong digest, a
 wrong revision or unavailable qualification inputs all fail closed. No command runs Alembic, and
 none accepts a plan, hashes, a result, a trust bundle or a runner override.
+
+**Closure #2 semantics.** `recomputed_result_hash` is produced by the frozen
+`compute_result_hash()` from the reconstructed `ExecutionInput`, the re-derived `ExecutionConfig`,
+the recomputed logical invocation and a `GatkExecutionOutcome` built from the VCF bytes the
+verifier hashed itself — never copied from `manifest.result_hash` — and it must equal the
+manifest, the database row and the dispatched result. The executed job must **be** the derived F7
+job: the scratch slice is required to hold exactly that one claimable job, and the dispatched
+member/partition/candidate-index/CONFIG-hash/job-key are re-read and compared, so a contaminated
+scratch database causes a refusal rather than a mislabelled qualification (it is never cleaned or
+repaired). Resume evidence is deterministic pre/post row counts across plans, members, CONFIG
+payloads, plan configs, jobs, results, failures and artifacts plus database and artifact
+fingerprints; a conflicting replay really reaches `_persist_experiment_plan_with_trust` and must
+create zero rows; and `automatic_retry_observed` is derived from a durably FAILED control job that
+stayed FAILED and unreclaimed across a restart. Stage blocking requires `StageNotReadyError`
+**specifically** — a normal return fails, and any other exception fails the qualification instead
+of passing quietly. The operational store is observed through a transaction PostgreSQL itself
+reports as read-only (`SHOW transaction_read_only`), fingerprinted before and after, and required
+to stay at `0005_l2e_feature_view` with zero `l2f%` tables. Offline verification recomputes the
+accepted closure from the **supplied** `base_dir`, so a tampered alternate checkout is rejected.
+Both accepted E5 gates additionally run their **established** gate-specific ancestry closure, not
+generic integrity alone.
 
 **Accepted identities are recomputed, not shape-checked.** `l2f_accepted_identities` re-derives
 both E5 gate hashes (loading the committed gates and re-running their integrity closure), the

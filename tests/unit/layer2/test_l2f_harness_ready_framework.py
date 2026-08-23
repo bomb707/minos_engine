@@ -40,6 +40,8 @@ from minos_engine.qualification.l2f_gatk_twin_parity import (
 from minos_engine.qualification.l2f_harness_ready_contract import (
     ACCEPTED_CANDIDATE_COUNT,
     ACCEPTED_F6_CORRECTIVE_COMMIT,
+    ACCEPTED_PARAMETER_SPACE_HASH,
+    ACCEPTED_PLAN_HASH,
     HARNESS_READY_GATE,
     HARNESS_READY_GATE_PATH,
     ArtifactVerificationResult,
@@ -1328,3 +1330,339 @@ def test_a_gate_and_result_that_disagree_on_the_source_fail(tmp_path: Path) -> N
         base_dir=_repo_root(), gate_path=gate_path, qualification_path=qual_path
     )
     assert verified["ok"] is False
+
+
+# --------------------------------------------------------------------------- #
+# CLOSURE-2 FIX 1 — result_hash is RECOMPUTED through the frozen formula
+# --------------------------------------------------------------------------- #
+def test_the_qualifier_never_copies_the_manifest_result_hash() -> None:
+    """`recomputed_result_hash` must come from compute_result_hash, not manifest.result_hash."""
+    import ast
+    import inspect
+
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    source = inspect.getsource(Q._observe_result_details)
+    tree = ast.parse(source.lstrip())
+    assigned: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.keyword) and node.arg == "recomputed_result_hash":
+            assigned.append(ast.dump(node.value))
+    assert assigned, "recomputed_result_hash is never assigned"
+    for dumped in assigned:
+        assert "manifest" not in dumped, dumped
+    assert "compute_result_hash(" in source
+
+
+def test_a_forged_self_consistent_result_hash_fails_the_frozen_recomputation() -> None:
+    """The decisive control: manifest AND database agree on a forged hash, the formula does not."""
+    from minos_engine.experiments.execution_contract import (
+        ExecutionConfig,
+        ExecutionResultManifest,
+        GatkExecutionOutcome,
+        compute_result_hash,
+        execution_input_from_manifest,
+    )
+
+    plan, invocation, config_hash = _twin_and_execution()
+    inputs = _inputs()
+    outcome = GatkExecutionOutcome(
+        exit_code=0, runtime_ms=5, vcf_sha256=_H["f"], vcf_size_bytes=512
+    )
+    config = ExecutionConfig(
+        config_hash=config_hash,
+        parameter_space_hash=ACCEPTED_PARAMETER_SPACE_HASH,
+        config_index=0,
+        effective_config=_accepted_config(),
+    )
+    honest = compute_result_hash(
+        plan_hash=ACCEPTED_PLAN_HASH,
+        job_key=_H["c"],
+        inputs=inputs,
+        config=config,
+        invocation=invocation,
+        outcome=outcome,
+    )
+    forged = "0" * 64
+    assert honest != forged
+    # a manifest that self-consistently carries the forged value still cannot reproduce it
+    manifest = ExecutionResultManifest(
+        schema_version="l2f-gatk-execution-result-v1",
+        plan_hash=ACCEPTED_PLAN_HASH,
+        job_id="11111111-2222-3333-4444-555555555555",
+        job_key=_H["c"],
+        dataset_id=inputs.dataset_id,
+        round_id=inputs.round_id,
+        profile_id=inputs.profile_id,
+        content_hash=inputs.content_hash,
+        feature_values_hash=inputs.feature_values_hash,
+        config_hash=config_hash,
+        parameter_space_hash=ACCEPTED_PARAMETER_SPACE_HASH,
+        input_identity_hash=inputs.identity_hash(),
+        bam_sha256=inputs.bam_sha256,
+        bai_sha256=inputs.bai_sha256,
+        reference_sha256=inputs.reference_sha256,
+        fai_sha256=inputs.fai_sha256,
+        dictionary_sha256=inputs.dictionary_sha256,
+        bam_size_bytes=inputs.bam_size_bytes,
+        region_hash=inputs.region_hash,
+        region_start0=inputs.region_start0,
+        region_end0_exclusive=inputs.region_end0_exclusive,
+        chromosome=inputs.chromosome,
+        logical_argv_hash=invocation.argv_hash(),
+        gatk_executable_sha256=_H["b"],
+        gatk_version="4.5.0.0",
+        vcf_sha256=_H["f"],
+        vcf_size_bytes=512,
+        result_hash=forged,
+        runtime_ms=5,
+        worker_id="w",
+        generated_at="2026-01-01T00:00:00+00:00",
+    )
+    rebuilt = compute_result_hash(
+        plan_hash=ACCEPTED_PLAN_HASH,
+        job_key=manifest.job_key,
+        inputs=execution_input_from_manifest(manifest),
+        config=config,
+        invocation=invocation,
+        outcome=outcome,
+    )
+    assert rebuilt == honest != manifest.result_hash
+    # the qualification HOLDs when the recomputed value disagrees with the stored one
+    degraded = _qualification(
+        artifact_verification=_qualification().artifact_verification.model_copy(
+            update={"recomputed_result_hash": forged}
+        )
+    )
+    assert _assemble(degraded).status is GateStatus.HOLD
+
+
+# --------------------------------------------------------------------------- #
+# CLOSURE-2 FIX 4 — StageNotReadyError specifically
+# --------------------------------------------------------------------------- #
+def test_stage_blocking_requires_stage_not_ready_error() -> None:
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    assert Q._select_config_raises_stage_not_ready() is True
+
+
+def test_an_unrelated_exception_is_not_stage_blocking(monkeypatch: pytest.MonkeyPatch) -> None:
+    from minos_engine.layer2 import service as S
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    class _Boom:
+        def select_config(self, *_a: Any, **_k: Any) -> Any:
+            raise RuntimeError("an unrelated crash")
+
+    monkeypatch.setattr(S, "Layer2Service", _Boom)
+    with pytest.raises(Q.QualificationEnvironmentError, match="not StageNotReadyError"):
+        Q._select_config_raises_stage_not_ready()
+
+
+def test_a_normal_return_from_select_config_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    from minos_engine.layer2 import service as S
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    class _Open:
+        def select_config(self, *_a: Any, **_k: Any) -> Any:
+            return {"config": "granted"}
+
+    monkeypatch.setattr(S, "Layer2Service", _Open)
+    with pytest.raises(Q.QualificationEnvironmentError, match="returned normally"):
+        Q._select_config_raises_stage_not_ready()
+
+
+# --------------------------------------------------------------------------- #
+# CLOSURE-2 FIX 5 — the operational store is read-only and unchanged
+# --------------------------------------------------------------------------- #
+def test_the_operational_endpoint_must_be_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    monkeypatch.delenv("MINOS_L2F_OPERATIONAL_READONLY_URL", raising=False)
+    with pytest.raises(Q.QualificationEnvironmentError, match="OPERATIONAL_READONLY"):
+        Q._capture_operational_before()
+
+
+def test_a_writable_operational_session_is_refused() -> None:
+    """A connection that does not report a read-only transaction is refused."""
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    class _Conn:
+        def execute(self, statement: Any, *_a: Any) -> Any:
+            text_of = str(statement)
+
+            class _R:
+                @staticmethod
+                def scalar_one() -> Any:
+                    return "off" if "transaction_read_only" in text_of else "x"
+
+                @staticmethod
+                def all() -> Any:
+                    return []
+
+            return _R()
+
+        def begin(self) -> Any:
+            return contextlib_nullcontext()
+
+        def __enter__(self) -> Any:
+            return self
+
+        def __exit__(self, *_a: Any) -> None:
+            return None
+
+    class _Engine:
+        @staticmethod
+        def connect() -> Any:
+            return _Conn()
+
+    with pytest.raises(Q.QualificationEnvironmentError, match="not a read-only transaction"):
+        Q.operational_fingerprint(_Engine())
+
+
+def contextlib_nullcontext() -> Any:
+    import contextlib
+
+    return contextlib.nullcontext()
+
+
+@pytest.mark.parametrize(
+    ("mutation", "match"),
+    [
+        ({"operational_database_revision": "0006_x"}, None),
+        ({"operational_l2f_table_count": 1}, None),
+    ],
+)
+def test_a_wrong_operational_state_holds_the_gate(mutation: dict[str, Any], match: Any) -> None:
+    degraded = _qualification(boundaries=_qualification().boundaries.model_copy(update=mutation))
+    gate = _assemble(degraded)
+    assert gate.mandatory_checks["operational_database_untouched"] is False
+    assert gate.status is GateStatus.HOLD
+
+
+# --------------------------------------------------------------------------- #
+# CLOSURE-2 FIX 6 — offline verification recomputes from the SUPPLIED root
+# --------------------------------------------------------------------------- #
+def test_accepted_identities_are_recomputed_from_the_supplied_root(tmp_path: Path) -> None:
+    from minos_engine.qualification.l2f_accepted_identities import (
+        recompute_migration_sha256,
+    )
+
+    with pytest.raises(AcceptedIdentityError, match="missing"):
+        recompute_migration_sha256(tmp_path)
+
+
+def test_a_tampered_alternate_checkout_fails_offline_verification(tmp_path: Path) -> None:
+    """Clone the repo, tamper one accepted committed artifact, keep the gate/result identical."""
+    import shutil
+    import subprocess as _sp
+
+    clone = tmp_path / "checkout"
+    _sp.run(  # noqa: S603 - fixed argv, no shell
+        ["git", "clone", "--quiet", "--no-hardlinks", str(_repo_root()), str(clone)],  # noqa: S607
+        capture_output=True,
+        check=True,
+    )
+    source = _qualification().source.model_copy(
+        update={
+            "qualified_source_git_sha": _head_sha(),
+            "qualified_source_tree_sha": _head_tree(),
+        }
+    )
+    result = _qualification(source=source)
+    gate_path = _write_gate(tmp_path, result)
+    qual_path = tmp_path / "qualification.json"
+    qual_path.write_bytes(canonical_qualification_bytes(result) + b"\n")
+
+    # tamper exactly one accepted committed artifact IN THE CLONE
+    victim = clone / "manifests" / "l2f_gatk_parameter_space_v1.json"
+    victim.write_bytes(victim.read_bytes() + b"\n")
+
+    verified = R.verify_committed_harness_ready_gate(
+        base_dir=clone, gate_path=gate_path, qualification_path=qual_path
+    )
+    assert verified["ok"] is False
+    assert any(
+        "recomputed from the verification root" in r or "accepted identity" in r
+        for r in verified["reasons"]
+    ), verified["reasons"]
+    shutil.rmtree(clone, ignore_errors=True)
+
+
+# --------------------------------------------------------------------------- #
+# CLOSURE-2 FIX 7 — the established E5 ancestry closure is what runs
+# --------------------------------------------------------------------------- #
+def test_the_e5_closure_uses_the_established_gate_verifiers() -> None:
+    import inspect
+
+    from minos_engine.qualification import l2f_accepted_identities as A
+
+    source = inspect.getsource(A.recompute_e5_gate_hashes)
+    assert "verify_feature_view_ready_gate" in source
+    assert "verify_feature_matrix_frozen_1_gate" in source
+    hashes = A.recompute_e5_gate_hashes()
+    assert set(hashes) == {"FEATURE-VIEW-READY", "FEATURE-MATRIX-FROZEN-1"}
+
+
+def test_a_missing_e5_gate_fails_the_closure(tmp_path: Path) -> None:
+    from minos_engine.qualification import l2f_accepted_identities as A
+
+    with pytest.raises(AcceptedIdentityError, match="accepted E5 gate is missing"):
+        A.recompute_e5_gate_hashes(tmp_path)
+
+
+# --------------------------------------------------------------------------- #
+# CLOSURE-2 FIX 3 — resume evidence is deterministic pre/post, not a boolean
+# --------------------------------------------------------------------------- #
+def test_the_resume_contract_carries_deterministic_pre_post_evidence() -> None:
+    from minos_engine.qualification.l2f_harness_ready_contract import ResumeResult
+
+    fields = set(ResumeResult.model_fields)
+    for name in (
+        "row_counts_before",
+        "row_counts_after",
+        "database_fingerprint_before",
+        "database_fingerprint_after",
+        "artifact_fingerprint_before",
+        "artifact_fingerprint_after",
+        "conflicting_replay_created_rows",
+        "failed_job_remained_failed",
+        "failed_job_reclaimed",
+    ):
+        assert name in fields, name
+
+
+def test_duplicate_rows_are_derived_from_every_tracked_table() -> None:
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    tracked = {label for label, _ in Q.ROW_COUNT_TABLES}
+    assert tracked == {
+        "plans",
+        "members",
+        "config_payloads",
+        "configs",
+        "jobs",
+        "results",
+        "failures",
+        "artifacts",
+    }
+
+
+def test_a_conflicting_replay_that_created_rows_holds_the_gate() -> None:
+    degraded = _qualification(
+        resume=_qualification().resume.model_copy(
+            update={"conflicting_replay_rejected": False, "conflicting_replay_created_rows": 1}
+        )
+    )
+    assert _assemble(degraded).status is GateStatus.HOLD
+
+
+def test_a_reclaimed_failed_job_holds_the_gate() -> None:
+    degraded = _qualification(
+        resume=_qualification().resume.model_copy(
+            update={"automatic_retry_observed": True, "failed_job_reclaimed": True}
+        )
+    )
+    gate = _assemble(degraded)
+    assert gate.mandatory_checks["no_automatic_retry"] is False
+    assert gate.status is GateStatus.HOLD

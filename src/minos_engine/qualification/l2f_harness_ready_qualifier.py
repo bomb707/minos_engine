@@ -57,6 +57,10 @@ __all__ = [
     "acquire_source_provenance",
     "verify_official_gatk_binary",
     "derive_qualification_job",
+    "row_counts",
+    "attempt_conflicting_replay",
+    "observe_no_automatic_retry",
+    "ROW_COUNT_TABLES",
     "run_harness_ready_qualification",
 ]
 
@@ -404,12 +408,16 @@ def run_harness_ready_qualification(*, base_dir: str | Path = ".") -> TrustedQua
             ) from exc
         publisher = ResultArtifactPublisher(artifact_root)
 
-        # 8) the failure inventory is DERIVED from the implementation and structurally verified
+        # 8) capture the operational state BEFORE anything runs, through a read-only transaction
+        operational_before = _capture_operational_before()
+
+        # 9) the failure inventory is DERIVED from the implementation and structurally verified
         inventory = build_failure_inventory()
         verify_failure_inventory(inventory)
 
-        # 9) execute the official job, then observe resume and artifact verification
+        # 10) execute the official job, then observe resume and artifact verification
         observed = _execute_and_observe(
+            operational_before=operational_before,
             scratch_url=scratch,
             runner=runner,
             binary=binary,
@@ -501,6 +509,7 @@ def _require_scratch_at_0008(engine: Any) -> None:
 
 def _execute_and_observe(
     *,
+    operational_before: tuple[str, str, int] | None = None,
     scratch_url: str,
     runner: Any,
     binary: GatkBinaryIdentity,
@@ -551,7 +560,10 @@ def _execute_and_observe(
                 "the accepted plan graph is not persisted in the scratch database; F7 "
                 "qualification never persists or repairs it"
             )
+        # the F7 slice must be EXACTLY the derived qualification job: another PENDING job could
+        # otherwise be claimed first and mislabelled as the F7 qualification case.
         _enqueue_experiment_jobs_with_trust(engine, plan, candidate_set, start=0, count=1)
+        _require_exact_qualification_slice(engine, plan, job)
 
         dispatched = _execute_next_job_with_trust(
             engine,
@@ -568,9 +580,12 @@ def _execute_and_observe(
             raise QualificationEnvironmentError(
                 f"official qualification execution did not succeed: {dispatched}"
             )
+        # the job that actually ran must BE the deterministically derived qualification job.
+        _require_dispatched_is_derived(engine, plan, job, dispatched)
 
         db_before = _fingerprint_database(engine)
         artifacts_before = _fingerprint_artifacts(Path(publisher.root))
+        counts_before = row_counts(engine)
 
         # --- resume: dispose every engine and rebuild from the same scratch endpoint --------
         engine.dispose()
@@ -579,6 +594,10 @@ def _execute_and_observe(
         replay = _enqueue_experiment_jobs_with_trust(engine, plan, candidate_set, start=0, count=1)
         db_after = _fingerprint_database(engine)
         artifacts_after = _fingerprint_artifacts(Path(publisher.root))
+        counts_after = row_counts(engine)
+        conflicting_rejected, conflicting_created = attempt_conflicting_replay(
+            engine, plan, publisher
+        )
         exhausted = (
             _execute_next_job_with_trust(
                 engine,
@@ -612,16 +631,23 @@ def _execute_and_observe(
             build_twin=build_twin_plan_for_execution,
             compare_parity=compare_invocation_parity,
         )
+        failed_remained, failed_reclaimed = observe_no_automatic_retry(engine, plan)
         resume = _build_resume_observation(
             replay=replay,
+            counts_before=counts_before,
+            counts_after=counts_after,
             db_before=db_before,
             db_after=db_after,
             artifacts_before=artifacts_before,
             artifacts_after=artifacts_after,
             exhausted=exhausted,
             stranded=len(find_nonterminal_jobs(engine, plan.plan_hash)),
+            conflicting_rejected=conflicting_rejected,
+            conflicting_created=conflicting_created,
+            failed_remained_failed=failed_remained,
+            failed_reclaimed=failed_reclaimed,
         )
-        boundaries = _observe_boundaries()
+        boundaries = _observe_boundaries(before=operational_before)
         return _Observed(
             qualification_input=observed_input,
             official_execution=official,
@@ -654,8 +680,11 @@ def _observe_result_details(
 
     from minos_engine.common.canonical_json import canonical_json_bytes
     from minos_engine.experiments.execution_contract import (
+        ExecutionConfig,
         ExecutionResultManifest,
+        GatkExecutionOutcome,
         compute_input_identity_hash,
+        compute_result_hash,
         execution_input_from_manifest,
     )
     from minos_engine.qualification.l2f_harness_ready_contract import (
@@ -733,6 +762,41 @@ def _observe_result_details(
         gatk_executable_sha256=binary.executable_sha256,
         gatk_version=binary.version,
     )
+    # --- the FROZEN result identity, recomputed from independently verified material ---------
+    # Nothing here reads manifest.result_hash: the outcome is rebuilt from the VCF bytes this
+    # verifier hashed itself, and the CONFIG identity it re-derived from the CONFIG artifact.
+    recomputed_config = ExecutionConfig(
+        config_hash=str(row["config_hash"]),
+        parameter_space_hash=str(row["parameter_space_hash"]),
+        config_index=0,
+        effective_config=effective,
+    )
+    recomputed_outcome = GatkExecutionOutcome(
+        exit_code=0,
+        runtime_ms=manifest.runtime_ms,
+        vcf_sha256=hashlib.sha256(vcf_bytes).hexdigest(),
+        vcf_size_bytes=len(vcf_bytes),
+    )
+    recomputed_result_hash = compute_result_hash(
+        plan_hash=plan.plan_hash,
+        job_key=str(row["job_key"]),
+        inputs=inputs,
+        config=recomputed_config,
+        invocation=invocation,
+        outcome=recomputed_outcome,
+    )
+    # the independently recomputed identity must equal the manifest, the database row AND the
+    # dispatched result; a forged pair that agrees with itself still fails here.
+    for label, claimed in (
+        ("manifest", manifest.result_hash),
+        ("database row", str(row["result_hash"])),
+        ("dispatched result", str(getattr(dispatched, "result_hash", ""))),
+    ):
+        if claimed != recomputed_result_hash:
+            raise QualificationEnvironmentError(
+                f"the {label} result_hash {claimed} does not equal the independently recomputed "
+                f"{recomputed_result_hash}"
+            )
     twin_plan = build_twin(
         effective_config=effective,
         parameter_space_hash=str(row["parameter_space_hash"]),
@@ -778,7 +842,7 @@ def _observe_result_details(
         media_types_ok=vcf_ok and man_ok,
         recomputed_input_identity_hash=recomputed_input,
         recomputed_logical_argv_hash=invocation.argv_hash(),
-        recomputed_result_hash=manifest.result_hash,
+        recomputed_result_hash=recomputed_result_hash,
         harness_verifier_status=str(verification.status),
         harness_verifier_checks=dict(verification.checks),
         verifier_non_mutating=fingerprint_before == fingerprint_after,
@@ -788,90 +852,179 @@ def _observe_result_details(
     return qualification_input, official, parity, artifact_result
 
 
+ROW_COUNT_TABLES: tuple[tuple[str, str], ...] = (
+    ("plans", "experiments.l2f_experiment_plans"),
+    ("members", "experiments.l2f_experiment_plan_members"),
+    ("config_payloads", "experiments.l2f_config_payloads"),
+    ("configs", "experiments.l2f_experiment_plan_configs"),
+    ("jobs", "experiments.l2f_experiment_jobs"),
+    ("results", "experiments.l2f_execution_results"),
+    ("failures", "experiments.l2f_execution_failures"),
+    ("artifacts", "catalog.artifacts"),
+)
+
+
+def row_counts(engine: Any) -> dict[str, int]:
+    """Deterministic per-table row counts across every table a replay could duplicate."""
+    from sqlalchemy import text
+
+    out: dict[str, int] = {}
+    with engine.connect() as conn:
+        for label, table in ROW_COUNT_TABLES:
+            out[label] = int(
+                conn.execute(text(f"SELECT count(*) FROM {table}")).scalar_one()  # noqa: S608
+            )
+    return out
+
+
+def attempt_conflicting_replay(engine: Any, plan: Any, publisher: Any) -> tuple[bool, int]:
+    """ACTUALLY drive a conflicting replay at the accepted persistence boundary.
+
+    Returns ``(rejected, rows_created)``. The forged candidate set really reaches
+    ``_persist_experiment_plan_with_trust``; it is not merely handed to the pure candidate
+    verifier. Nothing is cleaned up afterwards because nothing may be created.
+    """
+    import dataclasses as _dc
+
+    from minos_engine.experiments.candidates import generate_accepted_candidate_set
+    from minos_engine.storage.l2f_plan_store import _persist_experiment_plan_with_trust
+
+    forged = _dc.replace(generate_accepted_candidate_set(), candidate_set_hash="f" * 64)
+    before = row_counts(engine)
+    rejected = False
+    try:
+        _persist_experiment_plan_with_trust(engine, plan, forged, publisher=publisher)
+    except Exception:
+        rejected = True
+    after = row_counts(engine)
+    created = sum(max(0, after[k] - before[k]) for k in before)
+    return rejected, created
+
+
 def _build_resume_observation(
     *,
     replay: Any,
+    counts_before: dict[str, int],
+    counts_after: dict[str, int],
     db_before: str,
     db_after: str,
     artifacts_before: str,
     artifacts_after: str,
     exhausted: bool,
     stranded: int,
+    conflicting_rejected: bool,
+    conflicting_created: int,
+    failed_remained_failed: bool,
+    failed_reclaimed: bool,
 ) -> Any:
     from minos_engine.qualification.l2f_harness_ready_contract import ResumeResult
 
+    # "no duplicates" is EVERY table's count being unchanged across the restart + exact replay,
+    # not merely the enqueue helper reporting created_count == 0.
+    duplicates = sum(max(0, counts_after[k] - counts_before[k]) for k in counts_before)
     return ResumeResult(
         engines_recreated=True,
-        duplicate_rows_created=int(replay.created_count),
+        duplicate_rows_created=duplicates + int(replay.created_count),
         terminal_job_reset=db_before != db_after,
         terminal_job_reexecuted=db_before != db_after,
         artifact_bytes_rewritten=artifacts_before != artifacts_after,
         exact_replay_returned_existing=int(replay.existing_count) > 0,
-        conflicting_replay_rejected=_conflicting_replay_is_rejected(),
+        conflicting_replay_rejected=conflicting_rejected and conflicting_created == 0,
         exhausted_queue_returns_none=exhausted,
         nonterminal_jobs_remaining=stranded,
-        automatic_retry_observed=False,
+        # OBSERVED: a durably FAILED control job stayed FAILED and was never reclaimed.
+        automatic_retry_observed=failed_reclaimed or not failed_remained_failed,
+        row_counts_before=counts_before,
+        row_counts_after=counts_after,
+        database_fingerprint_before=db_before,
+        database_fingerprint_after=db_after,
+        artifact_fingerprint_before=artifacts_before,
+        artifact_fingerprint_after=artifacts_after,
+        conflicting_replay_created_rows=conflicting_created,
+        failed_job_remained_failed=failed_remained_failed,
+        failed_job_reclaimed=failed_reclaimed,
     )
 
 
-def _conflicting_replay_is_rejected() -> bool:
-    """Prove the accepted persistence boundary refuses a conflicting candidate set."""
-    import dataclasses as _dc
+def operational_fingerprint(engine: Any) -> tuple[str, str, int]:
+    """``(fingerprint, revision, l2f_table_count)`` read inside a READ-ONLY transaction.
 
-    from minos_engine.experiments.candidates import (
-        generate_accepted_candidate_set,
-        verify_accepted_candidate_set,
+    PostgreSQL itself is asked to enforce read-only: the session is set read-only and the
+    qualification refuses to proceed unless the server reports it. A configured "readonly"
+    variable NAME is never accepted as proof.
+    """
+    from sqlalchemy import text
+
+    with engine.connect() as conn, conn.begin():
+        conn.execute(text("SET TRANSACTION READ ONLY"))
+        readonly = str(conn.execute(text("SHOW transaction_read_only")).scalar_one())
+        if readonly.lower() != "on":
+            raise QualificationEnvironmentError(
+                "the operational connection is not a read-only transaction; F7 refuses to "
+                "observe the operational store through a writable session"
+            )
+        database = str(conn.execute(text("SELECT current_database()")).scalar_one())
+        revision = str(conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one())
+        l2f_tables = int(
+            conn.execute(
+                text(
+                    "SELECT count(*) FROM information_schema.tables "
+                    "WHERE table_schema='experiments' AND table_name LIKE 'l2f%'"
+                )
+            ).scalar_one()
+        )
+        inventory = conn.execute(
+            text(
+                "SELECT table_schema, table_name FROM information_schema.tables "
+                "WHERE table_schema IN "
+                "('catalog','experiments','profiling','audit','features','training','live') "
+                "ORDER BY table_schema, table_name"
+            )
+        ).all()
+    fingerprint = hashlib.sha256(
+        repr((database, revision, l2f_tables, inventory)).encode()
+    ).hexdigest()
+    return fingerprint, revision, l2f_tables
+
+
+def _observe_boundaries(*, before: tuple[str, str, int] | None = None) -> Any:
+    """Observe the leakage / non-mutation / authority boundary from the REAL environment."""
+    from sqlalchemy import create_engine
+
+    from minos_engine.qualification.l2f_harness_ready_contract import (
+        ACCEPTED_OPERATIONAL_REVISION,
+        BoundaryResult,
     )
-
-    forged = _dc.replace(generate_accepted_candidate_set(), candidate_set_hash="f" * 64)
-    try:
-        verify_accepted_candidate_set(forged)
-    except Exception:
-        return True
-    return False
-
-
-def _observe_boundaries() -> Any:
-    """Observe the leakage / non-mutation / authority boundary from the real environment."""
-    from sqlalchemy import create_engine, text
-
-    from minos_engine.qualification.l2f_harness_ready_contract import BoundaryResult
     from minos_engine.storage.database import normalize_database_url
 
-    revision = "unavailable"
-    l2f_tables = 0
     operational = os.environ.get("MINOS_L2F_OPERATIONAL_READONLY_URL")
-    if operational:
-        engine = create_engine(normalize_database_url(operational))
-        try:
-            with engine.connect() as conn:
-                revision = str(
-                    conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-                )
-                l2f_tables = int(
-                    conn.execute(
-                        text(
-                            "SELECT count(*) FROM information_schema.tables "
-                            "WHERE table_schema='experiments' AND table_name LIKE 'l2f%'"
-                        )
-                    ).scalar_one()
-                )
-        finally:
-            engine.dispose()
-    else:
+    if not operational:
         raise QualificationEnvironmentError(
-            "MINOS_L2F_OPERATIONAL_READONLY_URL must name the operational store read-only so "
-            "the qualification can OBSERVE that it remains untouched at 0005"
+            "MINOS_L2F_OPERATIONAL_READONLY_URL must name the operational store through "
+            "genuinely read-only credentials so the qualification can OBSERVE that it remains "
+            "untouched at 0005"
         )
-
-    select_config_blocked = False
+    engine = create_engine(normalize_database_url(operational))
     try:
-        from minos_engine.layer2.service import Layer2Service
+        after = operational_fingerprint(engine)
+    finally:
+        engine.dispose()
 
-        Layer2Service().select_config(None)  # type: ignore[arg-type]
-    except Exception:
-        select_config_blocked = True
-
+    fingerprint, revision, l2f_tables = after
+    if revision != ACCEPTED_OPERATIONAL_REVISION:
+        raise QualificationEnvironmentError(
+            f"the operational database is at {revision!r}, expected "
+            f"{ACCEPTED_OPERATIONAL_REVISION!r}"
+        )
+    if l2f_tables != 0:
+        raise QualificationEnvironmentError(
+            f"the operational database carries {l2f_tables} l2f%% tables, expected 0"
+        )
+    if before is not None and before != after:
+        raise QualificationEnvironmentError(
+            "the operational database changed during qualification: "
+            f"{before[0][:12]} -> {fingerprint[:12]}"
+        )
     return BoundaryResult(
         truth_paths_resolved=0,
         scoring_paths_resolved=0,
@@ -879,6 +1032,155 @@ def _observe_boundaries() -> Any:
         operational_database_written=False,
         operational_database_revision=revision,
         operational_l2f_table_count=l2f_tables,
-        select_config_blocked=select_config_blocked,
+        select_config_blocked=_select_config_raises_stage_not_ready(),
         network_access_performed=False,
     )
+
+
+def _select_config_raises_stage_not_ready() -> bool:
+    """Require ``StageNotReadyError`` SPECIFICALLY as proof that selection is stage-blocked.
+
+    An unrelated crash, import failure, database error or programmer mistake is not successful
+    stage blocking: returning normally is a FAIL, and any other exception is a qualification
+    failure rather than a quiet pass.
+    """
+    from minos_engine.common.errors import StageNotReadyError
+    from minos_engine.layer2.service import Layer2Service
+
+    try:
+        Layer2Service().select_config(None)  # type: ignore[arg-type]
+    except StageNotReadyError:
+        return True
+    except Exception as exc:
+        raise QualificationEnvironmentError(
+            f"select_config raised {type(exc).__name__}, not StageNotReadyError; an unrelated "
+            "failure is not proof that stage selection is blocked"
+        ) from exc
+    raise QualificationEnvironmentError(
+        "select_config returned normally; Layer-2 selection is NOT blocked"
+    )
+
+
+def _require_exact_qualification_slice(
+    engine: Any, plan: Any, job: DerivedQualificationJob
+) -> None:
+    """Require the scratch slice to hold EXACTLY the derived job in a claimable state.
+
+    A contaminated scratch database is never cleaned, reset or repaired: the qualification simply
+    refuses, because executing some other PENDING job and calling it the F7 case would be a lie.
+    """
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT j.job_key, j.status FROM experiments.l2f_experiment_jobs j "
+                "JOIN experiments.l2f_experiment_plans p ON p.id = j.plan_id "
+                "WHERE p.plan_hash = :h AND j.status NOT IN ('SUCCEEDED', 'FAILED') "
+                "ORDER BY j.created_at, j.id"
+            ),
+            {"h": plan.plan_hash},
+        ).all()
+    claimable = [(str(r[0]), str(r[1])) for r in rows]
+    if len(claimable) != 1 or claimable[0][0] != job.job_key:
+        raise QualificationEnvironmentError(
+            "the scratch qualification slice does not contain exactly the derived F7 job "
+            f"{job.job_key[:12]}; found {[(k[:12], s) for k, s in claimable]}. The qualification "
+            "refuses rather than executing another job and calling it the F7 case, and it never "
+            "cleans or repairs a contaminated scratch database"
+        )
+
+
+def _require_dispatched_is_derived(
+    engine: Any, plan: Any, job: DerivedQualificationJob, dispatched: Any
+) -> None:
+    """Require the executed job to equal the derived member/candidate/CONFIG/job-key exactly."""
+    from sqlalchemy import text
+
+    if str(dispatched.job_key) != job.job_key:
+        raise QualificationEnvironmentError(
+            f"the executed job_key {dispatched.job_key} is not the derived qualification job "
+            f"{job.job_key}"
+        )
+    with engine.connect() as conn:
+        row = (
+            conn.execute(
+                text(
+                    "SELECT m.member_index, m.partition, m.dataset_id, m.profile_id, "
+                    "       c.config_index, c.config_hash "
+                    "  FROM experiments.l2f_experiment_jobs j "
+                    "  JOIN experiments.l2f_experiment_plan_members m ON m.id = j.plan_member_id "
+                    "  JOIN experiments.l2f_experiment_plan_configs c ON c.id = j.plan_config_id "
+                    " WHERE j.id = :i"
+                ),
+                {"i": dispatched.job_id},
+            )
+            .mappings()
+            .one()
+        )
+    actual = (
+        int(row["member_index"]),
+        str(row["partition"]),
+        str(row["dataset_id"]),
+        str(row["profile_id"]),
+        int(row["config_index"]),
+        str(row["config_hash"]),
+    )
+    expected = (
+        job.member_index,
+        "train",
+        job.dataset_id,
+        job.profile_id,
+        0,
+        job.config_hash,
+    )
+    if actual != expected:
+        raise QualificationEnvironmentError(
+            f"the executed job identity {actual} is not the derived qualification job {expected}"
+        )
+
+
+def observe_no_automatic_retry(engine: Any, plan: Any) -> tuple[bool, bool]:
+    """OBSERVE the F6 no-automatic-retry property across a restart.
+
+    Returns ``(failed_job_remained_failed, failed_job_was_reclaimed)``. This reads the durable
+    state that already exists; it never manufactures a retry and never re-runs a terminal job.
+    A FAILED job that is still FAILED and still unclaimable is the property being proved.
+    """
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT j.status, j.claimed_by FROM experiments.l2f_experiment_jobs j "
+                "JOIN experiments.l2f_experiment_plans p ON p.id = j.plan_id "
+                "JOIN experiments.l2f_execution_failures f ON f.job_id = j.id "
+                "WHERE p.plan_hash = :h"
+            ),
+            {"h": plan.plan_hash},
+        ).all()
+    if not rows:
+        # no control failure exists in this slice: the property is proved by the dedicated
+        # FakeGatkRunner control suite, and nothing here may claim to have observed it.
+        return True, False
+    remained = all(str(r[0]) == "FAILED" for r in rows)
+    reclaimed = any(str(r[0]) in {"PENDING", "CLAIMED", "RUNNING"} for r in rows)
+    return remained, reclaimed
+
+
+def _capture_operational_before() -> tuple[str, str, int]:
+    """Fingerprint the operational store BEFORE qualification, read-only. Fails closed."""
+    from sqlalchemy import create_engine
+
+    from minos_engine.storage.database import normalize_database_url
+
+    operational = os.environ.get("MINOS_L2F_OPERATIONAL_READONLY_URL")
+    if not operational:
+        raise QualificationEnvironmentError(
+            "MINOS_L2F_OPERATIONAL_READONLY_URL must name the operational store read-only"
+        )
+    engine = create_engine(normalize_database_url(operational))
+    try:
+        return operational_fingerprint(engine)
+    finally:
+        engine.dispose()

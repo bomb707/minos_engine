@@ -50,6 +50,7 @@ __all__ = [
     "ACCEPTED_POLICY_HASH",
     "ACCEPTED_E5_GATE_HASHES",
     "ACCEPTED_ALEMBIC_HEAD",
+    "ACCEPTED_OPERATIONAL_REVISION",
     "HarnessReadyContractError",
     "SourceProvenance",
     "AcceptedIdentities",
@@ -119,6 +120,8 @@ ACCEPTED_E5_GATE_HASHES: dict[str, str] = {
     "FEATURE-MATRIX-FROZEN-1": "cd34bdf96f3e7853039b2719e74a12a95740904c1b15f2f5c747516e0260d3ef",
 }
 ACCEPTED_ALEMBIC_HEAD = "0008_l2f_execution_results"
+#: the operational store must remain here; F7 never migrates or writes it.
+ACCEPTED_OPERATIONAL_REVISION = "0005_l2e_feature_view"
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _HEX40 = re.compile(r"^[0-9a-f]{40}$")
@@ -275,6 +278,19 @@ class ResumeResult(BaseModel):
     exhausted_queue_returns_none: bool
     nonterminal_jobs_remaining: int = Field(ge=0)
     automatic_retry_observed: bool
+    #: additive F7-only evidence: deterministic per-table row counts and fingerprints captured
+    #: BEFORE and AFTER the restart + exact replay. Equality is what proves "no duplicates".
+    row_counts_before: dict[str, int] = Field(default_factory=dict)
+    row_counts_after: dict[str, int] = Field(default_factory=dict)
+    database_fingerprint_before: Hex64 | None = None
+    database_fingerprint_after: Hex64 | None = None
+    artifact_fingerprint_before: Hex64 | None = None
+    artifact_fingerprint_after: Hex64 | None = None
+    #: observed by actually attempting a conflicting replay against the persistence boundary.
+    conflicting_replay_created_rows: int = Field(default=0, ge=0)
+    #: observed by driving a control job to durable FAILED and resuming across a restart.
+    failed_job_remained_failed: bool = False
+    failed_job_reclaimed: bool = False
 
 
 class ArtifactVerificationResult(BaseModel):
