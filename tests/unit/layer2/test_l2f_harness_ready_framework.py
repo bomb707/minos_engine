@@ -650,9 +650,84 @@ def test_missing_evidence_fails_closed(tmp_path: Path) -> None:
     assert any("missing evidence" in r for r in result["reasons"])
 
 
-def test_the_f7a_source_commit_ships_no_committed_gate() -> None:
-    """F7-A must not commit HARNESS-READY evidence: the gate belongs to F7-B."""
-    assert not (_repo_root() / HARNESS_READY_GATE_PATH).exists()
+#: the two canonical HARNESS-READY evidence paths. Either BOTH are committed (the F7-B state)
+#: or NEITHER is (the F7-A / pre-F7-B state); one without the other is incoherent.
+HARNESS_READY_RESULT_PATH = "reports/layer2/harness-ready-result.json"
+
+
+def _committed_evidence() -> tuple[Path, Path]:
+    root = _repo_root()
+    return root / HARNESS_READY_GATE_PATH, root / HARNESS_READY_RESULT_PATH
+
+
+def test_committed_harness_ready_evidence_is_stage_coherent() -> None:
+    """Valid in BOTH stages, and never merely an existence assertion.
+
+    * gate absent  -> the canonical qualification result must be absent too (pre-F7-B);
+    * gate present -> the result must be present AND the real offline verifier must return
+      ``ok`` with no reasons, PASS status and the complete registered required-check set.
+
+    A gate without its result, a result without its gate, a HOLD gate, a tampered result or an
+    invalid source/tree all fail here rather than silently passing CI.
+    """
+    gate_path, result_path = _committed_evidence()
+    if not gate_path.exists():
+        assert not result_path.exists(), (
+            f"{HARNESS_READY_RESULT_PATH} is committed without {HARNESS_READY_GATE_PATH}; "
+            "HARNESS-READY evidence must be committed as a coherent pair"
+        )
+        return
+
+    assert result_path.exists(), (
+        f"{HARNESS_READY_GATE_PATH} is committed without {HARNESS_READY_RESULT_PATH}; "
+        "a PASS gate is never sufficient on its own"
+    )
+    verified = R.verify_committed_harness_ready_gate(
+        base_dir=_repo_root(), gate_path=gate_path, qualification_path=result_path
+    )
+    assert verified["reasons"] == (), verified["reasons"]
+    assert verified["ok"] is True
+    assert verified["status"] == "PASS"
+
+    from minos_engine.gates.verifier import load_gate
+
+    gate = load_gate(gate_path)
+    required = required_checks_for(HARNESS_READY_GATE)
+    assert required <= set(gate.mandatory_checks)
+    assert all(gate.mandatory_checks[name] for name in required)
+
+
+def test_a_gate_without_its_qualification_result_is_incoherent(tmp_path: Path) -> None:
+    """Control for CASE 2: the pairing rule really rejects a lone gate."""
+    source = _qualification().source.model_copy(
+        update={
+            "qualified_source_git_sha": _head_sha(),
+            "qualified_source_tree_sha": _head_tree(),
+        }
+    )
+    gate_path = _write_gate(tmp_path, _qualification(source=source))
+    verified = R.verify_committed_harness_ready_gate(base_dir=_repo_root(), gate_path=gate_path)
+    assert verified["ok"] is False
+    assert any("missing qualification evidence" in r for r in verified["reasons"])
+
+
+def test_a_coherent_evidence_pair_verifies(tmp_path: Path) -> None:
+    """Control for CASE 2: a genuine gate + result pair passes the same verifier CI will run."""
+    source = _qualification().source.model_copy(
+        update={
+            "qualified_source_git_sha": _head_sha(),
+            "qualified_source_tree_sha": _head_tree(),
+        }
+    )
+    result = _qualification(source=source)
+    gate_path = _write_gate(tmp_path, result)
+    result_path = tmp_path / "harness-ready-result.json"
+    result_path.write_bytes(canonical_qualification_bytes(result) + b"\n")
+    verified = R.verify_committed_harness_ready_gate(
+        base_dir=_repo_root(), gate_path=gate_path, qualification_path=result_path
+    )
+    assert verified["reasons"] == (), verified["reasons"]
+    assert verified["ok"] is True and verified["status"] == "PASS"
 
 
 def test_a_real_head_gate_verifies_against_real_git_history(tmp_path: Path) -> None:
@@ -890,19 +965,78 @@ def _cli(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_cli_check_fails_closed_when_no_gate_is_committed() -> None:
-    proc = _cli("qualify", "--check")
+def test_cli_check_fails_closed_for_missing_evidence(tmp_path: Path) -> None:
+    """Missing-evidence behaviour, independent of the repository's current stage.
+
+    Explicit nonexistent paths are used so this keeps testing MISSING evidence once F7-B commits
+    the real gate at the default path.
+    """
+    missing_gate = tmp_path / "missing-harness-ready.json"
+    missing_result = tmp_path / "missing-harness-ready-result.json"
+    proc = _cli(
+        "qualify",
+        "--check",
+        "--gate",
+        str(missing_gate),
+        "--qualification",
+        str(missing_result),
+    )
     assert proc.returncode == 3
     payload = json.loads(proc.stdout.strip().splitlines()[-1])
     assert payload["ok"] is False
     assert any("missing evidence" in r for r in payload["reasons"])
 
 
-def test_cli_require_pass_fails_closed_when_no_gate_is_committed() -> None:
-    proc = _cli("gate", "require-pass")
+def test_cli_require_pass_fails_closed_for_missing_evidence(tmp_path: Path) -> None:
+    missing_gate = tmp_path / "missing-harness-ready.json"
+    missing_result = tmp_path / "missing-harness-ready-result.json"
+    proc = _cli(
+        "gate",
+        "require-pass",
+        "--gate",
+        str(missing_gate),
+        "--qualification",
+        str(missing_result),
+    )
     assert proc.returncode == 3
     payload = json.loads(proc.stdout.strip().splitlines()[-1])
     assert payload["ok"] is False
+
+
+def test_cli_verifies_the_canonical_committed_evidence_when_present() -> None:
+    """Stage-aware: once F7-B commits evidence, ordinary pytest checks it via BOTH CLI paths."""
+    gate_path, result_path = _committed_evidence()
+    if not gate_path.exists() and not result_path.exists():
+        pytest.skip("pre-F7-B state: no HARNESS-READY evidence is committed yet")
+    assert gate_path.exists() and result_path.exists(), (
+        "HARNESS-READY evidence must be committed as a coherent gate + result pair"
+    )
+    for argv in (
+        (
+            "qualify",
+            "--check",
+            "--gate",
+            HARNESS_READY_GATE_PATH,
+            "--qualification",
+            HARNESS_READY_RESULT_PATH,
+            "--base-dir",
+            ".",
+        ),
+        (
+            "gate",
+            "require-pass",
+            "--gate",
+            HARNESS_READY_GATE_PATH,
+            "--qualification",
+            HARNESS_READY_RESULT_PATH,
+            "--base-dir",
+            ".",
+        ),
+    ):
+        proc = _cli(*argv)
+        payload = json.loads(proc.stdout.strip().splitlines()[-1])
+        assert proc.returncode == 0, payload
+        assert payload["ok"] is True, payload
 
 
 def test_cli_qualify_reports_the_unavailable_official_environment() -> None:

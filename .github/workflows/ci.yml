@@ -396,6 +396,30 @@ jobs:
             echo "gates/feature-matrix-frozen-1.json not present (E5 evidence commit pending)"
           fi
 
+      - name: Gate — HARNESS-READY (offline evidence verification; no GATK, no DB, no Alembic)
+        run: |
+          if [ -f gates/harness-ready.json ]; then
+            if [ ! -f reports/layer2/harness-ready-result.json ]; then
+              echo "gates/harness-ready.json is committed without reports/layer2/harness-ready-result.json"
+              echo "HARNESS-READY evidence must be committed as a coherent gate + result pair"
+              exit 1
+            fi
+            minos-engine layer2 harness qualify --check \
+              --gate gates/harness-ready.json \
+              --qualification reports/layer2/harness-ready-result.json \
+              --base-dir .
+            minos-engine layer2 harness gate require-pass \
+              --gate gates/harness-ready.json \
+              --qualification reports/layer2/harness-ready-result.json \
+              --base-dir .
+          else
+            if [ -f reports/layer2/harness-ready-result.json ]; then
+              echo "reports/layer2/harness-ready-result.json is committed without gates/harness-ready.json"
+              exit 1
+            fi
+            echo "HARNESS-READY evidence not committed yet (F7-B pending)"
+          fi
+
       - name: Gate — PROFILE-SNAPSHOT-FROZEN-1 offline verification
         run: |
           if [ -f gates/profile-snapshot-frozen-1.json ]; then
