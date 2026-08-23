@@ -173,6 +173,24 @@ accepted closure from the **supplied** `base_dir`, so a tampered alternate check
 Both accepted E5 gates additionally run their **established** gate-specific ancestry closure, not
 generic integrity alone.
 
+**Closure #3 — the three self-assertions are now experiments.** *No-automatic-retry* is proved by
+a dedicated control: a second deterministic accepted job is enqueued, driven to durable `FAILED`
+by a `FakeGatkRunner` (used **here only**, and never able to satisfy `official_gatk_runner_used`),
+then every engine is disposed and the worker resumed — the job must stay `FAILED`, hold exactly
+one bounded failure record and no success row, never be reclaimed, and never re-execute. **An
+absent control is not a pass**: `failed_control_observed` is False and the check fails.
+*Conflicting replay* now runs through the accepted `ConfigPayloadPublisher` (a
+`ResultArtifactPublisher` is refused outright, since its `TypeError` would otherwise have looked
+like a rejection), forges one immutable plan-metadata field while preserving the plan's unique
+identity, and accepts **only** `ImmutableMetadataConflictError` — any other exception fails the
+qualification — with row counts plus database and CONFIG-artifact-root fingerprints required
+identical before and after. *Operational read-only* is a property of the provisioned credentials,
+not of F7's restraint: `transaction_read_only` is read **before** any `SET`, `default_transaction_
+read_only` is recorded, a superuser / write-privileged / `CREATE`-privileged role is refused, and
+PostgreSQL itself must reject a harmless write with SQLSTATE `25006` inside an always-rolled-back
+transaction. The derived checks bind these raw observations directly, so default or empty evidence
+can never reach PASS.
+
 **Accepted identities are recomputed, not shape-checked.** `l2f_accepted_identities` re-derives
 both E5 gate hashes (loading the committed gates and re-running their integrity closure), the
 `0006`/`0007`/`0008` migration byte hashes, the F5 contract hash, the committed live-GATK **source

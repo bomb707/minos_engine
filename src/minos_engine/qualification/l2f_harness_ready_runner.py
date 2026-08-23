@@ -233,18 +233,57 @@ def derive_checks(
         "official_execution_artifacts_published": ex.published_artifact_count == 2,
         "gatk_twin_semantic_parity": par.parity_ok and par.first_difference is None,
         "gatk_only_policy": par.caller == "gatk" and par.subcommand == "HaplotypeCaller",
-        "resume_after_restart_verified": res.engines_recreated,
-        "resume_creates_no_duplicates": res.duplicate_rows_created == 0,
+        "resume_after_restart_verified": (
+            res.engines_recreated
+            and bool(res.row_counts_before)
+            and bool(res.row_counts_after)
+            and res.database_fingerprint_before is not None
+            and res.artifact_fingerprint_before is not None
+        ),
+        # every raw observation must agree; an aggregate boolean alone is never enough.
+        "resume_creates_no_duplicates": (
+            res.duplicate_rows_created == 0
+            and bool(res.row_counts_before)
+            and res.row_counts_before == res.row_counts_after
+            and res.database_fingerprint_before == res.database_fingerprint_after
+            and res.artifact_fingerprint_before == res.artifact_fingerprint_after
+        ),
         "resume_preserves_terminal_jobs": (
             not res.terminal_job_reset
             and not res.terminal_job_reexecuted
             and not res.artifact_bytes_rewritten
             and res.exact_replay_returned_existing
+            and res.database_fingerprint_before == res.database_fingerprint_after
         ),
-        "resume_conflicting_replay_rejected": res.conflicting_replay_rejected,
+        "resume_conflicting_replay_rejected": (
+            res.conflicting_replay_rejected
+            # the conflict experiment must have ACTUALLY run and raised the EXPECTED type
+            and res.conflicting_replay_observed
+            and res.conflicting_replay_expected_exception is not None
+            and res.conflicting_replay_observed_exception
+            == res.conflicting_replay_expected_exception
+            and res.conflicting_replay_created_rows == 0
+            and res.conflicting_replay_db_fingerprint_before is not None
+            and res.conflicting_replay_db_fingerprint_before
+            == res.conflicting_replay_db_fingerprint_after
+            and res.conflicting_replay_artifact_fingerprint_before is not None
+            and res.conflicting_replay_artifact_fingerprint_before
+            == res.conflicting_replay_artifact_fingerprint_after
+        ),
         "resume_exhausted_queue_returns_none": res.exhausted_queue_returns_none,
         "no_stranded_jobs": res.nonterminal_jobs_remaining == 0,
-        "no_automatic_retry": not res.automatic_retry_observed,
+        # an ABSENT failure-control experiment can never satisfy this: the control must have run,
+        # produced exactly one bounded failure record, no success row, and stayed FAILED.
+        "no_automatic_retry": (
+            not res.automatic_retry_observed
+            and res.failed_control_observed
+            and res.failed_control_job_key is not None
+            and res.failed_control_failure_rows == 1
+            and res.failed_control_result_rows == 0
+            and res.failed_control_retry_executions == 0
+            and res.failed_job_remained_failed
+            and not res.failed_job_reclaimed
+        ),
         "artifact_bytes_independently_verified": (
             ver.config_artifact_ok and ver.vcf_artifact_ok and ver.result_manifest_artifact_ok
         ),
@@ -275,6 +314,14 @@ def derive_checks(
             not bnd.operational_database_written
             and bnd.operational_database_revision == "0005_l2e_feature_view"
             and bnd.operational_l2f_table_count == 0
+            # the endpoint was read-only BEFORE F7 touched the transaction mode, the role is not
+            # write-capable, PostgreSQL itself refused a write, and nothing changed.
+            and bnd.operational_read_only_before_set
+            and not bnd.operational_role_is_superuser
+            and bnd.operational_write_privileges == 0
+            and bnd.operational_write_denied_sqlstate == "25006"
+            and bnd.operational_fingerprint_before is not None
+            and bnd.operational_fingerprint_before == bnd.operational_fingerprint_after
         ),
         "select_config_still_blocked": bnd.select_config_blocked,
         "no_network_access": not bnd.network_access_performed,

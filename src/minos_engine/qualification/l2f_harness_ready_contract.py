@@ -286,9 +286,23 @@ class ResumeResult(BaseModel):
     database_fingerprint_after: Hex64 | None = None
     artifact_fingerprint_before: Hex64 | None = None
     artifact_fingerprint_after: Hex64 | None = None
-    #: observed by actually attempting a conflicting replay against the persistence boundary.
+    #: observed by actually attempting a conflicting replay at the F3-C1 persistence boundary.
+    conflicting_replay_observed: bool = False
+    conflicting_replay_expected_exception: str | None = None
+    conflicting_replay_observed_exception: str | None = None
     conflicting_replay_created_rows: int = Field(default=0, ge=0)
-    #: observed by driving a control job to durable FAILED and resuming across a restart.
+    conflicting_replay_db_fingerprint_before: Hex64 | None = None
+    conflicting_replay_db_fingerprint_after: Hex64 | None = None
+    conflicting_replay_artifact_fingerprint_before: Hex64 | None = None
+    conflicting_replay_artifact_fingerprint_after: Hex64 | None = None
+    #: observed by driving a dedicated CONTROL job to durable FAILED and resuming across a
+    #: restart. ``failed_control_observed`` is False unless that experiment actually ran, so an
+    #: absence of failure rows can never be mistaken for proof of no-automatic-retry.
+    failed_control_observed: bool = False
+    failed_control_job_key: Hex64 | None = None
+    failed_control_failure_rows: int = Field(default=0, ge=0)
+    failed_control_result_rows: int = Field(default=0, ge=0)
+    failed_control_retry_executions: int = Field(default=0, ge=0)
     failed_job_remained_failed: bool = False
     failed_job_reclaimed: bool = False
 
@@ -345,6 +359,17 @@ class BoundaryResult(BaseModel):
     """Leakage / non-mutation / authority boundary observations."""
 
     model_config = _STRICT
+
+    #: observed BEFORE F7 changes the transaction mode: a writable endpoint that merely *could*
+    #: set its own transaction read-only is refused, so this is a property of the provisioned
+    #: credentials rather than of the application's own restraint.
+    operational_read_only_before_set: bool = False
+    operational_default_read_only: bool = False
+    operational_role_is_superuser: bool = True
+    operational_write_privileges: int = 0
+    operational_write_denied_sqlstate: str | None = None
+    operational_fingerprint_before: Hex64 | None = None
+    operational_fingerprint_after: Hex64 | None = None
 
     truth_paths_resolved: int = Field(ge=0)
     scoring_paths_resolved: int = Field(ge=0)

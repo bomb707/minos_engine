@@ -159,6 +159,8 @@ def _qualification(**over: Any) -> HarnessReadyQualification:
             runtime_ms=1234,
         ),
         "twin_parity": parity,
+        # a COMPLETE raw-evidence resume observation: every strengthened binding must be
+        # satisfied, so an empty/default observation can no longer reach PASS.
         "resume": ResumeResult(
             engines_recreated=True,
             duplicate_rows_created=0,
@@ -170,6 +172,27 @@ def _qualification(**over: Any) -> HarnessReadyQualification:
             exhausted_queue_returns_none=True,
             nonterminal_jobs_remaining=0,
             automatic_retry_observed=False,
+            row_counts_before={"jobs": 4, "results": 1},
+            row_counts_after={"jobs": 4, "results": 1},
+            database_fingerprint_before=_H["3"],
+            database_fingerprint_after=_H["3"],
+            artifact_fingerprint_before=_H["4"],
+            artifact_fingerprint_after=_H["4"],
+            conflicting_replay_observed=True,
+            conflicting_replay_expected_exception="ImmutableMetadataConflictError",
+            conflicting_replay_observed_exception="ImmutableMetadataConflictError",
+            conflicting_replay_created_rows=0,
+            conflicting_replay_db_fingerprint_before=_H["5"],
+            conflicting_replay_db_fingerprint_after=_H["5"],
+            conflicting_replay_artifact_fingerprint_before=_H["6"],
+            conflicting_replay_artifact_fingerprint_after=_H["6"],
+            failed_control_observed=True,
+            failed_control_job_key=_H["7"],
+            failed_control_failure_rows=1,
+            failed_control_result_rows=0,
+            failed_control_retry_executions=0,
+            failed_job_remained_failed=True,
+            failed_job_reclaimed=False,
         ),
         "artifact_verification": ArtifactVerificationResult(
             artifacts_verified=3,
@@ -197,6 +220,13 @@ def _qualification(**over: Any) -> HarnessReadyQualification:
             operational_l2f_table_count=0,
             select_config_blocked=True,
             network_access_performed=False,
+            operational_read_only_before_set=True,
+            operational_default_read_only=True,
+            operational_role_is_superuser=False,
+            operational_write_privileges=0,
+            operational_write_denied_sqlstate="25006",
+            operational_fingerprint_before=_H["8"],
+            operational_fingerprint_after=_H["8"],
         ),
     }
     base.update(over)
@@ -1483,47 +1513,160 @@ def test_the_operational_endpoint_must_be_configured(monkeypatch: pytest.MonkeyP
         Q._capture_operational_before()
 
 
-def test_a_writable_operational_session_is_refused() -> None:
-    """A connection that does not report a read-only transaction is refused."""
+class _FakeResult:
+    def __init__(self, value: Any, rows: Any = ()) -> None:
+        self._value, self._rows = value, rows
+
+    def scalar_one(self) -> Any:
+        return self._value
+
+    def scalar_one_or_none(self) -> Any:
+        return self._value
+
+    def all(self) -> Any:
+        return self._rows
+
+
+class _FakeConn:
+    """A configurable stand-in for a PostgreSQL connection (no database is opened)."""
+
+    def __init__(self, answers: dict[str, Any], *, write_error: Any = None) -> None:
+        self.answers, self.write_error = answers, write_error
+        self.executed: list[str] = []
+
+    def execute(self, statement: Any, *_a: Any) -> Any:
+        sql = str(statement)
+        self.executed.append(sql)
+        if sql.strip().upper().startswith("UPDATE"):
+            if self.write_error is None:
+                return _FakeResult(None)
+            raise self.write_error
+        for key, value in self.answers.items():
+            if key in sql:
+                return _FakeResult(value)
+        return _FakeResult(0, ())
+
+    def begin(self) -> Any:
+        class _T:
+            @staticmethod
+            def rollback() -> None:
+                return None
+
+        return _T()
+
+    def close(self) -> None:
+        return None
+
+
+class _FakeEngine:
+    def __init__(self, answers: dict[str, Any], *, write_error: Any = None) -> None:
+        self.answers, self.write_error = answers, write_error
+
+    def connect(self) -> Any:
+        return _FakeConn(self.answers, write_error=self.write_error)
+
+
+def _read_only_answers(**over: Any) -> dict[str, Any]:
+    # ordered most-specific first: several of these SQL texts contain one another's fragments
+    # (e.g. the privilege query also mentions ``current_user``).
+    base: dict[str, Any] = {
+        "SHOW default_transaction_read_only": "on",
+        "SHOW transaction_read_only": "on",
+        "table_privileges": 0,
+        "has_database_privilege": False,
+        "usesuper": False,
+        "version_num": "0005_l2e_feature_view",
+        "table_name LIKE 'l2f%'": 0,
+        "current_database()": "minos_engine_db",
+        "current_user": "minos_readonly",
+    }
+    base.update(over)
+    return base
+
+
+def _read_only_denial() -> Any:
+    from sqlalchemy.exc import DBAPIError
+
+    class _Orig(Exception):
+        sqlstate = "25006"
+
+    return DBAPIError("UPDATE", {}, _Orig())
+
+
+def test_a_preconfigured_read_only_endpoint_is_accepted() -> None:
     from minos_engine.qualification import l2f_harness_ready_qualifier as Q
 
-    class _Conn:
-        def execute(self, statement: Any, *_a: Any) -> Any:
-            text_of = str(statement)
-
-            class _R:
-                @staticmethod
-                def scalar_one() -> Any:
-                    return "off" if "transaction_read_only" in text_of else "x"
-
-                @staticmethod
-                def all() -> Any:
-                    return []
-
-            return _R()
-
-        def begin(self) -> Any:
-            return contextlib_nullcontext()
-
-        def __enter__(self) -> Any:
-            return self
-
-        def __exit__(self, *_a: Any) -> None:
-            return None
-
-    class _Engine:
-        @staticmethod
-        def connect() -> Any:
-            return _Conn()
-
-    with pytest.raises(Q.QualificationEnvironmentError, match="not a read-only transaction"):
-        Q.operational_fingerprint(_Engine())
+    observation = Q.operational_fingerprint(
+        _FakeEngine(_read_only_answers(), write_error=_read_only_denial())
+    )
+    assert observation.read_only_before_set is True
+    assert observation.is_superuser is False
+    assert observation.write_privileges == 0
+    assert observation.write_denied_sqlstate == Q.READ_ONLY_SQLSTATE
+    assert observation.revision == "0005_l2e_feature_view"
+    assert observation.l2f_tables == 0
 
 
-def contextlib_nullcontext() -> Any:
-    import contextlib
+def test_a_writable_endpoint_is_refused_even_though_it_could_set_read_only() -> None:
+    """The central Blocker-C control: 'off' BEFORE the application sets anything is fatal."""
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
 
-    return contextlib.nullcontext()
+    engine = _FakeEngine(
+        _read_only_answers(**{"SHOW transaction_read_only": "off"}),
+        write_error=_read_only_denial(),
+    )
+    with pytest.raises(Q.QualificationEnvironmentError, match="NOT read-only before"):
+        Q.operational_fingerprint(engine)
+
+
+def test_a_superuser_operational_role_is_refused() -> None:
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    engine = _FakeEngine(_read_only_answers(usesuper=True), write_error=_read_only_denial())
+    with pytest.raises(Q.QualificationEnvironmentError, match="superuser"):
+        Q.operational_fingerprint(engine)
+
+
+def test_a_write_privileged_operational_role_is_refused() -> None:
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    engine = _FakeEngine(
+        _read_only_answers(**{"table_privileges": 4}), write_error=_read_only_denial()
+    )
+    with pytest.raises(Q.QualificationEnvironmentError, match="TRUNCATE privileges"):
+        Q.operational_fingerprint(engine)
+
+
+def test_a_create_privileged_operational_role_is_refused() -> None:
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    engine = _FakeEngine(
+        _read_only_answers(**{"has_database_privilege": True}), write_error=_read_only_denial()
+    )
+    with pytest.raises(Q.QualificationEnvironmentError, match="CREATE"):
+        Q.operational_fingerprint(engine)
+
+
+def test_an_accepted_write_proves_the_endpoint_is_not_read_only() -> None:
+    """If PostgreSQL ACCEPTS the harmless write, the endpoint is refused."""
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    engine = _FakeEngine(_read_only_answers(), write_error=None)
+    with pytest.raises(Q.QualificationEnvironmentError, match="ACCEPTED a write"):
+        Q.operational_fingerprint(engine)
+
+
+def test_a_wrong_write_denial_sqlstate_is_refused() -> None:
+    from sqlalchemy.exc import DBAPIError
+
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    class _Orig(Exception):
+        sqlstate = "42501"  # insufficient_privilege, not read-only-transaction
+
+    engine = _FakeEngine(_read_only_answers(), write_error=DBAPIError("UPDATE", {}, _Orig()))
+    with pytest.raises(Q.QualificationEnvironmentError, match="expected the"):
+        Q.operational_fingerprint(engine)
 
 
 @pytest.mark.parametrize(

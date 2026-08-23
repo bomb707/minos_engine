@@ -471,65 +471,153 @@ def test_every_tracked_table_is_unchanged_across_a_restart_and_replay(env: Any) 
     assert _artifact_fingerprint(env.result_root) == artifacts_before
 
 
-def test_a_conflicting_replay_actually_reaches_the_persistence_boundary(
-    env: Any, tmp_path: Path
-) -> None:
-    """The forged candidate set really hits _persist_experiment_plan_with_trust and is rejected."""
+def test_a_conflicting_replay_raises_the_expected_typed_conflict(env: Any, tmp_path: Path) -> None:
+    """The forged plan really hits _persist_experiment_plan_with_trust via the CORRECT publisher."""
     from minos_engine.qualification.l2f_harness_ready_qualifier import (
         attempt_conflicting_replay,
         row_counts,
     )
+    from minos_engine.storage.l2f_config_publisher import ConfigPayloadPublisher
 
     assert env.run() is not None
+    publisher = _replay_publisher(tmp_path)
+    assert isinstance(publisher, ConfigPayloadPublisher)
+
     before = row_counts(env.engine)
     artifacts_before = _artifact_fingerprint(env.result_root)
     db_before = _database_fingerprint(env.engine)
 
-    rejected, created = attempt_conflicting_replay(
-        env.engine, env.plan, _replay_publisher(tmp_path)
-    )
-    assert rejected is True
-    assert created == 0
+    observation = attempt_conflicting_replay(env.engine, env.plan, publisher)
+    assert observation.observed is True
+    assert observation.expected_exception == "ImmutableMetadataConflictError"
+    assert observation.observed_exception == "ImmutableMetadataConflictError"
+    assert observation.created_rows == 0
+    assert observation.db_fingerprint_before == observation.db_fingerprint_after
+    assert observation.artifact_fingerprint_before == observation.artifact_fingerprint_after
+    assert observation.rejected is True
+    # nothing anywhere changed
     assert row_counts(env.engine) == before
     assert _artifact_fingerprint(env.result_root) == artifacts_before
     assert _database_fingerprint(env.engine) == db_before
 
 
-def test_a_failed_job_survives_restart_and_is_never_auto_retried(env: Any) -> None:
-    """Control (deterministic FakeGatkRunner): FAILED stays FAILED and is never reclaimed."""
-    from minos_engine.qualification.l2f_harness_ready_qualifier import observe_no_automatic_retry
-
-    failed = env.run(runner=FakeGatkRunner(exit_code=3))
-    assert failed is not None and failed.status == "FAILED"
-
-    env.engine.dispose()
-    env.engine = _engine(env.url)
-
-    remained, reclaimed = observe_no_automatic_retry(env.engine, env.plan)
-    assert remained is True
-    assert reclaimed is False
-
-    # resuming the worker takes a DIFFERENT job and never re-runs the failed one
-    following = env.run()
-    assert following is not None and following.job_id != failed.job_id
-    remained_after, reclaimed_after = observe_no_automatic_retry(env.engine, env.plan)
-    assert remained_after is True and reclaimed_after is False
-    with env.engine.connect() as c:
-        status = str(
-            c.execute(
-                text(f"SELECT status FROM {_JOBS} WHERE id=:i"),  # noqa: S608
-                {"i": failed.job_id},
-            ).scalar_one()
-        )
-    assert status == "FAILED"
-
-
-def test_the_operational_fingerprint_requires_a_read_only_transaction(env: Any) -> None:
-    """A scratch connection is writable, so the operational observer refuses it."""
+def test_the_wrong_publisher_type_is_refused_not_counted_as_a_conflict(
+    env: Any, tmp_path: Path
+) -> None:
+    """A ResultArtifactPublisher would raise TypeError; that must never look like a rejection."""
     from minos_engine.qualification import l2f_harness_ready_qualifier as Q
 
-    fingerprint, revision, l2f_tables = Q.operational_fingerprint(env.engine)
-    # the scratch DB is at 0008 with L2-F tables; the operational assertions are what reject it
-    assert revision == "0008_l2f_execution_results"
-    assert l2f_tables > 0
-    assert len(fingerprint) == 64
+    assert env.run() is not None
+    with pytest.raises(Q.QualificationEnvironmentError, match="ConfigPayloadPublisher"):
+        Q.attempt_conflicting_replay(env.engine, env.plan, env.publisher)
+
+
+def test_an_arbitrary_exception_is_not_a_conflict_rejection(
+    env: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+    from minos_engine.storage import l2f_plan_store as PS
+
+    assert env.run() is not None
+
+    def _boom(*_a: Any, **_k: Any) -> Any:
+        raise TypeError("wrong publisher API")
+
+    monkeypatch.setattr(PS, "_persist_experiment_plan_with_trust", _boom)
+    with pytest.raises(Q.QualificationEnvironmentError, match="not the expected"):
+        Q.attempt_conflicting_replay(env.engine, env.plan, _replay_publisher(tmp_path))
+
+
+def test_the_failure_control_experiment_proves_no_automatic_retry(env: Any) -> None:
+    """The REAL control: drive a job to durable FAILED, restart, and observe it is untouched."""
+    from minos_engine.qualification.l2f_harness_ready_qualifier import (
+        run_failure_control_experiment,
+    )
+
+    observation = run_failure_control_experiment(
+        scratch_url=env.url,
+        plan=env.plan,
+        candidate_set=_CS,
+        dataset_root=env.dataset_root,
+        publisher=env.publisher,
+        work_root=env.work_root,
+    )
+    assert observation.observed is True
+    assert observation.job_key is not None and len(observation.job_key) == 64
+    assert observation.failure_rows == 1
+    assert observation.result_rows == 0
+    assert observation.remained_failed is True
+    assert observation.reclaimed is False
+    assert observation.retry_executions == 0
+    assert observation.proves_no_automatic_retry is True
+
+    with env.engine.connect() as c:
+        statuses = {
+            str(r[0])
+            for r in c.execute(
+                text(
+                    f"SELECT j.status FROM {_JOBS} j "  # noqa: S608
+                    f"JOIN {_FAILURES} f ON f.job_id = j.id"
+                )
+            ).all()
+        }
+    assert statuses == {"FAILED"}
+
+
+def test_an_absent_failure_control_cannot_prove_no_automatic_retry() -> None:
+    """The Blocker-A fix: no observation must mean 'cannot prove', never PASS."""
+    from minos_engine.qualification.l2f_harness_ready_qualifier import FailureControlObservation
+
+    absent = FailureControlObservation(
+        observed=False,
+        job_key=None,
+        failure_rows=0,
+        result_rows=0,
+        remained_failed=True,
+        reclaimed=False,
+        retry_executions=0,
+    )
+    assert absent.proves_no_automatic_retry is False
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"remained_failed": False},
+        {"reclaimed": True},
+        {"retry_executions": 1},
+        {"failure_rows": 2},
+        {"failure_rows": 0},
+        {"result_rows": 1},
+    ],
+)
+def test_any_deficient_failure_control_fails(mutation: dict[str, Any]) -> None:
+    import dataclasses as _dc
+
+    from minos_engine.qualification.l2f_harness_ready_qualifier import FailureControlObservation
+
+    good = FailureControlObservation(
+        observed=True,
+        job_key="a" * 64,
+        failure_rows=1,
+        result_rows=0,
+        remained_failed=True,
+        reclaimed=False,
+        retry_executions=0,
+    )
+    assert good.proves_no_automatic_retry is True
+    assert _dc.replace(good, **mutation).proves_no_automatic_retry is False
+
+
+def test_a_writable_scratch_connection_is_refused_by_the_operational_observer(env: Any) -> None:
+    """Corrected control: the writable scratch endpoint must be REFUSED, not fingerprinted.
+
+    Previously this succeeded, which is exactly the Blocker-C gap: a writable connection can set
+    its own transaction read-only. It is now rejected because it is not read-only BEFORE F7
+    changes anything.
+    """
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    with pytest.raises(Q.QualificationEnvironmentError) as excinfo:
+        Q.operational_fingerprint(env.engine)
+    assert "NOT read-only before" in str(excinfo.value) or "superuser" in str(excinfo.value)

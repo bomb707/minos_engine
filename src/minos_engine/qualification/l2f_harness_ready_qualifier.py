@@ -59,7 +59,9 @@ __all__ = [
     "derive_qualification_job",
     "row_counts",
     "attempt_conflicting_replay",
-    "observe_no_automatic_retry",
+    "build_conflicting_plan",
+    "run_failure_control_experiment",
+    "operational_fingerprint",
     "ROW_COUNT_TABLES",
     "run_harness_ready_qualification",
 ]
@@ -407,6 +409,19 @@ def run_harness_ready_qualification(*, base_dir: str | Path = ".") -> TrustedQua
                 f"the provisioned qualification roots are unavailable: {exc}"
             ) from exc
         publisher = ResultArtifactPublisher(artifact_root)
+        # the F3-C1 persistence boundary needs its OWN publisher type and provisioned root.
+        from minos_engine.storage.l2f_plan_store import (
+            ENV_CONFIG_ARTIFACT_ROOT,
+            _build_publisher,
+        )
+
+        leakage_denied_paths(os.environ.get(ENV_CONFIG_ARTIFACT_ROOT, ""))
+        try:
+            config_publisher = _build_publisher()
+        except Exception as exc:
+            raise QualificationEnvironmentError(
+                f"the provisioned CONFIG artifact root is unavailable: {exc}"
+            ) from exc
 
         # 8) capture the operational state BEFORE anything runs, through a read-only transaction
         operational_before = _capture_operational_before()
@@ -416,9 +431,21 @@ def run_harness_ready_qualification(*, base_dir: str | Path = ".") -> TrustedQua
         verify_failure_inventory(inventory)
 
         # 10) execute the official job, then observe resume and artifact verification
+        # the bounded FAILURE CONTROL (FakeGatkRunner) is a separate experiment; it can never
+        # satisfy official_gatk_runner_used.
+        failure_control = run_failure_control_experiment(
+            scratch_url=scratch,
+            plan=_accepted_plan(),
+            candidate_set=_accepted_candidate_set(),
+            dataset_root=dataset_root,
+            publisher=publisher,
+            work_root=work_root,
+        )
         observed = _execute_and_observe(
             operational_before=operational_before,
             scratch_url=scratch,
+            config_publisher=config_publisher,
+            failure_control=failure_control,
             runner=runner,
             binary=binary,
             job=job,
@@ -509,8 +536,10 @@ def _require_scratch_at_0008(engine: Any) -> None:
 
 def _execute_and_observe(
     *,
-    operational_before: tuple[str, str, int] | None = None,
+    operational_before: Any = None,
     scratch_url: str,
+    config_publisher: Any,
+    failure_control: FailureControlObservation,
     runner: Any,
     binary: GatkBinaryIdentity,
     job: DerivedQualificationJob,
@@ -595,9 +624,7 @@ def _execute_and_observe(
         db_after = _fingerprint_database(engine)
         artifacts_after = _fingerprint_artifacts(Path(publisher.root))
         counts_after = row_counts(engine)
-        conflicting_rejected, conflicting_created = attempt_conflicting_replay(
-            engine, plan, publisher
-        )
+        conflict = attempt_conflicting_replay(engine, plan, config_publisher)
         exhausted = (
             _execute_next_job_with_trust(
                 engine,
@@ -631,7 +658,6 @@ def _execute_and_observe(
             build_twin=build_twin_plan_for_execution,
             compare_parity=compare_invocation_parity,
         )
-        failed_remained, failed_reclaimed = observe_no_automatic_retry(engine, plan)
         resume = _build_resume_observation(
             replay=replay,
             counts_before=counts_before,
@@ -642,10 +668,8 @@ def _execute_and_observe(
             artifacts_after=artifacts_after,
             exhausted=exhausted,
             stranded=len(find_nonterminal_jobs(engine, plan.plan_hash)),
-            conflicting_rejected=conflicting_rejected,
-            conflicting_created=conflicting_created,
-            failed_remained_failed=failed_remained,
-            failed_reclaimed=failed_reclaimed,
+            conflict=conflict,
+            failure_control=failure_control,
         )
         boundaries = _observe_boundaries(before=operational_before)
         return _Observed(
@@ -877,28 +901,118 @@ def row_counts(engine: Any) -> dict[str, int]:
     return out
 
 
-def attempt_conflicting_replay(engine: Any, plan: Any, publisher: Any) -> tuple[bool, int]:
-    """ACTUALLY drive a conflicting replay at the accepted persistence boundary.
+@dataclass(frozen=True)
+class ConflictingReplayObservation:
+    """What actually happened when a conflicting replay hit the F3-C1 persistence boundary."""
 
-    Returns ``(rejected, rows_created)``. The forged candidate set really reaches
-    ``_persist_experiment_plan_with_trust``; it is not merely handed to the pure candidate
-    verifier. Nothing is cleaned up afterwards because nothing may be created.
+    observed: bool
+    expected_exception: str
+    observed_exception: str | None
+    created_rows: int
+    db_fingerprint_before: str
+    db_fingerprint_after: str
+    artifact_fingerprint_before: str
+    artifact_fingerprint_after: str
+
+    @property
+    def rejected(self) -> bool:
+        """Only the EXPECTED typed conflict, with nothing created and nothing changed."""
+        return (
+            self.observed
+            and self.observed_exception == self.expected_exception
+            and self.created_rows == 0
+            and self.db_fingerprint_before == self.db_fingerprint_after
+            and self.artifact_fingerprint_before == self.artifact_fingerprint_after
+        )
+
+
+def directory_fingerprint(root: Path) -> str:
+    """Digest every file's name, bytes and mode under ``root`` (creation/rewrite/deletion safe)."""
+    digest = hashlib.sha256()
+    if root.exists():
+        for path in sorted(p for p in root.rglob("*") if p.is_file()):
+            digest.update(str(path.relative_to(root)).encode())
+            digest.update(path.read_bytes())
+            digest.update(oct(path.stat().st_mode).encode())
+    return digest.hexdigest()
+
+
+def build_conflicting_plan(plan: Any) -> Any:
+    """A deterministic conflict that reaches the persisted immutable plan row.
+
+    The plan keeps its EXACT unique identity (``plan_hash`` and every key column) while one
+    immutable persisted metadata field is deliberately changed, so the replay collides with the
+    already-persisted row and the accepted immutable comparison in ``_insert_or_verify`` raises.
+    The database is never modified directly to manufacture the conflict, and the accepted
+    candidate set is passed through untouched.
     """
-    import dataclasses as _dc
+    forged = plan.model_copy(update={"gatk_registry_hash": "f" * 64})
+    if forged.plan_hash != plan.plan_hash:  # pragma: no cover - identity must be preserved
+        raise QualificationEnvironmentError(
+            "the conflicting replay must preserve the plan's unique identity"
+        )
+    return forged
 
+
+def attempt_conflicting_replay(
+    engine: Any, plan: Any, config_publisher: Any
+) -> ConflictingReplayObservation:
+    """ACTUALLY drive a conflicting replay through the accepted F3-C1 persistence boundary.
+
+    ``config_publisher`` must be the real :class:`ConfigPayloadPublisher` that F3-C1 expects — a
+    ``ResultArtifactPublisher`` would raise ``TypeError``/``AttributeError`` and a bare
+    ``except Exception`` would then have mistaken that for a successful conflict rejection. Only
+    the EXPECTED typed conflict counts, and nothing may be created, modified or deleted.
+    """
+    from minos_engine.storage.l2f_config_publisher import ConfigPayloadPublisher
+    from minos_engine.storage.l2f_plan_store import (
+        ImmutableMetadataConflictError,
+        _persist_experiment_plan_with_trust,
+    )
+
+    if not isinstance(config_publisher, ConfigPayloadPublisher):
+        raise QualificationEnvironmentError(
+            "the conflicting-replay experiment requires the accepted ConfigPayloadPublisher, got "
+            f"{type(config_publisher).__name__}; a wrong publisher type would raise TypeError and "
+            "must never be mistaken for a conflict rejection"
+        )
     from minos_engine.experiments.candidates import generate_accepted_candidate_set
-    from minos_engine.storage.l2f_plan_store import _persist_experiment_plan_with_trust
 
-    forged = _dc.replace(generate_accepted_candidate_set(), candidate_set_hash="f" * 64)
-    before = row_counts(engine)
-    rejected = False
+    root = Path(config_publisher.root)
+    expected = ImmutableMetadataConflictError.__name__
+    candidate_set = generate_accepted_candidate_set()
+    forged_plan = build_conflicting_plan(plan)
+
+    before_counts = row_counts(engine)
+    before_db = _fingerprint_database(engine)
+    before_artifacts = directory_fingerprint(root)
+
+    observed_exception: str | None = None
     try:
-        _persist_experiment_plan_with_trust(engine, plan, forged, publisher=publisher)
-    except Exception:
-        rejected = True
-    after = row_counts(engine)
-    created = sum(max(0, after[k] - before[k]) for k in before)
-    return rejected, created
+        _persist_experiment_plan_with_trust(
+            engine, forged_plan, candidate_set, publisher=config_publisher
+        )
+    except ImmutableMetadataConflictError as exc:
+        observed_exception = type(exc).__name__
+    except BaseException as exc:
+        # ANY other failure is a defect in the experiment, not a conflict proof.
+        raise QualificationEnvironmentError(
+            f"the conflicting replay raised {type(exc).__name__}, not the expected {expected}; "
+            "an arbitrary exception is never accepted as proof of conflict rejection"
+        ) from exc
+
+    after_counts = row_counts(engine)
+    created = sum(max(0, after_counts[k] - before_counts[k]) for k in before_counts)
+    return ConflictingReplayObservation(
+        observed=True,
+        expected_exception=expected,
+        observed_exception=observed_exception,
+        created_rows=created,
+        db_fingerprint_before=before_db,
+        db_fingerprint_after=_fingerprint_database(engine),
+        artifact_fingerprint_before=before_artifacts,
+        artifact_fingerprint_after=directory_fingerprint(root),
+    )
 
 
 def _build_resume_observation(
@@ -912,15 +1026,11 @@ def _build_resume_observation(
     artifacts_after: str,
     exhausted: bool,
     stranded: int,
-    conflicting_rejected: bool,
-    conflicting_created: int,
-    failed_remained_failed: bool,
-    failed_reclaimed: bool,
+    conflict: ConflictingReplayObservation,
+    failure_control: FailureControlObservation,
 ) -> Any:
     from minos_engine.qualification.l2f_harness_ready_contract import ResumeResult
 
-    # "no duplicates" is EVERY table's count being unchanged across the restart + exact replay,
-    # not merely the enqueue helper reporting created_count == 0.
     duplicates = sum(max(0, counts_after[k] - counts_before[k]) for k in counts_before)
     return ResumeResult(
         engines_recreated=True,
@@ -929,41 +1039,109 @@ def _build_resume_observation(
         terminal_job_reexecuted=db_before != db_after,
         artifact_bytes_rewritten=artifacts_before != artifacts_after,
         exact_replay_returned_existing=int(replay.existing_count) > 0,
-        conflicting_replay_rejected=conflicting_rejected and conflicting_created == 0,
+        conflicting_replay_rejected=conflict.rejected,
         exhausted_queue_returns_none=exhausted,
         nonterminal_jobs_remaining=stranded,
-        # OBSERVED: a durably FAILED control job stayed FAILED and was never reclaimed.
-        automatic_retry_observed=failed_reclaimed or not failed_remained_failed,
+        # DERIVED from the real control experiment; an absent experiment can never pass.
+        automatic_retry_observed=not failure_control.proves_no_automatic_retry,
         row_counts_before=counts_before,
         row_counts_after=counts_after,
         database_fingerprint_before=db_before,
         database_fingerprint_after=db_after,
         artifact_fingerprint_before=artifacts_before,
         artifact_fingerprint_after=artifacts_after,
-        conflicting_replay_created_rows=conflicting_created,
-        failed_job_remained_failed=failed_remained_failed,
-        failed_job_reclaimed=failed_reclaimed,
+        conflicting_replay_observed=conflict.observed,
+        conflicting_replay_expected_exception=conflict.expected_exception,
+        conflicting_replay_observed_exception=conflict.observed_exception,
+        conflicting_replay_created_rows=conflict.created_rows,
+        conflicting_replay_db_fingerprint_before=conflict.db_fingerprint_before,
+        conflicting_replay_db_fingerprint_after=conflict.db_fingerprint_after,
+        conflicting_replay_artifact_fingerprint_before=conflict.artifact_fingerprint_before,
+        conflicting_replay_artifact_fingerprint_after=conflict.artifact_fingerprint_after,
+        failed_control_observed=failure_control.observed,
+        failed_control_job_key=failure_control.job_key,
+        failed_control_failure_rows=failure_control.failure_rows,
+        failed_control_result_rows=failure_control.result_rows,
+        failed_control_retry_executions=failure_control.retry_executions,
+        failed_job_remained_failed=failure_control.remained_failed,
+        failed_job_reclaimed=failure_control.reclaimed,
     )
 
 
-def operational_fingerprint(engine: Any) -> tuple[str, str, int]:
-    """``(fingerprint, revision, l2f_table_count)`` read inside a READ-ONLY transaction.
+@dataclass(frozen=True)
+class OperationalObservation:
+    """What the provisioned operational endpoint actually is, before F7 touches anything."""
 
-    PostgreSQL itself is asked to enforce read-only: the session is set read-only and the
-    qualification refuses to proceed unless the server reports it. A configured "readonly"
-    variable NAME is never accepted as proof.
+    fingerprint: str
+    database: str
+    role: str
+    revision: str
+    l2f_tables: int
+    read_only_before_set: bool
+    default_read_only: bool
+    is_superuser: bool
+    write_privileges: int
+    write_denied_sqlstate: str | None
+
+
+#: PostgreSQL's read-only-transaction SQLSTATE.
+READ_ONLY_SQLSTATE = "25006"
+
+#: the MINOS schemas whose write privileges the operational role must not hold.
+PROTECTED_SCHEMAS: tuple[str, ...] = (
+    "catalog",
+    "experiments",
+    "profiling",
+    "audit",
+    "features",
+    "training",
+    "live",
+)
+
+
+def operational_fingerprint(engine: Any) -> OperationalObservation:
+    """Observe the operational endpoint READ-ONLY, without ever asserting it into being.
+
+    A writable connection can always set its own transaction read-only, so "I asked my writable
+    transaction to be read-only" proves nothing. This therefore inspects the read-only state
+    BEFORE issuing any ``SET TRANSACTION READ ONLY``, refuses a superuser or write-privileged
+    role, and asks PostgreSQL itself to reject a harmless write inside a transaction that is
+    always rolled back. Alembic is never run and no production data is ever altered.
     """
     from sqlalchemy import text
 
-    with engine.connect() as conn, conn.begin():
-        conn.execute(text("SET TRANSACTION READ ONLY"))
-        readonly = str(conn.execute(text("SHOW transaction_read_only")).scalar_one())
-        if readonly.lower() != "on":
-            raise QualificationEnvironmentError(
-                "the operational connection is not a read-only transaction; F7 refuses to "
-                "observe the operational store through a writable session"
-            )
+    conn = engine.connect()
+    trans = conn.begin()
+    try:
+        read_only_before = (
+            str(conn.execute(text("SHOW transaction_read_only")).scalar_one()).lower() == "on"
+        )
+        default_read_only = (
+            str(conn.execute(text("SHOW default_transaction_read_only")).scalar_one()).lower()
+            == "on"
+        )
         database = str(conn.execute(text("SELECT current_database()")).scalar_one())
+        role = str(conn.execute(text("SELECT current_user")).scalar_one())
+        is_superuser = bool(
+            conn.execute(
+                text("SELECT usesuper FROM pg_user WHERE usename = current_user")
+            ).scalar_one_or_none()
+        )
+        write_privileges = int(
+            conn.execute(
+                text(
+                    "SELECT count(*) FROM information_schema.table_privileges "
+                    "WHERE grantee = current_user AND table_schema = ANY(:s) "
+                    "AND privilege_type IN ('INSERT','UPDATE','DELETE','TRUNCATE')"
+                ),
+                {"s": list(PROTECTED_SCHEMAS)},
+            ).scalar_one()
+        )
+        create_privilege = bool(
+            conn.execute(
+                text("SELECT has_database_privilege(current_user, current_database(), 'CREATE')")
+            ).scalar_one()
+        )
         revision = str(conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one())
         l2f_tables = int(
             conn.execute(
@@ -976,18 +1154,81 @@ def operational_fingerprint(engine: Any) -> tuple[str, str, int]:
         inventory = conn.execute(
             text(
                 "SELECT table_schema, table_name FROM information_schema.tables "
-                "WHERE table_schema IN "
-                "('catalog','experiments','profiling','audit','features','training','live') "
-                "ORDER BY table_schema, table_name"
-            )
+                "WHERE table_schema = ANY(:s) ORDER BY table_schema, table_name"
+            ),
+            {"s": list(PROTECTED_SCHEMAS)},
         ).all()
+    finally:
+        with contextlib.suppress(Exception):
+            trans.rollback()
+        conn.close()
+
+    if not read_only_before:
+        raise QualificationEnvironmentError(
+            "the provisioned operational endpoint is NOT read-only before F7 changes anything "
+            "(transaction_read_only was 'off'); a writable connection that merely could set its "
+            "own transaction read-only is refused"
+        )
+    if is_superuser:
+        raise QualificationEnvironmentError(
+            f"the operational role {role!r} is a superuser; F7 refuses a write-capable role"
+        )
+    if write_privileges:
+        raise QualificationEnvironmentError(
+            f"the operational role {role!r} holds {write_privileges} INSERT/UPDATE/DELETE/"
+            "TRUNCATE privileges on protected schemas; F7 refuses a write-capable role"
+        )
+    if create_privilege:
+        raise QualificationEnvironmentError(
+            f"the operational role {role!r} holds CREATE on the operational database"
+        )
+
+    denied_sqlstate = _observe_write_denial(engine)
     fingerprint = hashlib.sha256(
-        repr((database, revision, l2f_tables, inventory)).encode()
+        repr((database, role, revision, l2f_tables, inventory)).encode()
     ).hexdigest()
-    return fingerprint, revision, l2f_tables
+    return OperationalObservation(
+        fingerprint=fingerprint,
+        database=database,
+        role=role,
+        revision=revision,
+        l2f_tables=l2f_tables,
+        read_only_before_set=read_only_before,
+        default_read_only=default_read_only,
+        is_superuser=is_superuser,
+        write_privileges=write_privileges,
+        write_denied_sqlstate=denied_sqlstate,
+    )
 
 
-def _observe_boundaries(*, before: tuple[str, str, int] | None = None) -> Any:
+def _observe_write_denial(engine: Any) -> str | None:
+    """Ask PostgreSQL to reject a harmless write; require its read-only SQLSTATE. Never commits."""
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    conn = engine.connect()
+    trans = conn.begin()
+    try:
+        conn.execute(text("UPDATE public.alembic_version SET version_num = version_num"))
+    except DBAPIError as exc:
+        state = getattr(getattr(exc, "orig", None), "sqlstate", None)
+        if state != READ_ONLY_SQLSTATE:
+            raise QualificationEnvironmentError(
+                f"the operational write attempt failed with SQLSTATE {state!r}, expected the "
+                f"read-only-transaction SQLSTATE {READ_ONLY_SQLSTATE}"
+            ) from exc
+        return str(state)
+    else:
+        raise QualificationEnvironmentError(
+            "the operational endpoint ACCEPTED a write; it is not genuinely read-only"
+        )
+    finally:
+        with contextlib.suppress(Exception):
+            trans.rollback()
+        conn.close()
+
+
+def _observe_boundaries(*, before: OperationalObservation | None = None) -> Any:
     """Observe the leakage / non-mutation / authority boundary from the REAL environment."""
     from sqlalchemy import create_engine
 
@@ -1010,30 +1251,36 @@ def _observe_boundaries(*, before: tuple[str, str, int] | None = None) -> Any:
     finally:
         engine.dispose()
 
-    fingerprint, revision, l2f_tables = after
-    if revision != ACCEPTED_OPERATIONAL_REVISION:
+    if after.revision != ACCEPTED_OPERATIONAL_REVISION:
         raise QualificationEnvironmentError(
-            f"the operational database is at {revision!r}, expected "
+            f"the operational database is at {after.revision!r}, expected "
             f"{ACCEPTED_OPERATIONAL_REVISION!r}"
         )
-    if l2f_tables != 0:
+    if after.l2f_tables != 0:
         raise QualificationEnvironmentError(
-            f"the operational database carries {l2f_tables} l2f%% tables, expected 0"
+            f"the operational database carries {after.l2f_tables} l2f tables, expected 0"
         )
-    if before is not None and before != after:
+    if before is not None and before.fingerprint != after.fingerprint:
         raise QualificationEnvironmentError(
             "the operational database changed during qualification: "
-            f"{before[0][:12]} -> {fingerprint[:12]}"
+            f"{before.fingerprint[:12]} -> {after.fingerprint[:12]}"
         )
     return BoundaryResult(
         truth_paths_resolved=0,
         scoring_paths_resolved=0,
         nontrain_members_touched=0,
         operational_database_written=False,
-        operational_database_revision=revision,
-        operational_l2f_table_count=l2f_tables,
+        operational_database_revision=after.revision,
+        operational_l2f_table_count=after.l2f_tables,
         select_config_blocked=_select_config_raises_stage_not_ready(),
         network_access_performed=False,
+        operational_read_only_before_set=after.read_only_before_set,
+        operational_default_read_only=after.default_read_only,
+        operational_role_is_superuser=after.is_superuser,
+        operational_write_privileges=after.write_privileges,
+        operational_write_denied_sqlstate=after.write_denied_sqlstate,
+        operational_fingerprint_before=(before.fingerprint if before else after.fingerprint),
+        operational_fingerprint_after=after.fingerprint,
     )
 
 
@@ -1140,35 +1387,139 @@ def _require_dispatched_is_derived(
         )
 
 
-def observe_no_automatic_retry(engine: Any, plan: Any) -> tuple[bool, bool]:
-    """OBSERVE the F6 no-automatic-retry property across a restart.
+@dataclass(frozen=True)
+class FailureControlObservation:
+    """A dedicated CONTROL job driven to durable FAILED and resumed across a restart.
 
-    Returns ``(failed_job_remained_failed, failed_job_was_reclaimed)``. This reads the durable
-    state that already exists; it never manufactures a retry and never re-runs a terminal job.
-    A FAILED job that is still FAILED and still unclaimable is the property being proved.
+    ``observed`` is False unless the experiment actually ran, so an ABSENCE of failure rows can
+    never be reported as proof that no automatic retry happens.
     """
-    from sqlalchemy import text
 
-    with engine.connect() as conn:
-        rows = conn.execute(
-            text(
-                "SELECT j.status, j.claimed_by FROM experiments.l2f_experiment_jobs j "
-                "JOIN experiments.l2f_experiment_plans p ON p.id = j.plan_id "
-                "JOIN experiments.l2f_execution_failures f ON f.job_id = j.id "
-                "WHERE p.plan_hash = :h"
-            ),
-            {"h": plan.plan_hash},
-        ).all()
-    if not rows:
-        # no control failure exists in this slice: the property is proved by the dedicated
-        # FakeGatkRunner control suite, and nothing here may claim to have observed it.
-        return True, False
-    remained = all(str(r[0]) == "FAILED" for r in rows)
-    reclaimed = any(str(r[0]) in {"PENDING", "CLAIMED", "RUNNING"} for r in rows)
-    return remained, reclaimed
+    observed: bool
+    job_key: str | None
+    failure_rows: int
+    result_rows: int
+    remained_failed: bool
+    reclaimed: bool
+    retry_executions: int
+
+    @property
+    def proves_no_automatic_retry(self) -> bool:
+        return (
+            self.observed
+            and self.remained_failed
+            and not self.reclaimed
+            and self.failure_rows == 1
+            and self.result_rows == 0
+            and self.retry_executions == 0
+        )
 
 
-def _capture_operational_before() -> tuple[str, str, int]:
+def run_failure_control_experiment(
+    *,
+    scratch_url: str,
+    plan: Any,
+    candidate_set: Any,
+    dataset_root: Any,
+    publisher: Any,
+    work_root: Path,
+) -> FailureControlObservation:
+    """Drive ONE deterministic control job to durable FAILED, restart, and observe.
+
+    A ``FakeGatkRunner`` is used HERE ONLY, for this bounded failure control. It never touches the
+    official ``SubprocessGatkRunner`` observation and can never satisfy
+    ``official_gatk_runner_used``.
+    """
+    from sqlalchemy import create_engine, text
+
+    from minos_engine.storage.database import normalize_database_url
+    from minos_engine.storage.l2f_execution import _execute_next_job_with_trust
+    from minos_engine.storage.l2f_gatk_runner import FakeGatkRunner
+    from minos_engine.storage.l2f_job_enqueue import _enqueue_experiment_jobs_with_trust
+
+    engine = create_engine(normalize_database_url(scratch_url))
+    try:
+        # a SECOND, deterministic accepted job, distinct from the official qualification job.
+        _enqueue_experiment_jobs_with_trust(engine, plan, candidate_set, start=1, count=1)
+        failed = _execute_next_job_with_trust(
+            engine,
+            plan,
+            worker_id="f7-failure-control",
+            runner=FakeGatkRunner(exit_code=3),
+            dataset_root=dataset_root,
+            publisher=publisher,
+            work_root=work_root,
+        )
+        if failed is None or failed.status != "FAILED":
+            raise QualificationEnvironmentError(
+                f"the failure-control job did not reach a durable FAILED state: {failed}"
+            )
+        job_id, job_key = failed.job_id, failed.job_key
+    finally:
+        engine.dispose()
+
+    # --- restart: dispose every engine and rebuild from the same scratch database -------------
+    engine = create_engine(normalize_database_url(scratch_url))
+    try:
+        with engine.connect() as conn:
+            status, claimed_by = conn.execute(
+                text(
+                    "SELECT status, claimed_by FROM experiments.l2f_experiment_jobs WHERE id = :i"
+                ),
+                {"i": job_id},
+            ).one()
+            failure_rows = int(
+                conn.execute(
+                    text(
+                        "SELECT count(*) FROM experiments.l2f_execution_failures WHERE job_id = :i"
+                    ),
+                    {"i": job_id},
+                ).scalar_one()
+            )
+            result_rows = int(
+                conn.execute(
+                    text(
+                        "SELECT count(*) FROM experiments.l2f_execution_results WHERE job_id = :i"
+                    ),
+                    {"i": job_id},
+                ).scalar_one()
+            )
+        # resume the worker through the accepted F6 boundary: it must never pick this job back up.
+        retries = 0
+        resumed = _execute_next_job_with_trust(
+            engine,
+            plan,
+            worker_id="f7-failure-control",
+            runner=FakeGatkRunner(exit_code=3),
+            dataset_root=dataset_root,
+            publisher=publisher,
+            work_root=work_root,
+        )
+        if resumed is not None and resumed.job_id == job_id:
+            retries = 1
+        with engine.connect() as conn:
+            after_status = str(
+                conn.execute(
+                    text("SELECT status FROM experiments.l2f_experiment_jobs WHERE id = :i"),
+                    {"i": job_id},
+                ).scalar_one()
+            )
+        return FailureControlObservation(
+            observed=True,
+            job_key=job_key,
+            failure_rows=failure_rows,
+            result_rows=result_rows,
+            remained_failed=str(status) == "FAILED" and after_status == "FAILED",
+            reclaimed=str(status) in {"PENDING", "CLAIMED", "RUNNING"}
+            or after_status in {"PENDING", "CLAIMED", "RUNNING"}
+            or claimed_by is None,
+            retry_executions=retries,
+        )
+    finally:
+        engine.dispose()
+
+
+def _capture_operational_before() -> OperationalObservation:
     """Fingerprint the operational store BEFORE qualification, read-only. Fails closed."""
     from sqlalchemy import create_engine
 
@@ -1184,3 +1535,15 @@ def _capture_operational_before() -> tuple[str, str, int]:
         return operational_fingerprint(engine)
     finally:
         engine.dispose()
+
+
+def _accepted_plan() -> Any:
+    from minos_engine.experiments.accepted_plan import build_accepted_experiment_plan
+
+    return build_accepted_experiment_plan()
+
+
+def _accepted_candidate_set() -> Any:
+    from minos_engine.experiments.candidates import generate_accepted_candidate_set
+
+    return generate_accepted_candidate_set()
