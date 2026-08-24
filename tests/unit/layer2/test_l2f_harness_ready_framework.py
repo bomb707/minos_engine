@@ -16,7 +16,11 @@ from typing import Any
 import pytest
 
 from minos_engine.common.canonical_json import canonical_json_bytes
-from minos_engine.experiments.execution_contract import ExecutionInput
+from minos_engine.experiments.execution_contract import (
+    ExecutionInput,
+    GatkExecutionError,
+    compute_gatk_runtime_bundle_sha256,
+)
 from minos_engine.experiments.gatk_live_space import canonicalize_live_gatk_config
 from minos_engine.gates.contracts import GateStatus
 from minos_engine.gates.required_checks import required_checks_for
@@ -60,6 +64,9 @@ from minos_engine.qualification.l2f_harness_ready_contract import (
 from minos_engine.storage.l2f_gatk_runner import build_logical_invocation
 
 _H = {c: c * 64 for c in "0123456789abcdef"}
+_BUNDLE = compute_gatk_runtime_bundle_sha256(
+    launcher_sha256=_H["b"], local_jar_sha256=_H["a"], gatk_version="4.5.0.0"
+)
 _GIT = {c: c * 40 for c in "0123456789abcdef"}
 
 
@@ -101,6 +108,7 @@ def _twin_and_execution(**over: Any) -> tuple[Any, Any, str]:
         effective_config=dict(canonical.effective_config),
         inputs=inputs,
         gatk_executable_sha256=_H["b"],
+        gatk_runtime_bundle_sha256=_H["c"],
         gatk_version="4.5.0.0",
     )
     plan = build_twin_plan_for_execution(
@@ -133,7 +141,19 @@ def _qualification(**over: Any) -> HarnessReadyQualification:
         # the accepted block is RECOMPUTED from the real committed bytes: arbitrary 64-hex
         # values no longer satisfy the accepted-identity checks (see the negative controls).
         "accepted": recompute_accepted_identities(),
-        "gatk_binary": GatkBinaryIdentity(executable_sha256=_H["b"], version="4.5.0.0"),
+        # a COMPLETE bundle identity: launcher + the local JAR it actually runs, with the
+        # bundle digest genuinely derived from those parts and the observed runtime version.
+        "gatk_binary": GatkBinaryIdentity(
+            executable_sha256=_H["b"],
+            local_jar_sha256=_H["a"],
+            runtime_bundle_sha256=_BUNDLE,
+            version="4.5.0.0",
+            observed_version="4.5.0.0",
+            local_jar_is_symlink=False,
+            jar_override_variables_inherited=False,
+            python_executable_sha256=_H["8"],
+            java_executable_sha256=_H["9"],
+        ),
         "qualification_input": QualificationInputIdentity(
             member_index=0,
             candidate_index=0,
@@ -152,6 +172,7 @@ def _qualification(**over: Any) -> HarnessReadyQualification:
             job_status="SUCCEEDED",
             result_hash=_H["e"],
             logical_argv_hash=invocation.argv_hash(),
+            gatk_runtime_bundle_sha256=_BUNDLE,
             vcf_sha256=_H["f"],
             vcf_size_bytes=512,
             result_manifest_sha256=_H["0"],
@@ -1171,11 +1192,50 @@ def test_arbitrary_well_formed_identities_are_not_accepted_bindings(
 # --------------------------------------------------------------------------- #
 # CORRECTIVE 5-9 — the GATK binary is verified from ACTUAL bytes
 # --------------------------------------------------------------------------- #
-def _fixture_binary(tmp_path: Path, body: str = "#!/bin/sh\nexit 0\n") -> Path:
+#: what the real Broad launcher prints for ``gatk --version``.
+_BANNER = "The Genome Analysis Toolkit (GATK) v4.5.0.0"
+
+
+def _fixture_binary(
+    tmp_path: Path,
+    body: str | None = None,
+    *,
+    version: str = "4.5.0.0",
+    jar_name: str | None = None,
+    jar_body: bytes = b"PK\x03\x04 fake local jar payload",
+    jar_symlink: bool = False,
+) -> Path:
+    """Build a COMPLETE fake execution bundle: a launcher plus the local JAR it dispatches to.
+
+    The launcher alone is never a sufficient identity, so every fixture here mirrors the real
+    layout (``gatk`` + ``gatk-package-<version>-local.jar`` side by side) and answers a bounded
+    ``--version`` probe the way the official launcher does.
+    """
     path = tmp_path / "gatk"
-    path.write_text(body, encoding="utf-8")
+    path.write_text(body or f'#!/bin/sh\necho "{_BANNER}"\nexit 0\n', encoding="utf-8")
     path.chmod(0o700)
+    jar = tmp_path / (jar_name or f"gatk-package-{version}-local.jar")
+    if jar_symlink:
+        real = tmp_path / "elsewhere.jar"
+        real.write_bytes(jar_body)
+        jar.symlink_to(real)
+    else:
+        jar.write_bytes(jar_body)
     return path.resolve()
+
+
+@pytest.fixture
+def _child_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Put a resolvable ``python`` and ``java`` on the PATH the CHILD would inherit."""
+    bindir = tmp_path / "runtime-bin"
+    bindir.mkdir()
+    for name in ("python", "java"):
+        exe = bindir / name
+        exe.write_text(f"#!/bin/sh\n# {name}\nexit 0\n", encoding="utf-8")
+        exe.chmod(0o700)
+    monkeypatch.setenv("PATH", f"{bindir}:{os.environ.get('PATH', '')}")
+    monkeypatch.delenv("JAVA_HOME", raising=False)
+    return bindir
 
 
 def _runner(path: Path, *, digest: str | None = None, version: str = "4.5.0.0") -> Any:
@@ -1190,7 +1250,7 @@ def _runner(path: Path, *, digest: str | None = None, version: str = "4.5.0.0") 
     )
 
 
-def test_the_actual_executable_bytes_are_hashed(tmp_path: Path) -> None:
+def test_the_actual_executable_bytes_are_hashed(tmp_path: Path, _child_runtime: Path) -> None:
     import hashlib as _h
 
     from minos_engine.qualification import l2f_harness_ready_qualifier as Q
@@ -1199,9 +1259,21 @@ def test_the_actual_executable_bytes_are_hashed(tmp_path: Path) -> None:
     identity = Q.verify_official_gatk_binary(_runner(path))
     assert identity.executable_sha256 == _h.sha256(path.read_bytes()).hexdigest()
     assert identity.version_provenance == "provisioned_metadata_bound_to_digest"
+    # the SCIENTIFIC payload is bound too, and the bundle derives from the observed parts
+    jar = path.parent / "gatk-package-4.5.0.0-local.jar"
+    assert identity.local_jar_sha256 == _h.sha256(jar.read_bytes()).hexdigest()
+    assert identity.runtime_bundle_sha256 == compute_gatk_runtime_bundle_sha256(
+        launcher_sha256=identity.executable_sha256,
+        local_jar_sha256=str(identity.local_jar_sha256),
+        gatk_version="4.5.0.0",
+    )
+    assert identity.observed_version == "4.5.0.0"
+    assert identity.python_executable_sha256 and identity.java_executable_sha256
 
 
-def test_a_wrong_provisioned_digest_fails_official_qualification(tmp_path: Path) -> None:
+def test_a_wrong_provisioned_digest_fails_official_qualification(
+    tmp_path: Path, _child_runtime: Path
+) -> None:
     """The corrective test: a mismatched provisioned digest CANNOT qualify."""
     from minos_engine.qualification import l2f_harness_ready_qualifier as Q
 
@@ -1210,7 +1282,7 @@ def test_a_wrong_provisioned_digest_fails_official_qualification(tmp_path: Path)
         Q.verify_official_gatk_binary(_runner(path, digest=_H["0"]))
 
 
-def test_a_swapped_executable_after_pinning_fails(tmp_path: Path) -> None:
+def test_a_swapped_executable_after_pinning_fails(tmp_path: Path, _child_runtime: Path) -> None:
     from minos_engine.qualification import l2f_harness_ready_qualifier as Q
 
     path = _fixture_binary(tmp_path)
@@ -1220,7 +1292,7 @@ def test_a_swapped_executable_after_pinning_fails(tmp_path: Path) -> None:
         Q.verify_official_gatk_binary(runner)
 
 
-def test_a_symlinked_executable_fails(tmp_path: Path) -> None:
+def test_a_symlinked_executable_fails(tmp_path: Path, _child_runtime: Path) -> None:
     from minos_engine.qualification import l2f_harness_ready_qualifier as Q
 
     real = _fixture_binary(tmp_path)
@@ -1575,6 +1647,7 @@ def test_a_forged_self_consistent_result_hash_fails_the_frozen_recomputation() -
         chromosome=inputs.chromosome,
         logical_argv_hash=invocation.argv_hash(),
         gatk_executable_sha256=_H["b"],
+        gatk_runtime_bundle_sha256=_H["c"],
         gatk_version="4.5.0.0",
         vcf_sha256=_H["f"],
         vcf_size_bytes=512,
@@ -1943,3 +2016,202 @@ def test_a_reclaimed_failed_job_holds_the_gate() -> None:
     gate = _assemble(degraded)
     assert gate.mandatory_checks["no_automatic_retry"] is False
     assert gate.status is GateStatus.HOLD
+
+
+# --------------------------------------------------------------------------- #
+# F7 EXECUTION-BUNDLE PINNING — the launcher is a dispatcher, not the science
+# --------------------------------------------------------------------------- #
+def test_a_modified_local_jar_changes_the_pinned_bundle_identity(
+    tmp_path: Path, _child_runtime: Path
+) -> None:
+    """THE corrective control: an AUTHENTIC launcher + a MODIFIED JAR is a different identity."""
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    path = _fixture_binary(tmp_path)
+    before = Q.verify_official_gatk_binary(_runner(path))
+    (tmp_path / "gatk-package-4.5.0.0-local.jar").write_bytes(b"PK\x03\x04 TAMPERED payload")
+    after = Q.verify_official_gatk_binary(_runner(path))
+    # the launcher digest is byte-identical — that alone would have accepted the tamper
+    assert after.executable_sha256 == before.executable_sha256
+    assert after.local_jar_sha256 != before.local_jar_sha256
+    assert after.runtime_bundle_sha256 != before.runtime_bundle_sha256
+
+
+def test_a_replaced_local_jar_cannot_reuse_an_accepted_bundle_digest(
+    tmp_path: Path, _child_runtime: Path
+) -> None:
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    path = _fixture_binary(tmp_path)
+    pinned = Q.verify_official_gatk_binary(_runner(path))
+    (tmp_path / "gatk-package-4.5.0.0-local.jar").write_bytes(b"an entirely different jar")
+    swapped = Q.verify_official_gatk_binary(_runner(path))
+    forged = swapped.model_copy(update={"runtime_bundle_sha256": pinned.runtime_bundle_sha256})
+    # the derivation is recomputed from the raw parts, so a pasted digest does not survive
+    assert (
+        compute_gatk_runtime_bundle_sha256(
+            launcher_sha256=forged.executable_sha256,
+            local_jar_sha256=str(forged.local_jar_sha256),
+            gatk_version=forged.version,
+        )
+        != forged.runtime_bundle_sha256
+    )
+
+
+def test_a_symlinked_local_jar_fails_closed(tmp_path: Path, _child_runtime: Path) -> None:
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    path = _fixture_binary(tmp_path, jar_symlink=True)
+    with pytest.raises((Q.QualificationEnvironmentError, GatkExecutionError), match="symlink"):
+        Q.verify_official_gatk_binary(_runner(path))
+
+
+def test_a_missing_local_jar_fails_closed(tmp_path: Path, _child_runtime: Path) -> None:
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    path = _fixture_binary(tmp_path)
+    (tmp_path / "gatk-package-4.5.0.0-local.jar").unlink()
+    with pytest.raises(GatkExecutionError, match="no official local GATK JAR"):
+        Q.verify_official_gatk_binary(_runner(path))
+
+
+def test_an_ambiguous_second_local_jar_fails_closed(tmp_path: Path, _child_runtime: Path) -> None:
+    """The launcher picks the NEWEST match; ambiguity must be refused, never silently resolved."""
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    path = _fixture_binary(tmp_path)
+    (tmp_path / "gatk-package-9.9.9.9-local.jar").write_bytes(b"a second candidate")
+    with pytest.raises(GatkExecutionError, match="ambiguous"):
+        Q.verify_official_gatk_binary(_runner(path))
+
+
+def test_a_wrong_version_local_jar_fails_closed(tmp_path: Path, _child_runtime: Path) -> None:
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    path = _fixture_binary(tmp_path, jar_name="gatk-package-4.4.0.0-local.jar")
+    with pytest.raises(GatkExecutionError, match="gatk-package-4.5.0.0-local.jar"):
+        Q.verify_official_gatk_binary(_runner(path))
+
+
+def test_a_disagreeing_observed_version_fails_closed(tmp_path: Path, _child_runtime: Path) -> None:
+    """Provisioned metadata may not disagree with what the REAL bundle reports."""
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    body = '#!/bin/sh\necho "The Genome Analysis Toolkit (GATK) v4.4.0.0"\nexit 0\n'
+    path = _fixture_binary(tmp_path, body)
+    with pytest.raises(Q.QualificationEnvironmentError, match="reports version"):
+        Q.verify_official_gatk_binary(_runner(path))
+
+
+def test_the_child_environment_cannot_inherit_a_jar_override() -> None:
+    """GATK_LOCAL_JAR/GATK_SPARK_JAR would let a caller substitute the scientific payload."""
+    from minos_engine.storage.l2f_gatk_runner import (
+        CHILD_ENV_ALLOWLIST,
+        GATK_JAR_OVERRIDE_VARIABLES,
+    )
+
+    assert not set(GATK_JAR_OVERRIDE_VARIABLES) & set(CHILD_ENV_ALLOWLIST)
+
+
+def test_the_bundle_digest_is_host_independent() -> None:
+    """No absolute path, uid/gid, timestamp or hostname may enter the scientific identity."""
+    a = compute_gatk_runtime_bundle_sha256(
+        launcher_sha256=_H["b"], local_jar_sha256=_H["a"], gatk_version="4.5.0.0"
+    )
+    b = compute_gatk_runtime_bundle_sha256(
+        launcher_sha256=_H["b"], local_jar_sha256=_H["a"], gatk_version="4.5.0.0"
+    )
+    assert a == b
+    assert a != compute_gatk_runtime_bundle_sha256(
+        launcher_sha256=_H["b"], local_jar_sha256=_H["c"], gatk_version="4.5.0.0"
+    )
+    assert a != compute_gatk_runtime_bundle_sha256(
+        launcher_sha256=_H["c"], local_jar_sha256=_H["a"], gatk_version="4.5.0.0"
+    )
+    assert a != compute_gatk_runtime_bundle_sha256(
+        launcher_sha256=_H["b"], local_jar_sha256=_H["a"], gatk_version="4.4.0.0"
+    )
+
+
+def test_the_result_identity_changes_when_only_the_jar_changes() -> None:
+    """A different local JAR CANNOT reproduce an accepted ``result_hash``."""
+    from minos_engine.experiments.execution_contract import (
+        ExecutionConfig,
+        GatkExecutionOutcome,
+        compute_result_hash,
+    )
+    from minos_engine.storage.l2f_gatk_runner import build_logical_invocation
+
+    inputs = _inputs()
+    common: dict[str, Any] = {
+        "effective_config": {"min_pruning": 2},
+        "inputs": inputs,
+        "gatk_executable_sha256": _H["b"],
+        "gatk_version": "4.5.0.0",
+    }
+    a = build_logical_invocation(gatk_runtime_bundle_sha256=_H["a"], **common)
+    b = build_logical_invocation(gatk_runtime_bundle_sha256=_H["c"], **common)
+    outcome = GatkExecutionOutcome(
+        exit_code=0, runtime_ms=1234, vcf_sha256=_H["f"], vcf_size_bytes=512
+    )
+    cfg = ExecutionConfig(
+        config_hash=_H["9"],
+        parameter_space_hash=_H["a"],
+        config_index=0,
+        effective_config={"min_pruning": 2},
+    )
+    # everything except the bundle is identical, so ONLY the JAR identity moves the hash
+    assert a.argv_hash() == b.argv_hash()
+    assert compute_result_hash(
+        plan_hash=_H["0"],
+        job_key="k",
+        config=cfg,
+        inputs=inputs,
+        invocation=a,
+        outcome=outcome,
+    ) != compute_result_hash(
+        plan_hash=_H["0"],
+        job_key="k",
+        config=cfg,
+        inputs=inputs,
+        invocation=b,
+        outcome=outcome,
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"local_jar_sha256": None},
+        {"runtime_bundle_sha256": None},
+        {"observed_version": None},
+        {"observed_version": "4.4.0.0"},
+        {"local_jar_is_symlink": True},
+        {"jar_override_variables_inherited": True},
+        {"python_executable_sha256": None},
+        {"java_executable_sha256": None},
+        {"runtime_bundle_sha256": _H["7"]},
+    ],
+)
+def test_an_incomplete_bundle_observation_cannot_pin_the_binary(
+    mutation: dict[str, Any],
+) -> None:
+    """An aggregate boolean is not enough: the RAW bundle observations must all be present."""
+    q = _qualification()
+    weakened = q.model_copy(update={"gatk_binary": q.gatk_binary.model_copy(update=mutation)})
+    assert R.derive_checks(weakened)["official_gatk_binary_pinned"] is False
+    assert _assemble(weakened).status is GateStatus.HOLD
+
+
+def test_the_execution_must_have_used_the_pinned_bundle() -> None:
+    """A pinned bundle that the official execution did NOT use cannot pass."""
+    q = _qualification()
+    detached = q.model_copy(
+        update={
+            "official_execution": q.official_execution.model_copy(
+                update={"gatk_runtime_bundle_sha256": _H["7"]}
+            )
+        }
+    )
+    assert R.derive_checks(detached)["official_gatk_binary_pinned"] is False
+    assert _assemble(detached).status is GateStatus.HOLD

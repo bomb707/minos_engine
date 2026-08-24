@@ -50,6 +50,9 @@ FORGERY_MATRIX: dict[str, str] = {
         "execution_results_independently_verified"
     ),
     "logical_argv_mutated_with_recomputed_argv_hash": "execution_results_independently_verified",
+    "gatk_runtime_bundle_substituted_with_recomputed_result_hash": (
+        "execution_results_independently_verified"
+    ),
     "vcf_bytes_mutated_with_matching_artifact_hash": "execution_results_independently_verified",
     "result_manifest_mutated_with_matching_artifact_hash": (
         "execution_results_independently_verified"
@@ -130,7 +133,7 @@ def test_the_untouched_graph_is_the_control(env: Any) -> None:
 
 
 def test_the_forgery_matrix_is_named_and_maps_onto_real_checks() -> None:
-    assert len(FORGERY_MATRIX) == 15
+    assert len(FORGERY_MATRIX) == 16
     assert set(FORGERY_MATRIX.values()) <= set(HV.CHECK_NAMES)
 
 
@@ -307,6 +310,7 @@ def test_logical_argv_mutated_with_recomputed_argv_hash(env: Any) -> None:
         effective_config=hostile,
         inputs=execution_input_from_manifest(ExecutionResultManifest(**document)),
         gatk_executable_sha256=document["gatk_executable_sha256"],
+        gatk_runtime_bundle_sha256=document["gatk_runtime_bundle_sha256"],
         gatk_version=document["gatk_version"],
     )
     document["logical_argv_hash"] = invocation.argv_hash()
@@ -315,6 +319,70 @@ def test_logical_argv_mutated_with_recomputed_argv_hash(env: Any) -> None:
         env,
         dataclasses.replace(graph, execution_results=(forged,)),
         FORGERY_MATRIX["logical_argv_mutated_with_recomputed_argv_hash"],
+    )
+
+
+# --------------------------------------------------------------------------- #
+# F7 — the scientific payload swapped: an AUTHENTIC launcher, a DIFFERENT local JAR
+# --------------------------------------------------------------------------- #
+def test_gatk_runtime_bundle_substituted_with_recomputed_result_hash(env: Any) -> None:
+    """The launcher is a dispatcher: swapping the local JAR must break the result identity.
+
+    The forged manifest keeps the authentic launcher digest and recomputes ``result_hash`` through
+    the frozen formula, so nothing inside it is self-inconsistent — it is caught only because the
+    recomputation no longer equals the immutable append-only database row.
+    """
+    from minos_engine.experiments.execution_contract import (
+        ExecutionConfig,
+        GatkExecutionOutcome,
+        compute_result_hash,
+    )
+    from minos_engine.storage.l2f_gatk_runner import build_logical_invocation
+
+    env.run()
+    graph = _graph(env)
+    result = graph.execution_results[0]
+    document = json.loads(result.manifest_bytes)
+    # a DIFFERENT scientific payload behind a byte-identical launcher
+    document["gatk_runtime_bundle_sha256"] = "b" * 64
+    manifest = ExecutionResultManifest(**{**document, "result_hash": "0" * 64})
+    inputs = execution_input_from_manifest(manifest)
+    invocation = build_logical_invocation(
+        effective_config=dict(result.effective_config),
+        inputs=inputs,
+        gatk_executable_sha256=manifest.gatk_executable_sha256,
+        gatk_runtime_bundle_sha256=manifest.gatk_runtime_bundle_sha256,
+        gatk_version=manifest.gatk_version,
+    )
+    document["logical_argv_hash"] = invocation.argv_hash()
+    document["result_hash"] = compute_result_hash(
+        plan_hash=env.plan.plan_hash,
+        job_key=result.job_key,
+        inputs=inputs,
+        config=ExecutionConfig(
+            config_hash=result.config_hash,
+            parameter_space_hash=result.parameter_space_hash,
+            config_index=0,
+            effective_config=dict(result.effective_config),
+        ),
+        invocation=invocation,
+        outcome=GatkExecutionOutcome(
+            exit_code=0,
+            runtime_ms=manifest.runtime_ms,
+            vcf_sha256=manifest.vcf_sha256,
+            vcf_size_bytes=manifest.vcf_size_bytes,
+        ),
+    )
+    # the launcher identity is untouched — hashing it alone would have accepted this forgery
+    assert (
+        document["gatk_executable_sha256"]
+        == json.loads(result.manifest_bytes)["gatk_executable_sha256"]
+    )
+    forged = _rehash_manifest(result, document)
+    _fails(
+        env,
+        dataclasses.replace(graph, execution_results=(forged,)),
+        FORGERY_MATRIX["gatk_runtime_bundle_substituted_with_recomputed_result_hash"],
     )
 
 
@@ -378,6 +446,7 @@ def test_result_scientific_fields_mutated_with_matching_result_hash(env: Any) ->
         effective_config=dict(result.effective_config),
         inputs=inputs,
         gatk_executable_sha256=manifest.gatk_executable_sha256,
+        gatk_runtime_bundle_sha256=manifest.gatk_runtime_bundle_sha256,
         gatk_version=manifest.gatk_version,
     )
     document["result_hash"] = compute_result_hash(

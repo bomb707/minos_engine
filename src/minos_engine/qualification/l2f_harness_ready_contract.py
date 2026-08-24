@@ -75,7 +75,8 @@ HARNESS_READY_GATE_PATH = "gates/harness-ready.json"
 
 #: versioned F7 qualifier identity (bumping this changes every qualification hash).
 HARNESS_READY_QUALIFIER_SCHEMA = "l2f-harness-ready-qualification-v1"
-HARNESS_READY_QUALIFIER_VERSION = "f7a-1"
+#: bumped for the GATK execution-bundle binding: qualification evidence semantics changed.
+HARNESS_READY_QUALIFIER_VERSION = "f7a-2"
 #: domain separation for the qualification identity hash.
 HARNESS_READY_QUALIFICATION_DOMAIN = "minos:l2f-harness-ready-qualification:v1\n"
 
@@ -190,12 +191,24 @@ class GatkBinaryIdentity(BaseModel):
 
     model_config = _STRICT
 
+    #: the launcher script alone — a ~21 KB dispatcher, NOT the scientific payload.
     executable_sha256: Hex64
+    #: the local JAR the official launcher actually runs: the real GATK implementation.
+    local_jar_sha256: Hex64 | None = None
+    #: launcher + local JAR + version, domain-separated. This is what enters ``result_hash``.
+    runtime_bundle_sha256: Hex64 | None = None
     version: str = Field(min_length=1)
+    #: the version the REAL bundle reported from a bounded, offline ``gatk --version`` probe.
+    observed_version: str | None = None
     version_provenance: Literal["provisioned_metadata_bound_to_digest"] = (
         "provisioned_metadata_bound_to_digest"
     )
     absolute_path_is_symlink: bool = False
+    local_jar_is_symlink: bool = True
+    jar_override_variables_inherited: bool = True
+    #: runtime provenance (reproducibility, deliberately NOT in the scientific bundle digest).
+    python_executable_sha256: Hex64 | None = None
+    java_executable_sha256: Hex64 | None = None
 
 
 class QualificationInputIdentity(BaseModel):
@@ -227,6 +240,8 @@ class OfficialExecutionResult(BaseModel):
     job_status: str = Field(min_length=1)
     result_hash: Hex64
     logical_argv_hash: Hex64
+    #: the execution-bundle identity the official run actually used.
+    gatk_runtime_bundle_sha256: Hex64 | None = None
     vcf_sha256: Hex64
     vcf_size_bytes: int = Field(gt=0)
     result_manifest_sha256: Hex64

@@ -216,6 +216,7 @@ class PersistedExecutionResult:
     input_identity_hash: str
     logical_argv_hash: str
     gatk_executable_sha256: str
+    gatk_runtime_bundle_sha256: str
     gatk_version: str
     result_hash: str
     vcf_sha256: str
@@ -728,6 +729,7 @@ def _check_execution_results(plan: Any, graph: PersistedGraph) -> bool:
             (manifest.input_identity_hash, res.input_identity_hash),
             (manifest.logical_argv_hash, res.logical_argv_hash),
             (manifest.gatk_executable_sha256, res.gatk_executable_sha256),
+            (manifest.gatk_runtime_bundle_sha256, res.gatk_runtime_bundle_sha256),
             (manifest.gatk_version, res.gatk_version),
             (manifest.vcf_sha256, res.vcf_sha256),
             (manifest.result_hash, res.result_hash),
@@ -760,6 +762,7 @@ def _check_execution_results(plan: Any, graph: PersistedGraph) -> bool:
                 effective_config=dict(res.effective_config),
                 inputs=inputs,
                 gatk_executable_sha256=manifest.gatk_executable_sha256,
+                gatk_runtime_bundle_sha256=manifest.gatk_runtime_bundle_sha256,
                 gatk_version=manifest.gatk_version,
             )
         except Exception:
@@ -1269,6 +1272,11 @@ def _read_execution_results(conn: Connection, plan_id: str) -> tuple[PersistedEx
                 input_identity_hash=str(r["input_identity_hash"]),
                 logical_argv_hash=str(r["logical_argv_hash"]),
                 gatk_executable_sha256=str(r["gatk_executable_sha256"]),
+                # no DB column exists (no migration 0009); the bundle is anchored by the
+                # append-only result_hash, which the recomputation below reproduces.
+                gatk_runtime_bundle_sha256=str(document.get("gatk_runtime_bundle_sha256", ""))
+                if document
+                else "",
                 gatk_version=str(r["gatk_version"]),
                 result_hash=str(r["result_hash"]),
                 vcf_sha256=str(r["vcf_sha256"]),

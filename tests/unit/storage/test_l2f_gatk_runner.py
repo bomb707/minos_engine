@@ -123,6 +123,7 @@ def test_logical_argv_uses_stable_placeholders_and_is_host_independent() -> None
         effective_config=_CONFIG,
         inputs=_inputs(),
         gatk_executable_sha256=_H["b"],
+        gatk_runtime_bundle_sha256=_H["c"],
         gatk_version="4.5.0.0",
     )
     assert ARGV_REFERENCE_PLACEHOLDER in a.logical_argv
@@ -134,6 +135,7 @@ def test_logical_argv_uses_stable_placeholders_and_is_host_independent() -> None
         effective_config=_CONFIG,
         inputs=_inputs(),
         gatk_executable_sha256=_H["b"],
+        gatk_runtime_bundle_sha256=_H["c"],
         gatk_version="4.5.0.0",
     )
     assert a.argv_hash() == b.argv_hash()
@@ -142,6 +144,7 @@ def test_logical_argv_uses_stable_placeholders_and_is_host_independent() -> None
         effective_config=_CONFIG,
         inputs=_inputs(region_start0=500, region_end0_exclusive=600),
         gatk_executable_sha256=_H["b"],
+        gatk_runtime_bundle_sha256=_H["c"],
         gatk_version="4.5.0.0",
     )
     assert c.argv_hash() != a.argv_hash()
@@ -149,6 +152,7 @@ def test_logical_argv_uses_stable_placeholders_and_is_host_independent() -> None
         effective_config=_CONFIG,
         inputs=_inputs(),
         gatk_executable_sha256=_H["0"],
+        gatk_runtime_bundle_sha256=_H["c"],
         gatk_version="4.5.0.0",
     )
     assert d.argv_hash() != a.argv_hash()

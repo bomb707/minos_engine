@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from minos_engine.common.errors import MinosEngineError
+from minos_engine.experiments.execution_contract import compute_gatk_runtime_bundle_sha256
 from minos_engine.gates.contracts import EvidenceItem, GateArtifact, GateStatus
 from minos_engine.gates.required_checks import required_checks_for
 from minos_engine.gates.verifier import load_gate, verify_gate_integrity, write_gate
@@ -224,10 +225,28 @@ def derive_checks(
         "official_gatk_runner_used": (
             ex.used_official_runner and ex.runner_class == "SubprocessGatkRunner"
         ),
+        # the launcher alone is a dispatcher: the pinned identity must bind the local JAR the
+        # launcher actually runs, and the observed runtime version must equal the provisioned one.
         "official_gatk_binary_pinned": (
             not result.gatk_binary.absolute_path_is_symlink
+            and not result.gatk_binary.local_jar_is_symlink
+            and not result.gatk_binary.jar_override_variables_inherited
             and len(result.gatk_binary.executable_sha256) == 64
+            and result.gatk_binary.local_jar_sha256 is not None
+            and result.gatk_binary.runtime_bundle_sha256 is not None
+            and result.gatk_binary.python_executable_sha256 is not None
+            and result.gatk_binary.java_executable_sha256 is not None
             and bool(result.gatk_binary.version)
+            and result.gatk_binary.observed_version == result.gatk_binary.version
+            # the recorded bundle digest must actually derive from the recorded parts
+            and result.gatk_binary.runtime_bundle_sha256
+            == compute_gatk_runtime_bundle_sha256(
+                launcher_sha256=result.gatk_binary.executable_sha256,
+                local_jar_sha256=result.gatk_binary.local_jar_sha256,
+                gatk_version=result.gatk_binary.version,
+            )
+            # and the execution identity must have USED that bundle
+            and ex.gatk_runtime_bundle_sha256 == result.gatk_binary.runtime_bundle_sha256
         ),
         "official_execution_succeeded": ex.job_status == "SUCCEEDED",
         "official_execution_artifacts_published": ex.published_artifact_count == 2,

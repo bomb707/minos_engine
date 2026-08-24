@@ -200,11 +200,41 @@ count, and the single Alembic head — each from real committed bytes — and re
 the accepted constants. `bool(policy_hash)` and "is 64 hex characters" are used nowhere as proof:
 an arbitrary well-formed hash HOLDs the gate.
 
-**The GATK binary is observed.** The qualifier hashes the ACTUAL executable bytes and requires
-them to equal the provisioned digest, after requiring an absolute, existing, non-symlink, regular,
-executable file. A mismatched provisioned digest, a swapped binary, a symlink, a relative path or
-a `FakeGatkRunner` each fail official qualification outright. The version remains provisioned
-metadata bound to that verified digest — no probe is performed or claimed.
+**The GATK execution BUNDLE is observed.** `MINOS_L2F_GATK_EXECUTABLE` is the official Broad
+launcher — a ~21 KB Python dispatcher that locates `^gatk.*local\.jar$` beside itself and runs
+`java -jar` on it. Hashing the launcher alone therefore does **not** pin the science: an authentic
+launcher with a modified or replaced `gatk-package-<version>-local.jar` would produce identical
+launcher bytes. The qualifier consequently observes the whole bundle:
+
+* the launcher bytes, which must equal the provisioned digest, after requiring an absolute,
+  existing, non-symlink, regular, executable file;
+* the **local JAR** the launcher would actually run, resolved by reproducing the launcher's own
+  selection and failing closed on a missing JAR, more than one candidate, a symlink, a non-regular
+  file or a name that does not carry the pinned version — a caller cannot nominate an arbitrary
+  file as "the GATK JAR";
+* the **runtime bundle digest**, `sha256("minos:l2f-gatk-runtime-bundle:v1\n" + canonical_json({
+  launcher_sha256, local_jar_sha256, gatk_version }))` — deliberately host-independent: no
+  absolute path, uid/gid, timestamp or hostname enters it;
+* the **observed version**, from a bounded, offline `gatk --version` probe under the same
+  restricted child environment (never `HaplotypeCaller`), which must equal the provisioned
+  version — provisioned metadata may not disagree with what the real bundle reports;
+* the **Python and Java executables** the child would actually resolve through its PATH and
+  `JAVA_HOME`, hashed at their final symlink targets. These are runtime provenance and are
+  intentionally **not** part of the scientific bundle digest.
+
+`GATK_LOCAL_JAR` and `GATK_SPARK_JAR` override the launcher's JAR selection, so they are absent
+from the child environment allowlist and their absence is asserted as a qualification observation.
+
+**The bundle enters the result identity.** `LogicalGatkInvocation` and `ExecutionResultManifest`
+carry `gatk_runtime_bundle_sha256`, and `compute_result_hash` binds it. A different local JAR
+therefore cannot reproduce an accepted `result_hash`, and the append-only result row anchors the
+bundle without any new database column — no migration `0009` is required.
+`official_gatk_binary_pinned` requires the raw observations (launcher, JAR, bundle, observed
+version, Python, Java, non-symlink, no inherited override), recomputes the bundle digest from
+those parts so a pasted digest does not survive, and requires the official execution to have
+actually **used** that bundle. A mismatched provisioned digest, a swapped launcher, a mutated or
+substituted JAR, a symlink, a relative path, a version disagreement or a `FakeGatkRunner` each
+fail official qualification outright.
 
 **Enforced boundaries.** An offline guard replaces `socket.socket`/`socket.create_connection` for
 the duration of the run, so a network attempt *raises* rather than being assumed absent; a
@@ -219,12 +249,13 @@ binding, re-derives the checks from it, requires them to equal the gate's, re-ve
 accepted identity closure from repository bytes, and requires the gate and result to agree on the
 qualified source — all offline, with no GATK, no database mutation and no Alembic.
 
-**Official GATK environment status.** At F7-A the official GATK qualification environment is
-**not provisioned** in this workspace, so no official run was performed and **no HARNESS-READY
-evidence exists**. The live `qualify` path is nevertheless real and reachable: it fails closed on
-the first genuinely missing input (scratch endpoint, clean tree, provisioned binary, provisioned
-roots) rather than on a blanket stage refusal. F7-B remains blocked until the official run
-succeeds.
+**Official GATK environment status.** No official run has been performed from this repository and
+**no HARNESS-READY evidence exists**; `gates/harness-ready.json` and the qualification result are
+absent by design. The qualification environment (official GATK 4.5.0.0, a JDK, the TRAIN-only
+dataset closure and an isolated scratch endpoint) lives entirely outside Git and is not
+committed. The live `qualify` path is real and reachable: it fails closed on the first genuinely
+missing input (scratch endpoint, clean tree, provisioned binary, provisioned roots) rather than
+on a blanket stage refusal. F7-B remains blocked until the official run succeeds.
 
 ### F6 execution recovery contract
 

@@ -32,7 +32,7 @@ from minos_engine.storage.l2f_execution import (
     verify_produced_output,
 )
 from minos_engine.storage.l2f_gatk_runner import (
-    _ENV_ALLOWLIST,
+    CHILD_ENV_ALLOWLIST,
     MAX_CAPTURED_STREAM_BYTES,
     FakeGatkRunner,
     SubprocessGatkRunner,
@@ -176,6 +176,7 @@ def test_the_logical_argv_uses_placeholders_and_is_host_independent() -> None:
         effective_config=_accepted_config(),
         inputs=_inputs(),
         gatk_executable_sha256=_H["b"],
+        gatk_runtime_bundle_sha256=_H["c"],
         gatk_version="4.5.0.0",
     )
     assert ARGV_REFERENCE_PLACEHOLDER in invocation.logical_argv
@@ -283,7 +284,7 @@ def test_the_child_environment_is_an_explicit_allowlist(
         assert forbidden not in names, forbidden
         assert f"leaked-{forbidden}" not in dumped
     # PWD/SHLVL/_ are set by the shell fixture ITSELF, not inherited from the parent.
-    assert names - {"PWD", "SHLVL", "_"} <= set(_ENV_ALLOWLIST)
+    assert names - {"PWD", "SHLVL", "_"} <= set(CHILD_ENV_ALLOWLIST)
 
 
 @pytest.mark.skipif(not Path("/bin/sh").exists(), reason="POSIX shell required")

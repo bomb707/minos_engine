@@ -591,10 +591,18 @@ def test_f6_failure_codes_are_a_closed_non_scientific_vocabulary() -> None:
 
 
 def test_f6_child_environment_allowlist_carries_no_secret_or_evaluation_variable() -> None:
-    from minos_engine.storage.l2f_gatk_runner import _ENV_ALLOWLIST
+    from minos_engine.storage.l2f_gatk_runner import CHILD_ENV_ALLOWLIST
 
-    assert set(_ENV_ALLOWLIST) == {"PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "JAVA_HOME", "TZ"}
-    for name in _ENV_ALLOWLIST:
+    assert set(CHILD_ENV_ALLOWLIST) == {
+        "PATH",
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "TMPDIR",
+        "JAVA_HOME",
+        "TZ",
+    }
+    for name in CHILD_ENV_ALLOWLIST:
         lowered = name.lower()
         assert not any(c in lowered for c in _F6_FORBIDDEN_CONCEPTS)
         assert not any(s in lowered for s in ("url", "dsn", "password", "secret", "token", "key"))

@@ -35,6 +35,7 @@ __all__ = [
     "RESULT_HASH_DOMAIN",
     "INPUT_IDENTITY_DOMAIN",
     "LOGICAL_ARGV_DOMAIN",
+    "GATK_RUNTIME_BUNDLE_DOMAIN",
     "ARGV_REFERENCE_PLACEHOLDER",
     "ARGV_BAM_PLACEHOLDER",
     "ARGV_OUTPUT_PLACEHOLDER",
@@ -55,6 +56,7 @@ __all__ = [
     "execution_input_from_manifest",
     "compute_input_identity_hash",
     "compute_logical_argv_hash",
+    "compute_gatk_runtime_bundle_sha256",
     "compute_result_hash",
     "build_result_manifest_bytes",
 ]
@@ -64,6 +66,9 @@ EXECUTION_RESULT_SCHEMA = "l2f-gatk-execution-result-v1"
 RESULT_HASH_DOMAIN = "minos:l2f-gatk-execution-result:v1\n"
 INPUT_IDENTITY_DOMAIN = "minos:l2f-execution-input:v1\n"
 LOGICAL_ARGV_DOMAIN = "minos:l2f-logical-argv:v1\n"
+#: domain for the GATK *execution bundle* identity: the launcher alone is a ~21 KB dispatcher, so
+#: the scientific payload (the local JAR it actually runs) must be bound too.
+GATK_RUNTIME_BUNDLE_DOMAIN = "minos:l2f-gatk-runtime-bundle:v1\n"
 
 #: stable path placeholders so the logical argv hash is independent of the host filesystem.
 ARGV_REFERENCE_PLACEHOLDER = "<reference.fa>"
@@ -166,7 +171,11 @@ class LogicalGatkInvocation(BaseModel):
     region_token: str = Field(min_length=1)
     #: argv with stable path placeholders substituted for host paths.
     logical_argv: tuple[str, ...] = Field(min_length=1)
+    #: SHA-256 of the GATK launcher script alone (a dispatcher, NOT the scientific payload).
     gatk_executable_sha256: Hex64
+    #: SHA-256 over launcher + the local JAR the launcher actually runs + the version. This is
+    #: the value that makes the execution identity depend on the real GATK implementation.
+    gatk_runtime_bundle_sha256: Hex64
     gatk_version: str = Field(min_length=1)
 
     def argv_hash(self) -> str:
@@ -218,6 +227,7 @@ class ExecutionResultManifest(BaseModel):
     chromosome: str = Field(min_length=1)
     logical_argv_hash: Hex64
     gatk_executable_sha256: Hex64
+    gatk_runtime_bundle_sha256: Hex64
     gatk_version: str = Field(min_length=1)
     vcf_sha256: Hex64
     vcf_size_bytes: int = Field(gt=0)
@@ -296,6 +306,23 @@ def compute_logical_argv_hash(invocation: LogicalGatkInvocation) -> str:
     return sha256_hex(LOGICAL_ARGV_DOMAIN.encode("utf-8") + canonical_json_bytes(content))
 
 
+def compute_gatk_runtime_bundle_sha256(
+    *, launcher_sha256: str, local_jar_sha256: str, gatk_version: str
+) -> str:
+    """The deterministic, HOST-INDEPENDENT GATK execution-bundle identity.
+
+    Binds the launcher bytes, the local JAR bytes the launcher actually executes, and the version.
+    Absolute paths, uid/gid, timestamps and hostnames are deliberately excluded, so the digest is
+    reproducible on any host that has the same official GATK bundle.
+    """
+    content = {
+        "launcher_sha256": launcher_sha256,
+        "local_jar_sha256": local_jar_sha256,
+        "gatk_version": gatk_version,
+    }
+    return sha256_hex(GATK_RUNTIME_BUNDLE_DOMAIN.encode("utf-8") + canonical_json_bytes(content))
+
+
 def compute_result_hash(
     *,
     plan_hash: str,
@@ -330,6 +357,8 @@ def compute_result_hash(
         "chromosome": inputs.chromosome,
         "logical_argv_hash": invocation.argv_hash(),
         "gatk_executable_sha256": invocation.gatk_executable_sha256,
+        # the scientific payload: a different local JAR CANNOT reproduce this result identity.
+        "gatk_runtime_bundle_sha256": invocation.gatk_runtime_bundle_sha256,
         "gatk_version": invocation.gatk_version,
         "vcf_sha256": outcome.vcf_sha256,
         "vcf_size_bytes": outcome.vcf_size_bytes,

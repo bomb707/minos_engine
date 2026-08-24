@@ -269,11 +269,95 @@ def verify_official_gatk_binary(runner: Any) -> GatkBinaryIdentity:
         )
     if not runner.expected_version.strip():
         raise QualificationEnvironmentError("the provisioned GATK version metadata is empty")
+
+    # --- the scientific payload: the local JAR the official launcher will actually run --------
+    from minos_engine.experiments.execution_contract import compute_gatk_runtime_bundle_sha256
+    from minos_engine.storage.l2f_gatk_runner import (
+        CHILD_ENV_ALLOWLIST,
+        GATK_JAR_OVERRIDE_VARIABLES,
+        resolve_official_local_jar,
+    )
+
+    jar = runner.local_jar or resolve_official_local_jar(path, gatk_version=runner.expected_version)
+    jar_sha = _stream_sha256(jar)
+    bundle = compute_gatk_runtime_bundle_sha256(
+        launcher_sha256=actual, local_jar_sha256=jar_sha, gatk_version=runner.expected_version
+    )
+    inherited = [v for v in GATK_JAR_OVERRIDE_VARIABLES if v in CHILD_ENV_ALLOWLIST]
+    if inherited:
+        raise QualificationEnvironmentError(
+            f"the child environment would inherit {inherited}, allowing JAR substitution"
+        )
+
+    # --- the version the REAL bundle reports (bounded, offline, never HaplotypeCaller) --------
+    observed = runner.observe_version()
+    if observed != runner.expected_version:
+        raise QualificationEnvironmentError(
+            f"the GATK bundle reports version {observed!r}, but {runner.expected_version!r} is "
+            "provisioned; the provisioned metadata must equal the observed runtime version"
+        )
+
+    python_sha, java_sha = _runtime_provenance()
     return GatkBinaryIdentity(
         executable_sha256=actual,
+        local_jar_sha256=jar_sha,
+        runtime_bundle_sha256=bundle,
         version=runner.expected_version,
+        observed_version=observed,
         absolute_path_is_symlink=False,
+        local_jar_is_symlink=False,
+        jar_override_variables_inherited=False,
+        python_executable_sha256=python_sha,
+        java_executable_sha256=java_sha,
     )
+
+
+def _stream_sha256(path: Path) -> str:
+    """Stream-hash a bundle file, rejecting symlinks and mutation during the read."""
+    if path.is_symlink():
+        raise QualificationEnvironmentError(f"{path} is a symlink")
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise QualificationEnvironmentError(f"{path} is not a regular file")
+        digest = hashlib.sha256()
+        size = 0
+        while chunk := os.read(fd, 1024 * 1024):
+            digest.update(chunk)
+            size += len(chunk)
+        after = os.fstat(fd)
+    finally:
+        os.close(fd)
+    if (after.st_size, after.st_ino) != (before.st_size, before.st_ino) or size != after.st_size:
+        raise QualificationEnvironmentError(f"{path} changed while it was being hashed")
+    return digest.hexdigest()
+
+
+def _runtime_provenance() -> tuple[str, str]:
+    """Resolve and hash the Python and Java executables the CHILD would actually use.
+
+    Resolution follows the exact PATH/JAVA_HOME the restricted child inherits, and a symlink is
+    followed to its final target so the hashed bytes are unambiguous. These digests are runtime
+    provenance and are deliberately NOT part of the host-independent scientific bundle.
+    """
+    import shutil
+
+    python = shutil.which("python", path=os.environ.get("PATH", ""))
+    if not python:
+        raise QualificationEnvironmentError(
+            "the official GATK launcher resolves '#!/usr/bin/env python', but no 'python' is "
+            "resolvable on the child PATH"
+        )
+    java_home = os.environ.get("JAVA_HOME", "")
+    java = (
+        str(Path(java_home) / "bin" / "java")
+        if java_home and (Path(java_home) / "bin" / "java").exists()
+        else shutil.which("java", path=os.environ.get("PATH", ""))
+    )
+    if not java:
+        raise QualificationEnvironmentError("no 'java' is resolvable on the child PATH/JAVA_HOME")
+    return _stream_sha256(Path(python).resolve()), _stream_sha256(Path(java).resolve())
 
 
 # --------------------------------------------------------------------------- #
@@ -603,6 +687,7 @@ def _execute_and_observe(
             publisher=publisher,
             work_root=work_root,
             gatk_executable_sha256=binary.executable_sha256,
+            gatk_runtime_bundle_sha256=str(binary.runtime_bundle_sha256),
             gatk_version=binary.version,
         )
         if dispatched is None or dispatched.status != "SUCCEEDED":
@@ -778,12 +863,20 @@ def _observe_result_details(
         raise QualificationEnvironmentError("the result manifest bytes are not canonical")
     inputs = execution_input_from_manifest(manifest)
     recomputed_input = compute_input_identity_hash(inputs)
+    # the PUBLISHED manifest must name the same execution bundle this qualifier observed; the
+    # recomputation below then proves the immutable result row was produced with it.
+    if manifest.gatk_runtime_bundle_sha256 != binary.runtime_bundle_sha256:
+        raise QualificationEnvironmentError(
+            f"the result manifest names GATK bundle {manifest.gatk_runtime_bundle_sha256}, but "
+            f"the observed bundle is {binary.runtime_bundle_sha256}"
+        )
 
     effective = json.loads(config_bytes)
     invocation = build_logical_invocation(
         effective_config=effective,
         inputs=inputs,
         gatk_executable_sha256=binary.executable_sha256,
+        gatk_runtime_bundle_sha256=str(binary.runtime_bundle_sha256),
         gatk_version=binary.version,
     )
     # --- the FROZEN result identity, recomputed from independently verified material ---------
@@ -851,6 +944,9 @@ def _observe_result_details(
         job_status=str(dispatched.status),
         result_hash=str(row["result_hash"]),
         logical_argv_hash=invocation.argv_hash(),
+        # taken from the PUBLISHED manifest (checked equal to the observation above), so the
+        # pinned-binary check compares two independent readings rather than one value twice.
+        gatk_runtime_bundle_sha256=manifest.gatk_runtime_bundle_sha256,
         vcf_sha256=str(row["vcf_sha256"]),
         vcf_size_bytes=len(vcf_bytes),
         result_manifest_sha256=str(row["result_manifest_sha256"]),

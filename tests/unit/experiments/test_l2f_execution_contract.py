@@ -65,6 +65,7 @@ def _invocation(**over: Any) -> LogicalGatkInvocation:
         "region_token": "chr18:101-200",
         "logical_argv": ("HaplotypeCaller", "-R", "<reference.fa>"),
         "gatk_executable_sha256": _H["b"],
+        "gatk_runtime_bundle_sha256": _H["d"],
         "gatk_version": "4.5.0.0",
     }
     base.update(over)
@@ -181,6 +182,7 @@ def test_result_hash_excludes_host_paths_uuids_timestamps_and_worker() -> None:
         chromosome="chr18",
         logical_argv_hash=_invocation().argv_hash(),
         gatk_executable_sha256=_H["b"],
+        gatk_runtime_bundle_sha256=_H["c"],
         gatk_version="4.5.0.0",
         vcf_sha256=_H["c"],
         vcf_size_bytes=512,

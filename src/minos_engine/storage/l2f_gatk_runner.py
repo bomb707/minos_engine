@@ -48,11 +48,13 @@ from minos_engine.experiments.execution_contract import (
 )
 
 __all__ = [
+    "CHILD_ENV_ALLOWLIST",
     "ENV_GATK_EXECUTABLE",
     "ENV_GATK_EXECUTABLE_SHA256",
     "ENV_GATK_VERSION",
     "ENV_GATK_TIMEOUT_SECONDS",
     "ENV_WORK_ROOT",
+    "GATK_JAR_OVERRIDE_VARIABLES",
     "MAX_CAPTURED_STREAM_BYTES",
     "GatkRunner",
     "FakeGatkRunner",
@@ -62,6 +64,7 @@ __all__ = [
     "region_token",
     "validate_vcf_bytes",
     "validate_vcf_payload",
+    "resolve_official_local_jar",
     "VCF_FIXED_COLUMNS",
     "VCF_SINGLE_SAMPLE_COLUMN_COUNT",
     "work_root_from_env",
@@ -73,6 +76,13 @@ ENV_GATK_VERSION = "MINOS_L2F_GATK_VERSION"
 ENV_GATK_TIMEOUT_SECONDS = "MINOS_L2F_GATK_TIMEOUT_SECONDS"
 ENV_WORK_ROOT = "MINOS_L2F_WORK_ROOT"
 
+#: the official launcher selects its JAR from these variables BEFORE searching its own directory.
+#: Neither is in the child allowlist, so a substituted payload can never reach the child; the
+#: names are kept here so the exclusion is explicit and testable.
+GATK_JAR_OVERRIDE_VARIABLES: tuple[str, ...] = ("GATK_LOCAL_JAR", "GATK_SPARK_JAR")
+#: the launcher's own selection pattern for the scientific payload.
+_LOCAL_JAR_RE = re.compile(r"^gatk.*local\.jar$")
+
 #: hard cap on captured stdout/stderr bytes — streams are bounded files, never unbounded buffers.
 MAX_CAPTURED_STREAM_BYTES = 1024 * 1024
 _CHUNK = 1024 * 1024
@@ -80,8 +90,17 @@ _DEFAULT_TIMEOUT_SECONDS = 3600
 #: bounded wait for each drain thread to observe EOF after the child has exited or been killed.
 _DRAIN_JOIN_SECONDS = 30
 
-#: the ONLY environment variables a GATK child process inherits.
-_ENV_ALLOWLIST = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "JAVA_HOME", "TZ")
+#: the ONLY environment variables a GATK child process inherits. Deliberately excludes every
+#: JAR-override variable, so the launcher cannot be steered at a substituted scientific payload.
+CHILD_ENV_ALLOWLIST: tuple[str, ...] = (
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "TMPDIR",
+    "JAVA_HOME",
+    "TZ",
+)
 
 _VCF_FILEFORMAT = re.compile(rb"^##fileformat=VCFv4\.\d+\s*$")
 
@@ -124,6 +143,7 @@ def build_logical_invocation(
     effective_config: dict[str, Any],
     inputs: ExecutionInput,
     gatk_executable_sha256: str,
+    gatk_runtime_bundle_sha256: str,
     gatk_version: str,
 ) -> LogicalGatkInvocation:
     """The HOST-INDEPENDENT logical invocation: real paths replaced by stable placeholders."""
@@ -142,6 +162,7 @@ def build_logical_invocation(
         region_token=region_token(inputs),
         logical_argv=argv,
         gatk_executable_sha256=gatk_executable_sha256,
+        gatk_runtime_bundle_sha256=gatk_runtime_bundle_sha256,
         gatk_version=gatk_version,
     )
 
@@ -364,6 +385,61 @@ class FakeGatkRunner:
         )
 
 
+def resolve_official_local_jar(launcher: Path, *, gatk_version: str) -> Path:
+    """Resolve the local JAR the OFFICIAL launcher would actually run. Fails closed.
+
+    The launcher searches its own directory for ``^gatk.*local\\.jar$`` and runs the newest match,
+    so this reproduces that selection and refuses anything ambiguous: a missing JAR, more than one
+    candidate, a symlink, a non-regular file or a name that does not carry the pinned version.
+    A caller cannot nominate an arbitrary file as "the GATK JAR".
+    """
+    parent = launcher.parent
+    candidates = sorted(p for p in parent.iterdir() if _LOCAL_JAR_RE.match(p.name))
+    if not candidates:
+        raise GatkExecutionError(
+            f"no official local GATK JAR (^gatk.*local.jar$) beside the launcher in {parent}"
+        )
+    if len(candidates) > 1:
+        raise GatkExecutionError(
+            f"ambiguous local GATK JARs beside the launcher: {[p.name for p in candidates]}; "
+            "the launcher would pick the newest, so F7 refuses rather than guess"
+        )
+    jar = candidates[0]
+    expected_name = f"gatk-package-{gatk_version}-local.jar"
+    if jar.name != expected_name:
+        raise GatkExecutionError(
+            f"local GATK JAR {jar.name!r} does not match the pinned version layout "
+            f"{expected_name!r}"
+        )
+    if jar.is_symlink():
+        raise GatkExecutionError(f"local GATK JAR {jar} is a symlink")
+    if not jar.is_file():
+        raise GatkExecutionError(f"local GATK JAR {jar} is not a regular file")
+    return jar
+
+
+def _stable_sha256(path: Path) -> str:
+    """Stream-hash a file and reject mutation during the read (size/inode re-checked)."""
+    if path.is_symlink():
+        raise GatkExecutionError(f"{path} is a symlink")
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise GatkExecutionError(f"{path} is not a regular file")
+        digest = hashlib.sha256()
+        size = 0
+        while chunk := os.read(fd, _CHUNK):
+            digest.update(chunk)
+            size += len(chunk)
+        after = os.fstat(fd)
+    finally:
+        os.close(fd)
+    if (after.st_size, after.st_ino) != (before.st_size, before.st_ino) or size != after.st_size:
+        raise GatkExecutionError(f"{path} changed while it was being hashed")
+    return digest.hexdigest()
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as fh:
@@ -423,6 +499,9 @@ class SubprocessGatkRunner:
     expected_sha256: str
     expected_version: str
     timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS
+    #: the scientific payload the official launcher will run. Resolved fail-closed from the
+    #: launcher's own directory; never nominated by a caller.
+    local_jar: Path | None = None
     #: hard cap on bytes retained per captured stream (enforced DURING the run, not afterwards).
     max_captured_stream_bytes: int = MAX_CAPTURED_STREAM_BYTES
 
@@ -438,12 +517,61 @@ class SubprocessGatkRunner:
                 "all be provisioned (no PATH-based executable discovery is performed)"
             )
         timeout = int(os.environ.get(ENV_GATK_TIMEOUT_SECONDS, _DEFAULT_TIMEOUT_SECONDS))
+        launcher = Path(raw)
         return SubprocessGatkRunner(
-            executable=Path(raw),
+            executable=launcher,
             expected_sha256=sha,
             expected_version=version,
             timeout_seconds=timeout,
+            local_jar=resolve_official_local_jar(launcher, gatk_version=version)
+            if launcher.is_absolute() and launcher.parent.is_dir()
+            else None,
         )
+
+    def runtime_bundle_sha256(self) -> str:
+        """The frozen execution-bundle identity: launcher bytes + local JAR bytes + version.
+
+        Streams both files and re-checks size/inode, so a payload swapped during hashing is
+        rejected rather than silently averaged over.
+        """
+        from minos_engine.experiments.execution_contract import (
+            compute_gatk_runtime_bundle_sha256,
+        )
+
+        if self.local_jar is None:
+            raise GatkExecutionError(
+                "the official local GATK JAR was not resolved; the launcher alone is a dispatcher "
+                "and cannot stand for the scientific payload"
+            )
+        return compute_gatk_runtime_bundle_sha256(
+            launcher_sha256=_stable_sha256(self.executable),
+            local_jar_sha256=_stable_sha256(self.local_jar),
+            gatk_version=self.expected_version,
+        )
+
+    def observe_version(self) -> str:
+        """Bounded, offline ``gatk --version`` probe under the SAME restricted child environment.
+
+        HaplotypeCaller is never executed here. Used to prove the provisioned version metadata
+        equals what the real bundle reports.
+        """
+        self._verify_executable()
+        env = {k: os.environ[k] for k in CHILD_ENV_ALLOWLIST if k in os.environ}
+        proc = subprocess.run(  # noqa: S603 - pinned executable, fixed argv, shell=False
+            [str(self.executable), "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            timeout=min(self.timeout_seconds, 600),
+        )
+        blob = f"{proc.stdout}\n{proc.stderr}"
+        match = re.search(r"\(GATK\)\s+v([0-9][0-9A-Za-z.\-]*)", blob)
+        if not match:
+            raise GatkExecutionError(
+                f"the GATK bundle did not report a recognizable version: {blob.strip()[:200]!r}"
+            )
+        return match.group(1)
 
     def _verify_executable(self) -> None:
         path = self.executable
@@ -468,7 +596,7 @@ class SubprocessGatkRunner:
         inputs: ExecutionInput,
     ) -> GatkExecutionOutcome:
         self._verify_executable()
-        env = {k: os.environ[k] for k in _ENV_ALLOWLIST if k in os.environ}
+        env = {k: os.environ[k] for k in CHILD_ENV_ALLOWLIST if k in os.environ}
         stdout_path = work_dir / "gatk.stdout"
         stderr_path = work_dir / "gatk.stderr"
         limit = self.max_captured_stream_bytes

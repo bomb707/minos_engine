@@ -708,6 +708,7 @@ def _prepare(
     job_key: str,
     dataset_root: DatasetRoot,
     gatk_executable_sha256: str,
+    gatk_runtime_bundle_sha256: str,
     gatk_version: str,
     require_operational_identity: bool,
 ) -> _Prepared:
@@ -741,6 +742,7 @@ def _prepare(
         effective_config=config.effective_config,
         inputs=inputs,
         gatk_executable_sha256=gatk_executable_sha256,
+        gatk_runtime_bundle_sha256=gatk_runtime_bundle_sha256,
         gatk_version=gatk_version,
     )
     return _Prepared(
@@ -876,6 +878,7 @@ def _build_manifest(
         chromosome=inputs.chromosome,
         logical_argv_hash=prepared.invocation.argv_hash(),
         gatk_executable_sha256=prepared.invocation.gatk_executable_sha256,
+        gatk_runtime_bundle_sha256=prepared.invocation.gatk_runtime_bundle_sha256,
         gatk_version=prepared.invocation.gatk_version,
         vcf_sha256=outcome.vcf_sha256,
         vcf_size_bytes=outcome.vcf_size_bytes,
@@ -1128,6 +1131,7 @@ def _execute(
     publisher: ResultArtifactPublisher,
     work_root: Path,
     gatk_executable_sha256: str,
+    gatk_runtime_bundle_sha256: str,
     gatk_version: str,
     require_operational_identity: bool,
 ) -> ExecutionDispatchResult | None:
@@ -1168,6 +1172,7 @@ def _execute(
             job_key=job_key,
             dataset_root=dataset_root,
             gatk_executable_sha256=gatk_executable_sha256,
+            gatk_runtime_bundle_sha256=gatk_runtime_bundle_sha256,
             gatk_version=gatk_version,
             require_operational_identity=require_operational_identity,
         )
@@ -1361,6 +1366,7 @@ def execute_next_accepted_job(*, worker_id: str) -> ExecutionDispatchResult | No
             publisher=ResultArtifactPublisher(result_artifact_root_from_env()),
             work_root=work_root_from_env(),
             gatk_executable_sha256=runner.expected_sha256,
+            gatk_runtime_bundle_sha256=runner.runtime_bundle_sha256(),
             gatk_version=runner.expected_version,
             require_operational_identity=True,
         )
@@ -1378,6 +1384,7 @@ def _execute_next_job_with_trust(
     publisher: ResultArtifactPublisher,
     work_root: Path,
     gatk_executable_sha256: str = "0" * 64,
+    gatk_runtime_bundle_sha256: str = "1" * 64,
     gatk_version: str = "fake-gatk-4.5.0.0",
     require_operational_identity: bool = False,
 ) -> ExecutionDispatchResult | None:
@@ -1393,6 +1400,7 @@ def _execute_next_job_with_trust(
         publisher=publisher,
         work_root=work_root,
         gatk_executable_sha256=gatk_executable_sha256,
+        gatk_runtime_bundle_sha256=gatk_runtime_bundle_sha256,
         gatk_version=gatk_version,
         require_operational_identity=require_operational_identity,
     )
