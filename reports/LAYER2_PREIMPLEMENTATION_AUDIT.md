@@ -1,5 +1,10 @@
 # Layer 2 — Pre-Implementation Audit
 
+> **Historical, append-only.** This report records the Layer-2 pre-implementation audit as it
+> stood when written. Its tables are evidence and are never rewritten. For **current** stage
+> state see `docs/DEVELOPMENT_STATUS.md`; for the L2-F2 baseline audit see
+> `reports/LAYER2_BASELINE_PREIMPLEMENTATION_AUDIT.md`.
+
 **Date:** 2026-08-17 · **Runtime:** CPython 3.12.x · **Scope:** design/audit only.
 **No Layer 2 code is implemented by this report.** Companion documents:
 [`LAYER1_FINAL_ACCEPTANCE_DECISION.md`](LAYER1_FINAL_ACCEPTANCE_DECISION.md) (owner

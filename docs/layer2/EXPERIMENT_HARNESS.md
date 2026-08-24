@@ -3,10 +3,18 @@
 The L2-F harness performs **offline** deterministic GATK CONFIG candidate generation, experiment
 planning and GATK **execution** over the frozen L2-E train membership, recording each job's
 terminal outcome. It does **not** score, rank, select, optimize, train, or activate
-`Layer2Service.select_config`. `HARNESS-READY` (F7) is not implemented and is **not** claimed
-anywhere below.
+`Layer2Service.select_config`.
 
-## Scope (F3-A … F6 accepted; F7-A qualification framework)
+> **Status (current).** `HARNESS-READY` is **ISSUED**. The committed gate
+> `gates/harness-ready.json` is PASS with 40/40 mandatory checks, bound to qualified source
+> `488af0a8e8d49574fc301d9d5ea2ba2707704428` / tree `71a6ae05d32835383405f26c378e3ca0787b062b`
+> (gate hash `0e8411eb…`, qualification hash `b1d1cc5d…`). L2-F1 is **closed**; the current stage
+> is **L2-F2 — baseline discovery + qualification**. The sections below are the harness contract
+> and its stage-local implementation history (checkpoints F1…F7-B *inside* L2-F1), not the current
+> roadmap position — see `docs/DEVELOPMENT_STATUS.md` for authoritative current state and
+> `docs/layer2/BASELINE_QUALIFICATION.md` for what comes next.
+
+## Scope (F3-A … F6 accepted; F7 qualification issued)
 
 **F3-A is accepted** at commit `ff8daa4bf9bd9891e46017e3f7bcb4ea9a8edb6d`. The accepted
 identities are the migration `0006_l2f_experiment_plan` byte SHA-256
