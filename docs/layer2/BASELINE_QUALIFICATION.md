@@ -28,7 +28,7 @@ protocol that chose it, and every evaluation that informed the choice.
 | Scoring authority pinned | met — see §3 |
 | Evaluation persistence contract | **missing** — §11 |
 | Truth identities registered | **missing** — §5 |
-| Evaluator login principal | **missing** — §4 |
+| External evaluator service login principal | **missing** — §4 (built-in group role is fine) |
 
 The last three are the L2-F2-A deliverables.
 
@@ -76,9 +76,16 @@ The GATK runner **stays truth-free**; nothing in the execution path may resolve 
 truth or scoring path. This is already enforced and gate-bound
 (`no_truth_or_scoring_access`, `truth_paths_resolved = 0`).
 
-`minos_evaluator` exists as a role but is **NOLOGIN**. L2-F2-A must provision an
-evaluator login principal with: `SELECT` on the execution/plan/catalog tables it
-needs, `INSERT` on `evaluation.*`, and **no** write privilege on `experiments.*`.
+`minos_evaluator` is an **intentionally NOLOGIN group role**, like `minos_live`,
+`minos_runner`, `minos_trainer` and `minos_admin`. That is the architecture and it
+stays: group roles carry authority, not credentials. Do **not** grant it LOGIN and
+do **not** give it a password.
+
+What is missing is an **external evaluator service login principal** — conceptually
+`minos_evaluator_svc LOGIN` — granted `minos_evaluator` and nothing more, so it
+gets: `SELECT` on the execution/plan/catalog tables it needs, `INSERT` on
+`evaluation.*`, and **no** write privilege on `experiments.*`. Provisioning that
+service identity belongs to L2-F2-A.
 
 ## 5. Partition policy
 

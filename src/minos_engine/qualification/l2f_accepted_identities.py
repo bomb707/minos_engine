@@ -37,6 +37,7 @@ __all__ = [
     "recompute_migration_sha256",
     "recompute_live_gatk_artifact_sha256",
     "recompute_alembic_head",
+    "recompute_harness_alembic_head",
 ]
 
 
@@ -136,29 +137,79 @@ def recompute_e5_gate_hashes(root: Path | None = None) -> dict[str, str]:
     return out
 
 
-def recompute_alembic_head(root: Path | None = None) -> str:
-    """The single Alembic head, read from the committed migration lineage (never from a DB)."""
-    base = root or repository_root()
-    versions = base / "migrations" / "versions"
-    revisions: dict[str, str | None] = {}
-    for path in sorted(versions.glob("[0-9]*.py")):
-        revision: str | None = None
-        down: str | None = None
-        for line in path.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if stripped.startswith("revision:") or stripped.startswith("revision ="):
-                revision = stripped.split("=", 1)[1].strip().strip('"').strip("'")
-            elif stripped.startswith("down_revision"):
-                raw = stripped.split("=", 1)[1].strip()
-                down = None if raw.startswith("None") else raw.strip('"').strip("'")
-            if revision is not None and "down_revision" in stripped:
-                break
-        if revision:
-            revisions[revision] = down
+def _parse_migration_revision(path: Path) -> tuple[str | None, str | None]:
+    """Read the real ``revision`` / ``down_revision`` a migration file declares."""
+    revision: str | None = None
+    down: str | None = None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("revision:") or stripped.startswith("revision ="):
+            revision = stripped.split("=", 1)[1].strip().strip('"').strip("'")
+        elif stripped.startswith("down_revision"):
+            raw = stripped.split("=", 1)[1].strip()
+            down = None if raw.startswith("None") else raw.strip('"').strip("'")
+        if revision is not None and "down_revision" in stripped:
+            break
+    return revision, down
+
+
+def _single_head(revisions: dict[str, str | None], *, label: str) -> str:
+    """The one head of a revision map, or a typed failure."""
     heads = sorted(set(revisions) - {d for d in revisions.values() if d})
     if len(heads) != 1:
-        raise AcceptedIdentityError(f"expected exactly one Alembic head, found {heads}")
+        raise AcceptedIdentityError(f"expected exactly one {label} Alembic head, found {heads}")
     return heads[0]
+
+
+def recompute_alembic_head(root: Path | None = None) -> str:
+    """The CURRENT repository-wide Alembic head, from committed bytes (never from a DB).
+
+    This scans every migration file, so it legitimately advances as later stages add additive
+    migrations. It is deliberately NOT the authority for historical HARNESS evidence — see
+    :func:`recompute_harness_alembic_head`.
+    """
+    base = root or repository_root()
+    revisions: dict[str, str | None] = {}
+    for path in sorted((base / "migrations" / "versions").glob("[0-9]*.py")):
+        revision, down = _parse_migration_revision(path)
+        if revision:
+            revisions[revision] = down
+    return _single_head(revisions, label="repository")
+
+
+def recompute_harness_alembic_head(root: Path | None = None) -> str:
+    """The head of the ACCEPTED HARNESS migration subgraph — stage-scoped, not repository-wide.
+
+    HARNESS-READY proves the migration state of the L2-F1 source it qualified: that the accepted
+    migrations exist, are byte-identical and form one coherent lineage ending at
+    ``0008_l2f_execution_results``. It must NOT assert that the repository head stays 0008
+    forever, or the first legitimate additive migration (0009) would retroactively invalidate
+    frozen evidence.
+
+    Membership is ``ACCEPTED_MIGRATION_SHAS`` — never filename numbering — so a later additive
+    migration is ignored here while remaining visible to :func:`recompute_alembic_head`.
+    """
+    base = root or repository_root()
+    revisions: dict[str, str | None] = {}
+    for relative in sorted(ACCEPTED_MIGRATION_SHAS):
+        path = base / relative
+        if not path.is_file():
+            raise AcceptedIdentityError(f"accepted migration {relative} is missing")
+        revision, down = _parse_migration_revision(path)
+        if not revision:
+            raise AcceptedIdentityError(f"accepted migration {relative} declares no revision")
+        if revision in revisions:
+            raise AcceptedIdentityError(f"duplicate accepted migration revision {revision}")
+        revisions[revision] = down
+    # the earliest accepted migration legitimately points back at the pre-HARNESS boundary, so a
+    # down_revision outside the accepted set is only allowed for exactly one entry point.
+    external = sorted(r for r, d in revisions.items() if d is not None and d not in revisions)
+    roots = sorted(r for r, d in revisions.items() if d is None) + external
+    if len(roots) != 1:
+        raise AcceptedIdentityError(
+            f"accepted migrations must form ONE lineage; found entry points {roots}"
+        )
+    return _single_head(revisions, label="accepted HARNESS")
 
 
 def recompute_accepted_identities(root: Path | None = None) -> AcceptedIdentities:
@@ -190,7 +241,8 @@ def recompute_accepted_identities(root: Path | None = None) -> AcceptedIdentitie
         candidate_count=candidate_set.candidate_count,
         plan_hash=plan.plan_hash,
         logical_job_count=plan.logical_job_count,
-        alembic_head=recompute_alembic_head(base),
+        # stage-scoped: the ACCEPTED subgraph head, not the repository's current head.
+        alembic_head=recompute_harness_alembic_head(base),
     )
 
 

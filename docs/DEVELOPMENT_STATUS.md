@@ -4,6 +4,10 @@
 If any other document disagrees with this file about what stage we are in, this
 file wins and the other document is stale.
 
+This file is authoritative for **stage status**, not for its own commit SHA: a document
+cannot truthfully contain the SHA of the commit that introduces it, so only immutable
+historical anchors are recorded below and the current branch tip is read from Git.
+
 Authoritative *frozen specifications* live in `docs/specifications/*.docx` and are
 never edited. This file records where we are **against** those specifications; it
 does not restate or override them.
@@ -16,8 +20,10 @@ does not restate or override them.
 |---|---|
 | Architectural stage | **L2-F2 — baseline discovery + baseline qualification** |
 | Previous stage | L2-F1 — experiment harness — **CLOSED** at HARNESS-READY |
-| Current HEAD | `107a745f2530b841ee3b399c81f3b2385cb6de2b` |
+| Current implementation HEAD | verify from Git (`git rev-parse HEAD`) — deliberately **not** embedded here |
 | Branch | `feature/L2-F` |
+| HARNESS evidence commit (immutable anchor) | `107a745f2530b841ee3b399c81f3b2385cb6de2b` |
+| L2-F2 pre-implementation-plan commit (immutable anchor) | `1536f73f0b0bbce0a514d56d2f47923945741762` |
 | Alembic head (source) | `0008_l2f_execution_results` (migrations `0001`–`0008` only) |
 | Operational DB revision | `0005_l2e_feature_view` |
 | Next gate | **BASELINE-QUALIFIED** (designed in `docs/layer2/BASELINE_QUALIFICATION.md`, not implemented) |
@@ -82,7 +88,7 @@ roadmap drift.
 * **Implementation checkpoints** are internal working increments *inside* one
   stage. `F1, F2, F3-A, F3-B, F3-C1, F3-C2, F3-D, F4, F5, F6, F7-A, F7-B`
   (including the R1/R2/R3 qualification attempts) were all checkpoints **inside
-  L2-F1**. They are historical工作 markers, not roadmap stages, and no future
+  L2-F1**. They are historical working markers, not roadmap stages, and no future
   document should treat them as such.
 
 L2-F1 is **closed**. Do not open `F7-C`, `F7-D` or "F8 hardening". A new F7

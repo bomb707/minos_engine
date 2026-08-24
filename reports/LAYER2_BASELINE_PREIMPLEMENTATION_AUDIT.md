@@ -26,7 +26,7 @@ Verdict vocabulary: **VERIFIED**, **PARTIAL**, **MISSING**, **INCOMPATIBLE**,
 | 2 | Reward is **rank-based**, not proportional to score | **VERIFIED** | OWNER DECISION REQUIRED |
 | 3 | `evaluation.evaluations` targets the legacy `experiments.results`, not `experiments.l2f_execution_results` | **INCOMPATIBLE** | **BLOCKER** for L2-F2 persistence |
 | 4 | Truth/mutation material exists on disk for all 75 rounds but is registered nowhere | **PARTIAL** | **BLOCKER** for evaluation |
-| 5 | `minos_evaluator` role exists but is NOLOGIN; no evaluator login principal | **PARTIAL** | **BLOCKER** for evaluator isolation |
+| 5 | Built-in `minos_evaluator` group role is intentionally NOLOGIN; no **external evaluator service login principal** exists | **VERIFIED** (group role) / **MISSING** (service login) | **BLOCKER** for evaluator isolation |
 | 6 | The accepted 39 candidates are pure one-at-a-time; zero interactions tested | **VERIFIED** | search-design input |
 | 7 | Split is exactly 50/10/15 and perfectly chromosome-balanced | **VERIFIED** | enables cheap screening |
 | 8 | Robust objective J(c) is not mandated in full by the specification | **OWNER DECISION REQUIRED** | must freeze before compute |
@@ -197,12 +197,18 @@ placeholder path — while the accepted harness writes
    identity / hap.py identity / parsed metrics / final score / evaluation
    artifact / partition?* **No** — it binds only an opaque `evaluation_hash` and
    a legacy result id. None of the other ten bindings exist.
-3. *Can current role grants support the baseline evaluator?* **Not yet.**
-   `minos_evaluator` exists as a role but is **NOLOGIN**; the only login
-   principal today is `minos_f7_observer`, whose grants are deliberately narrow
-   (it cannot even `SELECT catalog.split_allocations` — confirmed by
-   `InsufficientPrivilege` during this audit). That narrowness is correct for
-   F7 and simply means L2-F2 needs its own principal.
+3. *Can current role grants support the baseline evaluator?* **Not yet — but
+   `minos_evaluator` being NOLOGIN is not the defect.** `minos_live`,
+   `minos_runner`, `minos_evaluator`, `minos_trainer` and `minos_admin` are
+   **intentionally NOLOGIN group roles**, and that design must remain: they carry
+   authority, not credentials. Nothing here should grant `minos_evaluator` LOGIN
+   or a password. What is genuinely **missing** is an *external evaluator service
+   login principal* — conceptually `minos_evaluator_svc LOGIN` — that receives
+   only `minos_evaluator` authority. The only login principal today is
+   `minos_f7_observer`, whose grants are deliberately narrow (it cannot even
+   `SELECT catalog.split_allocations` — confirmed by `InsufficientPrivilege`
+   during this audit); that narrowness is correct for F7. Provisioning the
+   service principal belongs to L2-F2-A.
 4. *Is a new additive migration required?* **Yes.**
 
 Do **not** force L2-F evaluations into the legacy row shape. No migration was
@@ -380,7 +386,8 @@ setgid propagates to per-attempt directories and breaks the production
 ## 9. Verdict
 
 Three **BLOCKERS** stand between here and baseline compute — the evaluation
-schema (§2), truth registration (§3.2) and the evaluator login principal (§2.3).
+schema (§2), truth registration (§3.2) and the external evaluator **service** login
+principal (§2.3 — the built-in group role stays NOLOGIN by design).
 All are additive L2-F2-A work. None reopens L2-F1, none requires touching
 HARNESS evidence, and none requires inventing a scorer.
 

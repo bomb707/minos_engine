@@ -136,10 +136,35 @@ jobs:
           done
           psql "$MINOS_DATABASE_URL" -c "SELECT version();"
 
-      - name: Alembic upgrade head — confirm L2-F F5 head 0008_l2f_execution_results
+      - name: Alembic upgrade head — verify the repository's single CURRENT head
         run: |
           alembic upgrade head
-          alembic current | grep 0008_l2f_execution_results
+          python - <<'PY'
+          # Dynamic CURRENT-head verification: the repository must declare exactly one head, and
+          # the database must be at that head. Never hard-code a revision here — later stages add
+          # additive migrations and the current head legitimately advances. Historical, stage-local
+          # revision assertions elsewhere in this workflow stay explicit on purpose.
+          from alembic.config import Config
+          from alembic.runtime.migration import MigrationContext
+          from alembic.script import ScriptDirectory
+          from sqlalchemy import create_engine
+
+          from minos_engine.storage.database import database_url
+
+          script = ScriptDirectory.from_config(Config("alembic.ini"))
+          heads = tuple(script.get_heads())
+          assert len(heads) == 1, f"expected exactly one Alembic head, found {heads}"
+
+          engine = create_engine(database_url())
+          try:
+              with engine.connect() as connection:
+                  current = tuple(MigrationContext.configure(connection).get_current_heads())
+          finally:
+              engine.dispose()
+
+          assert current == heads, (current, heads)
+          print(f"current Alembic head verified: {heads[0]}")
+          PY
 
       - name: Alembic downgrade to 0005 (L2-F removed, L2-E retained) then re-upgrade
         run: |
@@ -287,10 +312,35 @@ jobs:
           assert n == 0, f"stage schemas not removed: {n}"
           PY
 
-      - name: Alembic re-upgrade head — confirm L2-F F5 head 0008_l2f_execution_results
+      - name: Alembic re-upgrade head — verify the repository's single CURRENT head
         run: |
           alembic upgrade head
-          alembic current | grep 0008_l2f_execution_results
+          python - <<'PY'
+          # Dynamic CURRENT-head verification: the repository must declare exactly one head, and
+          # the database must be at that head. Never hard-code a revision here — later stages add
+          # additive migrations and the current head legitimately advances. Historical, stage-local
+          # revision assertions elsewhere in this workflow stay explicit on purpose.
+          from alembic.config import Config
+          from alembic.runtime.migration import MigrationContext
+          from alembic.script import ScriptDirectory
+          from sqlalchemy import create_engine
+
+          from minos_engine.storage.database import database_url
+
+          script = ScriptDirectory.from_config(Config("alembic.ini"))
+          heads = tuple(script.get_heads())
+          assert len(heads) == 1, f"expected exactly one Alembic head, found {heads}"
+
+          engine = create_engine(database_url())
+          try:
+              with engine.connect() as connection:
+                  current = tuple(MigrationContext.configure(connection).get_current_heads())
+          finally:
+              engine.dispose()
+
+          assert current == heads, (current, heads)
+          print(f"current Alembic head verified: {heads[0]}")
+          PY
           python - <<'PY'
           from sqlalchemy import create_engine, text
           from minos_engine.storage.database import database_url
