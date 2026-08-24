@@ -8,6 +8,7 @@ never used.
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import os
 import tempfile
@@ -38,10 +39,36 @@ def postgres_base_url() -> str | None:
     return "pgserver"
 
 
+def database_mode() -> str:
+    """ "shared" when tests target a persistent MINOS_DATABASE_URL cluster, else "ephemeral"."""
+    return "shared" if os.environ.get(_ENV) else "ephemeral"
+
+
+def _require_xdist_isolation() -> None:
+    """Fail closed when xdist workers would share one PostgreSQL cluster.
+
+    Under xdist every worker inherits the same ``MINOS_DATABASE_URL``, and the suite uses fixed
+    scratch names with ``DROP DATABASE ... WITH (FORCE)`` — workers would destroy each other's
+    databases mid-test. Isolation per worker exists ONLY in ephemeral mode, where each worker
+    process provisions its own bundled pgserver cluster.
+    """
+    if os.environ.get("PYTEST_XDIST_WORKER") and os.environ.get(_ENV):
+        pytest.fail(
+            "Parallel PostgreSQL integration tests cannot run against a shared "
+            f"MINOS_DATABASE_URL cluster (mode={database_mode()}): xdist workers would "
+            "FORCE-drop each other's scratch databases. Unset MINOS_DATABASE_URL so each "
+            "worker gets its own ephemeral pgserver cluster "
+            "(env -u MINOS_DATABASE_URL pytest -n auto --dist loadscope ...), "
+            "or run the suite serially.",
+            pytrace=False,
+        )
+
+
 @pytest.fixture(scope="session")
 def pg_base_url() -> Iterator[str]:
     url = os.environ.get(_ENV)
     if url:
+        _require_xdist_isolation()
         yield url
         return
     try:
@@ -87,9 +114,87 @@ def _swap_db(base_url: str, name: str) -> str:
 #: cluster's maintenance connection without changing any call site.
 _SCRATCH_BASE: dict[str, str] = {}
 
-#: (normalized base URL, revision) -> template database name, built ONCE per session by running
-#: the REAL migration chain, then cloned per test via CREATE DATABASE ... TEMPLATE (~100ms).
+#: (normalized base URL, CONCRETE revision) -> template database name, built ONCE per session by
+#: running the REAL migration chain, then cloned per test via CREATE DATABASE ... TEMPLATE
+#: (~100ms). The key is never the symbolic string "head": it is resolved to the concrete
+#: revision first, so "head" and its explicit revision share one template, and a future head
+#: automatically gets a different identity.
 _TEMPLATE_CACHE: dict[tuple[str, str], str] = {}
+
+
+def _resolve_revision(revision: str) -> str | None:
+    """Resolve an Alembic target to its CONCRETE revision, or ``None`` when in doubt.
+
+    ``None`` makes the template fast path decline and fall open to real Alembic — a symbolic or
+    ambiguous target (multiple heads) must never become a cache identity.
+    """
+    try:
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+
+        script = ScriptDirectory.from_config(Config("alembic.ini"))
+        if revision == "head":
+            heads = script.get_heads()
+            if len(heads) != 1:
+                return None
+            return str(heads[0])
+        resolved = script.get_revision(revision)
+        if resolved is None:
+            return None
+        return str(resolved.revision)
+    except Exception:
+        return None
+
+
+def _drop_templates(items: list[tuple[tuple[str, str], str]]) -> None:
+    """Best-effort drop of OWNED template databases only; never anything else.
+
+    Each entry came from ``_TEMPLATE_CACHE`` and therefore names a database THIS process
+    created; the name-prefix assertion is belt-and-braces so no refactor can ever point this
+    at a production database. A failure on one template never hides the caller's outcome.
+    """
+    for key, name in items:
+        if not name.startswith("minos_tmpl_"):  # pragma: no cover - structural guard
+            continue
+        with contextlib.suppress(Exception):
+            admin = create_engine(key[0], isolation_level="AUTOCOMMIT")
+            try:
+                with admin.connect() as c:
+                    c.execute(
+                        text(
+                            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                            "WHERE datname = :t AND pid <> pg_backend_pid()"
+                        ),
+                        {"t": name},
+                    )
+                    c.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+            finally:
+                admin.dispose()
+        _TEMPLATE_CACHE.pop(key, None)
+
+
+def drop_session_templates() -> None:
+    """Drop every template database THIS process created and clear the cache. Idempotent.
+
+    Without this, a persistent/shared cluster (``MINOS_DATABASE_URL``) would accumulate
+    ``minos_tmpl_*`` databases across pytest runs: the in-process cache dies with the process,
+    but the physical databases would not — pinning MINOS roles and confusing later runs.
+    """
+    _drop_templates(list(_TEMPLATE_CACHE.items()))
+
+
+#: last-resort cleanup even for abnormal exits and runs where the session fixture is not
+#: active (a sibling test directory importing these helpers). Idempotent: after the session
+#: fixture has cleaned up, the cache is empty and this is a no-op.
+atexit.register(drop_session_templates)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _template_session_cleanup() -> Iterator[None]:
+    """Templates never survive the pytest session — pass or fail."""
+    yield
+    with contextlib.suppress(Exception):
+        drop_session_templates()
 
 
 def _alembic_upgrade_real(url: str, revision: str) -> None:
@@ -134,8 +239,11 @@ def _clone_from_template(url: str, revision: str) -> bool:
         if not fresh:
             return False
 
+        concrete = _resolve_revision(revision)
+        if concrete is None:
+            return False
         normalized = normalize_database_url(base)
-        key = (normalized, revision)
+        key = (normalized, concrete)
         admin = create_engine(normalized, isolation_level="AUTOCOMMIT")
         try:
             template = _TEMPLATE_CACHE.get(key)
@@ -184,18 +292,7 @@ def _drop_cluster_templates(url: str) -> None:
     if base is None:
         return
     normalized = normalize_database_url(base)
-    doomed = [(key, name) for key, name in _TEMPLATE_CACHE.items() if key[0] == normalized]
-    if not doomed:
-        return
-    with contextlib.suppress(Exception):
-        admin = create_engine(normalized, isolation_level="AUTOCOMMIT")
-        try:
-            with admin.connect() as c:
-                for key, name in doomed:
-                    c.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
-                    _TEMPLATE_CACHE.pop(key, None)
-        finally:
-            admin.dispose()
+    _drop_templates([(k, n) for k, n in _TEMPLATE_CACHE.items() if k[0] == normalized])
 
 
 def alembic_downgrade(url: str, revision: str) -> None:

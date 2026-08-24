@@ -207,8 +207,20 @@ formatter-only red CI once cost a full task cycle — the exact commands CI runs
 `ruff check .`, `ruff format --check .`, `mypy src`.
 
 **Local, before a commit touching** migrations, CI, `conftest`, security grants, or accepted
-identities: one full run. `pytest -n auto --dist loadscope` parallelizes it; each xdist worker
-provisions its own ephemeral cluster, so the isolated fixtures do not collide.
+identities: one full run.
+
+**Database modes.** *Serial* runs may use either a shared persistent cluster
+(`MINOS_DATABASE_URL` set) or ephemeral pgserver clusters (unset). *Parallel* runs REQUIRE
+`MINOS_DATABASE_URL` to be **unset** — per-worker isolation exists only in ephemeral mode, where
+each xdist worker process provisions its own pgserver cluster. Against a shared cluster the
+workers would `DROP DATABASE … WITH (FORCE)` each other's fixed-name scratch databases, so the
+conftest **fails closed** (`_require_xdist_isolation`) rather than silently corrupting results:
+
+    env -u MINOS_DATABASE_URL pytest -n auto --dist loadscope ...
+
+**CI stays serial** until a dedicated audit proves no cross-worker collision on shared service
+resources (ports, roles, template names); parallelism is a local-iteration convenience, never
+the authority.
 
 **CI (the authority):** one full-suite invocation producing JUnit *and* the ≥90 % coverage gate
 together. Coverage is a whole-suite property and is enforced only here.
@@ -220,7 +232,13 @@ together. Coverage is a whole-suite property and is enforced only here.
   `CREATE DATABASE … TEMPLATE` (~0.1 s instead of a full replay). Strictly fail-open: staged
   upgrades, downgrades, non-fresh databases and any error fall back to real Alembic, so
   correctness never depends on the optimization — migrations are still genuinely executed and
-  inventoried every session.
+  inventoried every session. Cache identity is the **resolved concrete** Alembic revision
+  (never the symbolic string `head`), so `head` and its explicit revision share one template and
+  an ambiguous multi-head tree declines the fast path entirely.
+* *Session-final template cleanup* — every template THIS process created is dropped at session
+  end (pass **or** fail; `atexit` as last resort), so persistent clusters never accumulate
+  `minos_tmpl_*` databases across runs. Cleanup drops only the process's own cached templates,
+  never sweeps by name pattern, and is best-effort — it can never mask a test failure.
 * *Ephemeral-cluster tuning* — throwaway pgserver clusters run with `synchronous_commit=off`;
   the CI service container is never touched.
 
