@@ -368,18 +368,21 @@ def _root(tmp_path: Path, mode: int = 0o2750) -> Path:
 def test_publishing_is_content_addressed_and_idempotent(tmp_path: Path) -> None:
     publisher = EvaluationArtifactPublisher(_root(tmp_path))
     payload = build_metrics_artifact_bytes(_artifact())
-    digest, uri = publisher.publish(payload)
+    first = publisher.publish(payload)
     again = publisher.publish(payload)
-    assert again == (digest, uri)
+    # identical bytes converge on ONE inode: the replay verifies and reuses rather than rewriting.
+    assert (again.sha256, again.uri) == (first.sha256, first.uri)
+    assert first.created is True
+    assert again.created is False
     assert (
-        Path(tmp_path) / "evaluation_artifacts" / f"{digest}.metrics.json"
+        Path(tmp_path) / "evaluation_artifacts" / f"{first.sha256}.json"
     ).read_bytes() == payload
 
 
 def test_a_wrong_mode_artifact_root_is_refused(tmp_path: Path) -> None:
-    publisher = EvaluationArtifactPublisher(_root(tmp_path, mode=0o755))
+    """The root contract is validated EAGERLY, so an unsafe root cannot be held at all."""
     with pytest.raises(EvaluationPublishError, match="mode"):
-        publisher.publish(b"{}")
+        EvaluationArtifactPublisher(_root(tmp_path, mode=0o755))
 
 
 def test_a_symlinked_artifact_root_is_refused(tmp_path: Path) -> None:

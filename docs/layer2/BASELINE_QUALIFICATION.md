@@ -26,7 +26,8 @@ protocol that chose it, and every evaluation that informed the choice.
 | Frozen feature matrix / profile snapshot | met |
 | Pinned GATK bundle | met — `2707ad20…` |
 | Scoring authority pinned | met — see §3 |
-| Evaluation persistence contract | **implemented in source** — migration `0009`, §11 |
+| Evaluation persistence contract | **implemented in source** — migrations `0009` + `0010`, §11 |
+| Evaluation execution path | **implemented in source** — `minos_engine.evaluation.orchestrator.evaluate_execution`; proven end to end on synthetic TRAIN data under the evaluator service principal, never on real practice truth |
 | Truth identities registered | **mechanism implemented; no real registration yet** — §5 |
 | External evaluator service login principal | **contract + runbook exist; not provisioned** — §4 |
 
@@ -276,7 +277,7 @@ Minimum bindings for one immutable evaluation record:
 | `scorer_source_sha256`, `scorer_commit` | which scorer produced it |
 | `happy_image_digest`, `bcftools_image` | container identity |
 | `evaluation_contract_version` | semantics version |
-| `metrics_artifact_sha256` | canonical content-addressed metrics document |
+| `metrics_artifact_sha256` | canonical content-addressed metrics document. Since `0010` the id, digest and media type are ONE composite foreign key against `catalog.artifacts(id, sha256, media_type)`, so the row cannot cite a document it did not produce |
 | `minos_score_100`, `minos_score`, `admitted` | the score and its admissibility |
 | `evaluation_hash` | domain-separated identity over all of the above |
 

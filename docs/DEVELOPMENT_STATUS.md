@@ -27,24 +27,58 @@ does not restate or override them.
 | HARNESS historical Alembic head | `0008_l2f_execution_results` (stage-scoped; the repository head advances independently) |
 | Operational DB revision | `0005_l2e_feature_view` |
 | Next gate | **BASELINE-QUALIFIED** (designed in `docs/layer2/BASELINE_QUALIFICATION.md`, not implemented) |
-| Current task | **L2-F2-A — offline evaluation foundation: IMPLEMENTED_PENDING_ENVIRONMENT** |
-| Source Alembic head | `0009_l2f_evaluation_results` (migrations `0001`–`0009`) |
+| Current task | **L2-F2-A — offline evaluation foundation: READY_PENDING_ENVIRONMENT** |
+| Source Alembic head | `0010_l2f2_evaluation_corrective` (migrations `0001`–`0010`) |
 
 `select_config` remains deliberately blocked by `StageNotReadyError` and stays
 blocked until L2-H.
 
-### L2-F2-A status — IMPLEMENTED_PENDING_ENVIRONMENT
+### L2-F2-A status — READY_PENDING_ENVIRONMENT
 
-The **source** foundation exists and is tested: migration `0009` (evaluation ledger, projections,
-`SECURITY DEFINER` persistence, evaluator grants), the scoring contract and authority manifest,
-the Minos score compatibility layer proven at **exact parity** against the real upstream
-`AdvancedScorer`, TRAIN-only truth registration, the hap.py runner port, the metrics artifact
-contract and the content-addressed publisher.
+The **source** path is complete and tested end to end: migration `0009` (evaluation ledger,
+projections, `SECURITY DEFINER` persistence, evaluator grants), migration `0010` (the
+corrective below), the scoring contract and authority manifest, the Minos score compatibility
+layer proven at **exact parity** against the real upstream `AdvancedScorer`, TRAIN-only truth
+registration, the hap.py runner and output parser, the metrics artifact contract, the
+content-addressed publisher and the production orchestrator.
+
+#### What migration `0010_l2f2_evaluation_corrective` closed
+
+`0009` is pushed history and is never rewritten; the corrective is additive and reversible
+(`0010 -> 0009 -> 0010` is inventory-exact, and CI verifies that boundary on every run).
+
+* **XOR serialization.** `0009`'s exclusive-outcome trigger took a `FOR SHARE` lock on the
+  execution result before checking the opposite outcome table. SHARE locks are mutually
+  compatible, so two overlapping transactions could both observe "no other outcome" and one
+  execution could end up with a success **and** a failure under the same scoring contract. The
+  lock is now `FOR UPDATE`. A two-connection integration control installs the old body, proves
+  it admits both outcomes, and proves the new body admits exactly one.
+* **Metrics artifact identity.** `metrics_artifact_id`, `metrics_artifact_sha256` and
+  `metrics_media_type` were three independent columns with only the id bound to
+  `catalog.artifacts`; artifact A's id could be paired with artifact B's digest. They are now
+  ONE composite foreign key against `catalog.artifacts(id, sha256, media_type)`, and the media
+  type is pinned by CHECK to the L2-F2 metrics document type.
+* **Registration path.** `minos_evaluator` deliberately has no `INSERT` on `catalog.artifacts`,
+  so the service principal previously had no way to register the document it publishes. The
+  narrow `SECURITY DEFINER` registrar `evaluation.l2f_register_metrics_artifact(sha256, uri,
+  size_bytes)` fixes media type and provenance itself — the caller supplies content identity and
+  nothing that could reclassify the document.
+* **Publisher.** The evaluation publisher no longer has a protocol of its own. The audited
+  atomic protocol (temp inode → write → fsync → fchmod/fchown → hard-link no-clobber → inode
+  identity proof → directory fsync → credential re-verification) now lives in
+  `minos_engine.storage.content_addressed_publisher` and is shared with the L2-F1 result
+  publisher, whose own suite is the proof the factoring changed nothing.
+* **Orchestrator.** `minos_engine.evaluation.orchestrator.evaluate_execution` is the single
+  authoritative production path. It takes an `execution_result_id` and reads dataset, partition,
+  round, VCF digest and truth digests from PostgreSQL — never from the caller — refuses any
+  non-TRAIN partition **before** constructing a truth path, verifies the recorded VCF and truth
+  bytes, runs hap.py only through `HappyRunner`, scores under ONE `ScoringAuthority`, and
+  persists ONE `EvaluationRecord` whose `evaluation_hash` is computed from that record.
 
 **Not yet done, and not claimed:**
 
 * the baseline workspace `/home/hr/bittensor/minos_l2f2_baseline` does not exist;
-* no baseline database exists at `0009`;
+* no baseline database exists at `0010`;
 * `minos_evaluator_svc` has **not** been provisioned;
 * **no truth identity is registered in any real database** — the 50 TRAIN bundles are still
   unregistered;

@@ -1,30 +1,46 @@
-"""Offline truth-aware evaluation: artifact publishing and immutable persistence.
+"""Offline truth-aware evaluation: scoring, one record identity, immutable persistence.
 
 This module is the only place truth meets an execution result, and it runs under
 ``minos_evaluator`` authority alone. It never runs GATK, never touches experiment jobs or
 results, never imports live-controller code, and never lets a truth-derived value escape into a
 Layer-1/Layer-2 live feature contract.
 
-Persistence is transactional and idempotent through migration 0009's ``SECURITY DEFINER``
-functions: an exact replay under the same scoring contract returns the existing row, and a
-conflicting replay raises. There is deliberately no UPDATE/DELETE correction path — a corrected
-evaluation is a NEW scoring contract, not a rewritten row.
+Two identity rules are structural rather than advisory:
+
+* **One scoring authority.** Every authority-derived field — contract hash, upstream commit,
+  both source digests, both container digests — comes from ONE :class:`ScoringAuthority`. There
+  is no public path on which a caller supplies contract hash A alongside authority metadata B.
+* **One evaluation record.** :class:`EvaluationRecord` owns the execution identity, truth
+  identity, scoring contract, published metrics artifact, component scores and admission, and
+  ``evaluation_hash`` is computed *from that record*. A caller cannot hand in scores and an
+  independently chosen hash.
+
+Persistence is transactional and idempotent through the ``SECURITY DEFINER`` functions of
+migrations 0009/0010: an exact replay under the same scoring contract returns the existing row,
+and a conflicting replay raises. There is deliberately no UPDATE/DELETE correction path — a
+corrected evaluation is a NEW scoring contract, not a rewritten row.
 """
 
 from __future__ import annotations
 
 import hashlib
-import os
-import stat
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from minos_engine.common.errors import MinosEngineError
+from minos_engine.evaluation.artifact_publisher import (
+    ENV_EVALUATION_ARTIFACT_ROOT,
+    EVALUATION_METRICS_PROVENANCE,
+    EvaluationArtifactPublisher,
+    EvaluationPublishError,
+    PublishedMetricsArtifact,
+    evaluation_artifact_root_from_env,
+)
 from minos_engine.evaluation.contracts import (
     EVALUATION_METRICS_MEDIA_TYPE,
     EvaluationInputs,
     MetricsArtifact,
+    build_metrics_artifact_bytes,
     compute_evaluation_hash,
 )
 from minos_engine.evaluation.minos_score import (
@@ -43,26 +59,25 @@ __all__ = [
     "EvaluationArtifactPublisher",
     "EvaluationPersistError",
     "EvaluationPublishError",
+    "EvaluationRecord",
+    "EvaluationRecordError",
     "PersistedEvaluation",
+    "PublishedMetricsArtifact",
+    "build_evaluation_record",
     "evaluate_metrics",
     "evaluation_artifact_root_from_env",
+    "register_metrics_artifact",
     "record_evaluation_failure",
     "record_evaluation_result",
 ]
 
-ENV_EVALUATION_ARTIFACT_ROOT = "MINOS_L2F2_EVALUATION_ARTIFACT_ROOT"
-
-#: artifact roots are setgid group-readable, matching the L2-F1 artifact policy.
-_ARTIFACT_ROOT_MODE = 0o2750
-_ARTIFACT_FILE_MODE = 0o640
-
-
-class EvaluationPublishError(MinosEngineError):
-    """The evaluation artifact root or a published file is unsafe."""
-
 
 class EvaluationPersistError(MinosEngineError):
     """The evaluation ledger refused the write."""
+
+
+class EvaluationRecordError(MinosEngineError):
+    """The evaluation record is internally inconsistent and must not be persisted."""
 
 
 @dataclass(frozen=True)
@@ -74,61 +89,39 @@ class PersistedEvaluation:
     created: bool
 
 
-def evaluation_artifact_root_from_env() -> Path:
-    """Resolve and validate the evaluation artifact root from the environment."""
-    raw = os.environ.get(ENV_EVALUATION_ARTIFACT_ROOT)
-    if raw is None or not raw.strip():
-        raise EvaluationPublishError(
-            f"{ENV_EVALUATION_ARTIFACT_ROOT} is not set; the artifact root must be provisioned"
-        )
-    return _require_root(Path(raw.strip()))
-
-
-def _require_root(root: Path) -> Path:
-    if not root.is_absolute():
-        raise EvaluationPublishError(f"evaluation artifact root {root} must be absolute")
-    info = os.lstat(root) if root.exists() or root.is_symlink() else None
-    if info is None:
-        raise EvaluationPublishError(f"evaluation artifact root {root} does not exist")
-    if stat.S_ISLNK(info.st_mode):
-        raise EvaluationPublishError(f"evaluation artifact root {root} is a symlink")
-    if not stat.S_ISDIR(info.st_mode):
-        raise EvaluationPublishError(f"evaluation artifact root {root} is not a directory")
-    if info.st_uid != os.geteuid():
-        raise EvaluationPublishError(f"evaluation artifact root {root} is not owned by this user")
-    if stat.S_IMODE(info.st_mode) != _ARTIFACT_ROOT_MODE:
-        raise EvaluationPublishError(
-            f"evaluation artifact root {root} has mode {stat.S_IMODE(info.st_mode):#o}, "
-            f"expected {_ARTIFACT_ROOT_MODE:#o}"
-        )
-    return root
-
-
 @dataclass(frozen=True)
-class EvaluationArtifactPublisher:
-    """Publishes the canonical metrics document under its own content address."""
+class EvaluationRecord:
+    """THE single construction path for a persistable evaluation.
 
-    root: Path
+    Built only by :func:`build_evaluation_record`, which proves every internal consistency
+    condition first, so nothing downstream has to re-check that (for example) the artifact this
+    row cites is the document whose bytes were actually published.
+    """
 
-    def publish(self, payload: bytes) -> tuple[str, str]:
-        """Write ``<sha256>.metrics.json`` exactly once. Returns ``(sha256, uri)``."""
-        root = _require_root(self.root)
-        digest = hashlib.sha256(payload).hexdigest()
-        path = root / f"{digest}.metrics.json"
-        if path.exists():
-            # content-addressed: identical bytes are already published, which is not an error.
-            if hashlib.sha256(path.read_bytes()).hexdigest() != digest:  # pragma: no cover
-                raise EvaluationPublishError(f"published artifact {path} does not match its name")
-            return digest, path.as_uri()
-        tmp = root / f".{digest}.partial"
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, _ARTIFACT_FILE_MODE)
-        try:
-            os.write(fd, payload)
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        os.replace(tmp, path)
-        return digest, path.as_uri()
+    execution_result_id: str
+    inputs: EvaluationInputs
+    artifact: MetricsArtifact
+    breakdown: AdvancedScoreBreakdown
+    admission_code: AdmissionCode
+    authority: ScoringAuthority
+    metrics_artifact_id: str
+    metrics: PublishedMetricsArtifact
+
+    @property
+    def scoring_contract_hash(self) -> str:
+        """Always recomputed from the authority — never a separately supplied value."""
+        return compute_scoring_contract_hash(self.authority)
+
+    @property
+    def evaluation_hash(self) -> str:
+        """The frozen evaluation identity, computed from exactly this record."""
+        return compute_evaluation_hash(
+            inputs=self.inputs,
+            scoring_contract_hash=self.scoring_contract_hash,
+            metrics_artifact_sha256=self.metrics.sha256,
+            breakdown=self.breakdown,
+            admission_code=self.admission_code,
+        )
 
 
 def evaluate_metrics(
@@ -174,8 +167,7 @@ def evaluate_metrics(
     return artifact, breakdown, admission, contract_hash
 
 
-def record_evaluation_result(
-    engine: Any,
+def build_evaluation_record(
     *,
     execution_result_id: str,
     inputs: EvaluationInputs,
@@ -184,24 +176,88 @@ def record_evaluation_result(
     admission_code: AdmissionCode,
     authority: ScoringAuthority,
     metrics_artifact_id: str,
-    metrics_artifact_sha256: str,
-) -> PersistedEvaluation:
+    metrics: PublishedMetricsArtifact,
+) -> EvaluationRecord:
+    """Construct the record, refusing every internally inconsistent combination.
+
+    These are the substitutions the checks make unrepresentable: an artifact scored under a
+    different contract, an artifact describing a different execution, a published document whose
+    bytes are not the artifact's bytes, and a document classified as anything other than the
+    L2-F2 metrics media type.
+    """
+    contract_hash = compute_scoring_contract_hash(authority)
+    if artifact.scoring_contract_hash != contract_hash:
+        raise EvaluationRecordError(
+            "metrics artifact was scored under a different scoring contract than the authority "
+            "supplied for persistence"
+        )
+    if artifact.execution_result_hash != inputs.execution_result_hash:
+        raise EvaluationRecordError(
+            "metrics artifact describes a different execution than the evaluation inputs"
+        )
+    if artifact.truth_identity != inputs.truth or artifact.comparison_scope != inputs.scope:
+        raise EvaluationRecordError(
+            "metrics artifact truth identity or comparison scope disagrees with the inputs"
+        )
+    expected_sha = hashlib.sha256(build_metrics_artifact_bytes(artifact)).hexdigest()
+    if metrics.sha256 != expected_sha:
+        raise EvaluationRecordError(
+            "the published metrics document is not this artifact's bytes; the evaluation row "
+            "would cite a document it did not produce"
+        )
+    if metrics.media_type != EVALUATION_METRICS_MEDIA_TYPE:
+        raise EvaluationRecordError(
+            f"metrics artifact media type {metrics.media_type!r} is not the L2-F2 metrics type"
+        )
+    if metrics.provenance != EVALUATION_METRICS_PROVENANCE:
+        raise EvaluationRecordError(
+            f"metrics artifact provenance {metrics.provenance!r} is not "
+            f"{EVALUATION_METRICS_PROVENANCE!r}"
+        )
+    return EvaluationRecord(
+        execution_result_id=execution_result_id,
+        inputs=inputs,
+        artifact=artifact,
+        breakdown=breakdown,
+        admission_code=admission_code,
+        authority=authority,
+        metrics_artifact_id=metrics_artifact_id,
+        metrics=metrics,
+    )
+
+
+def register_metrics_artifact(engine: Any, published: PublishedMetricsArtifact) -> tuple[str, bool]:
+    """Register the published metrics document through the narrow 0010 registrar.
+
+    ``minos_evaluator`` has no ``INSERT`` on ``catalog.artifacts`` by design. The registrar takes
+    only content identity — digest, URI, size — and fixes media type and provenance itself, so
+    this path cannot be used to register some other kind of artifact. Returns
+    ``(artifact_id, created)``; an exact re-registration returns the existing id.
+    """
+    from sqlalchemy import text
+
+    with engine.connect() as conn, conn.begin():
+        row = conn.execute(
+            text(
+                "SELECT artifact_id, created FROM evaluation.l2f_register_metrics_artifact("
+                ":sha, :uri, :size)"
+            ),
+            {"sha": published.sha256, "uri": published.uri, "size": published.size_bytes},
+        ).one()
+    return str(row[0]), bool(row[1])
+
+
+def record_evaluation_result(engine: Any, record: EvaluationRecord) -> PersistedEvaluation:
     """Persist one immutable evaluation. Idempotent per (execution, scoring contract).
 
     Dataset, partition and truth identity are NOT passed: the ``SECURITY DEFINER`` function
     derives them from the execution's own lineage, so a caller cannot score execution A against
-    dataset or truth B.
+    dataset or truth B. Everything else comes from ``record`` alone.
     """
     from sqlalchemy import text
 
-    contract_hash = compute_scoring_contract_hash(authority)
-    evaluation_hash = compute_evaluation_hash(
-        inputs=inputs,
-        scoring_contract_hash=contract_hash,
-        metrics_artifact_sha256=metrics_artifact_sha256,
-        breakdown=breakdown,
-        admission_code=admission_code,
-    )
+    authority = record.authority
+    breakdown = record.breakdown
     with engine.connect() as conn, conn.begin():
         row = conn.execute(
             text(
@@ -211,16 +267,16 @@ def record_evaluation_result(
                 ":overcall, :score100, :score, :admission, :eval_hash)"
             ),
             {
-                "exec_id": execution_result_id,
-                "contract": contract_hash,
+                "exec_id": record.execution_result_id,
+                "contract": record.scoring_contract_hash,
                 "commit": authority.upstream_commit,
                 "scoring_py": authority.scoring_py_sha256,
                 "validator_py": authority.validator_py_sha256,
                 "happy": authority.happy_image,
                 "bcftools": authority.bcftools_image,
-                "artifact_id": metrics_artifact_id,
-                "artifact_sha": metrics_artifact_sha256,
-                "media_type": EVALUATION_METRICS_MEDIA_TYPE,
+                "artifact_id": record.metrics_artifact_id,
+                "artifact_sha": record.metrics.sha256,
+                "media_type": record.metrics.media_type,
                 "core": breakdown.core_score,
                 "completeness": breakdown.completeness_score,
                 "fp": breakdown.fp_score,
@@ -228,13 +284,12 @@ def record_evaluation_result(
                 "overcall": breakdown.overcall_penalty,
                 "score100": breakdown.minos_score_100,
                 "score": breakdown.minos_score,
-                "admission": admission_code,
-                "eval_hash": evaluation_hash,
+                "admission": record.admission_code,
+                "eval_hash": record.evaluation_hash,
             },
         ).one()
-    _ = artifact  # bound into evaluation_hash via metrics_artifact_sha256
     return PersistedEvaluation(
-        evaluation_id=str(row[0]), evaluation_hash=evaluation_hash, created=bool(row[1])
+        evaluation_id=str(row[0]), evaluation_hash=record.evaluation_hash, created=bool(row[1])
     )
 
 

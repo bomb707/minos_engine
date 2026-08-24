@@ -11,8 +11,6 @@ deterministic hashes.
 
 from __future__ import annotations
 
-import hashlib
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -28,9 +26,11 @@ from minos_engine.evaluation.contracts import (
 )
 from minos_engine.evaluation.evaluator import (
     EvaluationArtifactPublisher,
+    build_evaluation_record,
     evaluate_metrics,
     record_evaluation_failure,
     record_evaluation_result,
+    register_metrics_artifact,
 )
 from minos_engine.evaluation.scoring_contract import (
     compute_scoring_contract_hash,
@@ -46,6 +46,7 @@ env = _env_fixture
 
 _F5 = "0008_l2f_execution_results"
 _F2A = "0009_l2f_evaluation_results"
+_F2A_CORRECTIVE = "0010_l2f2_evaluation_corrective"
 _METRICS = {
     "f1_snp": 0.95,
     "f1_indel": 0.9,
@@ -75,7 +76,7 @@ def evaluated(env: Any) -> Any:
     assert dispatched is not None and dispatched.status == "SUCCEEDED"
     url = str(env.engine.url.render_as_string(hide_password=False))
     env.engine.dispose()
-    alembic_upgrade(url, _F2A)
+    alembic_upgrade(url, _F2A_CORRECTIVE)
     from sqlalchemy import create_engine
 
     env.engine = create_engine(url)
@@ -124,41 +125,20 @@ def _register_truth(env: Any, root: Path, *, marker: bytes = b"v1") -> dict[str,
     return {str(r["dataset_registry_id"]): str(r["round_id"]) for r in rows}
 
 
-def _artifact_row(env: Any, payload: bytes, uri: str) -> str:
-    """Register the published metrics document in catalog.artifacts."""
-    digest = hashlib.sha256(payload).hexdigest()
-    with env.engine.connect() as conn:
-        existing = conn.execute(
-            text("SELECT id FROM catalog.artifacts WHERE sha256 = :s"), {"s": digest}
-        ).scalar()
-    if existing is not None:
-        # content-addressed: identical bytes are already registered, which is the replay case.
-        return str(existing)
-    artifact_id = str(uuid.uuid4())
-    with env.engine.connect() as conn, conn.begin():
-        conn.execute(
-            text(
-                "INSERT INTO catalog.artifacts (id, uri, sha256, media_type, size_bytes) "
-                "VALUES (:i, :u, :s, :m, :z)"
-            ),
-            {
-                "i": artifact_id,
-                "u": uri,
-                "s": digest,
-                "m": "application/vnd.minos.l2f2-evaluation-metrics+json",
-                "z": len(payload),
-            },
-        )
+def _register_artifact(env: Any, published: Any) -> str:
+    """Register through the production registrar — never a privileged catalog INSERT."""
+    artifact_id, _created = register_metrics_artifact(env.engine, published)
     return artifact_id
 
 
-def _publish(env: Any, tmp_path: Path, inputs: EvaluationInputs) -> tuple[Any, Any, str, str, str]:
+def _publish(env: Any, tmp_path: Path, inputs: EvaluationInputs) -> tuple[Any, Any, str, str, Any]:
+    """Score, publish the canonical document, and register it exactly as production does."""
     import os
 
     root = tmp_path / "evaluation_artifacts"
     root.mkdir(exist_ok=True)
     os.chmod(root, 0o2750)
-    artifact, breakdown, admission, contract = evaluate_metrics(
+    artifact, breakdown, admission, _contract = evaluate_metrics(
         inputs=inputs,
         happy_metrics=_METRICS,
         mutation_only_metrics={},
@@ -167,9 +147,9 @@ def _publish(env: Any, tmp_path: Path, inputs: EvaluationInputs) -> tuple[Any, A
         authority=_authority(),
     )
     payload = build_metrics_artifact_bytes(artifact)
-    digest, uri = EvaluationArtifactPublisher(root).publish(payload)
-    artifact_id = _artifact_row(env, payload, uri)
-    return artifact, breakdown, admission, artifact_id, digest
+    published = EvaluationArtifactPublisher(root).publish(payload)
+    artifact_id = _register_artifact(env, published)
+    return artifact, breakdown, admission, artifact_id, published
 
 
 def _inputs_for(env: Any, dispatched: Any) -> EvaluationInputs:
@@ -415,17 +395,19 @@ def test_the_evaluator_cannot_substitute_another_dataset_or_truth(
 # --------------------------------------------------------------------------- #
 def _persist(env: Any, evaluated: Any, tmp_path: Path) -> Any:
     inputs = _inputs_for(env, evaluated)
-    artifact, breakdown, admission, artifact_id, digest = _publish(env, tmp_path, inputs)
+    artifact, breakdown, admission, artifact_id, published = _publish(env, tmp_path, inputs)
     return record_evaluation_result(
         env.engine,
-        execution_result_id=_result_id(env, evaluated),
-        inputs=inputs,
-        artifact=artifact,
-        breakdown=breakdown,
-        admission_code=admission,
-        authority=_authority(),
-        metrics_artifact_id=artifact_id,
-        metrics_artifact_sha256=digest,
+        build_evaluation_record(
+            execution_result_id=_result_id(env, evaluated),
+            inputs=inputs,
+            artifact=artifact,
+            breakdown=breakdown,
+            admission_code=admission,
+            authority=_authority(),
+            metrics_artifact_id=artifact_id,
+            metrics=published,
+        ),
     )
 
 
@@ -484,30 +466,25 @@ def test_a_conflicting_replay_under_the_same_contract_fails_closed(
     _register_truth(env, root)
     register_train_truth_identities(env.engine, dataset_root=root)
     inputs = _inputs_for(env, evaluated)
-    artifact, breakdown, admission, artifact_id, digest = _publish(env, tmp_path, inputs)
-    record_evaluation_result(
-        env.engine,
-        execution_result_id=_result_id(env, evaluated),
-        inputs=inputs,
-        artifact=artifact,
-        breakdown=breakdown,
-        admission_code=admission,
-        authority=_authority(),
-        metrics_artifact_id=artifact_id,
-        metrics_artifact_sha256=digest,
-    )
-    # same execution + same contract, DIFFERENT science -> different evaluation_hash -> refused
-    with pytest.raises(Exception) as excinfo:
-        record_evaluation_result(
-            env.engine,
+    artifact, breakdown, admission, artifact_id, published = _publish(env, tmp_path, inputs)
+
+    def _record(evaluation_inputs: EvaluationInputs) -> Any:
+        return build_evaluation_record(
             execution_result_id=_result_id(env, evaluated),
-            inputs=inputs.model_copy(update={"vcf_sha256": "9" * 64}),
+            inputs=evaluation_inputs,
             artifact=artifact,
             breakdown=breakdown,
             admission_code=admission,
             authority=_authority(),
             metrics_artifact_id=artifact_id,
-            metrics_artifact_sha256=digest,
+            metrics=published,
+        )
+
+    record_evaluation_result(env.engine, _record(inputs))
+    # same execution + same contract, DIFFERENT science -> different evaluation_hash -> refused
+    with pytest.raises(Exception) as excinfo:
+        record_evaluation_result(
+            env.engine, _record(inputs.model_copy(update={"vcf_sha256": "9" * 64}))
         )
     assert "different identity" in str(excinfo.value)
 
@@ -665,9 +642,15 @@ def test_non_evaluator_roles_get_no_l2f2_evaluation_authority(evaluated: Any, en
 
 
 # --------------------------------------------------------------------------- #
-# Q — HARNESS evidence still verifies at source head 0009
+# Q — HARNESS evidence still verifies while the repository head advances
 # --------------------------------------------------------------------------- #
-def test_harness_offline_verification_still_passes_at_source_head_0009() -> None:
+def test_harness_offline_verification_still_passes_as_the_repository_head_advances() -> None:
+    """The seam property, re-observed at the corrective head.
+
+    HARNESS-READY proves the migration state of the L2-F1 source it qualified. Additive L2-F2
+    migrations legitimately move the repository head; they must never move the HARNESS head or
+    invalidate frozen evidence.
+    """
     from minos_engine.qualification.l2f_accepted_identities import (
         recompute_alembic_head,
         recompute_harness_alembic_head,
@@ -677,7 +660,7 @@ def test_harness_offline_verification_still_passes_at_source_head_0009() -> None
     )
 
     root = _repo_root()
-    assert recompute_alembic_head(root) == "0009_l2f_evaluation_results"
+    assert recompute_alembic_head(root) == "0010_l2f2_evaluation_corrective"
     assert recompute_harness_alembic_head(root) == "0008_l2f_execution_results"
     if not (root / "gates" / "harness-ready.json").exists():  # pragma: no cover
         pytest.skip("HARNESS evidence is not committed in this tree")

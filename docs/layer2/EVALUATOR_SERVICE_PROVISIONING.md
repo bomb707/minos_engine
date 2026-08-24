@@ -17,8 +17,8 @@ deliberately `NOLOGIN` group roles. That is the architecture and it stays.
 > merge the authority model with the credential model, which is exactly the separation the
 > role design exists to maintain.
 
-Migration `0009` grants evaluation authority to the **group role**. The service principal gets
-that authority purely by membership.
+Migrations `0009` and `0010` grant evaluation authority to the **group role**. The service
+principal gets that authority purely by membership.
 
 ## Required properties
 
@@ -71,10 +71,16 @@ Granted by `0009` through `minos_evaluator`:
   test are structurally absent from that view
 * `SELECT` on `evaluation.dataset_evaluation_identity`, `l2f_evaluation_results`,
   `l2f_evaluation_failures`
-* `EXECUTE` on the three `SECURITY DEFINER` persistence functions
+* `EXECUTE` on the three `0009` `SECURITY DEFINER` persistence functions
+* `EXECUTE` on `evaluation.l2f_register_metrics_artifact` (`0010`) — the ONLY path by which the
+  service registers the metrics document it publishes. It accepts a digest, URI and size; media
+  type and provenance are fixed inside the function, so it cannot register any other kind of
+  artifact
 
 Deliberately **not** granted:
 
+* any direct `INSERT`/`UPDATE`/`DELETE` on `catalog.artifacts` — registration goes through the
+  `0010` registrar or not at all
 * any write on `experiments.*` — the execution ledger stays owned by the runner path
 * broad `SELECT` on the L2-F experiment tables — `0008` gives application roles no direct table
   privileges there, and `0009` preserves that boundary
@@ -96,7 +102,14 @@ file; no repository change is required, because the repository never holds the c
 ## CI
 
 CI proves the *authority shape* without a production credential: it creates an ephemeral
-`minos_evaluator_ci_svc LOGIN`, grants it `minos_evaluator`, asserts it can read the two
-projections and cannot mutate `experiments.l2f_execution_results`, `l2f_experiment_jobs` or
-`l2f_experiment_plan_configs`, and drops the role afterwards. See
-`tests/integration/layer2_db/test_l2f2_evaluation_ledger.py`.
+`minos_evaluator_ci_svc LOGIN`, grants it `minos_evaluator` and nothing else, and then runs the
+**whole production evaluation path** under that login — TRAIN truth registration, metrics
+publication, artifact registration, evaluation persistence and read-back — before asserting the
+denials (no direct `catalog.artifacts` write, no `experiments.*` mutation, no plan/config
+mutation, no role escalation, and none of `SUPERUSER`/`CREATEDB`/`CREATEROLE`/`BYPASSRLS`). The
+role is dropped afterwards. See `tests/integration/layer2_db/test_l2f2_evaluation_corrective.py`
+and `tests/integration/layer2_db/test_l2f2_evaluation_ledger.py`.
+
+Each denial statement is separately proven to be **well formed** by running it under a role that
+is allowed to run it: a denial test whose statement dies on an unknown column would pass while
+testing nothing.

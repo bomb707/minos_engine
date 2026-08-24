@@ -28,6 +28,18 @@ from tests.integration.layer2_db.conftest import (
 _L2F = "0006_l2f_experiment_plan"
 
 
+def _repository_head() -> str:
+    """The current head, resolved by an INDEPENDENT code path.
+
+    Hard-coding the head here made these controls fail the moment a legitimate additive
+    migration landed. The accepted-identity resolver is a separate implementation, so it is a
+    real oracle rather than a restatement of the function under test.
+    """
+    from minos_engine.qualification.l2f_accepted_identities import recompute_alembic_head
+
+    return recompute_alembic_head()
+
+
 def _database_names(base: str) -> set[str]:
     engine = create_engine(normalize_database_url(base), isolation_level="AUTOCOMMIT")
     try:
@@ -144,9 +156,11 @@ def test_serial_shared_url_is_permitted(monkeypatch: pytest.MonkeyPatch) -> None
 # DEFECT C — the template cache identity is a CONCRETE revision, never "head"
 # --------------------------------------------------------------------------- #
 def test_head_resolves_to_the_concrete_repository_revision() -> None:
+    head = _repository_head()
     resolved = _resolve_revision("head")
-    assert resolved == "0009_l2f_evaluation_results"
-    assert _resolve_revision("0009_l2f_evaluation_results") == resolved
+    assert resolved == head
+    assert resolved != "head", "the symbolic string must never become a cache identity"
+    assert _resolve_revision(head) == resolved
     assert _resolve_revision(_L2F) == _L2F
 
 
@@ -156,21 +170,22 @@ def test_an_unknown_revision_fails_open() -> None:
 
 def test_a_future_head_gets_a_different_cache_identity() -> None:
     """A temporary additive migration moves head -> the resolved identity moves with it."""
+    head = _repository_head()
     probe = Path("migrations/versions/9990_tmpl_future_probe.py")
     probe.write_text(
         '"""Temporary offline probe: metadata only, never committed, never applied."""\n\n'
         'revision: str = "9990_tmpl_future_probe"\n'
-        'down_revision: str | None = "0009_l2f_evaluation_results"\n'
+        f'down_revision: str | None = "{head}"\n'
         "branch_labels = None\ndepends_on = None\n\n\n"
         "def upgrade() -> None:\n    pass\n\n\ndef downgrade() -> None:\n    pass\n",
         encoding="utf-8",
     )
     try:
         assert _resolve_revision("head") == "9990_tmpl_future_probe"
-        assert _resolve_revision("0009_l2f_evaluation_results") == "0009_l2f_evaluation_results"
+        assert _resolve_revision(head) == head
     finally:
         probe.unlink()
-    assert _resolve_revision("head") == "0009_l2f_evaluation_results"
+    assert _resolve_revision("head") == head
 
 
 def test_multiple_heads_decline_the_template_fast_path() -> None:
@@ -203,10 +218,10 @@ def test_head_and_explicit_revision_share_one_template(monkeypatch: pytest.Monke
                 alembic_upgrade(url_a, "head")
                 assert len(_TEMPLATE_CACHE) == 1
                 key_a = next(iter(_TEMPLATE_CACHE))
-                assert key_a[1] == "0009_l2f_evaluation_results"
+                assert key_a[1] == _repository_head()
 
                 with scratch_database(base, "minos_tmpl_key_b") as url_b:
-                    alembic_upgrade(url_b, "0009_l2f_evaluation_results")
+                    alembic_upgrade(url_b, _repository_head())
                     assert len(_TEMPLATE_CACHE) == 1, "explicit spelling must reuse the template"
             drop_session_templates()
     finally:

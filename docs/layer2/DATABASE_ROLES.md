@@ -111,7 +111,8 @@ Granted to `minos_evaluator`:
 | `evaluation.l2f_train_truth_registration_targets` | `SELECT` | **TRAIN only** — validation and test rows are structurally absent from the view, so this interface cannot enumerate them |
 | `evaluation.dataset_evaluation_identity` | `SELECT` | registered truth identity by content hash |
 | `evaluation.l2f_evaluation_results` / `l2f_evaluation_failures` | `SELECT` | read its own ledger |
-| the three `SECURITY DEFINER` functions | `EXECUTE` | the only write path |
+| the three `0009` `SECURITY DEFINER` functions | `EXECUTE` | the only write path into the evaluation ledger |
+| `evaluation.l2f_register_metrics_artifact` (`0010`) | `EXECUTE` | the only write path into `catalog.artifacts`. The evaluator has **no** direct `INSERT` there; this function accepts a digest, URI and size and fixes media type (`application/vnd.minos.l2f2-evaluation-metrics+json`) and provenance (`l2f2:evaluation-metrics`) itself, so it cannot be used to register some other kind of artifact |
 
 `PUBLIC` is revoked on every new object, and `minos_live` / `minos_runner` / `minos_trainer` are
 explicitly revoked before the evaluator grants are applied.
@@ -121,6 +122,14 @@ Writes go exclusively through `l2f_register_train_truth_identity`,
 dataset, partition and truth identity from the execution's own lineage rather than accepting them
 as parameters, so an evaluator cannot score execution A against dataset or truth B — the
 substitution is unrepresentable, not merely rejected.
+
+Migration `0010` closes the remaining substitution: the evaluation row's
+`metrics_artifact_id`, `metrics_artifact_sha256` and `metrics_media_type` are ONE composite
+foreign key against `catalog.artifacts(id, sha256, media_type)`, so a forged pairing of one
+artifact's id with another's digest is refused by PostgreSQL rather than by application
+discipline. `0010` also makes the success/failure XOR genuinely serialized: the exclusive-outcome
+trigger takes `FOR UPDATE` (not `FOR SHARE`) on the execution result, so two concurrent
+transactions cannot both conclude that no other outcome exists.
 
 ### Group role vs service principal
 

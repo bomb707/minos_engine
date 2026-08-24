@@ -167,6 +167,84 @@ jobs:
           print(f"current Alembic head verified: {heads[0]}")
           PY
 
+      - name: L2-F2-A corrective boundary — 0010 down to 0009 and back
+        run: |
+          python - <<'PY'
+          # Explicit 0010 appears ONLY here, where the corrective boundary is the subject. The
+          # generic current-head check above stays dynamic so later migrations do not break it.
+          import subprocess
+
+          from sqlalchemy import create_engine, text
+
+          from minos_engine.storage.database import database_url
+
+          def query(sql: str):
+              engine = create_engine(database_url())
+              try:
+                  with engine.connect() as connection:
+                      return connection.execute(text(sql)).scalar()
+              finally:
+                  engine.dispose()
+
+          def revision() -> str:
+              return str(query("SELECT version_num FROM alembic_version"))
+
+          def inventory() -> dict:
+              constraints = query(
+                  "SELECT string_agg(conname, ',' ORDER BY conname) FROM pg_constraint "
+                  " WHERE conname IN ('uq_artifacts_id_sha256_media', "
+                  "                   'ck_l2f_eval_results_metrics_media', "
+                  "                   'fk_l2f_eval_results_metrics_artifact')"
+              )
+              return {
+                  "registrar": int(query(
+                      "SELECT count(*) FROM pg_proc p "
+                      "  JOIN pg_namespace n ON n.oid = p.pronamespace "
+                      " WHERE n.nspname = 'evaluation' "
+                      "   AND p.proname = 'l2f_register_metrics_artifact'"
+                  )),
+                  "constraints": constraints,
+                  "metrics_fk_columns": int(query(
+                      "SELECT cardinality(conkey) FROM pg_constraint "
+                      " WHERE conname = 'fk_l2f_eval_results_metrics_artifact'"
+                  )),
+                  "exclusive_lock_is_for_update": "FOR UPDATE" in str(query(
+                      "SELECT pg_get_functiondef("
+                      "  'evaluation.l2f_evaluation_exclusive_outcome()'::regprocedure)"
+                  )),
+              }
+
+          assert revision() == "0010_l2f2_evaluation_corrective", revision()
+          at_head = inventory()
+          assert at_head == {
+              "registrar": 1,
+              "constraints": (
+                  "ck_l2f_eval_results_metrics_media,"
+                  "fk_l2f_eval_results_metrics_artifact,"
+                  "uq_artifacts_id_sha256_media"
+              ),
+              "metrics_fk_columns": 3,
+              "exclusive_lock_is_for_update": True,
+          }, at_head
+
+          subprocess.run(
+              ["alembic", "downgrade", "0009_l2f_evaluation_results"], check=True
+          )
+          assert revision() == "0009_l2f_evaluation_results", revision()
+          at_0009 = inventory()
+          assert at_0009 == {
+              "registrar": 0,
+              "constraints": "fk_l2f_eval_results_metrics_artifact",
+              "metrics_fk_columns": 1,
+              "exclusive_lock_is_for_update": False,
+          }, at_0009
+
+          subprocess.run(["alembic", "upgrade", "head"], check=True)
+          assert revision() == "0010_l2f2_evaluation_corrective", revision()
+          assert inventory() == at_head, "re-upgrade did not restore the 0010 inventory"
+          print("L2-F2-A corrective boundary verified: 0010 -> 0009 -> 0010")
+          PY
+
       - name: L2-F2 stage boundary — 0009 down to 0008 and back
         run: |
           python - <<'PY'
@@ -202,6 +280,10 @@ jobs:
               finally:
                   engine.dispose()
 
+          # head is now the corrective; step down to the 0009 boundary this check is about.
+          subprocess.run(
+              ["alembic", "downgrade", "0009_l2f_evaluation_results"], check=True
+          )
           assert revision() == "0009_l2f_evaluation_results", revision()
           at_head = objects()
           for name in (
@@ -226,9 +308,13 @@ jobs:
               assert name not in removed, f"{name} survived downgrade"
           assert "evaluations" in removed, "the legacy L2-B placeholder must be preserved"
 
-          subprocess.run(["alembic", "upgrade", "head"], check=True)
+          subprocess.run(
+              ["alembic", "upgrade", "0009_l2f_evaluation_results"], check=True
+          )
           assert revision() == "0009_l2f_evaluation_results", revision()
           assert objects() == at_head, "re-upgrade did not restore the 0009 inventory"
+          # restore the current head for the steps that follow.
+          subprocess.run(["alembic", "upgrade", "head"], check=True)
           print("L2-F2 stage boundary verified: 0009 -> 0008 -> 0009")
           PY
 

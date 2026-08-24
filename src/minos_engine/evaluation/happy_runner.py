@@ -198,6 +198,8 @@ class FakeHappyRunner:
     runtime_ms: int = 1
     raise_timeout: bool = False
     written_files: dict[str, str] = field(default_factory=dict)
+    #: binary outputs (hap.py's annotated VCF is gzipped), written verbatim into the work dir.
+    written_bytes: dict[str, bytes] = field(default_factory=dict)
 
     def run(
         self,
@@ -215,4 +217,6 @@ class FakeHappyRunner:
             raise HappyExecutionError(f"fake hap.py runner simulated exit code {self.exit_code}")
         for name, content in self.written_files.items():
             (work_dir / name).write_text(content, encoding="utf-8")
+        for name, blob in self.written_bytes.items():
+            (work_dir / name).write_bytes(blob)
         return HappyOutcome(exit_code=0, runtime_ms=self.runtime_ms, output_prefix=output_prefix)

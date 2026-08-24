@@ -14,21 +14,27 @@ Frozen root/file permission contract
 * file: content-addressed ``<root>/<sha256><extension>``, a regular non-symlink file owned by the
   writer uid, carrying the root gid, mode EXACTLY ``0o640``, whose bytes hash to ``<sha256>``.
 
+The atomic protocol itself now lives in
+``minos_engine.storage.content_addressed_publisher`` so later stages reuse the audited
+implementation instead of growing a second, weaker one. The behaviour here is unchanged:
+same modes, same typed errors, same no-clobber and rollback semantics.
+
 The two artifact kinds use DISTINCT extensions (``.vcf`` and ``.result.json``) so a VCF and a
 result manifest can never collide on one content-addressed path.
 """
 
 from __future__ import annotations
 
-import contextlib
-import hashlib
 import os
-import stat
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from minos_engine.common.errors import MinosEngineError
+from minos_engine.storage.content_addressed_publisher import (
+    ContentAddressedSpec,
+    ContentAddressedStore,
+    PublishedObject,
+)
 from minos_engine.storage.l2f_execution_contract import (
     L2F_RESULT_MANIFEST_MEDIA_TYPE,
     L2F_VCF_MEDIA_TYPE,
@@ -91,87 +97,32 @@ class PublishedResultArtifact:
     ino: int
 
 
-def _fsync_directory(directory: Path) -> None:
-    fd = os.open(directory, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
-def _verify_existing_bytes(path: Path, expected_sha256: str) -> None:
-    if path.is_symlink() or not path.is_file():
-        raise ResultArtifactIntegrityError(f"result artifact is not a regular file: {path}")
-    if hashlib.sha256(path.read_bytes()).hexdigest() != expected_sha256:
-        raise ResultArtifactIntegrityError(
-            f"pre-existing result artifact at {path} does not match its content hash (unchanged)"
-        )
-
-
-def _verify_inode_credential(path: Path, gid: int) -> None:
-    if path.is_symlink():
-        raise ResultArtifactIntegrityError(f"result artifact {path} is a symlink")
-    st = path.stat()
-    if not stat.S_ISREG(st.st_mode):
-        raise ResultArtifactIntegrityError(f"result artifact {path} is not a regular file")
-    if st.st_uid != os.getuid():
-        raise ResultArtifactIntegrityError(f"result artifact {path} not owned by the writer uid")
-    if st.st_gid != gid:
-        raise ResultArtifactIntegrityError(f"result artifact {path} has the wrong gid")
-    if stat.S_IMODE(st.st_mode) != RESULT_ARTIFACT_FILE_MODE:
-        raise ResultArtifactIntegrityError(f"result artifact {path} has the wrong mode")
-
-
-def _unlink_if_same_inode(path: Path, dev: int, ino: int) -> None:
-    """Unlink ONLY if lstat proves the path still names exactly ``(dev, ino)``."""
-    try:
-        st = os.lstat(path)
-    except OSError:
-        return
-    if not stat.S_ISLNK(st.st_mode) and st.st_dev == dev and st.st_ino == ino:
-        with contextlib.suppress(OSError):
-            os.unlink(path)
+_SPEC = ContentAddressedSpec(
+    label="result artifact",
+    root_mode=RESULT_ARTIFACT_ROOT_MODE,
+    file_mode=RESULT_ARTIFACT_FILE_MODE,
+    root_error=ResultArtifactRootError,
+    integrity_error=ResultArtifactIntegrityError,
+)
 
 
 class ResultArtifactPublisher:
     """A provisioned content-addressed publisher for the two F5 artifact kinds."""
 
     def __init__(self, root: Path, *, expected_gid: int | None = None) -> None:
-        self._root = self._validate_root(root, expected_gid=expected_gid)
-        self._gid = self._root.stat().st_gid
-
-    @staticmethod
-    def _validate_root(root: Path, *, expected_gid: int | None) -> Path:
-        if root.is_symlink():
-            raise ResultArtifactRootError(f"result artifact root {root} is a symlink")
-        if not root.is_dir():
-            raise ResultArtifactRootError(
-                f"result artifact root {root} is not an existing directory"
-            )
-        st = root.stat()
-        if st.st_uid != os.getuid():
-            raise ResultArtifactRootError(
-                f"result artifact root {root} not owned by the writer uid"
-            )
-        if stat.S_IMODE(st.st_mode) != RESULT_ARTIFACT_ROOT_MODE:
-            raise ResultArtifactRootError(
-                f"result artifact root {root} must have mode {oct(RESULT_ARTIFACT_ROOT_MODE)}"
-            )
-        if expected_gid is not None and st.st_gid != expected_gid:
-            raise ResultArtifactRootError(f"result artifact root {root} has an unexpected gid")
-        return root
+        self._store = ContentAddressedStore(root, _SPEC, expected_gid=expected_gid)
 
     @property
     def root(self) -> Path:
-        return self._root
+        return self._store.root
 
     @property
     def gid(self) -> int:
-        return self._gid
+        return self._store.gid
 
     def content_uri(self, kind: str, sha256: str) -> str:
         extension, _media = self._kind(kind)
-        return f"file://{(self._root / f'{sha256}{extension}').resolve()}"
+        return self._store.uri_for(sha256, extension)
 
     @staticmethod
     def _kind(kind: str) -> tuple[str, str]:
@@ -183,99 +134,36 @@ class ResultArtifactPublisher:
     def unpublish_if_created(self, artifact: PublishedResultArtifact) -> None:
         """Remove a file THIS call created (rollback cleanup); never a reused/concurrent one."""
         if artifact.created:
-            _unlink_if_same_inode(artifact.path, artifact.dev, artifact.ino)
-            with contextlib.suppress(OSError):
-                _fsync_directory(self._root)
+            self._store.unpublish_if_created(
+                PublishedObject(
+                    sha256=artifact.sha256,
+                    path=artifact.path,
+                    uri=artifact.uri,
+                    size_bytes=artifact.size_bytes,
+                    created=True,
+                    dev=artifact.dev,
+                    ino=artifact.ino,
+                )
+            )
 
     def publish(self, payload: bytes, *, kind: str, sha256: str) -> PublishedResultArtifact:
         """Publish ``payload`` (whose sha256 MUST equal ``sha256``) to its immutable
         content-addressed path with no-clobber semantics; get-or-verify an existing file."""
         extension, media_type = self._kind(kind)
         provenance = VCF_ARTIFACT_KIND if kind == "vcf" else RESULT_MANIFEST_ARTIFACT_KIND
-        if hashlib.sha256(payload).hexdigest() != sha256:
-            raise ResultArtifactIntegrityError(
-                f"{kind} payload bytes do not hash to the claimed sha256"
-            )
-        final_path = self._root / f"{sha256}{extension}"
-        uri = self.content_uri(kind, sha256)
-
-        def _result(created: bool, dev: int, ino: int) -> PublishedResultArtifact:
-            return PublishedResultArtifact(
-                kind=kind,
-                sha256=sha256,
-                path=final_path,
-                uri=uri,
-                size_bytes=len(payload),
-                media_type=media_type,
-                provenance=provenance,
-                created=created,
-                dev=dev,
-                ino=ino,
-            )
-
-        if final_path.exists():
-            _verify_existing_bytes(final_path, sha256)
-            _verify_inode_credential(final_path, self._gid)
-            st = final_path.stat()
-            return _result(False, st.st_dev, st.st_ino)
-
-        tmp_fd, tmp_name = tempfile.mkstemp(prefix=f".tmp-{sha256}-", dir=self._root)
-        tmp_path = Path(tmp_name)
-        fd_open = True
-        try:
-            mv = memoryview(payload)
-            while mv:
-                mv = mv[os.write(tmp_fd, mv) :]
-            os.fsync(tmp_fd)
-            os.fchmod(tmp_fd, RESULT_ARTIFACT_FILE_MODE)
-            os.fchown(tmp_fd, -1, self._gid)
-            os.fsync(tmp_fd)
-            os.close(tmp_fd)
-            fd_open = False
-            if hashlib.sha256(tmp_path.read_bytes()).hexdigest() != sha256:  # pragma: no cover
-                raise ResultArtifactIntegrityError(
-                    "written bytes do not hash to the claimed sha256"
-                )
-        except BaseException:
-            if fd_open:
-                with contextlib.suppress(OSError):
-                    os.close(tmp_fd)
-            with contextlib.suppress(FileNotFoundError):
-                tmp_path.unlink()
-            raise
-
-        tst = os.lstat(tmp_path)
-        created_dev, created_ino = tst.st_dev, tst.st_ino
-        linked = False
-        try:
-            try:
-                os.link(tmp_path, final_path)  # fails closed if the target already exists
-            except FileExistsError:
-                with contextlib.suppress(FileNotFoundError):
-                    tmp_path.unlink()
-                _verify_existing_bytes(final_path, sha256)
-                _verify_inode_credential(final_path, self._gid)
-                st = final_path.stat()
-                return _result(False, st.st_dev, st.st_ino)
-            linked = True
-            fst = os.lstat(final_path)
-            if (fst.st_dev, fst.st_ino) != (created_dev, created_ino):
-                raise ResultArtifactIntegrityError(
-                    "final path does not name the freshly linked inode (replaced concurrently)"
-                )
-            with contextlib.suppress(FileNotFoundError):
-                tmp_path.unlink()
-            _fsync_directory(self._root)
-            _verify_inode_credential(final_path, self._gid)
-        except BaseException:
-            if linked:
-                _unlink_if_same_inode(final_path, created_dev, created_ino)
-            with contextlib.suppress(OSError):
-                os.unlink(tmp_path)
-            with contextlib.suppress(OSError):
-                _fsync_directory(self._root)
-            raise
-        return _result(True, created_dev, created_ino)
+        published = self._store.publish(payload, sha256=sha256, extension=extension)
+        return PublishedResultArtifact(
+            kind=kind,
+            sha256=published.sha256,
+            path=published.path,
+            uri=published.uri,
+            size_bytes=published.size_bytes,
+            media_type=media_type,
+            provenance=provenance,
+            created=published.created,
+            dev=published.dev,
+            ino=published.ino,
+        )
 
 
 def result_artifact_root_from_env() -> Path:
