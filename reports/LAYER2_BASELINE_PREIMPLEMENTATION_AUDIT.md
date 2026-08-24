@@ -146,7 +146,7 @@ less than one that wins sometimes. Section 6 offers objectives for both readings
 |---|---|
 | Scorer source pinned and hashed | VERIFIED |
 | hap.py digest-pinned | VERIFIED |
-| bcftools digest | **PARTIAL** — tag only (HARDENING) |
+| bcftools digest | **RESOLVED** in L2-F2-A — `sha256:badc3a0c…58f78d`, confirmed against the local image and the quay.io registry |
 | Truth slicing / region semantics | VERIFIED, located |
 | Mutation-only filtering | VERIFIED, located |
 | Overcall guardrail | VERIFIED, located |

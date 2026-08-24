@@ -1,0 +1,264 @@
+{
+  "cases": [
+    {
+      "admission": "ADMITTED",
+      "metrics": {
+        "f1_indel": 1.0,
+        "f1_snp": 1.0,
+        "fp_indel": 0,
+        "fp_snp": 0,
+        "frac_na_indel": 0.0,
+        "frac_na_snp": 0.0,
+        "hethom_query_snp": 1.5,
+        "hethom_truth_snp": 1.5,
+        "query_total_indel": 100,
+        "query_total_snp": 500,
+        "recall_indel": 1.0,
+        "recall_snp": 1.0,
+        "titv_query_snp": 2.0,
+        "titv_truth_snp": 2.0,
+        "truth_total_indel": 100,
+        "truth_total_snp": 500
+      },
+      "name": "boundary_perfect",
+      "upstream_score_100": 99.93999999999164,
+      "validator_normalized_score": 0.9993999999999165
+    },
+    {
+      "admission": "ADMITTED",
+      "metrics": {
+        "f1_indel": 0.8,
+        "f1_snp": 0.88,
+        "fp_indel": 20,
+        "fp_snp": 50,
+        "frac_na_indel": 0.0,
+        "frac_na_snp": 0.0,
+        "overcall_penalty": 12.5,
+        "query_total_indel": 300,
+        "query_total_snp": 1500,
+        "recall_indel": 0.85,
+        "recall_snp": 0.9,
+        "truth_total_indel": 100,
+        "truth_total_snp": 500
+      },
+      "name": "call_count_overcall",
+      "upstream_score_100": 50.57644935098323,
+      "validator_normalized_score": 0.5057644935098323
+    },
+    {
+      "admission": "ADMITTED",
+      "metrics": {
+        "f1_indel": 0.9,
+        "f1_snp": 0.95,
+        "fp_indel": 1,
+        "fp_snp": 2,
+        "frac_na_indel": 0.0,
+        "frac_na_snp": 0.0,
+        "hethom_query_indel": 2.6,
+        "hethom_query_snp": 3.0,
+        "hethom_truth_indel": 1.2,
+        "hethom_truth_snp": 1.5,
+        "query_total_indel": 100,
+        "query_total_snp": 1000,
+        "recall_indel": 0.9,
+        "recall_snp": 0.95,
+        "truth_total_indel": 100,
+        "truth_total_snp": 1000
+      },
+      "name": "hethom_mismatch",
+      "upstream_score_100": 78.69776897287272,
+      "validator_normalized_score": 0.7869776897287273
+    },
+    {
+      "admission": "ADMITTED",
+      "metrics": {
+        "f1_indel": 0.55,
+        "f1_snp": 0.6,
+        "fp_indel": 90,
+        "fp_snp": 400,
+        "frac_na_indel": 0.0,
+        "frac_na_snp": 0.0,
+        "query_total_indel": 190,
+        "query_total_snp": 900,
+        "recall_indel": 0.92,
+        "recall_snp": 0.95,
+        "truth_total_indel": 100,
+        "truth_total_snp": 500
+      },
+      "name": "high_fp",
+      "upstream_score_100": 46.65949100951015,
+      "validator_normalized_score": 0.46659491009510146
+    },
+    {
+      "admission": "ADMITTED",
+      "metrics": {
+        "f1_indel": 0.93,
+        "f1_snp": 0.2,
+        "fp_indel": 6,
+        "fp_snp": 1,
+        "frac_na_indel": 0.01,
+        "frac_na_snp": 0.0,
+        "query_total_indel": 905,
+        "query_total_snp": 10,
+        "recall_indel": 0.94,
+        "recall_snp": 0.18,
+        "truth_total_indel": 900,
+        "truth_total_snp": 30
+      },
+      "name": "indel_dominant",
+      "upstream_score_100": 72.836552856327,
+      "validator_normalized_score": 0.7283655285632701
+    },
+    {
+      "admission": "ADMITTED",
+      "metrics": {
+        "f1_indel": 0.38,
+        "f1_snp": 0.42,
+        "fp_indel": 2,
+        "fp_snp": 5,
+        "frac_na_indel": 0.06,
+        "frac_na_snp": 0.05,
+        "query_total_indel": 70,
+        "query_total_snp": 400,
+        "recall_indel": 0.25,
+        "recall_snp": 0.3,
+        "truth_total_indel": 150,
+        "truth_total_snp": 800
+      },
+      "name": "low_recall",
+      "upstream_score_100": 36.2319933940127,
+      "validator_normalized_score": 0.36231993394012696
+    },
+    {
+      "admission": "ADMITTED",
+      "metrics": {
+        "f1_indel": 0.95,
+        "f1_snp": 0.99,
+        "fp_indel": 2,
+        "fp_snp": 3,
+        "frac_na_indel": 0.02,
+        "frac_na_snp": 0.01,
+        "hethom_query_indel": 1.21,
+        "hethom_query_snp": 1.52,
+        "hethom_truth_indel": 1.2,
+        "hethom_truth_snp": 1.5,
+        "query_total_indel": 202,
+        "query_total_snp": 1005,
+        "recall_indel": 0.94,
+        "recall_snp": 0.99,
+        "titv_query_snp": 2.08,
+        "titv_truth_snp": 2.1,
+        "truth_total_indel": 200,
+        "truth_total_snp": 1000
+      },
+      "name": "normal_high_accuracy",
+      "upstream_score_100": 85.51542966859729,
+      "validator_normalized_score": 0.8551542966859729
+    },
+    {
+      "admission": "NONPOSITIVE_SCORE",
+      "metrics": {
+        "f1_indel": 0.2,
+        "f1_snp": 0.3,
+        "fp_indel": 40,
+        "fp_snp": 200,
+        "frac_na_indel": 0.3,
+        "frac_na_snp": 0.2,
+        "overcall_penalty": 100.0,
+        "query_total_indel": 80,
+        "query_total_snp": 400,
+        "recall_indel": 0.2,
+        "recall_snp": 0.3,
+        "truth_total_indel": 20,
+        "truth_total_snp": 100
+      },
+      "name": "overcall_penalty_zeroes_score",
+      "upstream_score_100": 0.0,
+      "validator_normalized_score": 0.0
+    },
+    {
+      "admission": "ADMITTED",
+      "metrics": {
+        "f1_indel": 0.1,
+        "f1_snp": 0.97,
+        "fp_indel": 1,
+        "fp_snp": 8,
+        "frac_na_indel": 0.0,
+        "frac_na_snp": 0.0,
+        "query_total_indel": 5,
+        "query_total_snp": 2010,
+        "recall_indel": 0.08,
+        "recall_snp": 0.98,
+        "truth_total_indel": 20,
+        "truth_total_snp": 2000
+      },
+      "name": "snp_dominant",
+      "upstream_score_100": 81.93279656431817,
+      "validator_normalized_score": 0.8193279656431817
+    },
+    {
+      "admission": "ADMITTED",
+      "metrics": {
+        "f1_indel": 0.9,
+        "f1_snp": 0.95,
+        "fp_indel": 1,
+        "fp_snp": 2,
+        "frac_na_indel": 0.0,
+        "frac_na_snp": 0.0,
+        "query_total_indel": 100,
+        "query_total_snp": 1000,
+        "recall_indel": 0.9,
+        "recall_snp": 0.95,
+        "titv_query_snp": 3.4,
+        "titv_truth_snp": 2.1,
+        "truth_total_indel": 100,
+        "truth_total_snp": 1000
+      },
+      "name": "titv_mismatch",
+      "upstream_score_100": 78.69744570722371,
+      "validator_normalized_score": 0.7869744570722371
+    },
+    {
+      "admission": "ZERO_INPUT_FINGERPRINT",
+      "metrics": {
+        "f1_indel": 0.0,
+        "f1_snp": 0.0,
+        "fp_indel": 0,
+        "fp_snp": 0,
+        "frac_na_indel": 0.0,
+        "frac_na_snp": 0.0,
+        "query_total_indel": 0,
+        "query_total_snp": 0,
+        "recall_indel": 0.0,
+        "recall_snp": 0.0,
+        "truth_total_indel": 10,
+        "truth_total_snp": 100
+      },
+      "name": "zero_input_fingerprint",
+      "upstream_score_100": 25.00034049946572,
+      "validator_normalized_score": 0.25000340499465723
+    },
+    {
+      "admission": "NONPOSITIVE_SCORE",
+      "metrics": {
+        "f1_indel": 0.0,
+        "f1_snp": 0.0,
+        "query_total_indel": 0,
+        "query_total_snp": 0,
+        "truth_total_indel": 0,
+        "truth_total_snp": 0
+      },
+      "name": "zero_truth",
+      "upstream_score_100": 0.0,
+      "validator_normalized_score": 0.0
+    }
+  ],
+  "oracle": {
+    "commit": "649bb92c6abccebde58a736a2b2af7fd77a701c1",
+    "generated_by": "upstream utils.scoring.AdvancedScorer.compute_advanced_score",
+    "repository": "minos-protocol/minos_subnet",
+    "scoring_py_sha256": "7b5aa187adda5978adc029abcd4c96b7b78eafeb9c5641153955175cd0b7b658",
+    "validator_py_sha256": "2ac0841231a58794097ba40d245f27eaa44e1bd1b66134a17dece96a1a37f33e"
+  },
+  "schema_version": "l2f2-scoring-golden-v1"
+}

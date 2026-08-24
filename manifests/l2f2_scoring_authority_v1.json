@@ -1,0 +1,31 @@
+{
+  "schema_version": "l2f2-scoring-authority-v1",
+  "upstream": {
+    "repository": "minos-protocol/minos_subnet",
+    "commit": "649bb92c6abccebde58a736a2b2af7fd77a701c1",
+    "branch": "main",
+    "source_sha256": {
+      "neurons/validator.py": "2ac0841231a58794097ba40d245f27eaa44e1bd1b66134a17dece96a1a37f33e",
+      "templates/tool_params.py": "6e9648fb6d6bda1ed5411eff01c38596cc869e2f7ae9e5de855e8413f10e0765",
+      "utils/scoring.py": "7b5aa187adda5978adc029abcd4c96b7b78eafeb9c5641153955175cd0b7b658"
+    }
+  },
+  "containers": {
+    "bcftools": "quay.io/biocontainers/bcftools@sha256:badc3a0c7af72a83e5761ab0e881aa84204694bdead003b47552cb283958f78d",
+    "happy": "genonet/hap-py@sha256:03acabe84bbfba35f5a7234129d524c563f5657e1f21150a2ea2797f8e6d05f2"
+  },
+  "semantics": {
+    "admission_rule": "0.0 < minos_score <= 1.0 and not zero_input_fingerprint",
+    "advanced_scorer_weights": {"completeness": 0.15, "core": 0.6, "fp_rate": 0.15, "quality": 0.1},
+    "assessed_only_corrections": "parse_happy_vcf_assessed_metrics",
+    "comparison_region": "generate_challenge_region_bed + generate_synthetic_regions_bed(padding=50)",
+    "emphasis": "1 - (1 - clamp(m, 0, 0.999999)) ** gamma",
+    "metrics_artifact_schema": "l2f2-evaluation-metrics-v1",
+    "mutation_only": "compute_synthetic_only_metrics",
+    "overcall_guard": "parse_region_overcall_metrics",
+    "ratio_penalty": "exp(-abs(delta) / tolerance)",
+    "truth_slicing": "slice_truth_vcf",
+    "validator_normalization": "minos_score = minos_score_100 / 100.0",
+    "zero_input_fingerprint": "f1_snp == 0 and f1_indel == 0 and 0.24999 <= minos_score <= 0.25001"
+  }
+}

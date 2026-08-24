@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "l2f2-evaluation-metrics-v1",
+  "title": "L2-F2 canonical evaluation metrics artifact",
+  "description": "Identities and DERIVED metrics only. Never truth, mutation or VCF bytes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "execution_result_hash", "scoring_contract_hash", "truth_identity",
+    "comparison_scope", "happy_metrics", "mutation_only_metrics", "assessed_only_metrics",
+    "overcall", "advanced_scorer", "admission", "tool_identity"
+  ],
+  "properties": {
+    "schema_version": {"const": "l2f2-evaluation-metrics-v1"},
+    "execution_result_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "scoring_contract_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "truth_identity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["truth_vcf_sha256", "truth_tbi_sha256", "mutations_vcf_sha256", "mutations_tbi_sha256"],
+      "properties": {
+        "truth_vcf_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "truth_tbi_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "mutations_vcf_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "mutations_tbi_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "comparison_scope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["chromosome", "region_start0", "region_end0_exclusive", "region_source"],
+      "properties": {
+        "chromosome": {"type": "string", "minLength": 1},
+        "region_start0": {"type": "integer", "minimum": 0},
+        "region_end0_exclusive": {"type": "integer", "minimum": 1},
+        "region_source": {"type": "string", "minLength": 1}
+      }
+    },
+    "happy_metrics": {"type": "object"},
+    "mutation_only_metrics": {"type": "object"},
+    "assessed_only_metrics": {"type": "object"},
+    "overcall": {"type": "object"},
+    "advanced_scorer": {
+      "type": "object", "additionalProperties": false,
+      "required": ["core_score", "completeness_score", "fp_score", "quality_score",
+                   "overcall_penalty", "minos_score_100", "minos_score"],
+      "properties": {
+        "core_score": {"type": "number", "minimum": 0, "maximum": 1},
+        "completeness_score": {"type": "number", "minimum": 0, "maximum": 1},
+        "fp_score": {"type": "number", "minimum": 0, "maximum": 1},
+        "quality_score": {"type": "number", "minimum": 0, "maximum": 1},
+        "overcall_penalty": {"type": "number", "minimum": 0},
+        "minos_score_100": {"type": "number", "minimum": 0, "maximum": 100},
+        "minos_score": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "admission": {
+      "type": "object", "additionalProperties": false,
+      "required": ["admitted", "admission_code"],
+      "properties": {
+        "admitted": {"type": "boolean"},
+        "admission_code": {"enum": ["ADMITTED", "NONPOSITIVE_SCORE", "OUT_OF_RANGE_SCORE", "ZERO_INPUT_FINGERPRINT"]}
+      }
+    },
+    "tool_identity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["upstream_commit", "scoring_py_sha256", "validator_py_sha256", "happy_image", "bcftools_image"],
+      "properties": {
+        "upstream_commit": {"type": "string", "minLength": 40, "maxLength": 40},
+        "scoring_py_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "validator_py_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "happy_image": {"type": "string", "minLength": 1},
+        "bcftools_image": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

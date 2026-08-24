@@ -64,13 +64,18 @@ def _l2f_tables(url: str) -> int:
 
 
 def test_single_head_descends_the_unchanged_0006_lineage() -> None:
-    """One head only. F5 advanced it to 0008_l2f_execution_results, which descends exactly 0007,
-    which descends exactly 0006, which still descends exactly 0005 (lineage unchanged)."""
+    """The F5 LINEAGE is unchanged: 0008 descends exactly 0007, 0007 exactly 0006, 0006 exactly
+    0005 — and the repository still declares exactly ONE head.
+
+    The head itself is deliberately NOT asserted to be 0008 forever: later stages add additive
+    migrations (0009 and beyond) and the current head legitimately advances. What must never
+    change is this frozen lineage.
+    """
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert script.get_heads() == [_F5_HEAD]
+    assert len(script.get_heads()) == 1, script.get_heads()
     assert {r.down_revision for r in script.get_revisions(_F5_HEAD)} == {_F4_HEAD}
     assert {r.down_revision for r in script.get_revisions(_F4_HEAD)} == {_HEAD}
     assert {r.down_revision for r in script.get_revisions(_HEAD)} == {_PREV}

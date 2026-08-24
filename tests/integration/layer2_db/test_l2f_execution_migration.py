@@ -57,12 +57,17 @@ def _scalar(engine: Engine, sql: str, **p: Any) -> Any:
 # --------------------------------------------------------------------------- #
 # revision lineage + byte identity
 # --------------------------------------------------------------------------- #
-def test_single_head_is_0008_descending_0007() -> None:
+def test_0008_descends_0007_under_a_single_head() -> None:
+    """The F5 lineage is frozen: 0008 descends exactly 0007, and there is exactly ONE head.
+
+    The head is deliberately not asserted to BE 0008 — later stages add additive migrations and
+    the repository head legitimately advances past it.
+    """
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert script.get_heads() == [_F5]
+    assert len(script.get_heads()) == 1, script.get_heads()
     assert {r.down_revision for r in script.get_revisions(_F5)} == {_F4}
 
 

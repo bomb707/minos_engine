@@ -24,13 +24,32 @@ does not restate or override them.
 | Branch | `feature/L2-F` |
 | HARNESS evidence commit (immutable anchor) | `107a745f2530b841ee3b399c81f3b2385cb6de2b` |
 | L2-F2 pre-implementation-plan commit (immutable anchor) | `1536f73f0b0bbce0a514d56d2f47923945741762` |
-| Alembic head (source) | `0008_l2f_execution_results` (migrations `0001`–`0008` only) |
+| HARNESS historical Alembic head | `0008_l2f_execution_results` (stage-scoped; the repository head advances independently) |
 | Operational DB revision | `0005_l2e_feature_view` |
 | Next gate | **BASELINE-QUALIFIED** (designed in `docs/layer2/BASELINE_QUALIFICATION.md`, not implemented) |
-| Current task | L2-F2 pre-implementation audit — see `reports/LAYER2_BASELINE_PREIMPLEMENTATION_AUDIT.md` |
+| Current task | **L2-F2-A — offline evaluation foundation: IMPLEMENTED_PENDING_ENVIRONMENT** |
+| Source Alembic head | `0009_l2f_evaluation_results` (migrations `0001`–`0009`) |
 
 `select_config` remains deliberately blocked by `StageNotReadyError` and stays
 blocked until L2-H.
+
+### L2-F2-A status — IMPLEMENTED_PENDING_ENVIRONMENT
+
+The **source** foundation exists and is tested: migration `0009` (evaluation ledger, projections,
+`SECURITY DEFINER` persistence, evaluator grants), the scoring contract and authority manifest,
+the Minos score compatibility layer proven at **exact parity** against the real upstream
+`AdvancedScorer`, TRAIN-only truth registration, the hap.py runner port, the metrics artifact
+contract and the content-addressed publisher.
+
+**Not yet done, and not claimed:**
+
+* the baseline workspace `/home/hr/bittensor/minos_l2f2_baseline` does not exist;
+* no baseline database exists at `0009`;
+* `minos_evaluator_svc` has **not** been provisioned;
+* **no truth identity is registered in any real database** — the 50 TRAIN bundles are still
+  unregistered;
+* the L2-F2-C canary has **not** run; no real hap.py or GATK evaluation has been performed;
+* `BASELINE-QUALIFIED` is **not** issued and the objective (D1–D8) is **not** frozen.
 
 ---
 

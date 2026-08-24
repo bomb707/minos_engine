@@ -26,10 +26,10 @@ from minos_engine.qualification.l2f_harness_ready_contract import (
     ACCEPTED_MIGRATION_SHAS,
 )
 
-_FUTURE = '''"""Temporary offline probe: metadata only, creates no schema objects."""
+_FUTURE_TEMPLATE = '''"""Temporary offline probe: metadata only, creates no schema objects."""
 
 revision: str = "9999_future_probe"
-down_revision: str | None = "0008_l2f_execution_results"
+down_revision: str | None = "__PARENT__"
 branch_labels = None
 depends_on = None
 
@@ -71,18 +71,30 @@ def test_accepted_subgraph_head_is_the_historical_harness_head(repo: Path) -> No
     assert recompute_harness_alembic_head(repo) == "0008_l2f_execution_results"
 
 
-def test_accepted_subgraph_head_matches_the_real_repository_today() -> None:
-    """Today, with no 0009 present, both resolvers agree. That is expected, not the invariant."""
+def test_the_two_resolvers_are_independent_in_the_real_repository() -> None:
+    """THE property, observed on the real tree: HARNESS stays anchored while the repo advances.
+
+    Once the L2-F2 migration landed these two legitimately diverged, which is exactly what the
+    seam corrective existed to make safe.
+    """
     root = _repo_root()
     assert recompute_harness_alembic_head(root) == "0008_l2f_execution_results"
-    assert recompute_alembic_head(root) == "0008_l2f_execution_results"
+    repository = recompute_alembic_head(root)
+    assert repository.startswith("00")
+    # the repository head is free to be 0008 (before 0009 existed) or any later additive head
+    assert repository >= "0008_l2f_execution_results"
 
 
 # --------------------------------------------------------------------------- #
 # CONTROL 2 — THE point: a future additive migration moves only the global head
 # --------------------------------------------------------------------------- #
 def test_a_future_additive_migration_does_not_move_the_harness_head(repo: Path) -> None:
-    (repo / "migrations" / "versions" / "9999_future_probe.py").write_text(_FUTURE, "utf-8")
+    # descend whatever the CURRENT head is, so the fixture stays valid as later stages add
+    # migrations rather than assuming 0008 is forever the tip.
+    parent = recompute_alembic_head(repo)
+    (repo / "migrations" / "versions" / "9999_future_probe.py").write_text(
+        _FUTURE_TEMPLATE.replace("__PARENT__", parent), "utf-8"
+    )
 
     # the repository's CURRENT head legitimately advances ...
     assert recompute_alembic_head(repo) == "9999_future_probe"
@@ -94,7 +106,10 @@ def test_a_future_additive_migration_does_not_move_the_harness_head(repo: Path) 
 # CONTROL 3 — a future migration is not accepted history
 # --------------------------------------------------------------------------- #
 def test_a_future_additive_migration_never_enters_the_accepted_hash_set(repo: Path) -> None:
-    (repo / "migrations" / "versions" / "9999_future_probe.py").write_text(_FUTURE, "utf-8")
+    parent = recompute_alembic_head(repo)
+    (repo / "migrations" / "versions" / "9999_future_probe.py").write_text(
+        _FUTURE_TEMPLATE.replace("__PARENT__", parent), "utf-8"
+    )
 
     recomputed = recompute_migration_sha256(repo)
     assert set(recomputed) == set(ACCEPTED_MIGRATION_SHAS)

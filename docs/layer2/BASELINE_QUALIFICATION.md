@@ -26,11 +26,13 @@ protocol that chose it, and every evaluation that informed the choice.
 | Frozen feature matrix / profile snapshot | met |
 | Pinned GATK bundle | met — `2707ad20…` |
 | Scoring authority pinned | met — see §3 |
-| Evaluation persistence contract | **missing** — §11 |
-| Truth identities registered | **missing** — §5 |
-| External evaluator service login principal | **missing** — §4 (built-in group role is fine) |
+| Evaluation persistence contract | **implemented in source** — migration `0009`, §11 |
+| Truth identities registered | **mechanism implemented; no real registration yet** — §5 |
+| External evaluator service login principal | **contract + runbook exist; not provisioned** — §4 |
 
-The last three are the L2-F2-A deliverables.
+The last three are the L2-F2-A deliverables. Their **source** side is complete; the
+environment side (baseline workspace, baseline database, service principal, real truth
+registration) is the next task. See `docs/DEVELOPMENT_STATUS.md`.
 
 ## 3. Scoring authority
 
@@ -42,7 +44,7 @@ The offline objective must reproduce validator semantics exactly.
 | `utils/scoring.py` | `7b5aa187adda5978adc029abcd4c96b7b78eafeb9c5641153955175cd0b7b658` |
 | `neurons/validator.py` | `2ac0841231a58794097ba40d245f27eaa44e1bd1b66134a17dece96a1a37f33e` |
 | hap.py | `genonet/hap-py@sha256:03acabe84bbfba35f5a7234129d524c563f5657e1f21150a2ea2797f8e6d05f2` |
-| bcftools | `quay.io/biocontainers/bcftools:1.20--h8b25389_0` — digest to be resolved and recorded at evaluation time |
+| bcftools | `quay.io/biocontainers/bcftools@sha256:badc3a0c7af72a83e5761ab0e881aa84204694bdead003b47552cb283958f78d` — resolved and confirmed against both the local image and the quay.io registry |
 
 **The score used for ranking is not `AdvancedScorer`'s output.** The validator
 computes `combined_final = advanced_score / 100.0` and admits it only when

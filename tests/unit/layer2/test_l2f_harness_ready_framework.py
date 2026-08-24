@@ -959,10 +959,16 @@ def test_the_f7_surface_names_no_evaluation_concept() -> None:
             assert not any(token in name.lower() for token in forbidden), (module.__name__, name)
 
 
-def test_migration_0009_and_all_db_v2_artifacts_remain_absent() -> None:
+def test_the_accepted_l2f1_migrations_are_intact_and_db_v2_remains_absent() -> None:
+    """The L2-F1 lineage 0001-0008 is unchanged and DB-V2 stays abandoned.
+
+    Later stages legitimately ADD migrations (0009 is the sanctioned L2-F2 evaluation ledger), so
+    this asserts the accepted prefix rather than forbidding growth. DB-V2 remains permanently
+    excluded, which is the guard's actual subject.
+    """
     root = _repo_root()
     versions = sorted(p.name for p in (root / "migrations" / "versions").glob("0*.py"))
-    assert versions == [
+    accepted = [
         "0001_l2b_initial.py",
         "0002_l2c_dataset_split.py",
         "0003_l2c_split_v2_epochs.py",
@@ -972,6 +978,11 @@ def test_migration_0009_and_all_db_v2_artifacts_remain_absent() -> None:
         "0007_l2f_job_claiming.py",
         "0008_l2f_execution_results.py",
     ]
+    assert versions[: len(accepted)] == accepted
+    # anything beyond the accepted prefix must be an ADDITIVE later-stage migration, never a
+    # resurrection of the abandoned DB-V2 line.
+    for extra in versions[len(accepted) :]:
+        assert "v2" not in extra.lower() or "l2c_split_v2" in extra, extra
     tracked = subprocess.run(  # noqa: S603 - fixed argv, no shell
         ["git", "ls-files"],  # noqa: S607
         cwd=root,

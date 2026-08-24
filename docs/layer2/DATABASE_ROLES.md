@@ -94,3 +94,39 @@ revokes all grants and default privileges in this database, then drops exactly t
 MINOS roles — and, because roles are cluster-global, safely **retains** a role (with a
 NOTICE) if it is still referenced by another database on the same cluster, rather than
 using any destructive database-wide cleanup (never `DROP OWNED BY` / `DROP DATABASE`).
+
+## L2-F2 evaluation authority (migration `0009`)
+
+Migration `0009_l2f_evaluation_results` adds the offline truth-aware evaluation ledger and grants
+its authority to **one** role: `minos_evaluator`. `minos_live`, `minos_runner` and `minos_trainer`
+receive no L2-F2 grants at all — evaluation labels are deliberately not exposed to the trainer
+yet; that belongs to later training-snapshot construction.
+
+Granted to `minos_evaluator`:
+
+| Object | Privilege | Why this and not more |
+|---|---|---|
+| schema `evaluation` | `USAGE` | needed to reach anything below |
+| `evaluation.l2f_completed_execution_inputs` | `SELECT` | a **narrow projection** of successful executions. `0008` gives application roles no direct table privileges on the L2-F experiment ledger, and `0009` preserves that: the evaluator sees the result identity, dataset, partition and VCF artifact it needs, not the whole experiment ledger |
+| `evaluation.l2f_train_truth_registration_targets` | `SELECT` | **TRAIN only** — validation and test rows are structurally absent from the view, so this interface cannot enumerate them |
+| `evaluation.dataset_evaluation_identity` | `SELECT` | registered truth identity by content hash |
+| `evaluation.l2f_evaluation_results` / `l2f_evaluation_failures` | `SELECT` | read its own ledger |
+| the three `SECURITY DEFINER` functions | `EXECUTE` | the only write path |
+
+`PUBLIC` is revoked on every new object, and `minos_live` / `minos_runner` / `minos_trainer` are
+explicitly revoked before the evaluator grants are applied.
+
+Writes go exclusively through `l2f_register_train_truth_identity`,
+`l2f_record_evaluation_result` and `l2f_record_evaluation_failure`. Those functions **derive**
+dataset, partition and truth identity from the execution's own lineage rather than accepting them
+as parameters, so an evaluator cannot score execution A against dataset or truth B — the
+substitution is unrepresentable, not merely rejected.
+
+### Group role vs service principal
+
+`minos_evaluator` is and remains a **`NOLOGIN` group role**. It carries authority, never
+credentials. The credential identity is an **external** service principal
+(`minos_evaluator_svc LOGIN`) that is granted `minos_evaluator` and nothing else, provisioned
+outside Git — see [`EVALUATOR_SERVICE_PROVISIONING.md`](EVALUATOR_SERVICE_PROVISIONING.md).
+
+Never `ALTER ROLE minos_evaluator LOGIN` and never set a password on it.

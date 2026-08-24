@@ -166,6 +166,71 @@ jobs:
           print(f"current Alembic head verified: {heads[0]}")
           PY
 
+      - name: L2-F2 stage boundary — 0009 down to 0008 and back
+        run: |
+          python - <<'PY'
+          # Explicit 0009 appears ONLY here, where the stage boundary is the subject. The generic
+          # current-head check above stays dynamic so later migrations do not break it.
+          import subprocess
+
+          from sqlalchemy import create_engine, text
+
+          from minos_engine.storage.database import database_url
+
+          def revision() -> str:
+              engine = create_engine(database_url())
+              try:
+                  with engine.connect() as connection:
+                      return str(
+                          connection.execute(
+                              text("SELECT version_num FROM alembic_version")
+                          ).scalar()
+                      )
+              finally:
+                  engine.dispose()
+
+          def objects() -> set[str]:
+              engine = create_engine(database_url())
+              try:
+                  with engine.connect() as connection:
+                      rows = connection.execute(text(
+                          "SELECT tablename FROM pg_tables WHERE schemaname='evaluation' "
+                          "UNION ALL SELECT viewname FROM pg_views WHERE schemaname='evaluation'"
+                      ))
+                      return {r[0] for r in rows}
+              finally:
+                  engine.dispose()
+
+          assert revision() == "0009_l2f_evaluation_results", revision()
+          at_head = objects()
+          for name in (
+              "l2f_evaluation_results",
+              "l2f_evaluation_failures",
+              "l2f_completed_execution_inputs",
+              "l2f_train_truth_registration_targets",
+          ):
+              assert name in at_head, name
+
+          subprocess.run(
+              ["alembic", "downgrade", "0008_l2f_execution_results"], check=True
+          )
+          assert revision() == "0008_l2f_execution_results", revision()
+          removed = objects()
+          for name in (
+              "l2f_evaluation_results",
+              "l2f_evaluation_failures",
+              "l2f_completed_execution_inputs",
+              "l2f_train_truth_registration_targets",
+          ):
+              assert name not in removed, f"{name} survived downgrade"
+          assert "evaluations" in removed, "the legacy L2-B placeholder must be preserved"
+
+          subprocess.run(["alembic", "upgrade", "head"], check=True)
+          assert revision() == "0009_l2f_evaluation_results", revision()
+          assert objects() == at_head, "re-upgrade did not restore the 0009 inventory"
+          print("L2-F2 stage boundary verified: 0009 -> 0008 -> 0009")
+          PY
+
       - name: Alembic downgrade to 0005 (L2-F removed, L2-E retained) then re-upgrade
         run: |
           alembic downgrade 0005_l2e_feature_view
