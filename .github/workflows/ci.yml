@@ -72,12 +72,13 @@ jobs:
       - name: mypy (strict)
         run: mypy src
 
-      - name: Pytest (JUnit XML)
-        run: pytest --junitxml=reports/ci-junit.xml
-
-      - name: Coverage (>= 90%)
+      - name: Pytest (full regression + coverage >= 90%)
+        # ONE full-suite invocation producing both the JUnit report and the coverage gate.
+        # Running these as two separate steps executed the entire suite twice for no
+        # additional signal, doubling CI wall-clock.
         run: >-
           pytest
+          --junitxml=reports/ci-junit.xml
           --cov=src/minos_engine
           --cov-fail-under=90
           --cov-report=term-missing

@@ -196,6 +196,43 @@ A HARDENING item never justifies reopening a closed stage.
 
 ---
 
+## Validation cost policy
+
+The full regression suite is the **CI's** job, not every local iteration's. This policy exists
+because verification cost had grown quadratic in process: every commit paid a full serial suite
+locally *and* again in CI, and CI itself ran the full suite twice (JUnit + coverage).
+
+**Local, while iterating:** focused suites for the changed area, plus — always, because a
+formatter-only red CI once cost a full task cycle — the exact commands CI runs first:
+`ruff check .`, `ruff format --check .`, `mypy src`.
+
+**Local, before a commit touching** migrations, CI, `conftest`, security grants, or accepted
+identities: one full run. `pytest -n auto --dist loadscope` parallelizes it; each xdist worker
+provisions its own ephemeral cluster, so the isolated fixtures do not collide.
+
+**CI (the authority):** one full-suite invocation producing JUnit *and* the ≥90 % coverage gate
+together. Coverage is a whole-suite property and is enforced only here.
+
+**Infrastructure that keeps this cheap** (`tests/integration/layer2_db/conftest.py`):
+
+* *Template cloning* — the first `alembic_upgrade` to a revision builds a template database by
+  running the **real** migration chain once per session; every later fresh scratch database is
+  `CREATE DATABASE … TEMPLATE` (~0.1 s instead of a full replay). Strictly fail-open: staged
+  upgrades, downgrades, non-fresh databases and any error fall back to real Alembic, so
+  correctness never depends on the optimization — migrations are still genuinely executed and
+  inventoried every session.
+* *Ephemeral-cluster tuning* — throwaway pgserver clusters run with `synchronous_commit=off`;
+  the CI service container is never touched.
+
+Measured effect: the two most DB-heavy modules went **3 m 46 s → 1 m 39 s** wall (CPU
+37 s → 17 s), and the complete serial suite with coverage went from the historical **60–90 min**
+to **~20 min** — confirming the removed cost was migration replay and commit latency, not test
+logic. One real interaction surfaced and was fixed generically: persistent template databases
+pinned the MINOS roles during downgrade, so ``alembic_downgrade`` now drops the cluster's cached
+templates first, restoring pre-optimization downgrade semantics exactly.
+
+---
+
 ## Testing policy (three tiers)
 
 | Tier | Scope | Cost |

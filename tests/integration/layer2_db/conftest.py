@@ -51,10 +51,28 @@ def pg_base_url() -> Iterator[str]:
     tmp = tempfile.mkdtemp(prefix="minos_l2b_")
     server = pgserver.get_server(tmp)
     try:
+        _tune_ephemeral_cluster(server.get_uri())
         yield server.get_uri()
     finally:
         with contextlib.suppress(Exception):
             server.cleanup()
+
+
+def _tune_ephemeral_cluster(base_url: str) -> None:
+    """Disable durability niceties on a THROWAWAY test cluster (never the CI service container).
+
+    The data is deleted at session end, so synchronous commit buys nothing here and costs real
+    wall-clock on every one of the thousands of small commits the suite performs.
+    """
+    with contextlib.suppress(Exception):
+        admin = create_engine(normalize_database_url(base_url), isolation_level="AUTOCOMMIT")
+        try:
+            with admin.connect() as c:
+                c.execute(text("ALTER SYSTEM SET synchronous_commit = off"))
+                c.execute(text("ALTER SYSTEM SET full_page_writes = off"))
+                c.execute(text("SELECT pg_reload_conf()"))
+        finally:
+            admin.dispose()
 
 
 def _swap_db(base_url: str, name: str) -> str:
@@ -65,7 +83,18 @@ def _swap_db(base_url: str, name: str) -> str:
     )
 
 
-def alembic_upgrade(url: str, revision: str = "head") -> None:
+#: scratch URL -> the base URL it was created from, so the template fast path can find the
+#: cluster's maintenance connection without changing any call site.
+_SCRATCH_BASE: dict[str, str] = {}
+
+#: (normalized base URL, revision) -> template database name, built ONCE per session by running
+#: the REAL migration chain, then cloned per test via CREATE DATABASE ... TEMPLATE (~100ms).
+_TEMPLATE_CACHE: dict[tuple[str, str], str] = {}
+
+
+def _alembic_upgrade_real(url: str, revision: str) -> None:
+    """The genuine Alembic migration run. Templates are built through this, so every revision's
+    DDL is still truly executed at least once per session per cluster."""
     from alembic import command
     from alembic.config import Config
 
@@ -80,9 +109,100 @@ def alembic_upgrade(url: str, revision: str = "head") -> None:
             os.environ[_ENV] = prev
 
 
+def _clone_from_template(url: str, revision: str) -> bool:
+    """Fast path: rebuild a FRESH scratch database from a session template already migrated to
+    ``revision``, instead of replaying the whole migration chain for the Nth time.
+
+    Strictly fail-open: any doubt (unknown base, database not fresh, template build error,
+    clone error) returns False and the caller falls back to the real migration path, so
+    correctness never depends on this optimization. Staged upgrades (0006 -> seed -> 0008),
+    downgrades and post-downgrade re-upgrades keep using real Alembic because their target
+    databases are not fresh.
+    """
+    base = _SCRATCH_BASE.get(url)
+    if base is None:
+        return False
+    try:
+        probe = create_engine(url, isolation_level="AUTOCOMMIT")
+        try:
+            with probe.connect() as c:
+                fresh = bool(
+                    c.execute(text("SELECT to_regclass('public.alembic_version') IS NULL")).scalar()
+                )
+        finally:
+            probe.dispose()
+        if not fresh:
+            return False
+
+        normalized = normalize_database_url(base)
+        key = (normalized, revision)
+        admin = create_engine(normalized, isolation_level="AUTOCOMMIT")
+        try:
+            template = _TEMPLATE_CACHE.get(key)
+            if template is None:
+                template = f"minos_tmpl_{os.getpid()}_{len(_TEMPLATE_CACHE)}"
+                with admin.connect() as c:
+                    c.execute(text(f'DROP DATABASE IF EXISTS "{template}" WITH (FORCE)'))
+                    c.execute(text(f'CREATE DATABASE "{template}"'))
+                _alembic_upgrade_real(_swap_db(base, template), revision)
+                _TEMPLATE_CACHE[key] = template
+            name = make_url(url).database
+            with admin.connect() as c:
+                # CREATE ... TEMPLATE requires zero connections on the template: defensively
+                # terminate any straggler an Alembic engine may have left pooled.
+                c.execute(
+                    text(
+                        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                        "WHERE datname = :t AND pid <> pg_backend_pid()"
+                    ),
+                    {"t": template},
+                )
+                c.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+                c.execute(text(f'CREATE DATABASE "{name}" TEMPLATE "{template}"'))
+        finally:
+            admin.dispose()
+        return True
+    except Exception:
+        return False
+
+
+def alembic_upgrade(url: str, revision: str = "head") -> None:
+    if _clone_from_template(url, revision):
+        return
+    _alembic_upgrade_real(url, revision)
+
+
+def _drop_cluster_templates(url: str) -> None:
+    """Remove this cluster's cached template databases before a downgrade.
+
+    A downgrade test reasons about the WHOLE cluster (e.g. "roles are fully dropped when nothing
+    references them"), and a persistent template database would pin roles and grants the test
+    expects gone. Dropping the templates restores the pre-optimization semantics exactly; the
+    next fresh upgrade simply rebuilds them once.
+    """
+    base = _SCRATCH_BASE.get(url)
+    if base is None:
+        return
+    normalized = normalize_database_url(base)
+    doomed = [(key, name) for key, name in _TEMPLATE_CACHE.items() if key[0] == normalized]
+    if not doomed:
+        return
+    with contextlib.suppress(Exception):
+        admin = create_engine(normalized, isolation_level="AUTOCOMMIT")
+        try:
+            with admin.connect() as c:
+                for key, name in doomed:
+                    c.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+                    _TEMPLATE_CACHE.pop(key, None)
+        finally:
+            admin.dispose()
+
+
 def alembic_downgrade(url: str, revision: str) -> None:
     from alembic import command
     from alembic.config import Config
+
+    _drop_cluster_templates(url)
 
     prev = os.environ.get(_ENV)
     os.environ[_ENV] = url
@@ -103,9 +223,12 @@ def scratch_database(base_url: str, name: str) -> Iterator[str]:
         c.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
         c.execute(text(f'CREATE DATABASE "{name}"'))
     admin.dispose()
+    url = _swap_db(base_url, name)
+    _SCRATCH_BASE[url] = base_url
     try:
-        yield _swap_db(base_url, name)
+        yield url
     finally:
+        _SCRATCH_BASE.pop(url, None)
         admin2 = create_engine(normalize_database_url(base_url), isolation_level="AUTOCOMMIT")
         with admin2.connect() as c:
             c.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
@@ -138,6 +261,7 @@ def isolated_pg_base_url() -> Iterator[str]:
     tmp = tempfile.mkdtemp(prefix="minos_l2f_iso_")
     server = pgserver.get_server(tmp)
     try:
+        _tune_ephemeral_cluster(server.get_uri())
         yield server.get_uri()
     finally:
         with contextlib.suppress(Exception):
