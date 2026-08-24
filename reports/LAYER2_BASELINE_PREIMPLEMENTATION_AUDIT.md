@@ -172,9 +172,11 @@ op.create_table(
     sa.Column("experiment_result_id", postgresql.UUID(as_uuid=False), nullable=False),
     _sha("evaluation_hash"),
     _ts("created_at"),
-    sa.ForeignKeyConstraint(["experiment_result_id"],
-                            ["experiments.results.id"],      # ← LEGACY target
-                            name="fk_evaluations_experiment_result_id_results"),
+    sa.ForeignKeyConstraint(
+        ["experiment_result_id"],
+        ["experiments.results.id"],  # ← LEGACY target
+        name="fk_evaluations_experiment_result_id_results",
+    ),
     sa.UniqueConstraint("evaluation_hash", ...),
     schema="evaluation",
 )
