@@ -1459,17 +1459,25 @@ def _require_dispatched_is_derived(
 
     if str(dispatched.job_key) != job.job_key:
         raise QualificationEnvironmentError(
-            f"the executed job_key {dispatched.job_key} is not the derived qualification job "
-            f"{job.job_key}"
+            f"the executed job_key {dispatched.job_key} does not equal the derived qualification "
+            f"job_key {job.job_key}"
         )
+    # The L2-F member row carries UUID lineage, not textual identity: migration 0006 defines
+    # ``dataset_registry_id`` and ``bam_profile_id``, never ``dataset_id``/``profile_id``. The
+    # textual identities are resolved through their authoritative tables, and the bam profile is
+    # additionally required to hang off the SAME dataset registry row, so this proves one exact
+    # dispatched identity rather than recovering two unrelated strings.
     with engine.connect() as conn:
         row = (
             conn.execute(
                 text(
-                    "SELECT m.member_index, m.partition, m.dataset_id, m.profile_id, "
+                    "SELECT m.member_index, m.partition, dr.dataset_id, bp.profile_id, "
                     "       c.config_index, c.config_hash "
                     "  FROM experiments.l2f_experiment_jobs j "
                     "  JOIN experiments.l2f_experiment_plan_members m ON m.id = j.plan_member_id "
+                    "  JOIN catalog.dataset_registry dr ON dr.id = m.dataset_registry_id "
+                    "  JOIN profiling.bam_profiles bp ON bp.id = m.bam_profile_id "
+                    "   AND bp.dataset_registry_id = m.dataset_registry_id "
                     "  JOIN experiments.l2f_experiment_plan_configs c ON c.id = j.plan_config_id "
                     " WHERE j.id = :i"
                 ),
@@ -1496,7 +1504,8 @@ def _require_dispatched_is_derived(
     )
     if actual != expected:
         raise QualificationEnvironmentError(
-            f"the executed job identity {actual} is not the derived qualification job {expected}"
+            f"the executed job identity {actual} does not equal the derived qualification "
+            f"identity {expected}"
         )
 
 

@@ -421,24 +421,162 @@ def test_an_exact_single_job_slice_is_accepted(env: Any) -> None:
     Q._require_exact_qualification_slice(env.engine, env.plan, derived)  # must not raise
 
 
-def test_a_dispatched_job_that_is_not_the_derived_job_is_refused(env: Any) -> None:
-    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+def _durable_identity(env: Any, dispatched: Any) -> dict[str, Any]:
+    """Read the dispatched job's DURABLE identity through the authoritative tables.
+
+    Mirrors migration 0006: the L2-F member row carries UUID lineage only, so the textual
+    identities live in ``catalog.dataset_registry`` and ``profiling.bam_profiles``. Reading them
+    here (instead of hardcoding) keeps the controls bound to the real schema.
+    """
+    from sqlalchemy import text
+
+    with env.engine.connect() as conn:
+        return dict(
+            conn.execute(
+                text(
+                    "SELECT m.member_index, m.partition, dr.dataset_id, bp.profile_id, "
+                    "       c.config_index, c.config_hash "
+                    "  FROM experiments.l2f_experiment_jobs j "
+                    "  JOIN experiments.l2f_experiment_plan_members m ON m.id = j.plan_member_id "
+                    "  JOIN catalog.dataset_registry dr ON dr.id = m.dataset_registry_id "
+                    "  JOIN profiling.bam_profiles bp ON bp.id = m.bam_profile_id "
+                    "   AND bp.dataset_registry_id = m.dataset_registry_id "
+                    "  JOIN experiments.l2f_experiment_plan_configs c ON c.id = j.plan_config_id "
+                    " WHERE j.id = :i"
+                ),
+                {"i": dispatched.job_id},
+            )
+            .mappings()
+            .one()
+        )
+
+
+def _dispatch_candidate_zero(env: Any) -> tuple[Any, dict[str, Any]]:
+    """Dispatch until the CANDIDATE-0 job is claimed — the slice F7 treats as official.
+
+    The claim order is not candidate order, and ``_require_dispatched_is_derived`` pins the
+    official candidate index to 0, so every control here binds to that job and nothing else.
+    """
+    for _ in range(8):
+        dispatched = env.run()
+        if dispatched is None:
+            break
+        ident = _durable_identity(env, dispatched)
+        if int(ident["config_index"]) == 0:
+            return dispatched, ident
+    raise AssertionError("the candidate-0 job was never dispatched")
+
+
+def _derived_from(dispatched: Any, ident: dict[str, Any], **over: Any) -> Any:
     from minos_engine.qualification.l2f_harness_ready_qualifier import DerivedQualificationJob
 
-    dispatched = env.run()
-    assert dispatched is not None
-    wrong = DerivedQualificationJob(
-        member_index=0,
-        candidate_index=0,
-        dataset_id="d",
-        profile_id="p",
-        partition="train",
-        job_key="f" * 64,
-        config_hash="e" * 64,
-        effective_config={},
+    base: dict[str, Any] = {
+        "member_index": int(ident["member_index"]),
+        "candidate_index": int(ident["config_index"]),
+        "dataset_id": str(ident["dataset_id"]),
+        "profile_id": str(ident["profile_id"]),
+        "partition": str(ident["partition"]),
+        "job_key": str(dispatched.job_key),
+        "config_hash": str(ident["config_hash"]),
+        "effective_config": {},
+    }
+    base.update(over)
+    return DerivedQualificationJob(**base)
+
+
+def test_a_dispatched_job_matching_the_derived_identity_is_accepted(env: Any) -> None:
+    """THE happy path: the identity query must actually EXECUTE against the real schema.
+
+    This is the control that was missing. The previous negative-only test passed a mismatched
+    job_key, so the early guard returned before the SQL ran and a query naming columns that do
+    not exist in migration 0006 (``m.dataset_id`` / ``m.profile_id``) survived CI and only failed
+    during the real F7-B qualification.
+    """
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    dispatched, ident = _dispatch_candidate_zero(env)
+    assert int(ident["config_index"]) == 0
+    assert str(ident["partition"]) == "train"
+    assert str(ident["dataset_id"]) and str(ident["profile_id"])
+    # must NOT raise; reaching this line proves the full query ran on the migrated schema
+    Q._require_dispatched_is_derived(
+        env.engine, env.plan, _derived_from(dispatched, ident), dispatched
     )
-    with pytest.raises(Q.QualificationEnvironmentError, match="is not the derived"):
+
+
+def test_a_dispatched_job_with_a_different_job_key_is_refused_early(env: Any) -> None:
+    """Wrong job_key: refused by the EARLY guard, before any SQL is issued."""
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    dispatched, ident = _dispatch_candidate_zero(env)
+    wrong = _derived_from(dispatched, ident, job_key="f" * 64)
+    with pytest.raises(Q.QualificationEnvironmentError, match="executed job_key"):
         Q._require_dispatched_is_derived(env.engine, env.plan, wrong, dispatched)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"dataset_id": "attacker-dataset"},
+        {"profile_id": "attacker-profile"},
+        {"config_hash": "e" * 64},
+        {"member_index": 41},
+    ],
+)
+def test_a_matching_job_key_with_a_wrong_identity_is_refused_after_the_query(
+    env: Any, mutation: dict[str, Any]
+) -> None:
+    """Matching job_key, wrong durable identity: the SQL RUNS and the comparison rejects it.
+
+    Because the job_key matches, the early guard cannot fire — so a passing test here proves the
+    corrected query executed against the real schema and that every identity dimension still
+    binds.
+    """
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    dispatched, ident = _dispatch_candidate_zero(env)
+    wrong = _derived_from(dispatched, ident, **mutation)
+    assert wrong.job_key == str(dispatched.job_key)  # the early guard is genuinely bypassed
+    with pytest.raises(Q.QualificationEnvironmentError, match="executed job identity"):
+        Q._require_dispatched_is_derived(env.engine, env.plan, wrong, dispatched)
+
+
+def test_partition_and_candidate_index_are_pinned_and_not_caller_supplied(env: Any) -> None:
+    """A caller cannot relax the TRAIN/candidate-0 requirement by claiming something else.
+
+    ``expected`` pins those two dimensions to literals, so the DATABASE ROW must be train and
+    candidate 0 no matter what the derived job asserts. Claiming ``partition="validation"``
+    therefore does not make a validation row acceptable — it simply cannot widen the check.
+    """
+    import inspect
+
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    src = inspect.getsource(Q._require_dispatched_is_derived)
+    expected_block = src.split("expected = (")[1].split(")")[0]
+    assert '"train"' in expected_block, "partition must be pinned to the literal train"
+    assert "job.partition" not in expected_block, "partition must not come from the caller"
+    assert "job.candidate_index" not in expected_block, "candidate index must not come from caller"
+
+    # and behaviourally: a derived job claiming a different partition still matches the train row
+    dispatched, ident = _dispatch_candidate_zero(env)
+    claiming_validation = _derived_from(dispatched, ident, partition="validation")
+    Q._require_dispatched_is_derived(env.engine, env.plan, claiming_validation, dispatched)
+    assert str(ident["partition"]) == "train"
+
+
+def test_the_two_dispatched_identity_guards_are_distinguishable() -> None:
+    """The early and final refusals must not share a message a test could confuse."""
+    import inspect
+
+    from minos_engine.qualification import l2f_harness_ready_qualifier as Q
+
+    src = inspect.getsource(Q._require_dispatched_is_derived)
+    assert "executed job_key" in src and "executed job identity" in src
+    early = src.split("with engine.connect()")[0]
+    final = src.split("with engine.connect()")[1]
+    assert "executed job_key" in early and "executed job identity" not in early
+    assert "executed job identity" in final and "executed job_key" not in final
 
 
 # --------------------------------------------------------------------------- #
