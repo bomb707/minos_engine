@@ -752,15 +752,30 @@ def test_a_noisy_subprocess_keeps_captured_streams_bounded(tmp_path: Path) -> No
         expected_version="test",
         timeout_seconds=120,
         max_captured_stream_bytes=limit,
+        local_jar=_fixture_jar(script.parent),
     )
     inputs = _manifest_inputs()
     with pytest.raises(GatkExecutionError):
-        runner.run(argv=(), work_dir=work, vcf_path=work / "o.vcf", inputs=inputs)
+        runner.run(
+            argv=(),
+            work_dir=work,
+            vcf_path=work / "o.vcf",
+            inputs=inputs,
+            expected_runtime_bundle_sha256=runner.runtime_bundle_sha256(),
+        )
 
     produced = (work / "gatk.stdout").stat().st_size, (work / "gatk.stderr").stat().st_size
     # the child emitted ~400KB per stream; at most `limit` bytes reached disk on EACH stream.
     assert produced[0] <= limit and produced[1] <= limit
     assert limit < MAX_CAPTURED_STREAM_BYTES  # the test cap is genuinely smaller than production
+
+
+def _fixture_jar(directory: Path) -> Path:
+    """The local JAR a fixture launcher dispatches to; a launcher alone is not a bundle."""
+    jar = directory / "gatk-package-test-local.jar"
+    if not jar.exists():
+        jar.write_bytes(b"fixture-jar")
+    return jar
 
 
 def _manifest_inputs() -> Any:
@@ -799,6 +814,7 @@ def test_the_production_runner_never_uses_a_shell(tmp_path: Path) -> None:
         expected_sha256=hashlib.sha256(script.read_bytes()).hexdigest(),
         expected_version="test",
         timeout_seconds=60,
+        local_jar=_fixture_jar(script.parent),
     )
     with pytest.raises(GatkExecutionError):
         runner.run(
@@ -806,6 +822,7 @@ def test_the_production_runner_never_uses_a_shell(tmp_path: Path) -> None:
             work_dir=work,
             vcf_path=work / "o.vcf",
             inputs=_manifest_inputs(),
+            expected_runtime_bundle_sha256=runner.runtime_bundle_sha256(),
         )
     assert not marker.exists()
     assert f"; touch {marker}" in (work / "gatk.stdout").read_text(encoding="utf-8")

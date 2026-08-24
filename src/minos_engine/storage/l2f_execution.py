@@ -1261,7 +1261,13 @@ def _run_and_finalize(
                 output_path=str(vcf_path),
             )
             outcome = runner.run(
-                argv=argv, work_dir=workspace.path, vcf_path=vcf_path, inputs=prepared.inputs
+                argv=argv,
+                work_dir=workspace.path,
+                vcf_path=vcf_path,
+                inputs=prepared.inputs,
+                # the identity already frozen into result_hash — NOT a value the runner rederives
+                # for itself, so "the execution used that bundle" is enforced, not asserted.
+                expected_runtime_bundle_sha256=prepared.invocation.gatk_runtime_bundle_sha256,
             )
             # THE output boundary: one inode, opened relative to the retained attempt descriptor,
             # read once, validated and hashed from those exact bytes. Nothing below re-opens the

@@ -328,8 +328,22 @@ class _SwappingRunner(FakeGatkRunner):
 
     mode: str = "regular"
 
-    def run(self, *, argv: Any, work_dir: Any, vcf_path: Any, inputs: Any) -> Any:
-        outcome = super().run(argv=argv, work_dir=work_dir, vcf_path=vcf_path, inputs=inputs)
+    def run(
+        self,
+        *,
+        argv: Any,
+        work_dir: Any,
+        vcf_path: Any,
+        inputs: Any,
+        expected_runtime_bundle_sha256: str = "",
+    ) -> Any:
+        outcome = super().run(
+            argv=argv,
+            work_dir=work_dir,
+            vcf_path=vcf_path,
+            inputs=inputs,
+            expected_runtime_bundle_sha256=expected_runtime_bundle_sha256,
+        )
         vcf_path.unlink()
         if self.mode == "fifo":
             os.mkfifo(vcf_path)
@@ -362,10 +376,24 @@ def test_an_output_swapped_after_the_runner_is_durably_failed(env: Any, mode: st
 class _DirectorySwappingRunner(FakeGatkRunner):
     """Replaces the whole attempt directory the instant the runner returns."""
 
-    def run(self, *, argv: Any, work_dir: Any, vcf_path: Any, inputs: Any) -> Any:
+    def run(
+        self,
+        *,
+        argv: Any,
+        work_dir: Any,
+        vcf_path: Any,
+        inputs: Any,
+        expected_runtime_bundle_sha256: str = "",
+    ) -> Any:
         import shutil
 
-        outcome = super().run(argv=argv, work_dir=work_dir, vcf_path=vcf_path, inputs=inputs)
+        outcome = super().run(
+            argv=argv,
+            work_dir=work_dir,
+            vcf_path=vcf_path,
+            inputs=inputs,
+            expected_runtime_bundle_sha256=expected_runtime_bundle_sha256,
+        )
         payload = vcf_path.read_bytes()
         shutil.rmtree(work_dir)
         work_dir.mkdir()

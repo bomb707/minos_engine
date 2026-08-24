@@ -327,7 +327,13 @@ def validate_vcf_bytes(
 
 
 class GatkRunner(Protocol):
-    """Executes one prepared HaplotypeCaller invocation and returns its byte-verified outcome."""
+    """Executes one prepared HaplotypeCaller invocation and returns its byte-verified outcome.
+
+    ``expected_runtime_bundle_sha256`` is the execution-bundle identity ALREADY frozen into the
+    invocation, and therefore into ``result_hash``. It is passed explicitly rather than read from
+    runner state or a global, so the value the result is identified by and the value the run
+    boundary enforces are provably the same object.
+    """
 
     def run(
         self,
@@ -336,6 +342,7 @@ class GatkRunner(Protocol):
         work_dir: Path,
         vcf_path: Path,
         inputs: ExecutionInput,
+        expected_runtime_bundle_sha256: str,
     ) -> GatkExecutionOutcome: ...
 
 
@@ -367,6 +374,10 @@ class FakeGatkRunner:
         work_dir: Path,
         vcf_path: Path,
         inputs: ExecutionInput,
+        #: accepted to satisfy the protocol ONLY. This runner starts no process and owns no GATK
+        #: bundle, so it deliberately does not verify it — pretending to would be a false claim.
+        #: It can never satisfy ``official_gatk_runner_used``; it is test-only.
+        expected_runtime_bundle_sha256: str = "",
     ) -> GatkExecutionOutcome:
         if self.raise_timeout:
             raise GatkTimeoutError("fake runner simulated a GATK timeout")
@@ -573,6 +584,27 @@ class SubprocessGatkRunner:
             )
         return match.group(1)
 
+    def _require_runtime_bundle(self, expected: str, *, when: str) -> None:
+        """Fail closed unless the CURRENT execution bundle equals the frozen expected identity.
+
+        Bounded honesty: this proves the launcher and JAR bytes were the pinned ones immediately
+        before the process started and immediately after it exited, and that the child cannot be
+        redirected through the known JAR-override variables. It does not — and does not claim to —
+        defeat a privileged attacker able to swap bytes transiently and restore them.
+        """
+        if not expected:
+            raise GatkExecutionError(
+                "no expected GATK runtime bundle was supplied; the execution identity must be "
+                "frozen before execution, never derived from whatever happens to be on disk"
+            )
+        actual = self.runtime_bundle_sha256()
+        if actual != expected:
+            raise GatkExecutionError(
+                f"GATK runtime bundle {when} is {actual}, but the frozen execution identity is "
+                f"{expected}; the scientific payload changed and this job cannot be identified "
+                "by that bundle"
+            )
+
     def _verify_executable(self) -> None:
         path = self.executable
         if not path.is_absolute():
@@ -594,8 +626,13 @@ class SubprocessGatkRunner:
         work_dir: Path,
         vcf_path: Path,
         inputs: ExecutionInput,
+        expected_runtime_bundle_sha256: str,
     ) -> GatkExecutionOutcome:
         self._verify_executable()
+        # THE check/use boundary. The bundle observed at qualification time is minutes old by now;
+        # re-derive it from the launcher and JAR bytes as they are RIGHT NOW and refuse to start
+        # HaplotypeCaller unless it still equals the identity already frozen into result_hash.
+        self._require_runtime_bundle(expected_runtime_bundle_sha256, when="before execution")
         env = {k: os.environ[k] for k in CHILD_ENV_ALLOWLIST if k in os.environ}
         stdout_path = work_dir / "gatk.stdout"
         stderr_path = work_dir / "gatk.stderr"
@@ -639,6 +676,9 @@ class SubprocessGatkRunner:
         stderr_sha = drains[1].digest
         if exit_code != 0:
             raise GatkExecutionError(f"GATK exited with code {exit_code}")
+        # the bundle must ALSO be unchanged now, before any produced VCF is accepted: a run whose
+        # payload moved underneath it is not scientifically identified by the frozen bundle.
+        self._require_runtime_bundle(expected_runtime_bundle_sha256, when="after execution")
         if not vcf_path.exists():
             raise GatkOutputError("GATK produced no output VCF")
         sha, size = validate_vcf_bytes(vcf_path, work_dir=work_dir, inputs=inputs)

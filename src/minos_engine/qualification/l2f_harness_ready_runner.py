@@ -49,6 +49,7 @@ from minos_engine.qualification.l2f_harness_ready_contract import (
     ACCEPTED_POLICY_HASH,
     HARNESS_READY_GATE,
     HARNESS_READY_GATE_PATH,
+    HARNESS_READY_QUALIFICATION_TOOL_VERSION,
     HARNESS_READY_QUALIFIER_SCHEMA,
     HARNESS_READY_QUALIFIER_VERSION,
     HarnessReadyQualification,
@@ -399,9 +400,7 @@ def assemble_gate_from_trusted_qualification(
         mandatory_checks=checks,
         qualified_source_git_sha=result.source.qualified_source_git_sha,
         qualified_source_tree_sha=result.source.qualified_source_tree_sha,
-        qualification_tool_version=(
-            f"{HARNESS_READY_QUALIFIER_SCHEMA}/{HARNESS_READY_QUALIFIER_VERSION}"
-        ),
+        qualification_tool_version=HARNESS_READY_QUALIFICATION_TOOL_VERSION,
         created_at=created_at or _now_iso(),
     )
 
@@ -451,6 +450,13 @@ def verify_committed_harness_ready_gate(
     gate = load_gate(path)
     if gate.gate_name != HARNESS_READY_GATE:
         reasons.append(f"gate_name is {gate.gate_name!r}, expected {HARNESS_READY_GATE!r}")
+    # gate integrity proves the bytes were not edited; it says NOTHING about whether the
+    # qualifier that produced them still has the current evidence semantics. Bind that here.
+    if gate.qualification_tool_version != HARNESS_READY_QUALIFICATION_TOOL_VERSION:
+        reasons.append(
+            f"gate qualification_tool_version is {gate.qualification_tool_version!r}, expected "
+            f"{HARNESS_READY_QUALIFICATION_TOOL_VERSION!r}"
+        )
     integrity = verify_gate_integrity(gate, base_dir=root)
     if not integrity.ok:
         reasons.extend(integrity.reasons)
@@ -532,6 +538,16 @@ def verify_committed_harness_ready_gate(
                     verify_accepted_identities(parsed.accepted)
                 except MinosEngineError as exc:
                     reasons.append(f"accepted identity closure failed: {exc}")
+                if parsed.qualifier_version != HARNESS_READY_QUALIFIER_VERSION:
+                    reasons.append(
+                        f"qualification result qualifier_version is {parsed.qualifier_version!r}, "
+                        f"expected {HARNESS_READY_QUALIFIER_VERSION!r}"
+                    )
+                if parsed.schema_version != HARNESS_READY_QUALIFIER_SCHEMA:
+                    reasons.append(
+                        f"qualification result schema_version is {parsed.schema_version!r}, "
+                        f"expected {HARNESS_READY_QUALIFIER_SCHEMA!r}"
+                    )
                 if parsed.source.qualified_source_git_sha != gate.qualified_source_git_sha:
                     reasons.append(
                         "the qualification result and the gate disagree on the qualified source"

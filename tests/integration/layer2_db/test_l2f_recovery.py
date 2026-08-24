@@ -13,6 +13,7 @@ import pytest
 
 from minos_engine.experiments.execution_contract import (
     ConfigArtifactError,
+    GatkExecutionError,
     GatkInvocationError,
     InputResolutionError,
 )
@@ -312,8 +313,22 @@ def test_a_mutated_output_between_validation_and_publication_is_durably_failed(
     """The runner-reported digest is re-derived from the exact bytes about to be published."""
 
     class _MutatingRunner(FakeGatkRunner):
-        def run(self, *, argv: Any, work_dir: Any, vcf_path: Any, inputs: Any) -> Any:
-            outcome = super().run(argv=argv, work_dir=work_dir, vcf_path=vcf_path, inputs=inputs)
+        def run(
+            self,
+            *,
+            argv: Any,
+            work_dir: Any,
+            vcf_path: Any,
+            inputs: Any,
+            expected_runtime_bundle_sha256: str = "",
+        ) -> Any:
+            outcome = super().run(
+                argv=argv,
+                work_dir=work_dir,
+                vcf_path=vcf_path,
+                inputs=inputs,
+                expected_runtime_bundle_sha256=expected_runtime_bundle_sha256,
+            )
             vcf_path.write_bytes(vcf_path.read_bytes() + b"##mutated=true\n")
             return outcome
 
@@ -420,3 +435,91 @@ def _raise(exc: BaseException) -> Any:
         raise exc
 
     return _boom
+
+
+# --------------------------------------------------------------------------- #
+# F7 CLOSURE — an execution-time bundle mismatch is an ORDINARY durable failure
+# --------------------------------------------------------------------------- #
+class _BundleMismatchRunner:
+    """A runner that refuses exactly the way SubprocessGatkRunner refuses a moved bundle.
+
+    The point is the ORCHESTRATION contract, not the hashing: a bundle mismatch raised at the run
+    boundary must reach the existing durable typed FAILED path, leave the job terminal rather than
+    stranded, and never be retried.
+    """
+
+    def __init__(self) -> None:
+        self.seen: list[str] = []
+
+    def run(
+        self,
+        *,
+        argv: tuple[str, ...],
+        work_dir: Path,
+        vcf_path: Path,
+        inputs: Any,
+        expected_runtime_bundle_sha256: str,
+    ) -> Any:
+        self.seen.append(expected_runtime_bundle_sha256)
+        raise GatkExecutionError(
+            f"GATK runtime bundle before execution is {'b' * 64}, but the frozen execution "
+            f"identity is {expected_runtime_bundle_sha256}"
+        )
+
+
+def test_an_execution_time_bundle_mismatch_is_durably_failed_and_not_retried(env: Any) -> None:
+    runner = _BundleMismatchRunner()
+    result = env.run(runner=runner)
+    assert result is not None and result.status == "FAILED"
+    # it lands in the EXISTING typed classification for a GatkExecutionError; no new failure code
+    # and no new recovery path were introduced for the bundle check.
+    assert result.failure_code == "GATK_NONZERO_EXIT"
+    # exactly one attempt: the durable FAILED outcome IS the result, nothing re-runs it
+    assert _counts(env) == (0, 1)
+    assert len(runner.seen) == 1
+    assert_no_stranded_jobs(env.engine, env.plan.plan_hash)
+    # a second dispatch must NOT pick the terminal job back up: it either finds nothing or
+    # claims a DIFFERENT pending job. The failed job is never re-executed.
+    again = env.run(runner=runner)
+    assert again is None or again.job_key != result.job_key
+    assert_no_stranded_jobs(env.engine, env.plan.plan_hash)
+
+
+def test_the_frozen_invocation_bundle_is_what_reaches_the_runner(env: Any) -> None:
+    """The value the runner is asked to enforce must BE the one published in the manifest.
+
+    No database column carries the bundle (there is no migration 0009); it is anchored by the
+    append-only ``result_hash`` and published in the manifest, so that is what this compares.
+    """
+    import json
+
+    from minos_engine.storage import l2f_harness_verifier as HV
+
+    seen: list[str] = []
+
+    class _RecordingRunner(FakeGatkRunner):
+        def run(
+            self,
+            *,
+            argv: Any,
+            work_dir: Any,
+            vcf_path: Any,
+            inputs: Any,
+            expected_runtime_bundle_sha256: str = "",
+        ) -> Any:
+            seen.append(expected_runtime_bundle_sha256)
+            return super().run(
+                argv=argv,
+                work_dir=work_dir,
+                vcf_path=vcf_path,
+                inputs=inputs,
+                expected_runtime_bundle_sha256=expected_runtime_bundle_sha256,
+            )
+
+    result = env.run(runner=_RecordingRunner())
+    assert result is not None and result.status == "SUCCEEDED"
+    assert len(seen) == 1 and len(seen[0]) == 64
+    with env.engine.connect() as conn:
+        graph = HV._read_persisted_graph(conn, env.plan)
+    document = json.loads(graph.execution_results[0].manifest_bytes)
+    assert document["gatk_runtime_bundle_sha256"] == seen[0]

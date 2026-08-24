@@ -233,10 +233,17 @@ def acquire_source_provenance(
 # real GATK binary identity (actual bytes hashed)
 # --------------------------------------------------------------------------- #
 def verify_official_gatk_binary(runner: Any) -> GatkBinaryIdentity:
-    """Hash the ACTUAL executable bytes and require them to equal the provisioned digest.
+    """Observe the whole GATK execution BUNDLE, not just the launcher. Fails closed throughout.
 
-    The version is provisioned metadata bound to that verified digest; nothing here probes the
-    executable for a version and nothing claims that it did.
+    The launcher is a ~21 KB dispatcher, so this:
+
+    * hashes the ACTUAL launcher bytes and requires them to equal the provisioned digest;
+    * resolves and hashes the ACTUAL local JAR the launcher would run;
+    * recomputes the domain-separated, host-independent runtime bundle digest from both;
+    * EXECUTES a bounded, offline ``gatk --version`` (never HaplotypeCaller) and requires the
+      observed version to equal the provisioned version — the version is therefore a measured
+      property of the real bundle, not provisioned metadata alone;
+    * records the Python and Java executables the child would resolve, as runtime provenance.
     """
     from minos_engine.storage.l2f_gatk_runner import SubprocessGatkRunner
 
@@ -736,6 +743,7 @@ def _execute_and_observe(
             plan=plan,
             job=job,
             binary=binary,
+            runner=runner,
             dispatched=dispatched,
             verification=verification,
             fingerprint_before=verify_before,
@@ -775,6 +783,7 @@ def _observe_result_details(
     plan: Any,
     job: DerivedQualificationJob,
     binary: GatkBinaryIdentity,
+    runner: Any,
     dispatched: Any,
     verification: Any,
     fingerprint_before: str,
@@ -869,6 +878,14 @@ def _observe_result_details(
         raise QualificationEnvironmentError(
             f"the result manifest names GATK bundle {manifest.gatk_runtime_bundle_sha256}, but "
             f"the observed bundle is {binary.runtime_bundle_sha256}"
+        )
+    # ...and the bundle is STILL the pinned one now, re-derived from the launcher and JAR bytes
+    # rather than reused from the earlier observation.
+    current_bundle = runner.runtime_bundle_sha256()
+    if current_bundle != binary.runtime_bundle_sha256:
+        raise QualificationEnvironmentError(
+            f"the GATK runtime bundle is now {current_bundle}, but the official execution was "
+            f"identified by {binary.runtime_bundle_sha256}"
         )
 
     effective = json.loads(config_bytes)

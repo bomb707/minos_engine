@@ -7,6 +7,7 @@ builder; the qualification tests exercise the REAL derivation, assembly and offl
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -48,6 +49,10 @@ from minos_engine.qualification.l2f_harness_ready_contract import (
     ACCEPTED_PLAN_HASH,
     HARNESS_READY_GATE,
     HARNESS_READY_GATE_PATH,
+    HARNESS_READY_QUALIFICATION_TOOL_VERSION,
+    HARNESS_READY_QUALIFIER_SCHEMA,
+    HARNESS_READY_QUALIFIER_VERSION,
+    QUALIFIER_VERSIONS,
     ArtifactVerificationResult,
     BoundaryResult,
     GatkBinaryIdentity,
@@ -130,7 +135,9 @@ def _qualification(**over: Any) -> HarnessReadyQualification:
     parity = compare_invocation_parity(plan, invocation, execution_config_hash=config_hash)
     inventory = build_failure_inventory()
     base: dict[str, Any] = {
-        "qualifier_version": "f7a-1",
+        # bound to the SOURCE constant: a stale literal here would silently exempt the
+        # canonical fixture from the version invariant it is supposed to demonstrate.
+        "qualifier_version": HARNESS_READY_QUALIFIER_VERSION,
         "source": SourceProvenance(
             qualified_source_git_sha=_GIT["a"],
             qualified_source_tree_sha=_GIT["b"],
@@ -652,6 +659,34 @@ def _trusted(result: HarnessReadyQualification) -> Any:
 
 def _assemble(result: HarnessReadyQualification, **kw: Any) -> Any:
     return R.assemble_gate_from_trusted_qualification(_trusted(result), **kw)
+
+
+def _current_source_qualification() -> HarnessReadyQualification:
+    """A qualification bound to the REAL current HEAD, so ancestry/tree checks can pass."""
+    return _qualification(
+        source=_qualification().source.model_copy(
+            update={
+                "qualified_source_git_sha": _head_sha(),
+                "qualified_source_tree_sha": _head_tree(),
+            }
+        )
+    )
+
+
+def _write_gate_at(gate: Any, path: Path) -> None:
+    from minos_engine.gates.verifier import write_gate
+
+    write_gate(gate, path)
+
+
+def _restamped(gate: Any, **updates: Any) -> Any:
+    """A gate mutated AND re-stamped, so it is internally consistent and loads cleanly.
+
+    Without this, a mutated gate fails the generic integrity check first and never reaches the
+    semantic version check the surrounding test is trying to exercise.
+    """
+    payload = {**gate.model_dump(mode="json"), **updates, "gate_hash": ""}
+    return type(gate).model_validate(payload)
 
 
 def _write_gate(tmp_path: Path, result: HarnessReadyQualification) -> Path:
@@ -2215,3 +2250,113 @@ def test_the_execution_must_have_used_the_pinned_bundle() -> None:
     )
     assert R.derive_checks(detached)["official_gatk_binary_pinned"] is False
     assert _assemble(detached).status is GateStatus.HOLD
+
+
+# --------------------------------------------------------------------------- #
+# F7 CLOSURE — the qualifier version is BOUND, not merely documented
+# --------------------------------------------------------------------------- #
+def test_the_version_alias_is_single_valued_and_equals_the_constant() -> None:
+    """ "Current" must be unambiguous: one Literal member, equal to the exported constant."""
+    assert QUALIFIER_VERSIONS == (HARNESS_READY_QUALIFIER_VERSION,)
+    assert HARNESS_READY_QUALIFIER_VERSION == "f7a-2"
+    assert (
+        f"{HARNESS_READY_QUALIFIER_SCHEMA}/{HARNESS_READY_QUALIFIER_VERSION}"
+        == HARNESS_READY_QUALIFICATION_TOOL_VERSION
+    )
+
+
+def test_the_canonical_fixture_uses_the_source_version_constant() -> None:
+    """The fixture may not pin a stale literal and thereby exempt itself from the invariant."""
+    assert _qualification().qualifier_version == HARNESS_READY_QUALIFIER_VERSION
+
+
+def test_a_stale_qualifier_version_cannot_even_be_constructed() -> None:
+    """Structural, not prose: an f7a-1 document fails validation outright."""
+    import pydantic
+
+    payload = json.loads(canonical_qualification_bytes(_qualification()))
+    payload["qualifier_version"] = "f7a-1"
+    with pytest.raises((pydantic.ValidationError, HarnessReadyContractError)):
+        load_qualification_json(canonical_json_bytes(payload))
+
+
+@pytest.mark.parametrize("version", ["f7a-1", "f7a-3", "", "F7A-2", "f7a-2 "])
+def test_no_other_qualifier_version_is_accepted(version: str) -> None:
+    import pydantic
+
+    payload = json.loads(canonical_qualification_bytes(_qualification()))
+    payload["qualifier_version"] = version
+    with pytest.raises((pydantic.ValidationError, HarnessReadyContractError)):
+        load_qualification_json(canonical_json_bytes(payload))
+
+
+def test_changing_the_qualifier_version_changes_the_qualification_hash() -> None:
+    """The version is inside the identity, so old and new evidence can never collide."""
+    result = _qualification()
+    payload = json.loads(canonical_qualification_bytes(result))
+    stale = dict(payload, qualifier_version="f7a-1")
+    assert canonical_json_bytes(stale) != canonical_json_bytes(payload)
+    domain = b"minos:l2f-harness-ready-qualification:v1\n"
+    assert hashlib.sha256(domain + canonical_json_bytes(stale)).hexdigest() != (
+        compute_qualification_hash(result)
+    )
+
+
+def test_a_stale_gate_tool_version_is_refused(tmp_path: Path) -> None:
+    """Gate integrity proves the bytes are unedited; it does not prove they are CURRENT."""
+    result = _current_source_qualification()
+    gate = _assemble(result)
+    stale = _restamped(gate, qualification_tool_version=f"{HARNESS_READY_QUALIFIER_SCHEMA}/f7a-1")
+    gate_path = tmp_path / "harness-ready.json"
+    _write_gate_at(stale, gate_path)
+    qual_path = tmp_path / "qualification.json"
+    qual_path.write_bytes(canonical_qualification_bytes(result) + b"\n")
+    verified = R.verify_committed_harness_ready_gate(
+        base_dir=_repo_root(), gate_path=gate_path, qualification_path=qual_path
+    )
+    assert verified["ok"] is False
+    assert any("qualification_tool_version" in r for r in verified["reasons"])
+
+
+def test_an_internally_coherent_old_version_pair_still_fails(tmp_path: Path) -> None:
+    """The decisive control: a stale gate AND a stale result that agree with each other.
+
+    Nothing inside the pair is self-inconsistent — the gate binds the stale result's own hash —
+    yet the CURRENT verifier refuses it, because coherence with itself is not currency.
+    """
+    result = _current_source_qualification()
+    payload = json.loads(canonical_qualification_bytes(result))
+    payload["qualifier_version"] = "f7a-1"
+    stale_bytes = canonical_json_bytes(payload)
+    domain = b"minos:l2f-harness-ready-qualification:v1\n"
+    stale_hash = hashlib.sha256(domain + stale_bytes).hexdigest()
+
+    gate = _assemble(result)
+    stale_gate = _restamped(
+        gate,
+        qualification_tool_version=f"{HARNESS_READY_QUALIFIER_SCHEMA}/f7a-1",
+        input_hashes={**gate.input_hashes, "qualification_hash": stale_hash},
+    )
+    gate_path = tmp_path / "harness-ready.json"
+    _write_gate_at(stale_gate, gate_path)
+    qual_path = tmp_path / "qualification.json"
+    qual_path.write_bytes(stale_bytes + b"\n")
+    verified = R.verify_committed_harness_ready_gate(
+        base_dir=_repo_root(), gate_path=gate_path, qualification_path=qual_path
+    )
+    assert verified["ok"] is False
+
+
+def test_the_current_version_pair_is_the_positive_control(tmp_path: Path) -> None:
+    """The same route with CURRENT evidence must actually pass, or the controls prove nothing."""
+    result = _current_source_qualification()
+    gate = _assemble(result)
+    assert gate.qualification_tool_version == HARNESS_READY_QUALIFICATION_TOOL_VERSION
+    gate_path = tmp_path / "harness-ready.json"
+    _write_gate_at(gate, gate_path)
+    qual_path = tmp_path / "qualification.json"
+    qual_path.write_bytes(canonical_qualification_bytes(result) + b"\n")
+    verified = R.verify_committed_harness_ready_gate(
+        base_dir=_repo_root(), gate_path=gate_path, qualification_path=qual_path
+    )
+    assert verified["ok"] is True, verified["reasons"]

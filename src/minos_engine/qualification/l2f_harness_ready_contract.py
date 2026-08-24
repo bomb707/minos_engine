@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
@@ -35,6 +35,9 @@ __all__ = [
     "HARNESS_READY_GATE_PATH",
     "HARNESS_READY_QUALIFIER_SCHEMA",
     "HARNESS_READY_QUALIFIER_VERSION",
+    "HARNESS_READY_QUALIFICATION_TOOL_VERSION",
+    "QualifierVersion",
+    "QUALIFIER_VERSIONS",
     "HARNESS_READY_QUALIFICATION_DOMAIN",
     "ACCEPTED_F6_CORRECTIVE_COMMIT",
     "ACCEPTED_E5_GATES",
@@ -75,8 +78,20 @@ HARNESS_READY_GATE_PATH = "gates/harness-ready.json"
 
 #: versioned F7 qualifier identity (bumping this changes every qualification hash).
 HARNESS_READY_QUALIFIER_SCHEMA = "l2f-harness-ready-qualification-v1"
+#: THE current qualifier version, as a type. Evidence produced by an older qualifier is refused
+#: structurally rather than by prose: ``HarnessReadyQualification.qualifier_version`` is typed with
+#: this Literal, so a stale ``f7a-1`` document cannot even be parsed. Bumping the version means
+#: editing this alias AND the constant below; mypy rejects the pair drifting apart, and
+#: ``QUALIFIER_VERSIONS`` keeps the alias single-valued.
+QualifierVersion = Literal["f7a-2"]
 #: bumped for the GATK execution-bundle binding: qualification evidence semantics changed.
-HARNESS_READY_QUALIFIER_VERSION = "f7a-2"
+HARNESS_READY_QUALIFIER_VERSION: QualifierVersion = "f7a-2"
+#: the exact members of the alias — exactly one, so "current" is never ambiguous.
+QUALIFIER_VERSIONS: tuple[str, ...] = get_args(QualifierVersion)
+#: the gate's tool identity: schema and version, together, in one string.
+HARNESS_READY_QUALIFICATION_TOOL_VERSION = (
+    f"{HARNESS_READY_QUALIFIER_SCHEMA}/{HARNESS_READY_QUALIFIER_VERSION}"
+)
 #: domain separation for the qualification identity hash.
 HARNESS_READY_QUALIFICATION_DOMAIN = "minos:l2f-harness-ready-qualification:v1\n"
 
@@ -408,7 +423,9 @@ class HarnessReadyQualification(BaseModel):
     schema_version: Literal["l2f-harness-ready-qualification-v1"] = (
         "l2f-harness-ready-qualification-v1"
     )
-    qualifier_version: str = Field(min_length=1)
+    #: typed with the CURRENT version alias: a stale or arbitrary version fails validation, so
+    #: an internally coherent old-version document can never be loaded by this verifier.
+    qualifier_version: QualifierVersion = HARNESS_READY_QUALIFIER_VERSION
     gate_name: Literal["HARNESS-READY"] = "HARNESS-READY"
     source: SourceProvenance
     accepted: AcceptedIdentities

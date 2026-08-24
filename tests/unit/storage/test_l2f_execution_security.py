@@ -110,10 +110,18 @@ def _accepted_config() -> dict[str, Any]:
     return dict(canonicalize_live_gatk_config({}).effective_config)
 
 
-def _script(tmp_path: Path, name: str, body: str) -> Path:
+#: the version these fixtures pin; the JAR name must carry it, exactly as the real layout does.
+_FIXTURE_VERSION = "test-fixture"
+
+
+def _script(tmp_path: Path, name: str, body: str, *, jar: bytes = b"fixture-jar") -> Path:
+    """Write a fixture launcher AND the local JAR beside it — a launcher alone is not a bundle."""
     path = tmp_path / name
     path.write_text(body, encoding="utf-8")
     path.chmod(0o700)
+    jar_path = tmp_path / f"gatk-package-{_FIXTURE_VERSION}-local.jar"
+    if not jar_path.exists():
+        jar_path.write_bytes(jar)
     return path.resolve()
 
 
@@ -121,9 +129,26 @@ def _runner_for(script: Path, **over: Any) -> SubprocessGatkRunner:
     return SubprocessGatkRunner(
         executable=script,
         expected_sha256=hashlib.sha256(script.read_bytes()).hexdigest(),
-        expected_version="test-fixture",
+        expected_version=_FIXTURE_VERSION,
+        local_jar=script.parent / f"gatk-package-{_FIXTURE_VERSION}-local.jar",
         **over,
     )
+
+
+def _run(runner: SubprocessGatkRunner, **kwargs: Any) -> Any:
+    """Drive the REAL run boundary with the runner's CURRENT bundle as the frozen expectation.
+
+    Tests that deliberately move the bundle pass ``expected_runtime_bundle_sha256`` themselves;
+    for every other test this keeps the check/use invariant satisfied without weakening it.
+    """
+    if "expected_runtime_bundle_sha256" not in kwargs:
+        try:
+            kwargs["expected_runtime_bundle_sha256"] = runner.runtime_bundle_sha256()
+        except GatkExecutionError:
+            # the bundle cannot even be derived (relative/symlinked/absent launcher); the run
+            # boundary must refuse for THAT reason, which is exactly what such tests assert.
+            kwargs["expected_runtime_bundle_sha256"] = "f" * 64
+    return runner.run(**kwargs)
 
 
 def _work(tmp_path: Path, name: str = "work") -> Path:
@@ -275,8 +300,12 @@ def test_the_child_environment_is_an_explicit_allowlist(
     script = _script(tmp_path, "envdump.sh", _ECHO_ENV)
     work = _work(tmp_path)
     with pytest.raises(GatkExecutionError):
-        _runner_for(script, timeout_seconds=60).run(
-            argv=(), work_dir=work, vcf_path=work / "o.vcf", inputs=_inputs()
+        _run(
+            _runner_for(script, timeout_seconds=60),
+            argv=(),
+            work_dir=work,
+            vcf_path=work / "o.vcf",
+            inputs=_inputs(),
         )
     dumped = (work / "gatk.stdout").read_text(encoding="utf-8")
     names = {line.split("=", 1)[0] for line in dumped.splitlines() if "=" in line}
@@ -294,8 +323,12 @@ def test_argv_payloads_never_reach_a_shell(tmp_path: Path, payload: str) -> None
     script = _script(tmp_path, "args.sh", _ECHO_ARGS)
     work = _work(tmp_path)
     with pytest.raises(GatkExecutionError):
-        _runner_for(script, timeout_seconds=60).run(
-            argv=(payload,), work_dir=work, vcf_path=work / "o.vcf", inputs=_inputs()
+        _run(
+            _runner_for(script, timeout_seconds=60),
+            argv=(payload,),
+            work_dir=work,
+            vcf_path=work / "o.vcf",
+            inputs=_inputs(),
         )
     assert not marker.exists()
     assert not (work / "OWNED").exists()
@@ -311,7 +344,7 @@ def test_a_relative_executable_is_refused(tmp_path: Path) -> None:
         executable=Path("gatk"), expected_sha256=_H["0"], expected_version="v"
     )
     with pytest.raises(GatkExecutionError, match="absolute"):
-        runner.run(argv=(), work_dir=work, vcf_path=work / "o.vcf", inputs=_inputs())
+        _run(runner, argv=(), work_dir=work, vcf_path=work / "o.vcf", inputs=_inputs())
 
 
 def test_a_symlinked_executable_is_refused(tmp_path: Path) -> None:
@@ -325,7 +358,7 @@ def test_a_symlinked_executable_is_refused(tmp_path: Path) -> None:
         expected_version="v",
     )
     with pytest.raises(GatkExecutionError, match="symlink"):
-        runner.run(argv=(), work_dir=work, vcf_path=work / "o.vcf", inputs=_inputs())
+        _run(runner, argv=(), work_dir=work, vcf_path=work / "o.vcf", inputs=_inputs())
 
 
 def test_a_swapped_executable_fails_its_sha256(tmp_path: Path) -> None:
@@ -334,18 +367,21 @@ def test_a_swapped_executable_fails_its_sha256(tmp_path: Path) -> None:
     script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")  # swapped after pinning
     work = _work(tmp_path)
     with pytest.raises(GatkExecutionError, match="sha256"):
-        runner.run(argv=(), work_dir=work, vcf_path=work / "o.vcf", inputs=_inputs())
+        _run(runner, argv=(), work_dir=work, vcf_path=work / "o.vcf", inputs=_inputs())
 
 
-def test_the_pinned_version_is_provisioned_metadata_not_a_probe(tmp_path: Path) -> None:
-    """The runner NEVER probes ``--version``: the version is provisioned metadata BOUND to the
-    verified executable SHA-256. This test documents that honestly rather than overclaiming."""
+def test_the_execution_run_never_issues_a_version_probe(tmp_path: Path) -> None:
+    """The EXECUTION path issues the execution argv only.
+
+    Since ``f7a-2`` the version IS measured, but by the qualifier's separate bounded
+    ``observe_version()`` probe — never smuggled into the HaplotypeCaller run.
+    """
     script = _script(tmp_path, "gatk.sh", _ECHO_ARGS)
     runner = _runner_for(script)
     assert runner.expected_version == "test-fixture"
     work = _work(tmp_path)
     with pytest.raises(GatkExecutionError):
-        runner.run(argv=(), work_dir=work, vcf_path=work / "o.vcf", inputs=_inputs())
+        _run(runner, argv=(), work_dir=work, vcf_path=work / "o.vcf", inputs=_inputs())
     # the child was invoked with the EXECUTION argv only - no version probe was ever issued.
     assert "--version" not in (work / "gatk.stdout").read_text(encoding="utf-8")
 
@@ -376,8 +412,12 @@ def test_streams_stay_bounded_while_the_process_runs(tmp_path: Path) -> None:
     work = _work(tmp_path)
     limit = 2048
     with pytest.raises(GatkExecutionError):
-        _runner_for(script, timeout_seconds=120, max_captured_stream_bytes=limit).run(
-            argv=(), work_dir=work, vcf_path=work / "o.vcf", inputs=_inputs()
+        _run(
+            _runner_for(script, timeout_seconds=120, max_captured_stream_bytes=limit),
+            argv=(),
+            work_dir=work,
+            vcf_path=work / "o.vcf",
+            inputs=_inputs(),
         )
     assert (work / "gatk.stdout").stat().st_size <= limit
     assert (work / "gatk.stderr").stat().st_size <= limit
@@ -389,8 +429,12 @@ def test_a_timeout_terminates_the_whole_process_group(tmp_path: Path) -> None:
     script = _script(tmp_path, "sleeper.sh", _FORKING_SLEEPER)
     work = _work(tmp_path)
     with pytest.raises(GatkTimeoutError):
-        _runner_for(script, timeout_seconds=2).run(
-            argv=(), work_dir=work, vcf_path=work / "o.vcf", inputs=_inputs()
+        _run(
+            _runner_for(script, timeout_seconds=2),
+            argv=(),
+            work_dir=work,
+            vcf_path=work / "o.vcf",
+            inputs=_inputs(),
         )
     raw = (work / "child.pid").read_text(encoding="utf-8").strip()
     assert raw
@@ -585,3 +629,152 @@ def test_an_empty_output_is_refused(tmp_path: Path) -> None:
     out.write_bytes(b"")
     with pytest.raises(GatkOutputError):
         validate_vcf_bytes(out, work_dir=work, inputs=_inputs())
+
+
+# --------------------------------------------------------------------------- #
+# F7 CLOSURE — the execution bundle is verified AROUND the real subprocess
+# --------------------------------------------------------------------------- #
+def _jar(script: Path) -> Path:
+    return script.parent / f"gatk-package-{_FIXTURE_VERSION}-local.jar"
+
+
+#: a fixture launcher that writes a REAL, structurally valid single-sample VCF and exits 0.
+#: It writes ``o.vcf`` in its working directory, which is the attempt work dir the runner sets.
+_VCF_WRITER = """#!/bin/sh
+{
+  printf '##fileformat=VCFv4.2\n'
+  printf '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE\n'
+  printf 'chr18\t150\t.\tA\tG\t50.0\tPASS\t.\tGT\t0/1\n'
+} > o.vcf
+exit 0
+"""
+
+
+def test_the_exact_expected_bundle_reaches_the_run_boundary(tmp_path: Path) -> None:
+    """The run boundary is driven by the FROZEN identity, not by a value it derives itself."""
+    script = _script(tmp_path, "gatk.sh", _ECHO_ARGS)
+    runner = _runner_for(script, timeout_seconds=60)
+    seen: list[str] = []
+    original = SubprocessGatkRunner._require_runtime_bundle
+
+    def spy(self: Any, expected: str, *, when: str) -> None:
+        seen.append(f"{when}:{expected}")
+        original(self, expected, when=when)
+
+    work = _work(tmp_path)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(SubprocessGatkRunner, "_require_runtime_bundle", spy)
+        with pytest.raises(GatkExecutionError):  # the fixture exits nonzero
+            _run(runner, argv=(), work_dir=work, vcf_path=work / "o.vcf", inputs=_inputs())
+    assert seen == [f"before execution:{runner.runtime_bundle_sha256()}"]
+
+
+def test_a_changed_jar_before_the_run_is_refused_before_any_process_starts(
+    tmp_path: Path,
+) -> None:
+    """Launcher unchanged, JAR changed: HaplotypeCaller must never start."""
+    script = _script(tmp_path, "gatk.sh", _ECHO_ARGS)
+    runner = _runner_for(script, timeout_seconds=60)
+    frozen = runner.runtime_bundle_sha256()
+    _jar(script).write_bytes(b"a different scientific payload")
+    work = _work(tmp_path)
+    with pytest.raises(GatkExecutionError, match="before execution"):
+        runner.run(
+            argv=(),
+            work_dir=work,
+            vcf_path=work / "o.vcf",
+            inputs=_inputs(),
+            expected_runtime_bundle_sha256=frozen,
+        )
+    # no process ran at all: the drained stream files were never created
+    assert not (work / "gatk.stdout").exists()
+
+
+def test_a_changed_launcher_before_the_run_is_refused(tmp_path: Path) -> None:
+    script = _script(tmp_path, "gatk.sh", _ECHO_ARGS)
+    runner = _runner_for(script, timeout_seconds=60)
+    frozen = runner.runtime_bundle_sha256()
+    script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    work = _work(tmp_path)
+    # the launcher SHA pin catches this first; either refusal is fail-closed and pre-Popen
+    with pytest.raises(GatkExecutionError):
+        runner.run(
+            argv=(),
+            work_dir=work,
+            vcf_path=work / "o.vcf",
+            inputs=_inputs(),
+            expected_runtime_bundle_sha256=frozen,
+        )
+    assert not (work / "gatk.stdout").exists()
+
+
+def test_a_bundle_that_changes_DURING_the_run_refuses_the_produced_output(
+    tmp_path: Path,
+) -> None:
+    """The post-run check is what makes "the bundle was stable across execution" truthful."""
+    script = _script(tmp_path, "gatk.sh", _VCF_WRITER)
+    runner = _runner_for(script, timeout_seconds=60)
+    frozen = runner.runtime_bundle_sha256()
+    jar = _jar(script)
+
+    original = SubprocessGatkRunner._require_runtime_bundle
+
+    def mutate_then_check(self: Any, expected: str, *, when: str) -> None:
+        original(self, expected, when=when)
+        if when == "before execution":
+            # the payload is swapped while the process is running
+            jar.write_bytes(b"swapped mid-flight")
+
+    work = _work(tmp_path)
+    vcf = work / "o.vcf"
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(SubprocessGatkRunner, "_require_runtime_bundle", mutate_then_check)
+        with pytest.raises(GatkExecutionError, match="after execution"):
+            runner.run(
+                argv=(),
+                work_dir=work,
+                vcf_path=vcf,
+                inputs=_inputs(),
+                expected_runtime_bundle_sha256=frozen,
+            )
+    # the process DID run and DID produce output — the output is refused, not the process
+    assert vcf.exists()
+
+
+def test_a_stable_bundle_executes_normally(tmp_path: Path) -> None:
+    """The positive control: an unchanged bundle runs and its output is accepted."""
+    script = _script(tmp_path, "gatk.sh", _VCF_WRITER)
+    runner = _runner_for(script, timeout_seconds=60)
+    work = _work(tmp_path)
+    outcome = _run(runner, argv=(), work_dir=work, vcf_path=work / "o.vcf", inputs=_inputs())
+    assert outcome.exit_code == 0
+    assert outcome.vcf_size_bytes > 0
+
+
+def test_an_empty_expected_bundle_is_refused(tmp_path: Path) -> None:
+    """A missing expectation must fail closed, never fall back to 'whatever is on disk'."""
+    script = _script(tmp_path, "gatk.sh", _VCF_WRITER)
+    runner = _runner_for(script, timeout_seconds=60)
+    work = _work(tmp_path)
+    with pytest.raises(GatkExecutionError, match="no expected GATK runtime bundle"):
+        runner.run(
+            argv=(),
+            work_dir=work,
+            vcf_path=work / "o.vcf",
+            inputs=_inputs(),
+            expected_runtime_bundle_sha256="",
+        )
+
+
+def test_the_fake_runner_accepts_the_protocol_parameter_without_claiming_verification() -> None:
+    """FakeGatkRunner satisfies the protocol but must never look like the official runner."""
+    import inspect
+
+    from minos_engine.storage.l2f_gatk_runner import FakeGatkRunner, GatkRunner
+
+    for cls in (FakeGatkRunner, SubprocessGatkRunner, GatkRunner):
+        assert "expected_runtime_bundle_sha256" in inspect.signature(cls.run).parameters
+    source = inspect.getsource(FakeGatkRunner.run)
+    # it does not pretend to verify a bundle it does not own
+    assert "runtime_bundle_sha256()" not in source
+    assert FakeGatkRunner.__name__ != "SubprocessGatkRunner"

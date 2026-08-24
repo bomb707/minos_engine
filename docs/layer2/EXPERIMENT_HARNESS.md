@@ -110,9 +110,9 @@ canonical serialization is deterministic and timestamp-free.
 `SubprocessGatkRunner` — absolute non-symlink executable, verified SHA-256, `shell=False`, the
 current environment allowlist, and the existing bounded-stream, timeout, workspace and
 descriptor-bound output protections. `FakeGatkRunner` can never satisfy it, and naming a fake
-runner while claiming `used_official_runner` still fails. As in F6, the GATK **version is
-provisioned metadata bound to the verified executable digest** — no `--version` probe is
-performed and none is claimed.
+runner while claiming `used_official_runner` still fails. Since `f7a-2` the GATK **version is a
+measured property of the real bundle**: a bounded, offline `gatk --version` is executed and its
+output must equal the provisioned version.
 
 **GATK/Twin parity, defined exactly.** The additive, versioned adapter
 (`l2f-gatk-twin-parity-v1`) builds the accepted Stage-1 Twin plan from the SAME effective CONFIG,
@@ -344,10 +344,17 @@ API keys, cloud credentials and any truth/scoring variable are all absent, prove
 real child environment. stdout/stderr stay bounded **while the process runs**, and a timeout
 terminates the entire process group (proven by a forked grandchild that is also reaped).
 
-**GATK provenance, stated precisely.** The executable is pinned by absolute non-symlink path and a
-verified SHA-256. The version is **provisioned metadata bound to that verified SHA-256** — the
-runner performs **no** `--version` probe, so the version is not a measured property of the binary
-and is never described as one.
+**GATK provenance, stated precisely.** The launcher is pinned by absolute non-symlink path and a
+verified SHA-256, and the local JAR it dispatches to is pinned alongside it as the runtime bundle.
+Since `f7a-2` the version **is** a measured property: the qualifier executes a bounded, offline
+`gatk --version` and requires it to equal the provisioned version. The bundle is re-derived from
+the launcher and JAR bytes immediately **before** the HaplotypeCaller subprocess starts and again
+immediately **after** it exits, and both must equal the identity already frozen into
+`result_hash`; a mismatch raises a typed `GatkExecutionError` and the job reaches the ordinary
+durable FAILED outcome with no retry. This is bounded honesty: it proves the pinned bytes were in
+place around the real execution and that the child cannot be redirected through the known
+JAR-override variables. It does not claim to defeat a privileged attacker able to swap bytes
+transiently and restore them.
 
 ### F6 leakage exclusions
 
