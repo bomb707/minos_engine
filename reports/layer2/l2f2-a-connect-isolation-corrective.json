@@ -1,0 +1,260 @@
+{
+ "allowlist_discovery_method": "pg_roles WHERE rolcanlogin enumerated exactly three cluster LOGIN principals (postgres, minos_f7_observer, minos_evaluator_svc); pg_stat_activity showed the live operational sessions as postgres; the accepted F7 read-only observer URL names minos_f7_observer. Both preserved principals already held EXPLICIT CONNECT before the change, so revoking PUBLIC could not orphan them.",
+ "baseline_database_acl_entries_after": [
+  {
+   "database": "minos_l2f2_baseline",
+   "grantee": "PUBLIC",
+   "is_grantable": false,
+   "privilege_type": "TEMPORARY"
+  },
+  {
+   "database": "minos_l2f2_baseline",
+   "grantee": "minos_admin",
+   "is_grantable": false,
+   "privilege_type": "CONNECT"
+  },
+  {
+   "database": "minos_l2f2_baseline",
+   "grantee": "minos_admin",
+   "is_grantable": false,
+   "privilege_type": "CREATE"
+  },
+  {
+   "database": "minos_l2f2_baseline",
+   "grantee": "minos_admin",
+   "is_grantable": false,
+   "privilege_type": "TEMPORARY"
+  },
+  {
+   "database": "minos_l2f2_baseline",
+   "grantee": "minos_evaluator_svc",
+   "is_grantable": false,
+   "privilege_type": "CONNECT"
+  },
+  {
+   "database": "minos_l2f2_baseline",
+   "grantee": "postgres",
+   "is_grantable": false,
+   "privilege_type": "CONNECT"
+  }
+ ],
+ "baseline_database_acl_hash_after": "d8e6517b94c15d91b995c75507bd675d4604b1468aab011ee43d340bbcb2eb85",
+ "baseline_database_acl_hash_before": "f783a569956651bf1b94875d6a5337849d7c9ba00f986f9c82c68593ad6440d1",
+ "baseline_dataset_count": 50,
+ "baseline_db": "minos_l2f2_baseline",
+ "baseline_evaluation_failures_count": 0,
+ "baseline_evaluation_results_count": 0,
+ "baseline_execution_results_count": 0,
+ "baseline_jobs_count": 0,
+ "baseline_public_connect_after": false,
+ "baseline_public_connect_before": true,
+ "baseline_revision": "0010_l2f2_evaluation_corrective",
+ "baseline_test_count": 0,
+ "baseline_train_count": 50,
+ "baseline_validation_count": 0,
+ "defect": {
+  "id": "OPERATIONAL-DB-REACHABLE-BY-SERVICE-PRINCIPAL",
+  "previous_classification": "HARDENING",
+  "reclassification_reason": "a dedicated TRAIN-only evaluator credential could enter the operational database and, because PostgreSQL role memberships are cluster-global, inherit minos_evaluator authority over closed-partition projections there",
+  "remedy": "explicit per-database CONNECT allowlists on both databases",
+  "root_cause": "PUBLIC held CONNECT on minos_engine_db by PostgreSQL default; PostgreSQL privileges are additive, so revoking CONNECT from the service role alone would have been ineffective while PUBLIC retained it",
+  "severity": "DEFECT - credential/database isolation"
+ },
+ "harness_check": {
+  "checks": 40,
+  "evidence_bytes_changed": false,
+  "gate_require_pass": "PASS",
+  "qualify_check": "PASS"
+ },
+ "l2f2c_execution_boundary": "L2-F2-C-EXECUTION-BOUNDARY-BLOCKER (unchanged, not addressed)",
+ "negative_baseline_connect_probe": {
+  "available": true,
+  "denied_at_database_connect": true,
+  "principal": "minos_f7_observer"
+ },
+ "object_privileges_changed": false,
+ "operational_data_fingerprint_after": "b0e9f5c1d0a7a3dc445118e49174508ccff1072ed257cf157e1cc9dfefe5b05a",
+ "operational_data_fingerprint_before": "b0e9f5c1d0a7a3dc445118e49174508ccff1072ed257cf157e1cc9dfefe5b05a",
+ "operational_data_fingerprint_unchanged": true,
+ "operational_database_acl_entries_after": [
+  {
+   "database": "minos_engine_db",
+   "grantee": "PUBLIC",
+   "is_grantable": false,
+   "privilege_type": "TEMPORARY"
+  },
+  {
+   "database": "minos_engine_db",
+   "grantee": "minos_f7_observer",
+   "is_grantable": false,
+   "privilege_type": "CONNECT"
+  },
+  {
+   "database": "minos_engine_db",
+   "grantee": "postgres",
+   "is_grantable": false,
+   "privilege_type": "CONNECT"
+  },
+  {
+   "database": "minos_engine_db",
+   "grantee": "postgres",
+   "is_grantable": false,
+   "privilege_type": "CREATE"
+  },
+  {
+   "database": "minos_engine_db",
+   "grantee": "postgres",
+   "is_grantable": false,
+   "privilege_type": "TEMPORARY"
+  }
+ ],
+ "operational_database_acl_hash_after": "79fcc0ac3a53c781a0c745c1f6655c883c1bdc32e9b3809149f901b705bbf267",
+ "operational_database_acl_hash_before": "a6c40fb9f5201a2c85413f28dd65e75a926f3fd80a994fa47617d8571f41d903",
+ "operational_dataset_count": 75,
+ "operational_db": "minos_engine_db",
+ "operational_login_reconnect_probes": {
+  "minos_f7_observer_on_baseline_NEGATIVE": {
+   "connected": false,
+   "denied_at_database_connect": true,
+   "message": "(psycopg.OperationalError) connection failed: connection to server at \"127.0.0.1\", port 5433 failed: FATAL:  permission denied for database \"minos_l2f"
+  },
+  "minos_f7_observer_on_operational": {
+   "connected": true,
+   "current_database": "minos_engine_db",
+   "current_user": "minos_f7_observer"
+  },
+  "postgres_on_baseline": {
+   "connected": true,
+   "current_database": "minos_l2f2_baseline",
+   "current_user": "postgres"
+  },
+  "postgres_on_operational": {
+   "connected": true,
+   "current_database": "minos_engine_db",
+   "current_user": "postgres"
+  }
+ },
+ "operational_public_connect_after": false,
+ "operational_public_connect_before": true,
+ "operational_revision": "0005_l2e_feature_view",
+ "operational_split_allocations": {
+  "test": 15,
+  "train": 50,
+  "validation": 10
+ },
+ "original_environment_evidence_modified": false,
+ "other_minos_database_audit": {
+  "additional_isolation_blocker": false,
+  "connectivity": [
+   {
+    "database": "minos_engine_db",
+    "public_connect": false,
+    "svc_connect": false
+   },
+   {
+    "database": "minos_f7b_qualification",
+    "public_connect": true,
+    "svc_connect": true
+   },
+   {
+    "database": "minos_f7b_qualification_r2",
+    "public_connect": true,
+    "svc_connect": true
+   },
+   {
+    "database": "minos_f7b_qualification_r3",
+    "public_connect": true,
+    "svc_connect": true
+   },
+   {
+    "database": "minos_l2f2_baseline",
+    "public_connect": false,
+    "svc_connect": true
+   }
+  ],
+  "historical_f7_databases": {
+   "minos_f7b_qualification": {
+    "closed_partition_allocations": 0,
+    "contains_truth_or_evaluation_sensitive_state": false,
+    "contains_validation_or_test_allocation_state": false,
+    "revision": "0008_l2f_execution_results",
+    "split_allocations_total": 0,
+    "truth_identity_rows": 0
+   },
+   "minos_f7b_qualification_r2": {
+    "closed_partition_allocations": 0,
+    "contains_truth_or_evaluation_sensitive_state": false,
+    "contains_validation_or_test_allocation_state": false,
+    "revision": "0008_l2f_execution_results",
+    "split_allocations_total": 0,
+    "truth_identity_rows": 0
+   },
+   "minos_f7b_qualification_r3": {
+    "closed_partition_allocations": 0,
+    "contains_truth_or_evaluation_sensitive_state": false,
+    "contains_validation_or_test_allocation_state": false,
+    "revision": "0008_l2f_execution_results",
+    "split_allocations_total": 0,
+    "truth_identity_rows": 0
+   }
+  },
+  "note": "the three historical F7 qualification databases still allow the service principal to CONNECT through PUBLIC, and were deliberately left unchanged. Each is at 0008 with 0 split allocations, 0 closed-partition allocations and 0 truth identity rows, so none exposes validation/test allocation state or truth/evaluation-sensitive state."
+ },
+ "real_gatk_run": false,
+ "real_happy_run": false,
+ "role_memberships_changed": false,
+ "schema_version": "l2f2-a-connect-isolation-corrective-v1",
+ "service_baseline_login_probe": {
+  "connected": true,
+  "current_database": "minos_l2f2_baseline",
+  "current_user": "minos_evaluator_svc"
+ },
+ "service_can_connect_baseline_after": true,
+ "service_can_connect_baseline_before": true,
+ "service_can_connect_operational_after": false,
+ "service_can_connect_operational_before": true,
+ "service_memberships": [
+  "minos_evaluator"
+ ],
+ "service_operational_denial_probe": {
+  "authentication_failure": false,
+  "connected": false,
+  "denied_at_database_connect": true,
+  "message": "(psycopg.OperationalError) connection failed: connection to server at \"127.0.0.1\", port 5433 failed: FATAL:  permission denied for database \"minos_engine_db\"",
+  "network_failure": false
+ },
+ "service_principal": "minos_evaluator_svc",
+ "service_role_state": {
+  "bypassrls": false,
+  "createdb": false,
+  "createrole": false,
+  "group_role_minos_evaluator_login": false,
+  "inherit": true,
+  "login": true,
+  "superuser": false
+ },
+ "source_ci_run": 32799667232,
+ "source_commit": "e13ae930c3e74efd2fd416daef0ed0c61218dd91",
+ "source_tree": "d4f2dfd58779a32e5198dc0fadc94000a2b5332c",
+ "statements_executed": [
+  "REVOKE CONNECT ON DATABASE minos_engine_db FROM PUBLIC",
+  "GRANT CONNECT ON DATABASE minos_engine_db TO postgres",
+  "GRANT CONNECT ON DATABASE minos_engine_db TO minos_f7_observer",
+  "REVOKE CONNECT ON DATABASE minos_l2f2_baseline FROM PUBLIC",
+  "GRANT CONNECT ON DATABASE minos_l2f2_baseline TO minos_evaluator_svc",
+  "GRANT CONNECT ON DATABASE minos_l2f2_baseline TO postgres"
+ ],
+ "status": "READY",
+ "test_truth_accessed": false,
+ "train_truth_registration_manifest_hash": "fcf1420f038a6e6dcade2d546f354135ff0d3f84174befdce01766eed3fffc50",
+ "truth_identity_count": 50,
+ "validation_truth_accessed": false,
+ "verified_baseline_login_allowlist": [
+  "minos_evaluator_svc",
+  "postgres"
+ ],
+ "verified_operational_login_allowlist": [
+  "postgres",
+  "minos_f7_observer"
+ ]
+}

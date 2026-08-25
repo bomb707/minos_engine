@@ -20,6 +20,50 @@ deliberately `NOLOGIN` group roles. That is the architecture and it stays.
 Migrations `0009` and `0010` grant evaluation authority to the **group role**. The service
 principal gets that authority purely by membership.
 
+## Database connection isolation — the rule that was missing
+
+PostgreSQL role memberships are **cluster-global**. `minos_evaluator_svc` inherits
+`minos_evaluator` in *every* database of the cluster, including `minos_engine_db`, where that
+group role legitimately holds historical object grants over evaluation and closed-partition
+projections.
+
+Membership is therefore only safe when database `CONNECT` is an **explicit allowlist**.
+
+> **Never rely on the default `PUBLIC` `CONNECT` grant.** PostgreSQL privileges are additive, so
+> `REVOKE CONNECT ON DATABASE minos_engine_db FROM minos_evaluator_svc` is **ineffective** while
+> `PUBLIC` still holds `CONNECT` — the role keeps receiving it through `PUBLIC`.
+
+Required end state:
+
+```sql
+-- operational store: PUBLIC confers nothing; only real operational logins may connect
+REVOKE CONNECT ON DATABASE minos_engine_db FROM PUBLIC;
+GRANT  CONNECT ON DATABASE minos_engine_db TO <each verified operational LOGIN principal>;
+-- and deliberately NOT to minos_evaluator_svc
+
+-- dedicated evaluation store: the service principal, plus the migration login
+REVOKE CONNECT ON DATABASE minos_l2f2_baseline FROM PUBLIC;
+GRANT  CONNECT ON DATABASE minos_l2f2_baseline TO minos_evaluator_svc;
+GRANT  CONNECT ON DATABASE minos_l2f2_baseline TO <migration/admin LOGIN principal>;
+```
+
+Before revoking `PUBLIC` `CONNECT`, enumerate every LOGIN principal that legitimately needs the
+database (`SELECT rolname FROM pg_roles WHERE rolcanlogin`, plus `pg_stat_activity`) and grant it
+explicitly. `NOLOGIN` group roles need no `CONNECT` grant.
+
+Verify the isolation with the real credential, changing **only** the target database:
+
+```sql
+-- must succeed against the evaluation store, and fail against the operational store with
+-- FATAL: permission denied for database "minos_engine_db"
+```
+
+A failure caused by a wrong password, an unknown role or a network error does **not** prove
+isolation — the refusal must occur at database `CONNECT` authorization.
+
+This is a connection-layer control. It does **not** change the group-role architecture, and no
+object-level privilege of `minos_evaluator` is altered.
+
 ## Required properties
 
 The service principal must be created with:

@@ -131,6 +131,28 @@ discipline. `0010` also makes the success/failure XOR genuinely serialized: the 
 trigger takes `FOR UPDATE` (not `FOR SHARE`) on the execution result, so two concurrent
 transactions cannot both conclude that no other outcome exists.
 
+### Object authority vs database connection authority
+
+These are two different controls, and conflating them produced a real isolation defect.
+
+| | |
+|---|---|
+| **Object authority** | what a role may do *inside* a database — schema `USAGE`, table `SELECT`, function `EXECUTE`. `NOLOGIN` group roles legitimately carry it. |
+| **Database connection authority** | whether a principal may *enter* a database at all — `CONNECT ON DATABASE`. Only `LOGIN` principals can exercise it. |
+
+Role memberships are **cluster-global**: an external `LOGIN` principal that inherits a group role
+inherits that group's object grants in *every* database of the cluster, not only the one it was
+provisioned for. A group role's database-local object grants are therefore not a boundary by
+themselves.
+
+The boundary is the per-database `CONNECT` allowlist. Because PostgreSQL privileges are additive,
+the default `PUBLIC` `CONNECT` grant silently defeats a per-role revoke, so `PUBLIC` must be
+revoked and every legitimate `LOGIN` principal granted explicitly. See
+[`EVALUATOR_SERVICE_PROVISIONING.md`](EVALUATOR_SERVICE_PROVISIONING.md).
+
+This clarification adds a control; it does not change the historical L2-B role matrix above, and
+`minos_evaluator`'s object privileges are unchanged.
+
 ### Group role vs service principal
 
 `minos_evaluator` is and remains a **`NOLOGIN` group role**. It carries authority, never

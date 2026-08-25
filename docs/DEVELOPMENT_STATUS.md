@@ -121,6 +121,9 @@ Evidence: `reports/layer2/l2f2-a-environment-result.json`.
 * **Service principal** `minos_evaluator_svc` — `LOGIN`, no `SUPERUSER`/`CREATEDB`/`CREATEROLE`/
   `BYPASSRLS`, member of `minos_evaluator` and nothing else. The group role stays `NOLOGIN`. Its
   credential lives at `minos_l2f2_baseline/l2f2.env`, mode `0600`, outside Git.
+* **Database connection isolation** (corrective, see below): `PUBLIC` `CONNECT` is revoked on
+  both databases and replaced by explicit allowlists. `minos_evaluator_svc` may connect to
+  `minos_l2f2_baseline` and is refused by `minos_engine_db` at `CONNECT` authorization.
 * **Truth**: exactly **50 TRAIN** truth identities registered through the real service login
   (first run 50 created / 0 existing; replay 0 created / 50 existing). Validation and test truth
   were never resolved, opened or hashed, and the baseline database contains no non-TRAIN
@@ -133,6 +136,41 @@ Evidence: `reports/layer2/l2f2-a-environment-result.json`.
 
 **Ledgers are empty by design**: 0 experiment plans, 0 jobs, 0 execution results, 0 evaluation
 results, 0 evaluation failures, 0 metrics artifacts. No score has been produced.
+
+#### Connect-isolation corrective (environment ACL only)
+
+Evidence: `reports/layer2/l2f2-a-connect-isolation-corrective.json`. The original environment
+evidence (`l2f2-a-environment-result.json`) is historical and deliberately unmodified.
+
+The environment audit found that `PUBLIC` held `CONNECT` on `minos_engine_db` by PostgreSQL
+default, so `minos_evaluator_svc` could open the operational database — and because role
+memberships are **cluster-global**, inherit `minos_evaluator`'s historical object grants there,
+including over closed-partition projections. That was originally logged as HARDENING; for
+stage-closure purposes it is **reclassified as a DEFECT (credential/database isolation)**,
+because a TRAIN-only evaluator credential must not be able to enter the operational store at all.
+
+PostgreSQL privileges are additive, so revoking `CONNECT` from the service role alone would have
+been ineffective while `PUBLIC` retained it. The fix is an explicit per-database allowlist:
+
+| Database | `PUBLIC` CONNECT | Allowed LOGIN principals |
+|---|---|---|
+| `minos_engine_db` | **revoked** | `postgres`, `minos_f7_observer` — **not** `minos_evaluator_svc` |
+| `minos_l2f2_baseline` | **revoked** | `minos_evaluator_svc`, `postgres` |
+
+Only three LOGIN principals exist cluster-wide, and both preserved operational principals already
+held explicit `CONNECT`, so revoking `PUBLIC` could not orphan them. Proven with the real
+credential: connecting to `minos_l2f2_baseline` succeeds as `minos_evaluator_svc`, and the same
+host/port/username/password against `minos_engine_db` fails with
+`FATAL: permission denied for database "minos_engine_db"` — at `CONNECT` authorization, not
+authentication. Both preserved principals reconnect successfully, and `minos_f7_observer` is
+refused by the baseline database, proving `PUBLIC` no longer confers access there.
+
+**No object-level privilege, schema grant, table grant, function grant or role membership was
+changed**, and the operational scientific/schema/data fingerprint is byte-identical
+(`b0e9f5c1…`) before and after. Only the two databases' `CONNECT` ACLs changed. The three
+historical F7 qualification databases were deliberately left unchanged; each is at `0008` with
+0 split allocations and 0 truth identities, so none exposes closed-partition or truth-sensitive
+state.
 
 #### Future L2-F2-C canary execution boundary — **BLOCKED**
 
