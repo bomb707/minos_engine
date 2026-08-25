@@ -26,7 +26,7 @@ the historical pre-implementation evidence lives in
 | Evaluator service principal | **PROVISIONED** — `minos_evaluator_svc`, `LOGIN`, member of `minos_evaluator` only |
 | Baseline workspace and database | **ENVIRONMENT_READY** — `/home/hr/bittensor/minos_l2f2_baseline`, database at `0010_l2f2_evaluation_corrective` |
 | Database connection isolation | **CLOSED** — `PUBLIC` `CONNECT` revoked on both databases; the evaluator credential cannot reach `minos_engine_db` |
-| Real-GATK canary boundary | **BLOCKED** — `L2-F2-C-EXECUTION-BOUNDARY-BLOCKER`; a qualification-grade boundary for the baseline database is a later source task |
+| Real-GATK canary boundary | **SOURCE_READY_PENDING_ENVIRONMENT** — migration `0011` and `execute_next_l2f2_phase_a_job` implement a least-privilege real-GATK boundary for the baseline database. The environment is not yet provisioned and the canary has not run |
 
 ---
 

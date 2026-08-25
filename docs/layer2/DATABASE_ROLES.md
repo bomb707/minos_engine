@@ -131,6 +131,22 @@ discipline. `0010` also makes the success/failure XOR genuinely serialized: the 
 trigger takes `FOR UPDATE` (not `FOR SHARE`) on the execution result, so two concurrent
 transactions cannot both conclude that no other outcome exists.
 
+### L2-F2 runner boundary (`0011`)
+
+`0008` gives `minos_runner` **no direct table privilege**: it writes only through
+`SECURITY DEFINER` functions. `0011` completes that boundary so an external `minos_runner_svc`
+whose only membership is `minos_runner` can execute a baseline job without ever holding
+`minos_admin`.
+
+| Object | Privilege | Why this and not more |
+|---|---|---|
+| `experiments.l2f2_resolve_claimed_execution` | `EXECUTE` | the truth-free scientific identity of a job this worker already owns. Truth and mutation digests are absent from the result type, and a non-TRAIN member cannot be resolved at all |
+| `experiments.l2f2_register_execution_artifact` | `EXECUTE` | the ONLY path into `catalog.artifacts`. Accepts `vcf` or `result_manifest`; media type and provenance are fixed inside the function |
+| `public.alembic_version` | `SELECT` | the boundary refuses a wrong-revision database, so it must be able to read the revision |
+| `experiments.l2f2_execution_authorities` | **none** | the execution authority is control-plane state; it is append-only even for `minos_admin`, which holds `SELECT` and `INSERT` only |
+
+See [`RUNNER_SERVICE_PROVISIONING.md`](RUNNER_SERVICE_PROVISIONING.md).
+
 ### Object authority vs database connection authority
 
 These are two different controls, and conflating them produced a real isolation defect.

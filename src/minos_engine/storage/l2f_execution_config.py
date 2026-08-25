@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +68,16 @@ def load_accepted_execution_config(
         raise ConfigArtifactError(
             f"plan config {plan_config_id} of plan {plan_id} has no persisted CONFIG payload"
         )
+    return validate_execution_config_artifact(dict(row))
+
+
+def validate_execution_config_artifact(row: Mapping[str, Any]) -> ExecutionConfig:
+    """Read and fully validate one persisted CONFIG artifact from its catalog row.
+
+    The SHARED core. ``load_accepted_execution_config`` supplies ``row`` from a direct SELECT;
+    the L2-F2 runner supplies the identical column set from a ``SECURITY DEFINER`` function.
+    Every byte, hash, canonicality and live-domain check is performed identically on both paths.
+    """
     if row["media_type"] != CONFIG_ARTIFACT_MEDIA_TYPE:
         raise ConfigArtifactError(
             f"CONFIG payload media_type {row['media_type']!r} is not the canonical L2-F type"

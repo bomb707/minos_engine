@@ -27,9 +27,9 @@ does not restate or override them.
 | HARNESS historical Alembic head | `0008_l2f_execution_results` (stage-scoped; the repository head advances independently) |
 | Operational DB revision | `0005_l2e_feature_view` |
 | Next gate | **BASELINE-QUALIFIED** (designed in `docs/layer2/BASELINE_QUALIFICATION.md`, not implemented) |
-| Current task | **L2-F2-B — baseline search protocol: PROTOCOL_FROZEN** |
-| Previous task | L2-F2-A — offline evaluation foundation — **CLOSED** (source + environment) |
-| Source Alembic head | `0010_l2f2_evaluation_corrective` (migrations `0001`–`0010`) |
+| Current task | **L2-F2-C — least-privilege GATK execution boundary: SOURCE_READY_PENDING_ENVIRONMENT** |
+| Previous task | L2-F2-B — baseline search protocol — **CLOSED** at PROTOCOL_FROZEN |
+| Source Alembic head | `0011_l2f2_runner_boundary` (migrations `0001`–`0011`) |
 
 `select_config` remains deliberately blocked by `StageNotReadyError` and stays
 blocked until L2-H.
@@ -173,7 +173,7 @@ historical F7 qualification databases were deliberately left unchanged; each is 
 0 split allocations and 0 truth identities, so none exposes closed-partition or truth-sensitive
 state.
 
-### L2-F2-B status — PROTOCOL_FROZEN
+### L2-F2-B status — CLOSED (PROTOCOL_FROZEN)
 
 `l2f2-baseline-search-protocol-v1` is committed, hashed and **pre-registered before the first
 real score exists**. Manifest `manifests/l2f2_baseline_protocol_v1.json`, schema
@@ -214,10 +214,59 @@ moving α from 0.25 to 0.20 does.
 **Nothing has been executed.** No Phase-A run, no observed score, no baseline candidate, no
 validation access. TEST stays sealed until L2-I.
 
-#### Future L2-F2-C canary execution boundary — **BLOCKED**
+### L2-F2-C status — SOURCE_READY_PENDING_ENVIRONMENT
 
-`L2-F2-C-EXECUTION-BOUNDARY-BLOCKER`. No existing surface can run real GATK against the baseline
-database:
+The source-side blocker is closed. A least-privilege real-GATK boundary now exists for the
+baseline database; **nothing has been executed and no environment has been provisioned.**
+Evidence: `reports/layer2/l2f2-c-execution-boundary-result.json`.
+
+**Why the historical entries could not be reused.** `execute_next_accepted_job` is the accepted
+F5 production entry, but it verifies the canonical *operational* database identity and revision
+`0008` on every connection it opens — pointing it at `minos_l2f2_baseline` would have meant
+weakening exactly the check that makes it trustworthy. `_execute_next_job_with_trust` is private,
+documented test-only and typed `FakeGatkRunner`. And the historical Python path reads the plan
+graph with direct `SELECT` and persists artifacts under `SET LOCAL ROLE minos_admin`, which an
+external principal holding only `minos_runner` cannot do — and must not be given.
+
+**Phase-A authority.** `manifests/l2f2_phase_a_execution_authority_v1.json` fixes the plan before
+any score exists: TRAIN batch 0 (five members, one per chromosome chr18–chr22) × the accepted 39
+candidates = **195** logical jobs, `plan_hash`
+`97ba598778a5fc634345ded0901e4975af9c6b875c5b70fc7e76f2ae482e1b9a`. Member science is verbatim
+from the accepted 50-member plan; only the local `member_index` is renumbered.
+
+**The canary is structural, not chosen.** It is logical job **0** — member 0
+(`minos-chr18-028662fb934529d7`, round `028662fb934529d7`) against config 0, the accepted seed —
+so it cannot be picked after looking at results. Being a genuine Phase-A job rather than an extra
+run, its exact immutable execution may later be reused inside Phase A, which can only *reduce*
+the frozen 1215-pair budget.
+
+**Migration `0011_l2f2_runner_boundary`** is additive and reversible (`0011 → 0010 → 0011` is
+inventory-exact). It adds an append-only `experiments.l2f2_execution_authorities` binding a
+persisted plan to the frozen L2-F2-B protocol hash, a truth-free resolution function, and a
+narrow artifact registrar that accepts only `vcf` and `result_manifest` and fixes media type and
+provenance itself. `minos_runner` receives `EXECUTE` on exactly those two functions plus `SELECT`
+on `alembic_version`, and **no table privilege anywhere**.
+
+**The public entry** `execute_next_l2f2_phase_a_job(*, worker_id)` takes nothing else — no
+runner, engine, plan, hash, path or trust flag — and constructs the real `SubprocessGatkRunner`
+itself. Every connection it opens verifies the baseline database, revision `0011`, and that the
+`session_user` is a LOGIN principal with no elevated attributes whose only MINOS membership is
+`minos_runner`. It never issues `SET ROLE`, never writes a table directly, and returns the
+durable `execution_result_id` the evaluator needs. Input and CONFIG bytes are re-hashed and
+re-validated through the *same* verification cores the historical path uses, so neither path can
+drift into trusting metadata.
+
+**`execute_next_accepted_job` is unchanged** and still refuses any non-operational database and
+any revision other than `0008`. No bypass flag was added anywhere.
+
+**Not done, and not claimed:** `minos_runner_svc` is not provisioned, no credential file exists,
+the real baseline database is still at `0010`, no Phase-A plan is persisted, no job is enqueued,
+and no GATK, hap.py, score or evaluation has been produced.
+
+#### L2-F2-C canary execution — NOT RUN
+
+The canary itself has **not** run. The former `L2-F2-C-EXECUTION-BOUNDARY-BLOCKER` is resolved
+in source; for the record, the surfaces that could not be used were:
 
 * `execute_next_accepted_job` is the accepted public entry with the real `SubprocessGatkRunner`,
   but it requires the operational database identity and revision `0008`;
@@ -227,8 +276,10 @@ database:
   run the real runner against a non-operational scratch database, but `_require_scratch_at_0008`
   refuses any revision other than `0008` and it is bound to the accepted 1950-job F7 plan.
 
-A qualification-grade real-GATK boundary for the baseline database is an **L2-F2-C source task**
-and is deliberately not implemented here.
+That boundary is now implemented as `minos_engine.storage.l2f2_runner`, with control-plane
+preparation in `minos_engine.storage.l2f2_canary_prepare`. Running the canary requires the next
+environment task: migrate the baseline database to `0011`, provision `minos_runner_svc`, grant it
+`CONNECT`, prepare the Phase-A plan and enqueue the single canary job.
 
 **Not yet done, and not claimed:**
 

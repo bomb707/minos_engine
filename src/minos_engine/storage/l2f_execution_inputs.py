@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -200,10 +201,26 @@ def resolve_accepted_execution_input(
         {"p": plan_id, "m": plan_member_id},
         "accepted plan member",
     )
+    return verify_execution_input(member, root=root, reference_length=reference_length)
+
+
+def verify_execution_input(
+    member: Mapping[str, Any],
+    *,
+    root: DatasetRoot,
+    reference_length: int | None = None,
+) -> tuple[ExecutionInput, ResolvedInputPaths]:
+    """Byte-verify one TRAIN member's provisioned inputs against its accepted identity.
+
+    The SHARED core. ``resolve_accepted_execution_input`` reads ``member`` with a direct SELECT
+    (the historical operational path); the L2-F2 runner receives the identical column set from a
+    ``SECURITY DEFINER`` function because ``minos_runner`` has no direct table privilege. Both
+    then verify the same bytes the same way, so neither path can drift into trusting metadata.
+    """
     if member["partition"] != _TRAIN:
         raise InputResolutionError(
-            f"plan member {plan_member_id} has partition {member['partition']!r}; only accepted "
-            "TRAIN members may be executed"
+            f"plan member {member.get('dataset_id')} has partition "
+            f"{member['partition']!r}; only accepted TRAIN members may be executed"
         )
 
     paths = root.paths_for(round_id=str(member["round_id"]), chromosome=str(member["chromosome"]))

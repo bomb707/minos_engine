@@ -660,7 +660,10 @@ def test_harness_offline_verification_still_passes_as_the_repository_head_advanc
     )
 
     root = _repo_root()
-    assert recompute_alembic_head(root) == "0010_l2f2_evaluation_corrective"
+    # the seam property, not a pinned value: the repository head is free to advance with each
+    # additive L2-F2 migration, while the HARNESS head stays anchored to the stage it qualified.
+    repository = recompute_alembic_head(root)
+    assert repository > "0009_l2f_evaluation_results", repository
     assert recompute_harness_alembic_head(root) == "0008_l2f_execution_results"
     if not (root / "gates" / "harness-ready.json").exists():  # pragma: no cover
         pytest.skip("HARNESS evidence is not committed in this tree")

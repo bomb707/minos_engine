@@ -1,0 +1,124 @@
+# Runner service principal — provisioning runbook
+
+**Nothing in this document is executed by the repository, and no credential belongs in Git.**
+It specifies how the *external* login identity for the L2-F2 baseline GATK runner is created.
+Nothing here has been provisioned yet: this is the contract the next environment task follows.
+
+## The distinction that matters
+
+| | |
+|---|---|
+| `minos_runner` | **built-in group role, intentionally `NOLOGIN`** — carries authority, never credentials |
+| `minos_runner_svc` | **external service principal, `LOGIN`** — carries the credential, inherits only `minos_runner` |
+
+`minos_live`, `minos_runner`, `minos_evaluator`, `minos_trainer` and `minos_admin` are all
+deliberately `NOLOGIN` group roles. That is the architecture and it stays.
+
+> **Never** `ALTER ROLE minos_runner LOGIN`, and never give it a password.
+
+Migration `0011` grants the runner boundary to the **group role**. The service principal gets
+that authority purely by membership.
+
+## Required properties
+
+* `LOGIN`
+* **NO** `SUPERUSER`, `CREATEDB`, `CREATEROLE`, `BYPASSRLS`
+* `GRANT minos_runner TO minos_runner_svc` — and **no other** role membership
+* specifically **not** `minos_admin`, `minos_evaluator`, `minos_trainer` or `minos_live`
+
+The runner boundary verifies all of this on **every connection it opens**, reading
+`session_user` rather than `current_user` so an already-issued `SET ROLE` cannot disguise which
+principal actually logged in.
+
+## Provisioning (run by the operator, outside Git)
+
+```sql
+-- password supplied interactively or from a secret store; never committed, never logged
+CREATE ROLE minos_runner_svc LOGIN PASSWORD :'runner_password'
+    NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS INHERIT;
+
+GRANT CONNECT ON DATABASE minos_l2f2_baseline TO minos_runner_svc;
+GRANT minos_runner TO minos_runner_svc;
+```
+
+Verify afterwards:
+
+```sql
+SELECT rolsuper, rolcreatedb, rolcreaterole, rolbypassrls, rolcanlogin
+  FROM pg_roles WHERE rolname = 'minos_runner_svc';
+-- expect: f, f, f, f, t
+
+SELECT r.rolname FROM pg_auth_members m
+  JOIN pg_roles r ON r.oid = m.roleid
+  JOIN pg_roles g ON g.oid = m.member
+ WHERE g.rolname = 'minos_runner_svc';
+-- expect exactly one row: minos_runner
+
+SELECT rolcanlogin FROM pg_roles WHERE rolname = 'minos_runner';
+-- expect: f  (the group role stays NOLOGIN)
+```
+
+## Database connection isolation
+
+PostgreSQL role memberships are **cluster-global**, so `CONNECT` must be an explicit allowlist.
+`PUBLIC` `CONNECT` is already revoked on both databases; relying on it is forbidden, and a
+per-role revoke is ineffective while `PUBLIC` holds the privilege.
+
+The runner service principal may connect to **`minos_l2f2_baseline`** and must **not** be able to
+connect to `minos_engine_db`. The next environment task issues exactly one grant:
+
+```sql
+GRANT CONNECT ON DATABASE minos_l2f2_baseline TO minos_runner_svc;
+-- and deliberately NOTHING for minos_engine_db
+```
+
+Verify with the real credential, changing **only** the target database: the baseline store must
+connect, and the operational store must fail with
+`FATAL: permission denied for database "minos_engine_db"` — at `CONNECT` authorization, not
+authentication.
+
+## What the principal can and cannot do
+
+Granted by `0011` through `minos_runner`, on top of the existing `0007`/`0008` grants:
+
+* `EXECUTE` on `experiments.l2f2_resolve_claimed_execution` — the truth-free scientific identity
+  of a job this worker already owns. Truth digests, mutation digests and evaluation rows are
+  structurally absent from its result type, and a non-TRAIN member cannot be resolved at all
+* `EXECUTE` on `experiments.l2f2_register_execution_artifact` — the ONLY path into
+  `catalog.artifacts`. It accepts `vcf` or `result_manifest` and fixes media type and provenance
+  itself, so it cannot register any other kind of artifact
+* `SELECT` on `public.alembic_version` — so the boundary can refuse a wrong-revision database
+* the existing `0007`/`0008` claim, start, release, complete-success and fail functions
+
+Deliberately **not** granted:
+
+* any direct privilege on `experiments.l2f2_execution_authorities` — the execution authority is
+  created and read by the control plane only, and is append-only even for it
+* any direct `SELECT`/`INSERT`/`UPDATE`/`DELETE` on the L2-F plan, job, result or failure tables
+* generic `INSERT` on `catalog.artifacts`
+* anything in the `evaluation` schema — the runner is truth-free by construction
+
+## Credential handling
+
+The connection secret lives in a `0600` environment file beneath the canonical baseline
+workspace:
+
+```
+/home/hr/bittensor/minos_l2f2_baseline/l2f2-runner.env
+```
+
+It may carry `MINOS_DATABASE_URL` plus the already-accepted GATK, dataset, work-root and
+artifact-root variables. Consistent with the canonical-workspace rule it is never created
+directly under `/home/hr`, and it is never committed. Rotate with
+`ALTER ROLE minos_runner_svc PASSWORD …` and update that file; no repository change is required,
+because the repository never holds the credential.
+
+## CI
+
+CI proves the *authority shape* without a production credential: it creates an ephemeral
+`minos_runner_ci_svc LOGIN`, grants it `minos_runner` and nothing else, and runs a complete
+execution — claim, resolve, start, publish, register, complete — entirely under that principal,
+before asserting the denials (no table mutation anywhere, no ledger or authority read, no
+`SET ROLE`, and none of `SUPERUSER`/`CREATEDB`/`CREATEROLE`/`BYPASSRLS`). Each denial statement is
+separately proven well formed under a role that *is* allowed to run it, so a denial can never
+pass by dying in the parser. See `tests/integration/layer2_db/test_l2f2_runner_boundary.py`.

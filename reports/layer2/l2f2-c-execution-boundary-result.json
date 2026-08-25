@@ -1,0 +1,109 @@
+{
+ "baseline_protocol_hash": "c548e190571f5e964560cf30021a520ea8aad6674569fa3202af880d7dff77d1",
+ "canary_chromosome": "chr18",
+ "canary_config_hash": "4251cb85e5cd58b7eabfe530b9df23ea7d1d14fd882114b488d67cbd81b751b8",
+ "canary_config_index": 0,
+ "canary_dataset_id": "minos-chr18-028662fb934529d7",
+ "canary_job_key": "b25fabaffbbd51a0f1ec219898fcb77452133ca4ab9a578b7f12b0ad2fe14754",
+ "canary_logical_index": 0,
+ "canary_round_id": "028662fb934529d7",
+ "candidate_set_hash": "50d5f36918758de204e4b34cdd3fc8560a14debfcdb25869f713690c6085057d",
+ "control_plane_prepare_entry": "minos_engine.storage.l2f2_canary_prepare.prepare_l2f2_phase_a_canary",
+ "harness_alembic_head": "0008_l2f_execution_results",
+ "harness_check": {
+  "checks": 40,
+  "evidence_bytes_changed": false,
+  "gate_require_pass": "PASS",
+  "qualify_check": "PASS"
+ },
+ "historical_f5_regression": {
+  "bypass_flag_added": false,
+  "constructs_subprocess_runner": true,
+  "execute_next_accepted_job_signature": [
+   "worker_id"
+  ],
+  "private_seam_still_fake_typed": true,
+  "requires_operational_identity": true,
+  "requires_revision": "0008_l2f_execution_results"
+ },
+ "l2f2b_protocol_modified": false,
+ "least_privilege_checks": {
+  "checks_session_user_not_current_user": true,
+  "direct_table_dml": false,
+  "generic_catalog_artifact_insert": false,
+  "issues_set_role": false,
+  "proved_with_temporary_login": "minos_runner_ci_svc",
+  "refuses_elevated_attributes": [
+   "SUPERUSER",
+   "CREATEDB",
+   "CREATEROLE",
+   "BYPASSRLS"
+  ],
+  "requires_baseline_database": "minos_l2f2_baseline",
+  "requires_membership_exactly": [
+   "minos_runner"
+  ],
+  "requires_revision": "0011_l2f2_runner_boundary",
+  "runner_function_grants": [
+   "experiments.l2f2_register_execution_artifact",
+   "experiments.l2f2_resolve_claimed_execution"
+  ],
+  "runner_reads_alembic_version": true,
+  "runner_table_privileges_on_authority": [],
+  "truth_access": false
+ },
+ "migration_down_revision": "0010_l2f2_evaluation_corrective",
+ "migration_lifecycle": {
+  "downgrade_removes_only_0011_objects": true,
+  "inventory_exact": true,
+  "sequence": [
+   "0010",
+   "0011",
+   "0010",
+   "0011"
+  ]
+ },
+ "migration_revision": "0011_l2f2_runner_boundary",
+ "migrations_0001_to_0010_unchanged": true,
+ "parameter_space_hash": "b2d401918084d64023305d9262baf5011a89fe517bee4e0bd33af79fb14aee2e",
+ "phase_a_authority_hash": "9ad0ba48c80e7b305505fea201e93185deb15ae735338086d05b38afcf4deb3f",
+ "phase_a_authority_manifest": "manifests/l2f2_phase_a_execution_authority_v1.json",
+ "phase_a_authority_manifest_sha256": "6c5a728bbf7d93cfc62e388395dee953b60a3f04fcdbd0ad72a2c422e3db0d7e",
+ "phase_a_candidate_count": 39,
+ "phase_a_logical_job_count": 195,
+ "phase_a_member_count": 5,
+ "phase_a_member_dataset_ids": [
+  "minos-chr18-028662fb934529d7",
+  "minos-chr19-0de906231aa96ade",
+  "minos-chr20-42bdea88e6242d37",
+  "minos-chr21-0279a3b8042f848b",
+  "minos-chr22-19a4002faeaacbdf"
+ ],
+ "phase_a_plan_hash": "97ba598778a5fc634345ded0901e4975af9c6b875c5b70fc7e76f2ae482e1b9a",
+ "private_test_seam": "minos_engine.storage.l2f2_runner._execute_l2f2_job",
+ "public_runner_entry": "minos_engine.storage.l2f2_runner.execute_next_l2f2_phase_a_job",
+ "public_runner_signature": [
+  "worker_id"
+ ],
+ "real_baseline_db_modified": false,
+ "real_baseline_db_revision": "0010_l2f2_evaluation_corrective",
+ "real_credential_file_created": false,
+ "real_gatk_run": false,
+ "real_happy_run": false,
+ "real_job_enqueued": false,
+ "real_phase_a_plan_persisted": false,
+ "real_runner_service_principal_created": false,
+ "runner_role": "minos_runner",
+ "schema_version": "l2f2-c-execution-boundary-v1",
+ "score_observed": false,
+ "scoring_contract_modified": false,
+ "select_config_blocked": true,
+ "source_parent": "a6541e6d37ec7827ff74da7f06136484bc3087b7",
+ "source_parent_ci_run": 32813185784,
+ "source_parent_tree": "eda02761909b202918b9c2b1ea3d678bc5721d86",
+ "split_manifest_sha256": "ffdd31955a24147430156aff003248f8acb51c68514ca95c6fdbe75525328773",
+ "status": "SOURCE_READY_PENDING_ENVIRONMENT",
+ "test_truth_accessed": false,
+ "train_schedule_manifest_sha256": "694a8993ef64f72ca3705442c1bc070c0288d46e08e00e39bab1155d4415d454",
+ "validation_truth_accessed": false
+}
