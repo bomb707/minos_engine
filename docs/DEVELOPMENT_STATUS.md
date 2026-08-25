@@ -75,6 +75,35 @@ content-addressed publisher and the production orchestrator.
   bytes, runs hap.py only through `HappyRunner`, scores under ONE `ScoringAuthority`, and
   persists ONE `EvaluationRecord` whose `evaluation_hash` is computed from that record.
 
+#### Runtime and retry isolation (source-only, no migration)
+
+Three runtime defects closed before any real hap.py execution. None of them touches the schema,
+the scoring semantics or any scientific identity.
+
+* **Container containment.** `subprocess` kills only the Docker *client* on timeout; the
+  container it started keeps running, keeps writing output and can race the next attempt. Every
+  production invocation now gets a unique runtime identity (`minos-happy-<uuid>`, passed as
+  `--name`), and a timeout or start failure explicitly runs `docker rm --force` on **that**
+  container and then proves absence with `docker inspect`. If containment cannot be established
+  the runner raises `HappyContainmentError` instead of reporting a clean timeout; the
+  orchestrator records it as `EVALUATION_ERROR`. Cleanup is `shell=False` and separately bounded.
+  A normal exit issues no destructive cleanup — `--rm` has already reaped the container.
+* **Per-attempt output isolation.** hap.py used a deterministic prefix directly inside the shared
+  work directory, so a crashed or timed-out attempt could leave partial output a later retry
+  would read as its own. `EvaluationProvisioning.work_dir` is now the work **root**, and every
+  run gets a fresh private attempt directory (mode `0700`, never reused) created by the audited
+  workspace core in `minos_engine.storage.attempt_workspace` — the same implementation L2-F1
+  execution uses, factored into a neutral module so the evaluator never imports the GATK
+  execution path. Raw hap.py output is a runtime intermediate and is removed after a terminal
+  outcome through the retained descriptor; the metrics document and the ledger rows are what
+  survive.
+* **Terminal replay.** An evaluation outcome is immutable and mutually exclusive, so re-running
+  hap.py could not change the answer. Before any VCF verification, truth hashing or container
+  start, the orchestrator reads its own terminal state through the evaluator's granted
+  projections: an existing success or failure is returned immediately with no runner invocation.
+  A crash *before* a durable terminal row is a different case and still gets a fresh attempt.
+  Both outcomes present at once is refused as `DualTerminalOutcomeError` rather than resolved.
+
 **Not yet done, and not claimed:**
 
 * the baseline workspace `/home/hr/bittensor/minos_l2f2_baseline` does not exist;

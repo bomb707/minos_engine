@@ -754,8 +754,8 @@ def _good_runner() -> Any:
     from minos_engine.evaluation.happy_runner import FakeHappyRunner
 
     return FakeHappyRunner(
-        written_files={"happy_output.summary.csv": _SUMMARY_CSV},
-        written_bytes={"happy_output.vcf.gz": _gzip(_HAPPY_VCF_LINES)},
+        written_files={"happy.summary.csv": _SUMMARY_CSV},
+        written_bytes={"happy.vcf.gz": _gzip(_HAPPY_VCF_LINES)},
     )
 
 
@@ -765,21 +765,8 @@ def _run(engine: Any, env: Any, evaluated: Any, tmp_path: Path, runner: Any) -> 
 
     provisioning = _provisioning(tmp_path)
     result_id = _result_id(env, evaluated)
-    # FakeHappyRunner writes by fixed name; expose them under the prefix the orchestrator chose.
-    outcome_prefix = f"happy_{result_id}"
-    runner = type(runner)(
-        exit_code=runner.exit_code,
-        runtime_ms=runner.runtime_ms,
-        raise_timeout=runner.raise_timeout,
-        written_files={
-            name.replace("happy_output", outcome_prefix): value
-            for name, value in runner.written_files.items()
-        },
-        written_bytes={
-            name.replace("happy_output", outcome_prefix): value
-            for name, value in runner.written_bytes.items()
-        },
-    )
+    # the runner writes into whatever work_dir it is handed, which is now a FRESH attempt
+    # directory chosen by the orchestrator, under the fixed "happy" prefix.
     return evaluate_execution(
         engine,
         execution_result_id=result_id,
@@ -1123,3 +1110,322 @@ def test_the_corrective_downgrades_to_exactly_0009_and_upgrades_back(
     finally:
         engine.dispose()
     env.engine = create_engine(url)
+
+
+# --------------------------------------------------------------------------- #
+# RUNTIME ISOLATION — fresh attempt directory, and terminal replay never re-executes
+# --------------------------------------------------------------------------- #
+class _CountingRunner:
+    """A HappyRunner that records how often it was actually invoked."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self.calls = 0
+
+    def run(self, **kwargs: Any) -> Any:
+        self.calls += 1
+        return self._inner.run(**kwargs)
+
+
+class _ExplodingRunner:
+    """A HappyRunner that fails the test if it is invoked at all."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def run(self, **kwargs: Any) -> Any:
+        self.calls += 1
+        raise AssertionError("hap.py must not run for an already-terminal evaluation")
+
+
+def _run_with(engine: Any, env: Any, evaluated: Any, tmp_path: Path, runner: Any) -> Any:
+    from minos_engine.evaluation.orchestrator import evaluate_execution
+
+    return evaluate_execution(
+        engine,
+        execution_result_id=_result_id(env, evaluated),
+        authority=_authority(),
+        happy_runner=runner,
+        publisher=_artifact_publisher(tmp_path),
+        provisioning=_provisioning(tmp_path),
+    )
+
+
+def test_each_run_uses_a_fresh_private_attempt_directory(
+    service: Any, env: Any, evaluated: Any, tmp_path: Path
+) -> None:
+    """The work_dir handed to hap.py is a NEW 0700 directory beneath the work root each time.
+
+    Two genuinely different completed executions are evaluated, because an evaluation ledger row
+    is immutable and append-only — there is deliberately no way to "redo" one.
+    """
+    import stat as _stat
+
+    _provision_real_truth(env, tmp_path / "practice", engine=service)
+    seen: list[Path] = []
+    modes: list[int] = []
+
+    class _Recording:
+        def run(self, **kwargs: Any) -> Any:
+            work_dir = Path(kwargs["work_dir"])
+            seen.append(work_dir)
+            modes.append(_stat.S_IMODE(work_dir.lstat().st_mode))
+            assert Path(kwargs["output_prefix"]).parent == work_dir
+            return _good_runner().run(**kwargs)
+
+    first = _run_with(service, env, evaluated, tmp_path, _Recording())
+    assert first.status == "EVALUATED"
+
+    other = env.run()
+    assert other is not None and other.status == "SUCCEEDED"
+    _provision_real_truth(env, tmp_path / "practice", engine=service)
+    second = _run_with(service, env, other, tmp_path, _Recording())
+    assert second.status == "EVALUATED", second.failure_code
+
+    assert len(seen) == 2
+    assert seen[0] != seen[1], "an attempt directory is never reused"
+    assert modes == [0o700, 0o700]
+    assert seen[0].parent == seen[1].parent == (tmp_path / "happy_work")
+    # runtime intermediates do not survive a terminal outcome
+    assert not seen[0].exists() and not seen[1].exists()
+
+
+def test_stale_output_in_the_work_root_cannot_influence_the_evaluation(
+    service: Any, env: Any, evaluated: Any, tmp_path: Path
+) -> None:
+    """A previous attempt's leftovers are outside the fresh attempt namespace entirely."""
+    _provision_real_truth(env, tmp_path / "practice", engine=service)
+    work_root = tmp_path / "happy_work"
+    work_root.mkdir(exist_ok=True)
+
+    # valid-LOOKING but scientifically different leftovers, sitting in the parent work root
+    poisoned = _SUMMARY_CSV.replace("1.0,1.0,0.0,1.0", "0.01,0.01,0.9,0.01")
+    for name in ("happy.summary.csv", f"happy_{_result_id(env, evaluated)}.summary.csv"):
+        (work_root / name).write_text(poisoned, encoding="utf-8")
+    (work_root / "happy.vcf.gz").write_bytes(_gzip(_HAPPY_VCF_LINES))
+
+    outcome = _run_with(service, env, evaluated, tmp_path, _good_runner())
+
+    assert outcome.status == "EVALUATED"
+    with env.engine.connect() as conn:
+        score = conn.execute(
+            text(
+                "SELECT minos_score FROM evaluation.l2f_evaluation_results "
+                " WHERE execution_result_id = :e"
+            ),
+            {"e": _result_id(env, evaluated)},
+        ).scalar_one()
+    # the poisoned summary would have produced a far lower score had it been read
+    assert float(score) > 0.5, "the evaluation read stale parent-directory output"
+    # the leftovers are untouched: cleanup only ever removes the attempt's own inode
+    assert (work_root / "happy.summary.csv").read_text(encoding="utf-8") == poisoned
+
+
+def test_an_already_successful_evaluation_is_never_re_executed(
+    service: Any, env: Any, evaluated: Any, tmp_path: Path
+) -> None:
+    _provision_real_truth(env, tmp_path / "practice", engine=service)
+    counted = _CountingRunner(_good_runner())
+    first = _run_with(service, env, evaluated, tmp_path, counted)
+    assert first.status == "EVALUATED" and counted.calls == 1
+
+    exploding = _ExplodingRunner()
+    second = _run_with(service, env, evaluated, tmp_path, exploding)
+
+    assert exploding.calls == 0, "hap.py must not be launched for a terminal evaluation"
+    assert second.status == "EVALUATED"
+    assert second.persisted is not None and first.persisted is not None
+    assert second.persisted.evaluation_id == first.persisted.evaluation_id
+    assert second.persisted.evaluation_hash == first.persisted.evaluation_hash
+    assert second.persisted.created is False
+    assert second.metrics_artifact_id == first.metrics_artifact_id
+    assert _counts(env, _result_id(env, evaluated)) == {
+        "successes": 1,
+        "failures": 0,
+        "metrics_artifacts": 1,
+    }
+    assert len(sorted((tmp_path / "evaluation_artifacts").glob("*.json"))) == 1
+
+
+def test_an_already_failed_evaluation_is_never_automatically_retried(
+    service: Any, env: Any, evaluated: Any, tmp_path: Path
+) -> None:
+    from minos_engine.evaluation.happy_runner import FakeHappyRunner
+
+    _provision_real_truth(env, tmp_path / "practice", engine=service)
+    first = _run_with(service, env, evaluated, tmp_path, FakeHappyRunner(exit_code=3))
+    assert first.failure_code == "HAPPY_NONZERO_EXIT"
+
+    # a runner that WOULD succeed must not get the chance: the failure is terminal.
+    exploding = _ExplodingRunner()
+    second = _run_with(service, env, evaluated, tmp_path, exploding)
+
+    assert exploding.calls == 0
+    assert second.status == "FAILED"
+    assert second.failure_code == "HAPPY_NONZERO_EXIT"
+    assert second.failure_id == first.failure_id
+    assert _counts(env, _result_id(env, evaluated)) == {
+        "successes": 0,
+        "failures": 1,
+        "metrics_artifacts": 0,
+    }
+
+
+def test_a_crash_before_any_terminal_row_still_gets_a_fresh_attempt(
+    service: Any, env: Any, evaluated: Any, tmp_path: Path
+) -> None:
+    """Retry policy: no terminal row means the work never completed, so it may run again."""
+    _provision_real_truth(env, tmp_path / "practice", engine=service)
+
+    class _Crashing:
+        calls = 0
+
+        def run(self, **kwargs: Any) -> Any:
+            type(self).calls += 1
+            raise RuntimeError("process died mid-attempt, before anything was recorded")
+
+    crashing = _Crashing()
+    with pytest.raises(RuntimeError):
+        _run_with(service, env, evaluated, tmp_path, crashing)
+
+    assert _counts(env, _result_id(env, evaluated)) == {
+        "successes": 0,
+        "failures": 0,
+        "metrics_artifacts": 0,
+    }
+    # nothing terminal was recorded, so a retry proceeds normally
+    counted = _CountingRunner(_good_runner())
+    outcome = _run_with(service, env, evaluated, tmp_path, counted)
+    assert counted.calls == 1
+    assert outcome.status == "EVALUATED"
+
+
+def test_a_dual_terminal_outcome_fails_closed(
+    service: Any, env: Any, evaluated: Any, tmp_path: Path
+) -> None:
+    """0010 makes this unreachable through the write path; if seen anyway, refuse to proceed."""
+    from minos_engine.evaluation.orchestrator import DualTerminalOutcomeError
+
+    _provision_real_truth(env, tmp_path / "practice", engine=service)
+    result_id = _result_id(env, evaluated)
+    first = _run_with(service, env, evaluated, tmp_path, _good_runner())
+    assert first.status == "EVALUATED"
+
+    # forge the corrupt state the trigger prevents, by disabling it for one statement
+    with env.engine.connect() as conn, conn.begin():
+        conn.execute(
+            text(
+                "ALTER TABLE evaluation.l2f_evaluation_failures "
+                "DISABLE TRIGGER trg_l2f_evaluation_failures_exclusive_outcome"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO evaluation.l2f_evaluation_failures ("
+                "  execution_result_id, execution_result_hash, dataset_registry_id, "
+                "  scoring_contract_hash, failure_code) "
+                "SELECT r.execution_result_id, r.execution_result_hash, r.dataset_registry_id, "
+                "       r.scoring_contract_hash, 'EVALUATION_ERROR' "
+                "  FROM evaluation.l2f_evaluation_results r WHERE r.execution_result_id = :e"
+            ),
+            {"e": result_id},
+        )
+        conn.execute(
+            text(
+                "ALTER TABLE evaluation.l2f_evaluation_failures "
+                "ENABLE TRIGGER trg_l2f_evaluation_failures_exclusive_outcome"
+            )
+        )
+
+    with pytest.raises(DualTerminalOutcomeError, match="corrupt"):
+        _run_with(service, env, evaluated, tmp_path, _ExplodingRunner())
+
+
+def test_runtime_identity_never_enters_the_evaluation_hash(
+    service: Any, env: Any, evaluated: Any, tmp_path: Path
+) -> None:
+    """The stored identity is reproducible from science alone — no path, container or attempt."""
+    from minos_engine.evaluation.contracts import (
+        ComparisonScope,
+        EvaluationInputs,
+        TruthIdentity,
+        compute_evaluation_hash,
+    )
+    from minos_engine.evaluation.minos_score import AdvancedScoreBreakdown
+
+    _provision_real_truth(env, tmp_path / "practice", engine=service)
+    seen: list[Path] = []
+
+    class _Recording:
+        def run(self, **kwargs: Any) -> Any:
+            seen.append(Path(kwargs["work_dir"]))
+            return _good_runner().run(**kwargs)
+
+    outcome = _run_with(service, env, evaluated, tmp_path, _Recording())
+    assert outcome.status == "EVALUATED" and outcome.persisted is not None
+    attempt_dir = seen[0]
+
+    published = sorted((tmp_path / "evaluation_artifacts").glob("*.json"))[0]
+    payload = published.read_bytes()
+    for runtime in (attempt_dir.name, str(attempt_dir), str(tmp_path), "minos-happy-"):
+        assert runtime.encode() not in payload, f"runtime identity {runtime!r} leaked"
+
+    # and the identity is REPRODUCIBLE from the stored scientific fields alone
+    with env.engine.connect() as conn:
+        row = (
+            conn.execute(
+                text(
+                    "SELECT r.execution_result_hash, r.partition, r.scoring_contract_hash, "
+                    "       r.metrics_artifact_sha256, r.evaluation_hash, r.admission_code, "
+                    "       r.core_score, r.completeness_score, r.fp_score, r.quality_score, "
+                    "       r.overcall_penalty, r.minos_score_100, r.minos_score, "
+                    "       r.truth_vcf_sha256, r.truth_tbi_sha256, r.mutations_vcf_sha256, "
+                    "       r.mutations_tbi_sha256, i.dataset_id, i.vcf_sha256, i.chromosome, "
+                    "       i.region_start0, i.region_end0_exclusive "
+                    "  FROM evaluation.l2f_evaluation_results r "
+                    "  JOIN evaluation.l2f_completed_execution_inputs i "
+                    "    ON i.execution_result_id = r.execution_result_id "
+                    " WHERE r.execution_result_id = :e"
+                ),
+                {"e": _result_id(env, evaluated)},
+            )
+            .mappings()
+            .one()
+        )
+
+    recomputed = compute_evaluation_hash(
+        inputs=EvaluationInputs(
+            execution_result_hash=str(row["execution_result_hash"]),
+            dataset_id=str(row["dataset_id"]),
+            partition=str(row["partition"]),
+            vcf_sha256=str(row["vcf_sha256"]),
+            truth=TruthIdentity(
+                truth_vcf_sha256=str(row["truth_vcf_sha256"]),
+                truth_tbi_sha256=str(row["truth_tbi_sha256"]),
+                mutations_vcf_sha256=str(row["mutations_vcf_sha256"]),
+                mutations_tbi_sha256=str(row["mutations_tbi_sha256"]),
+            ),
+            scope=ComparisonScope(
+                chromosome=str(row["chromosome"]),
+                region_start0=int(row["region_start0"]),
+                region_end0_exclusive=int(row["region_end0_exclusive"]),
+                region_source=(
+                    f"{row['chromosome']}:{int(row['region_start0']) + 1}"
+                    f"-{int(row['region_end0_exclusive'])}"
+                ),
+            ),
+        ),
+        scoring_contract_hash=str(row["scoring_contract_hash"]),
+        metrics_artifact_sha256=str(row["metrics_artifact_sha256"]),
+        breakdown=AdvancedScoreBreakdown(
+            core_score=float(row["core_score"]),
+            completeness_score=float(row["completeness_score"]),
+            fp_score=float(row["fp_score"]),
+            quality_score=float(row["quality_score"]),
+            overcall_penalty=float(row["overcall_penalty"]),
+            minos_score_100=float(row["minos_score_100"]),
+            minos_score=float(row["minos_score"]),
+        ),
+        admission_code=str(row["admission_code"]),  # type: ignore[arg-type]
+    )
+    assert recomputed == str(row["evaluation_hash"])

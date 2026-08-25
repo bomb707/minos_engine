@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import subprocess  # noqa: S404 - fixed argv, shell=False, digest-pinned image
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -22,6 +23,7 @@ __all__ = [
     "FakeHappyRunner",
     "HappyExecutionError",
     "HappyOutcome",
+    "HappyContainmentError",
     "HappyOutputError",
     "HappyRunner",
     "HappyTimeoutError",
@@ -33,7 +35,19 @@ __all__ = [
 HAPPY_CHILD_ENV_ALLOWLIST: tuple[str, ...] = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TZ")
 
 _DEFAULT_TIMEOUT_SECONDS = 3600
+#: cleanup must itself be bounded: an unbounded ``docker rm`` would reintroduce the hang it exists
+#: to resolve.
+_DEFAULT_CLEANUP_TIMEOUT_SECONDS = 60
 _MAX_STDERR_BYTES = 1024 * 1024
+
+#: every invocation gets its OWN container identity, so cleanup can never reach another run's
+#: container. Runtime-only: it never enters the scoring contract or the evaluation hash.
+CONTAINER_NAME_PREFIX = "minos-happy-"
+
+
+def new_container_name() -> str:
+    """A unique, safe Docker identifier for exactly one invocation."""
+    return f"{CONTAINER_NAME_PREFIX}{uuid.uuid4().hex}"
 
 
 class HappyExecutionError(MinosEngineError):
@@ -46,6 +60,15 @@ class HappyTimeoutError(MinosEngineError):
 
 class HappyOutputError(MinosEngineError):
     """hap.py produced no usable output."""
+
+
+class HappyContainmentError(MinosEngineError):
+    """The runner could not PROVE the hap.py container was stopped.
+
+    Deliberately not a subclass of :class:`HappyExecutionError`: an uncontained container may
+    still be burning CPU, writing output and racing a later attempt, so it must never be reported
+    as an ordinary timeout or non-zero exit.
+    """
 
 
 @dataclass(frozen=True)
@@ -82,6 +105,7 @@ def build_happy_argv(
     region_bed: Path,
     output_prefix: Path,
     work_dir: Path,
+    container_name: str,
     threads: int = 1,
 ) -> tuple[str, ...]:
     """The deterministic container argv.
@@ -89,7 +113,12 @@ def build_happy_argv(
     Inputs are mounted read-only and individually; only the work directory is writable. The
     container is started with ``--network none`` so an evaluation can never reach the network,
     and the image must be digest-pinned so the comparison is reproducible.
+
+    ``container_name`` gives the invocation a unique runtime identity so a timeout can stop
+    exactly THIS container and prove it is gone.
     """
+    if not container_name.startswith(CONTAINER_NAME_PREFIX) or "/" in container_name:
+        raise HappyExecutionError(f"unsafe hap.py container name {container_name!r}")
     if "@sha256:" not in image:
         raise HappyExecutionError(
             f"hap.py image {image!r} must be digest-pinned; a tag can be moved underneath us"
@@ -102,6 +131,8 @@ def build_happy_argv(
         "docker",
         "run",
         "--rm",
+        "--name",
+        container_name,
         "--network",
         "none",
         "--read-only",
@@ -135,7 +166,47 @@ class SubprocessDockerHappyRunner:
 
     image: str
     timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS
+    cleanup_timeout_seconds: int = _DEFAULT_CLEANUP_TIMEOUT_SECONDS
     threads: int = 1
+
+    def _force_remove(self, container_name: str, env: dict[str, str]) -> None:
+        """Stop and remove THIS invocation's container, then PROVE it is gone.
+
+        ``subprocess`` only kills the Docker *client* when a timeout fires; the container it
+        started keeps running. Without this the runner would report a clean timeout while an
+        uncontrolled container continued to consume CPU, write hap.py output into the attempt
+        directory and race the next attempt.
+
+        A non-zero ``docker rm`` is not itself a failure — "No such container" is the expected
+        answer when ``--rm`` already reaped it. The ``docker inspect`` probe is the authority.
+        """
+        for argv in (
+            ("docker", "rm", "--force", container_name),
+            ("docker", "inspect", "--type", "container", container_name),
+        ):
+            try:
+                probe = subprocess.run(  # noqa: S603 - fixed argv, shell=False
+                    argv,
+                    capture_output=True,
+                    check=False,
+                    env=env,
+                    timeout=self.cleanup_timeout_seconds,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise HappyContainmentError(
+                    f"could not establish containment of hap.py container {container_name}: "
+                    f"{argv[1]} exceeded {self.cleanup_timeout_seconds}s"
+                ) from exc
+            except OSError as exc:
+                raise HappyContainmentError(
+                    f"could not establish containment of hap.py container {container_name}: "
+                    f"{argv[1]} could not be started: {exc}"
+                ) from exc
+            if argv[1] == "inspect" and probe.returncode == 0:
+                raise HappyContainmentError(
+                    f"hap.py container {container_name} still exists after forced removal; "
+                    "an uncontained container may still be running"
+                )
 
     def run(
         self,
@@ -149,6 +220,7 @@ class SubprocessDockerHappyRunner:
     ) -> HappyOutcome:
         import hashlib
 
+        container_name = new_container_name()
         argv = build_happy_argv(
             image=self.image,
             truth_vcf=truth_vcf,
@@ -157,6 +229,7 @@ class SubprocessDockerHappyRunner:
             region_bed=region_bed,
             output_prefix=output_prefix,
             work_dir=work_dir,
+            container_name=container_name,
             threads=self.threads,
         )
         env = {k: os.environ[k] for k in HAPPY_CHILD_ENV_ALLOWLIST if k in os.environ}
@@ -171,16 +244,23 @@ class SubprocessDockerHappyRunner:
                 timeout=self.timeout_seconds,
             )
         except subprocess.TimeoutExpired as exc:
+            # containment first: a HappyContainmentError deliberately propagates instead of the
+            # timeout, because "terminated" must be proven, not assumed.
+            self._force_remove(container_name, env)
             raise HappyTimeoutError(
-                f"hap.py exceeded {self.timeout_seconds}s and was terminated"
+                f"hap.py exceeded {self.timeout_seconds}s and its container was removed"
             ) from exc
         except OSError as exc:
+            # the client may have failed AFTER the daemon created the container.
+            self._force_remove(container_name, env)
             raise HappyExecutionError(f"hap.py could not be started: {exc}") from exc
 
         runtime_ms = int((time.monotonic() - started) * 1000)
         stderr = proc.stderr[:_MAX_STDERR_BYTES]
         stderr_sha = hashlib.sha256(stderr).hexdigest() if stderr else None
         if proc.returncode != 0:
+            # the client exited on its own, so --rm has already reaped the container: no
+            # destructive cleanup is issued on an ordinary non-zero exit.
             raise HappyExecutionError(f"hap.py exited with code {proc.returncode}")
         return HappyOutcome(
             exit_code=proc.returncode,

@@ -498,6 +498,7 @@ def test_the_happy_argv_is_digest_pinned_network_isolated_and_read_only(tmp_path
         reference=tmp_path / "r" / "chr18.fa",
         region_bed=tmp_path / "b" / "regions.bed",
         output_prefix=Path("out"),
+        container_name="minos-happy-0123456789abcdef",
         work_dir=tmp_path / "w",
     )
     assert argv[0] == "docker" and "--network" in argv and "none" in argv
@@ -515,6 +516,7 @@ def test_a_tag_pinned_happy_image_is_refused(tmp_path: Path) -> None:
             reference=tmp_path / "r.fa",
             region_bed=tmp_path / "b.bed",
             output_prefix=Path("out"),
+            container_name="minos-happy-0123456789abcdef",
             work_dir=tmp_path,
         )
 

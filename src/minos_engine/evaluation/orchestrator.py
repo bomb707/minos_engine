@@ -37,6 +37,8 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -63,6 +65,7 @@ from minos_engine.evaluation.evaluator import (
 )
 from minos_engine.evaluation.happy_metrics import parse_happy_outputs
 from minos_engine.evaluation.happy_runner import (
+    HappyContainmentError,
     HappyExecutionError,
     HappyOutputError,
     HappyRunner,
@@ -75,10 +78,16 @@ from minos_engine.evaluation.truth_registration import (
     hash_truth_bundle,
     refuse_non_train_partition,
 )
+from minos_engine.storage.attempt_workspace import (
+    create_attempt_workspace,
+    remove_attempt_workspace,
+)
 
 __all__ = [
+    "DualTerminalOutcomeError",
     "EvaluationOutcome",
     "EvaluationProvisioning",
+    "EvaluationWorkspaceError",
     "OrchestrationError",
     "UnknownExecutionError",
     "evaluate_execution",
@@ -95,9 +104,25 @@ class UnknownExecutionError(OrchestrationError):
     """No completed execution with that id is visible through the evaluator projection."""
 
 
+class EvaluationWorkspaceError(OrchestrationError):
+    """A fresh per-attempt hap.py workspace could not be created and proven private."""
+
+
+class DualTerminalOutcomeError(OrchestrationError):
+    """The ledger presents BOTH a success and a failure for one (execution, contract).
+
+    Migration 0010 makes this unreachable through the write path; observing it anyway means the
+    ledger is corrupt, so the evaluator refuses to proceed rather than picking one.
+    """
+
+
 @dataclass(frozen=True)
 class EvaluationProvisioning:
-    """Runtime provisioning — paths only. None of this enters any scientific identity."""
+    """Runtime provisioning — paths only. None of this enters any scientific identity.
+
+    ``work_dir`` is the evaluation work **root**, not the directory hap.py writes into: every
+    actual run gets a fresh private attempt directory beneath it.
+    """
 
     practice_dataset_root: Path
     reference: Path
@@ -204,6 +229,72 @@ def _resolve_truth_identity(engine: Any, dataset_registry_id: str) -> dict[str, 
     return dict(row) if row is not None else None
 
 
+def _terminal_outcome(
+    engine: Any, execution_result_id: str, contract_hash: str
+) -> EvaluationOutcome | None:
+    """Read this evaluation's OWN terminal state through the evaluator's granted projections.
+
+    Evaluation outcomes are immutable and mutually exclusive, so a terminal row means the work is
+    already done: re-running hap.py could not change the answer and would cost a full container
+    execution per replay. ``minos_evaluator`` holds SELECT on both ledgers, so no admin authority
+    is involved.
+    """
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        success = (
+            conn.execute(
+                text(
+                    "SELECT id, evaluation_hash, metrics_artifact_id, metrics_artifact_sha256 "
+                    "  FROM evaluation.l2f_evaluation_results "
+                    " WHERE execution_result_id = :e AND scoring_contract_hash = :c"
+                ),
+                {"e": execution_result_id, "c": contract_hash},
+            )
+            .mappings()
+            .one_or_none()
+        )
+        failure = (
+            conn.execute(
+                text(
+                    "SELECT id, failure_code FROM evaluation.l2f_evaluation_failures "
+                    " WHERE execution_result_id = :e AND scoring_contract_hash = :c"
+                ),
+                {"e": execution_result_id, "c": contract_hash},
+            )
+            .mappings()
+            .one_or_none()
+        )
+
+    if success is not None and failure is not None:
+        raise DualTerminalOutcomeError(
+            f"execution {execution_result_id} presents BOTH a success and a failure under one "
+            "scoring contract; the evaluation ledger is corrupt"
+        )
+    if success is not None:
+        return EvaluationOutcome(
+            execution_result_id=execution_result_id,
+            status="EVALUATED",
+            scoring_contract_hash=contract_hash,
+            persisted=PersistedEvaluation(
+                evaluation_id=str(success["id"]),
+                evaluation_hash=str(success["evaluation_hash"]),
+                created=False,
+            ),
+            metrics_artifact_id=str(success["metrics_artifact_id"]),
+            metrics_artifact_sha256=str(success["metrics_artifact_sha256"]),
+        )
+    if failure is not None:
+        return EvaluationOutcome(
+            execution_result_id=execution_result_id,
+            status="FAILED",
+            scoring_contract_hash=contract_hash,
+            failure_code=str(failure["failure_code"]),
+            failure_id=str(failure["id"]),
+        )
+    return None
+
+
 def evaluate_execution(
     engine: Any,
     *,
@@ -223,6 +314,13 @@ def evaluate_execution(
 
     # THE partition gate: before any truth path is constructed, opened or hashed.
     refuse_non_train_partition(str(execution["partition"]))
+
+    # An already-terminal evaluation is never re-executed: no truth hashing, no container, no
+    # republication. A crash BEFORE a durable terminal row is a different case entirely and does
+    # get a fresh attempt below.
+    already = _terminal_outcome(engine, execution_result_id, contract_hash)
+    if already is not None:
+        return already
 
     def _fail(
         code: str, *, exit_code: int | None = None, stderr: str | None = None
@@ -283,9 +381,65 @@ def evaluate_execution(
         return _fail("TRUTH_BYTES_MISMATCH")
 
     truth_dir = provisioning.practice_dataset_root / f"round_{execution['round_id']}"
-    output_prefix = provisioning.work_dir / f"happy_{execution_result_id}"
 
-    # 4. hap.py, through the runner boundary only.
+    # 4. a FRESH private attempt directory. Reusing one namespace per execution meant a crashed
+    # or timed-out attempt could leave partial hap.py output that a later retry would read as if
+    # it were its own; a new attempt inode per invocation makes that impossible.
+    try:
+        attempt = create_attempt_workspace(
+            provisioning.work_dir,
+            name=f"eval-{execution_result_id}-{contract_hash[:8]}-{uuid.uuid4().hex}",
+            error=EvaluationWorkspaceError,
+        )
+    except EvaluationWorkspaceError:
+        return _fail("EVALUATION_ERROR")
+
+    try:
+        return _evaluate_in_attempt(
+            engine,
+            execution=execution,
+            execution_result_id=execution_result_id,
+            contract_hash=contract_hash,
+            authority=authority,
+            happy_runner=happy_runner,
+            publisher=publisher,
+            provisioning=provisioning,
+            truth=truth,
+            truth_dir=truth_dir,
+            vcf_path=vcf_path,
+            observed_vcf_sha=observed_vcf_sha,
+            attempt_dir=attempt.path,
+            fail=_fail,
+        )
+    finally:
+        # raw hap.py output is a runtime intermediate, never scientific evidence: the published
+        # metrics document and the ledger rows are what survive. Removal goes through the
+        # retained descriptor, so only the inode this call created is ever removed.
+        remove_attempt_workspace(attempt)
+
+
+def _evaluate_in_attempt(
+    engine: Any,
+    *,
+    execution: dict[str, Any],
+    execution_result_id: str,
+    contract_hash: str,
+    authority: ScoringAuthority,
+    happy_runner: HappyRunner,
+    publisher: EvaluationArtifactPublisher,
+    provisioning: EvaluationProvisioning,
+    truth: TruthIdentity,
+    truth_dir: Path,
+    vcf_path: Path,
+    observed_vcf_sha: str,
+    attempt_dir: Path,
+    fail: Callable[..., EvaluationOutcome],
+) -> EvaluationOutcome:
+    """Everything that reads or writes hap.py output, confined to ONE fresh attempt directory."""
+    _fail = fail
+    output_prefix = attempt_dir / "happy"
+
+    # 5. hap.py, through the runner boundary only.
     try:
         outcome = happy_runner.run(
             truth_vcf=truth_dir / "truth.vcf.gz",
@@ -293,14 +447,17 @@ def evaluate_execution(
             reference=provisioning.reference,
             region_bed=provisioning.region_bed,
             output_prefix=output_prefix,
-            work_dir=provisioning.work_dir,
+            work_dir=attempt_dir,
         )
+    except HappyContainmentError:
+        # the container could not be PROVEN stopped: never reported as an ordinary timeout.
+        return _fail("EVALUATION_ERROR")
     except HappyTimeoutError:
         return _fail("HAPPY_TIMEOUT")
     except HappyExecutionError:
         return _fail("HAPPY_NONZERO_EXIT")
 
-    # 5. parse every metric family the scoring contract needs.
+    # 6. parse every metric family the scoring contract needs.
     try:
         parsed = parse_happy_outputs(output_prefix, truth_dir / "mutations.vcf.gz")
     except HappyOutputError:
@@ -323,7 +480,7 @@ def evaluate_execution(
         ),
     )
 
-    # 6. score under exactly one authority.
+    # 7. score under exactly one authority.
     try:
         artifact, breakdown, admission, _hash = evaluate_metrics(
             inputs=inputs,
@@ -336,7 +493,7 @@ def evaluate_execution(
     except ScoreComputationError:
         return _fail("SCORER_OUTPUT_INVALID", exit_code=outcome.exit_code)
 
-    # 7. publish the canonical document, then register it through the narrow registrar.
+    # 8. publish the canonical document, then register it through the narrow registrar.
     try:
         published = publisher.publish(build_metrics_artifact_bytes(artifact))
     except EvaluationPublishError:
