@@ -1,0 +1,334 @@
+{
+ "artifact_publisher_preflight": {
+  "content_sha256_matches": true,
+  "filename": "9ebbaaea2611c77cb20ad390d5c437a440d556a1f9b304132c17f3e1df98ae50.json",
+  "filename_is_content_address": true,
+  "first_created": true,
+  "gid": 1000,
+  "gid_matches_root": true,
+  "is_regular": true,
+  "is_symlink": false,
+  "mode": "0o640",
+  "objects_in_root": 1,
+  "production_artifact_root_empty": true,
+  "removed": true,
+  "replay_created": false,
+  "replay_same_inode": true,
+  "root": "/home/hr/bittensor/minos_l2f2_baseline/publisher_preflight",
+  "root_mode": "0o2750",
+  "uid": 1000
+ },
+ "attempt_workspace_preflight": {
+  "evaluation_work": {
+   "attempts": [
+    {
+     "beneath_root": true,
+     "descriptor_valid": true,
+     "gid": 1000,
+     "is_dir": true,
+     "is_symlink": false,
+     "mode": "0o700",
+     "name": "preflight-eval-0-540160",
+     "removed": true,
+     "same_inode": true,
+     "still_ours": true,
+     "uid": 1000
+    },
+    {
+     "beneath_root": true,
+     "descriptor_valid": true,
+     "gid": 1000,
+     "is_dir": true,
+     "is_symlink": false,
+     "mode": "0o700",
+     "name": "preflight-eval-1-540160",
+     "removed": true,
+     "same_inode": true,
+     "still_ours": true,
+     "uid": 1000
+    }
+   ],
+   "residue_after_cleanup": [],
+   "root": "/home/hr/bittensor/minos_l2f2_baseline/evaluation_work",
+   "unique_names": true
+  },
+  "gatk_work": {
+   "attempts": [
+    {
+     "beneath_root": true,
+     "descriptor_valid": true,
+     "gid": 1000,
+     "is_dir": true,
+     "is_symlink": false,
+     "mode": "0o700",
+     "name": "preflight-gatk-0-540160",
+     "removed": true,
+     "same_inode": true,
+     "still_ours": true,
+     "uid": 1000
+    },
+    {
+     "beneath_root": true,
+     "descriptor_valid": true,
+     "gid": 1000,
+     "is_dir": true,
+     "is_symlink": false,
+     "mode": "0o700",
+     "name": "preflight-gatk-1-540160",
+     "removed": true,
+     "same_inode": true,
+     "still_ours": true,
+     "uid": 1000
+    }
+   ],
+   "residue_after_cleanup": [],
+   "root": "/home/hr/bittensor/minos_l2f2_baseline/gatk_work",
+   "unique_names": true
+  }
+ },
+ "baseline_alembic_head": "0010_l2f2_evaluation_corrective",
+ "baseline_candidates_created": 0,
+ "baseline_db_name": "minos_l2f2_baseline",
+ "bcftools_image_local_identity": {
+  "local_image_id": "sha256:badc3a0c7af72a83e5761ab0e881aa84204694bdead003b47552cb283958f78d",
+  "repo_digests": [
+   "quay.io/biocontainers/bcftools@sha256:badc3a0c7af72a83e5761ab0e881aa84204694bdead003b47552cb283958f78d"
+  ],
+  "requested": "quay.io/biocontainers/bcftools@sha256:badc3a0c7af72a83e5761ab0e881aa84204694bdead003b47552cb283958f78d"
+ },
+ "bcftools_image_requested": "quay.io/biocontainers/bcftools@sha256:badc3a0c7af72a83e5761ab0e881aa84204694bdead003b47552cb283958f78d",
+ "canary_execution_boundary": {
+  "f7_real_scratch_route": {
+   "command": "minos-engine layer2 harness qualify --write-outputs",
+   "db_identity_requirement": "any non-operational scratch DB",
+   "db_revision_requirement": "EXACTLY 0008_l2f_execution_results (_require_scratch_at_0008)",
+   "function": "run_harness_ready_qualification -> _observe_official_execution",
+   "module": "minos_engine.qualification.l2f_harness_ready_qualifier",
+   "plan_requirement": "the accepted 1950-job F7 plan must already be persisted; enqueues the exact F7 qualification slice",
+   "reason": "refuses any revision other than 0008 and is bound to the F7 accepted plan; the baseline DB is at 0010 and must not reuse the 1950-job plan",
+   "runner": "SubprocessGatkRunner.from_env() (isinstance-guarded)",
+   "suitable": false,
+   "trust_boundary": "_execute_next_job_with_trust with require_operational_identity=False"
+  },
+  "marker": "L2-F2-C-EXECUTION-BOUNDARY-BLOCKER",
+  "next_stage_action": "a NEW qualification-grade real-GATK boundary for the baseline DB is an L2-F2-C SOURCE task; not fixed here",
+  "private_entry": {
+   "function": "_execute_next_job_with_trust",
+   "module": "minos_engine.storage.l2f_execution",
+   "reason": "private, documented test-only; must not be silently reused for a real run",
+   "runner_annotation": "FakeGatkRunner",
+   "suitable": false
+  },
+  "public_entry": {
+   "db_identity_requirement": "minos_engine_db (require_operational_identity=True)",
+   "db_revision_requirement": "0008_l2f_execution_results",
+   "function": "execute_next_accepted_job",
+   "module": "minos_engine.storage.l2f_execution",
+   "reason": "hard-bound to the operational database and 0008; the baseline DB is minos_l2f2_baseline at 0010",
+   "runner": "SubprocessGatkRunner",
+   "suitable": false
+  },
+  "status": "BLOCKED"
+ },
+ "canonical_workspace_realpath": "/home/hr/bittensor/minos_l2f2_baseline",
+ "closure_copy": {
+  "extension_over_f7b": "catalog.split_allocations for exactly the 50 TRAIN datasets; F7-B copied 0 rows and L2-F2's TRAIN registration projection is defined over that table",
+  "identities_preserved": true,
+  "mechanism": "accepted F7-B R3 copy_train_closure/provision_scratch, reused verbatim",
+  "source_read_mode": "READ ONLY transaction",
+  "train_source": "profiling.profile_snapshot_members WHERE partition='train'"
+ },
+ "credential_file": {
+  "inside_repository": false,
+  "mode": "0o600",
+  "password_redacted": true,
+  "path": "/home/hr/bittensor/minos_l2f2_baseline/l2f2.env"
+ },
+ "dataset_registry_count": 50,
+ "evaluation_failures_count": 0,
+ "evaluation_results_count": 0,
+ "evaluation_scores_produced": 0,
+ "execution_results_count": 0,
+ "experiment_jobs_count": 0,
+ "experiment_plans_count": 0,
+ "filesystem": {
+  "evaluation_artifacts": {
+   "gid": 1000,
+   "is_symlink": false,
+   "mode": "0o2750",
+   "realpath": "/home/hr/bittensor/minos_l2f2_baseline/evaluation_artifacts",
+   "uid": 1000
+  },
+  "evaluation_work": {
+   "gid": 1000,
+   "is_symlink": false,
+   "mode": "0o750",
+   "realpath": "/home/hr/bittensor/minos_l2f2_baseline/evaluation_work",
+   "uid": 1000
+  },
+  "gatk_result_artifacts": {
+   "gid": 1000,
+   "is_symlink": false,
+   "mode": "0o2750",
+   "realpath": "/home/hr/bittensor/minos_l2f2_baseline/gatk_result_artifacts",
+   "uid": 1000
+  },
+  "gatk_work": {
+   "gid": 1000,
+   "is_symlink": false,
+   "mode": "0o750",
+   "realpath": "/home/hr/bittensor/minos_l2f2_baseline/gatk_work",
+   "uid": 1000
+  },
+  "workspace": {
+   "gid": 1000,
+   "is_symlink": false,
+   "mode": "0o750",
+   "realpath": "/home/hr/bittensor/minos_l2f2_baseline",
+   "uid": 1000
+  }
+ },
+ "gatk_bundle_identity": {
+  "executed": false,
+  "gatk_version": "4.5.0.0",
+  "launcher_sha256": "91fa870b65312522f8c77f0f7adfb5a92b8da97d91c05302ce3535516036d1b8",
+  "local_jar_sha256": "8259348c85fa328b907801023e96f9c180c754573a17e62921303280576aeabf",
+  "matches_accepted_bundle": true,
+  "runtime_bundle_sha256": "2707ad203c82a9498fb2ffad8d97d8fbdb7e07a9bb963d0c4f4bc427e8372600"
+ },
+ "hap_image_local_identity": {
+  "local_image_id": "sha256:03acabe84bbfba35f5a7234129d524c563f5657e1f21150a2ea2797f8e6d05f2",
+  "repo_digests": [
+   "genonet/hap-py@sha256:03acabe84bbfba35f5a7234129d524c563f5657e1f21150a2ea2797f8e6d05f2"
+  ],
+  "requested": "genonet/hap-py@sha256:03acabe84bbfba35f5a7234129d524c563f5657e1f21150a2ea2797f8e6d05f2"
+ },
+ "hap_image_requested": "genonet/hap-py@sha256:03acabe84bbfba35f5a7234129d524c563f5657e1f21150a2ea2797f8e6d05f2",
+ "hardening_findings": [
+  {
+   "created_by_this_task": false,
+   "evidence": "privileges computed with has_table_privilege; no operational data was read",
+   "id": "OPERATIONAL-DB-REACHABLE-BY-SERVICE-PRINCIPAL",
+   "not_fixed_because": "this task must not write to the operational database; revoking PUBLIC CONNECT or the role's grants is an owner decision",
+   "observation": "PUBLIC holds CONNECT on minos_engine_db (a pre-existing cluster default), so minos_evaluator_svc can open a connection there. Through its minos_evaluator membership it inherits pre-existing grants in that database including SELECT/INSERT on evaluation.dataset_evaluation_identity and evaluation.evaluations, and SELECT on validation_* projections.",
+   "severity": "HARDENING",
+   "suggested_owner_action": "REVOKE CONNECT ON DATABASE minos_engine_db FROM PUBLIC, or REVOKE CONNECT FROM minos_evaluator_svc specifically"
+  }
+ ],
+ "harness_check": {
+  "checks": 40,
+  "evidence_bytes_changed": false,
+  "gate_require_pass": "PASS",
+  "gate_sha256": "c0dff7f2b4331af505c089b365f52d804844997e1cd7e047c04f26f92478df25",
+  "harness_alembic_head": "0008_l2f_execution_results",
+  "qualification_sha256": "9b127d0385fcd2271a5f5312a9d9ddd0a607bbfc2da03ac5658b8626870ce688",
+  "qualify_check": "PASS",
+  "repository_alembic_head": "0010_l2f2_evaluation_corrective"
+ },
+ "images_pulled_during_task": false,
+ "objective_frozen": false,
+ "operational_dataset_registry_count": 75,
+ "operational_db_name": "minos_engine_db",
+ "operational_db_revision": "0005_l2e_feature_view",
+ "operational_fingerprint_after": "b0e9f5c1d0a7a3dc445118e49174508ccff1072ed257cf157e1cc9dfefe5b05a",
+ "operational_fingerprint_before": "b0e9f5c1d0a7a3dc445118e49174508ccff1072ed257cf157e1cc9dfefe5b05a",
+ "operational_fingerprint_unchanged": true,
+ "operational_split_allocations": {
+  "test": 15,
+  "train": 50,
+  "validation": 10
+ },
+ "per_chromosome_train_counts": {
+  "chr18": 10,
+  "chr19": 10,
+  "chr20": 10,
+  "chr21": 10,
+  "chr22": 10
+ },
+ "real_gatk_run": false,
+ "real_happy_run": false,
+ "schema_version": "l2f2-a-environment-v1",
+ "select_config_blocked": true,
+ "service_authority_postflight": {
+  "catalog_artifacts_total": 151,
+  "execute_metrics_registrar": "allowed",
+  "execute_truth_registrar": "allowed (exercised by the 50-row registration)",
+  "metrics_artifacts": 0,
+  "post_rollback_artifact_count": 50,
+  "registrar_returned_artifact": true
+ },
+ "service_authority_preflight": {
+  "allowed": {
+   "completed_execution_inputs": 0,
+   "dataset_evaluation_identity": 0,
+   "evaluation_failures": 0,
+   "evaluation_results": 0,
+   "train_registration_targets": 50
+  },
+  "current_database": "minos_l2f2_baseline",
+  "current_user": "minos_evaluator_svc",
+  "denial_statements_wellformed": {
+   "DELETE FROM catalog.artifacts": "reached execution",
+   "INSERT INTO catalog.artifacts (uri, sha256) VALUES ('file://": "executed",
+   "INSERT INTO experiments.l2f_execution_results (id) VALUES (g": "reached execution",
+   "INSERT INTO models.model_bundles (id) VALUES (gen_random_uui": "reached execution",
+   "UPDATE catalog.artifacts SET uri = 'file:///y'": "executed",
+   "UPDATE catalog.dataset_registry SET dataset_id = 'x'": "reached execution",
+   "UPDATE experiments.l2f_execution_results SET result_hash = r": "executed",
+   "UPDATE experiments.l2f_experiment_jobs SET status = 'QUEUED'": "executed",
+   "UPDATE experiments.l2f_experiment_plan_configs SET config_ha": "executed"
+  },
+  "denied": {
+   "DELETE FROM catalog.artifacts": "permission denied",
+   "INSERT INTO catalog.artifacts (uri, sha256) VALUES ('file://": "permission denied",
+   "INSERT INTO experiments.l2f_execution_results (id) VALUES (g": "permission denied",
+   "INSERT INTO models.model_bundles (id) VALUES (gen_random_uui": "permission denied",
+   "UPDATE catalog.artifacts SET uri = 'file:///y'": "permission denied",
+   "UPDATE catalog.dataset_registry SET dataset_id = 'x'": "permission denied",
+   "UPDATE experiments.l2f_execution_results SET result_hash = r": "permission denied",
+   "UPDATE experiments.l2f_experiment_jobs SET status = 'QUEUED'": "permission denied",
+   "UPDATE experiments.l2f_experiment_plan_configs SET config_ha": "permission denied"
+  },
+  "role_escalation": {
+   "minos_admin": "permission denied",
+   "minos_live": "permission denied",
+   "minos_runner": "permission denied",
+   "minos_trainer": "permission denied"
+  }
+ },
+ "service_role": {
+  "bypassrls": false,
+  "createdb": false,
+  "createrole": false,
+  "group_role_minos_evaluator_login": false,
+  "inherit": true,
+  "login": true,
+  "memberships": [
+   "minos_evaluator"
+  ],
+  "name": "minos_evaluator_svc",
+  "superuser": false
+ },
+ "source_ci_run": 32796414677,
+ "source_commit": "899dec87ead8f76f5fef2737867f166589add099",
+ "source_tree": "ecdc870efe25ca4a7f229af1e3e1046814269ab3",
+ "status": "READY",
+ "test_count": 0,
+ "test_truth_accessed": false,
+ "train_count": 50,
+ "train_truth_registration_manifest_hash": "fcf1420f038a6e6dcade2d546f354135ff0d3f84174befdce01766eed3fffc50",
+ "truth_identity_count": 50,
+ "truth_registration_first_run": {
+  "already_registered": 0,
+  "created": 50,
+  "requested": 50
+ },
+ "truth_registration_replay": {
+  "already_registered": 50,
+  "created": 0,
+  "requested": 50
+ },
+ "truth_root_realpath": "/home/hr/bittensor/minos_subnet/datasets/practice",
+ "validation_count": 0,
+ "validation_truth_accessed": false
+}

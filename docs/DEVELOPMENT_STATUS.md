@@ -27,13 +27,13 @@ does not restate or override them.
 | HARNESS historical Alembic head | `0008_l2f_execution_results` (stage-scoped; the repository head advances independently) |
 | Operational DB revision | `0005_l2e_feature_view` |
 | Next gate | **BASELINE-QUALIFIED** (designed in `docs/layer2/BASELINE_QUALIFICATION.md`, not implemented) |
-| Current task | **L2-F2-A — offline evaluation foundation: READY_PENDING_ENVIRONMENT** |
+| Current task | **L2-F2-A — offline evaluation foundation: ENVIRONMENT_READY** |
 | Source Alembic head | `0010_l2f2_evaluation_corrective` (migrations `0001`–`0010`) |
 
 `select_config` remains deliberately blocked by `StageNotReadyError` and stays
 blocked until L2-H.
 
-### L2-F2-A status — READY_PENDING_ENVIRONMENT
+### L2-F2-A status — ENVIRONMENT_READY
 
 The **source** path is complete and tested end to end: migration `0009` (evaluation ledger,
 projections, `SECURITY DEFINER` persistence, evaluator grants), migration `0010` (the
@@ -104,14 +104,56 @@ the scoring semantics or any scientific identity.
   A crash *before* a durable terminal row is a different case and still gets a fresh attempt.
   Both outcomes present at once is refused as `DualTerminalOutcomeError` rather than resolved.
 
+#### Environment (provisioned and independently verified)
+
+Evidence: `reports/layer2/l2f2-a-environment-result.json`.
+
+* **Workspace** `/home/hr/bittensor/minos_l2f2_baseline` exists (`0750`), with
+  `evaluation_artifacts` and `gatk_result_artifacts` at `02750` and `evaluation_work` /
+  `gatk_work` at `0750` with **setgid off** — the F7-R2 inherited-setgid failure is structurally
+  prevented, and fresh attempt directories were proven to be created at exactly `0700`.
+* **Baseline database** `minos_l2f2_baseline` at `0010_l2f2_evaluation_corrective`, holding the
+  TRAIN closure only: 50 datasets (10 per chromosome chr18–chr22), 50 TRAIN split allocations,
+  **0 validation, 0 test**. The closure reuses the accepted F7-B R3 mechanism (TRAIN derived from
+  the frozen profile snapshot, identities preserved, source read under a READ ONLY transaction),
+  extended only by `catalog.split_allocations`, which L2-F2's TRAIN registration projection is
+  defined over and which F7-B did not need.
+* **Service principal** `minos_evaluator_svc` — `LOGIN`, no `SUPERUSER`/`CREATEDB`/`CREATEROLE`/
+  `BYPASSRLS`, member of `minos_evaluator` and nothing else. The group role stays `NOLOGIN`. Its
+  credential lives at `minos_l2f2_baseline/l2f2.env`, mode `0600`, outside Git.
+* **Truth**: exactly **50 TRAIN** truth identities registered through the real service login
+  (first run 50 created / 0 existing; replay 0 created / 50 existing). Validation and test truth
+  were never resolved, opened or hashed, and the baseline database contains no non-TRAIN
+  allocation at all, so closed partitions are not even enumerable there.
+* **Operational database untouched**: `minos_engine_db` remains at `0005_l2e_feature_view` with
+  75 datasets and the 50/10/15 split; its before/after fingerprint is byte-identical.
+* **Tools verified, not executed**: hap.py and bcftools resolve locally to their exact pinned
+  digests (no pull), and the GATK 4.5.0.0 runtime bundle recomputes to the accepted
+  `2707ad20…` identity.
+
+**Ledgers are empty by design**: 0 experiment plans, 0 jobs, 0 execution results, 0 evaluation
+results, 0 evaluation failures, 0 metrics artifacts. No score has been produced.
+
+#### Future L2-F2-C canary execution boundary — **BLOCKED**
+
+`L2-F2-C-EXECUTION-BOUNDARY-BLOCKER`. No existing surface can run real GATK against the baseline
+database:
+
+* `execute_next_accepted_job` is the accepted public entry with the real `SubprocessGatkRunner`,
+  but it requires the operational database identity and revision `0008`;
+* `_execute_next_job_with_trust` is private and documented test-only (annotated
+  `FakeGatkRunner`), and must not be silently reused for a real run;
+* the F7 real-scratch route (`l2f_harness_ready_qualifier.run_harness_ready_qualification`) does
+  run the real runner against a non-operational scratch database, but `_require_scratch_at_0008`
+  refuses any revision other than `0008` and it is bound to the accepted 1950-job F7 plan.
+
+A qualification-grade real-GATK boundary for the baseline database is an **L2-F2-C source task**
+and is deliberately not implemented here.
+
 **Not yet done, and not claimed:**
 
-* the baseline workspace `/home/hr/bittensor/minos_l2f2_baseline` does not exist;
-* no baseline database exists at `0010`;
-* `minos_evaluator_svc` has **not** been provisioned;
-* **no truth identity is registered in any real database** — the 50 TRAIN bundles are still
-  unregistered;
 * the L2-F2-C canary has **not** run; no real hap.py or GATK evaluation has been performed;
+* no baseline search plan, candidate set or job exists;
 * `BASELINE-QUALIFIED` is **not** issued and the objective (D1–D8) is **not** frozen.
 
 ---
