@@ -413,15 +413,56 @@ _METRICS = {
 }
 
 
+def _oracle_result(**overrides: Any) -> Any:
+    """A stand-in for what the pinned upstream scorer returned — never computed locally."""
+    from minos_engine.evaluation.minos_subnet_oracle import MinosSubnetOracleResult
+
+    authority = load_scoring_authority(_repo_root())
+    base: dict[str, Any] = {
+        "scored": True,
+        "metrics": dict(_METRICS),
+        "advanced_score_100": 87.5,
+        "minos_score": 0.875,
+        "minos_score_accepted": True,
+        "zero_input_fingerprint": False,
+        "admitted": True,
+        "admission_code": "ADMITTED",
+        "upstream_commit": authority.upstream_commit,
+        "upstream_source_sha256": {
+            "utils/scoring.py": authority.scoring_py_sha256,
+            "neurons/validator.py": authority.validator_py_sha256,
+            "templates/tool_params.py": authority.tool_params_py_sha256,
+        },
+        "upstream_provenance": {
+            "happy_docker_image": authority.happy_image,
+            "bcftools_docker_image": authority.bcftools_image,
+        },
+    }
+    base.update(overrides)
+    return MinosSubnetOracleResult(**base)
+
+
+def _scoring_inputs() -> Any:
+    from minos_engine.evaluation.contracts import ScoringInputIdentity
+
+    return ScoringInputIdentity(
+        truth_vcf_sha256="1" * 64,
+        truth_tbi_sha256="2" * 64,
+        mutations_vcf_sha256="3" * 64,
+        mutations_tbi_sha256="4" * 64,
+        query_vcf_sha256="5" * 64,
+        reference_fasta_sha256="6" * 64,
+        reference_sdf_present=True,
+    )
+
+
 def _built(tmp_path: Path, **over: Any) -> Any:
     authority = load_scoring_authority(_repo_root())
     inputs = _inputs()
-    artifact, breakdown, admission, _contract = evaluate_metrics(
+    artifact, admission, _contract = evaluate_metrics(
         inputs=inputs,
-        happy_metrics=dict(_METRICS),
-        mutation_only_metrics={},
-        assessed_only_metrics={},
-        overcall={},
+        oracle_result=over.pop("oracle_result", None) or _oracle_result(),
+        scoring_inputs=_scoring_inputs(),
         authority=authority,
     )
     published = EvaluationArtifactPublisher(_root(tmp_path)).publish(
@@ -431,7 +472,6 @@ def _built(tmp_path: Path, **over: Any) -> Any:
         "execution_result_id": "11111111-1111-1111-1111-111111111111",
         "inputs": inputs,
         "artifact": artifact,
-        "breakdown": breakdown,
         "admission_code": admission,
         "authority": authority,
         "metrics_artifact_id": "22222222-2222-2222-2222-222222222222",
@@ -455,12 +495,19 @@ def test_the_evaluation_hash_is_computed_from_exactly_this_record(tmp_path: Path
     record = _built(tmp_path)
     baseline = record.evaluation_hash
 
-    moved = dataclasses.replace(
-        record, breakdown=record.breakdown.model_copy(update={"minos_score": 0.123})
+    # the identity follows the UPSTREAM outcome recorded in the artifact.
+    moved_artifact = record.artifact.model_copy(
+        update={"upstream": record.upstream.model_copy(update={"minos_score": 0.123})}
     )
+    moved = dataclasses.replace(record, artifact=moved_artifact)
     assert moved.evaluation_hash != baseline
 
-    relabelled = dataclasses.replace(record, admission_code="NONPOSITIVE_SCORE")
+    relabelled_artifact = record.artifact.model_copy(
+        update={
+            "upstream": record.upstream.model_copy(update={"admission_code": "NONPOSITIVE_SCORE"})
+        }
+    )
+    relabelled = dataclasses.replace(record, artifact=relabelled_artifact)
     assert relabelled.evaluation_hash != baseline
 
 
@@ -513,13 +560,10 @@ def test_a_misclassified_document_cannot_become_a_record(
     import dataclasses
 
     authority = load_scoring_authority(_repo_root())
-    inputs = _inputs()
-    artifact, _b, _a, _c = evaluate_metrics(
-        inputs=inputs,
-        happy_metrics=dict(_METRICS),
-        mutation_only_metrics={},
-        assessed_only_metrics={},
-        overcall={},
+    artifact, _admission, _contract = evaluate_metrics(
+        inputs=_inputs(),
+        oracle_result=_oracle_result(),
+        scoring_inputs=_scoring_inputs(),
         authority=authority,
     )
     published = EvaluationArtifactPublisher(_root(tmp_path)).publish(

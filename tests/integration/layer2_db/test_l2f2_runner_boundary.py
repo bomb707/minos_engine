@@ -49,10 +49,11 @@ from tests.integration.layer2_db.test_l2f_plan_store import (
 
 _L2F = "0006_l2f_experiment_plan"
 _RUNNER_BOUNDARY = "0011_l2f2_runner_boundary"
-#: the EXACT revision the runner boundary requires. 0011 introduced this boundary's own functions
-#: and grants; 0012 added no privilege at all, but a database still at 0011 cannot represent the
-#: Phase-A plan's two index namespaces, so the runner fails closed on it like any other revision.
-_REQUIRED = "0012_l2f_plan_member_source_idx"
+#: the EXACT revision the runner boundary requires. It tracks the shared baseline store: 0011
+#: introduced this boundary's own functions and grants, 0012 separated the plan's two index
+#: namespaces, and 0013 let evaluation store what the pinned upstream scorer exposes. None of
+#: them grants the runner anything, and it fails closed on every revision but the current one.
+_REQUIRED = "0013_l2f2_upstream_score_oracle"
 _BASELINE_DB = "minos_l2f2_baseline"
 _CI_ROLE = "minos_runner_ci_svc"
 _AUTHORITIES = "experiments.l2f2_execution_authorities"
@@ -262,7 +263,10 @@ def test_the_boundary_refuses_a_database_that_is_not_the_baseline_store(
             engine.dispose()
 
 
-@pytest.mark.parametrize("revision", ["0010_l2f2_evaluation_corrective", _RUNNER_BOUNDARY])
+@pytest.mark.parametrize(
+    "revision",
+    ["0010_l2f2_evaluation_corrective", _RUNNER_BOUNDARY, "0012_l2f_plan_member_source_idx"],
+)
 def test_the_boundary_refuses_a_database_at_the_wrong_revision(
     isolated_pg_base_url: str,
     revision: str,

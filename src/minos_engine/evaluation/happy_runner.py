@@ -1,5 +1,11 @@
 """The hap.py execution boundary. No real hap.py runs at L2-F2-A — only the contract exists.
 
+**NOT PRODUCTION SCORE AUTHORITY.** This module is retained for historical tests, independent
+diagnostics and parity audits only. Production scoring executes the pinned MINOS_SUBNET
+implementation through :mod:`minos_engine.evaluation.minos_subnet_oracle`; nothing on the
+production evaluation path imports this module, and a regression test enforces that. Do not
+reintroduce it into the orchestrator, the evaluator or any selection decision.
+
 The production runner mirrors the safety properties the GATK runner already proved out in L2-F1:
 digest-pinned image, ``shell=False``, fixed argv, bounded timeout, explicit read-only input
 mounts, no network in the container, and typed failures. ``FakeHappyRunner`` exists for Tier-2

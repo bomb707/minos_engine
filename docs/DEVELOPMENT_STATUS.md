@@ -27,11 +27,12 @@ does not restate or override them.
 | HARNESS historical Alembic head | `0008_l2f_execution_results` (stage-scoped; the repository head advances independently) |
 | Operational DB revision | `0005_l2e_feature_view` |
 | Next gate | **BASELINE-QUALIFIED** (designed in `docs/layer2/BASELINE_QUALIFICATION.md`, not implemented) |
-| Current task | **L2-F2-C — PHASE-A-PERSISTENCE-SOURCE-READY, PENDING ENVIRONMENT PREPARATION REPLAY** |
+| Current task | **L2-F2-C — MINOS-SUBNET-SCORING-ORACLE (source); canary environment prepared at `0012`, canary NOT run** |
 | Previous task | L2-F2-B — baseline search protocol — **CLOSED** at PROTOCOL_FROZEN |
-| Source Alembic head | `0012_l2f_plan_member_source_idx` (migrations `0001`–`0012`) |
-| Baseline DB revision required by the runner | `0012_l2f_plan_member_source_idx` (exact; `0011` is refused) |
-| Real baseline DB revision | `0011_l2f2_runner_boundary` — migration to `0012` is the next environment task |
+| Source Alembic head | `0013_l2f2_upstream_score_oracle` (migrations `0001`–`0013`) |
+| Baseline DB revision required by the runner | `0013_l2f2_upstream_score_oracle` (exact; every other revision is refused) |
+| Production score authority | pinned `minos-protocol/minos_subnet` @ `649bb92c…` — executed, not reimplemented |
+| Real baseline DB revision | `0012_l2f_plan_member_source_idx` — migrating it to `0013` is the next environment task |
 
 `select_config` remains deliberately blocked by `StageNotReadyError` and stays
 blocked until L2-H.
@@ -40,10 +41,15 @@ blocked until L2-H.
 
 The **source** path is complete and tested end to end: migration `0009` (evaluation ledger,
 projections, `SECURITY DEFINER` persistence, evaluator grants), migration `0010` (the
-corrective below), the scoring contract and authority manifest, the Minos score compatibility
-layer proven at **exact parity** against the real upstream `AdvancedScorer`, TRAIN-only truth
-registration, the hap.py runner and output parser, the metrics artifact contract, the
+corrective below), the scoring contract and authority manifest, a Minos score compatibility layer
+proven at **exact parity** against the real upstream `AdvancedScorer`, TRAIN-only truth
+registration, a hap.py runner and output parser, the metrics artifact contract, the
 content-addressed publisher and the production orchestrator.
+
+> **Superseded in part.** The local compatibility layer (`minos_score.py`, `happy_metrics.py`,
+> `happy_runner.py`) is **no longer the production score authority** — see *L2-F2-C scoring
+> oracle* below. It is retained for audits and historical tests, and enforced out of the
+> production import closure by a regression test.
 
 #### What migration `0010_l2f2_evaluation_corrective` closed
 
@@ -75,8 +81,10 @@ content-addressed publisher and the production orchestrator.
   authoritative production path. It takes an `execution_result_id` and reads dataset, partition,
   round, VCF digest and truth digests from PostgreSQL — never from the caller — refuses any
   non-TRAIN partition **before** constructing a truth path, verifies the recorded VCF and truth
-  bytes, runs hap.py only through `HappyRunner`, scores under ONE `ScoringAuthority`, and
-  persists ONE `EvaluationRecord` whose `evaluation_hash` is computed from that record.
+  bytes, obtains the score under ONE `ScoringAuthority`, and persists ONE `EvaluationRecord`
+  whose `evaluation_hash` is computed from that record. (At L2-F2-A it ran hap.py itself through
+  `HappyRunner`; since the L2-F2-C scoring-oracle corrective it calls the pinned MINOS_SUBNET
+  implementation instead.)
 
 #### Runtime and retry isolation (source-only, no migration)
 
@@ -326,6 +334,67 @@ frozen Phase-A plan from committed authority, and refuse any other `plan_hash`.
 **The runner now requires exactly `0012`.** `BASELINE_REVISION` is an exact match, never a floor
 and never `head`: `0011` is refused like any other wrong revision. `0012` grants no privilege to
 any role.
+
+#### L2-F2-C scoring oracle — the score authority is MINOS_SUBNET, not this repository
+
+**The rule.** The **caller** is GATK HaplotypeCaller and only GATK. The **scorer** is the exact
+pinned MINOS_SUBNET implementation. MINOS_ENGINE is the adapter, the isolation boundary and the
+ledger around them — it does not define the Minos score.
+
+Until this corrective the production evaluator called MINOS_ENGINE's own
+`compute_advanced_score` / `decide_admission`. Those had been proven at exact parity against the
+upstream `AdvancedScorer`, but parity is not authority: it made this repository a *second*
+scientific definition of the score, which would have to be re-proven on every upstream change.
+
+**What production does now.** `minos_engine.evaluation.minos_subnet_oracle` executes the real
+upstream code at commit `649bb92c6abccebde58a736a2b2af7fd77a701c1` — the actual
+`utils.HappyScorer`, the actual `utils.AdvancedScorer`, and the validator's own
+`_valid_round_score` and `_is_zero_input_advanced_fingerprint` helpers, **called rather than
+reimplemented**. The final score, its normalization and the admission decision are upstream's
+return values. Whatever internal tooling upstream chooses to run (hap.py, Docker, bcftools, RTG)
+is its own business, and MINOS_ENGINE never rewrites, replaces, optimizes or substitutes it. If
+upstream changes, a new upstream compatibility domain is pinned — never a second implementation
+edited to match.
+
+Four properties make that credible rather than aspirational:
+
+* **Provenance is verified, not trusted.** The upstream root must be an absolute, non-symlink git
+  checkout whose HEAD is exactly the authority commit, whose three authority files hash exactly
+  as `manifests/l2f2_scoring_authority_v1.json` says, and whose git status is clean for those
+  files. A branch name, a directory name, an mtime or a caller-supplied hash prove nothing.
+* **The import is isolated.** Upstream's package names (`utils`, `templates`, `neurons`, `base`)
+  are generic enough to collide with anything, so they are never imported into the evaluator
+  process. A separate interpreter runs a standalone bridge with its working directory inside the
+  verified checkout; a regression asserts those modules never appear in the evaluator's
+  `sys.modules`.
+* **Registered evidence is never handed to the scorer.** Upstream legitimately reindexes and
+  writes intermediates beside the files it is given, so it is given regular-file **copies** in
+  the fresh attempt workspace — never hard links, which would share the inode — and every copy is
+  re-hashed against the registered identity before scoring begins.
+* **The reference is bound to the execution.** The FASTA is resolved under the pinned validator's
+  own layout (`<root>/<chrom>/<chrom>.fa`, beside `<chrom>.sdf`) and its digest must equal the
+  `reference_sha256` the execution recorded. The SDF is evaluation-only — it never enters Layer 1,
+  a Layer-2 live feature or the GATK CONFIG search — and a missing SDF fails evaluation closed
+  rather than scoring approximately.
+
+**Migration `0013_l2f2_upstream_score_oracle`** exists because
+`AdvancedScorer.compute_advanced_score(metrics)` returns a single float: the four components
+(core, completeness, FP-rate, quality) are local variables inside that function and are exposed
+by no upstream entry point. `0009` stored them `NOT NULL`, which would have forced a local
+recomputation of exactly the formula the row attests. They are now nullable and stored NULL, with
+a NULL-tolerant range CHECK. What upstream *does* expose stays mandatory: `minos_score_100`,
+`minos_score` and `overcall_penalty` (which upstream itself places in its metrics dictionary).
+The downgrade fails closed rather than inventing component values.
+
+**The scoring contract hash is unchanged** at
+`d6f29e11eba9a25d5e28c80b0ba746795390042dee618a33f579f6c47af29fee` — the authority did not
+change, only the implementation that now genuinely uses it. The **evaluation-hash domain moved to
+v2**, because v1 bound locally-computed component values; v2 binds the upstream outcome and the
+upstream source identity instead. No evaluation had ever been persisted, so nothing is
+invalidated.
+
+The evaluator service will need `MINOS_L2F_MINOS_SUBNET_ROOT` pointing at a detached pinned
+worktree; see `docs/layer2/EVALUATOR_SERVICE_PROVISIONING.md`.
 
 Running the canary requires the next environment task: migrate the real baseline database from
 `0011` to `0012`, then replay preparation. `minos_runner_svc` is already provisioned with

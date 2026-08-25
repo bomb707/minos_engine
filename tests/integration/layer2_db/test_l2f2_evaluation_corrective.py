@@ -12,7 +12,8 @@ against the pre-corrective implementation:
 * **Registration path** — the evaluator service principal registers its metrics document through
   the narrow ``SECURITY DEFINER`` registrar, and has no direct write on ``catalog.artifacts``.
 * **Publisher** — proven under the actual service login, end to end.
-* **Orchestrator** — the whole production chain, with ``FakeHappyRunner`` and synthetic truth.
+* **Orchestrator** — the whole production chain, against a synthetic pinned MINOS_SUBNET
+  checkout and synthetic truth. No real hap.py, no Docker, no biological data.
 
 No GATK, no Docker, no real hap.py, no practice truth: every byte here is synthetic.
 """
@@ -77,7 +78,7 @@ def _exclusive_body(lock: str) -> str:
 
 
 def _record_params(record: Any) -> dict[str, Any]:
-    authority, breakdown = record.authority, record.breakdown
+    authority, upstream = record.authority, record.upstream
     return {
         "exec_id": record.execution_result_id,
         "contract": record.scoring_contract_hash,
@@ -89,13 +90,14 @@ def _record_params(record: Any) -> dict[str, Any]:
         "artifact_id": record.metrics_artifact_id,
         "artifact_sha": record.metrics.sha256,
         "media_type": record.metrics.media_type,
-        "core": breakdown.core_score,
-        "completeness": breakdown.completeness_score,
-        "fp": breakdown.fp_score,
-        "quality": breakdown.quality_score,
-        "overcall": breakdown.overcall_penalty,
-        "score100": breakdown.minos_score_100,
-        "score": breakdown.minos_score,
+        # NULL, exactly as production stores them: upstream never exposes the components.
+        "core": None,
+        "completeness": None,
+        "fp": None,
+        "quality": None,
+        "overcall": float(upstream.metrics.get("overcall_penalty", 0.0) or 0.0),
+        "score100": upstream.advanced_score_100,
+        "score": upstream.minos_score,
         "admission": record.admission_code,
         "eval_hash": record.evaluation_hash,
     }
@@ -108,12 +110,11 @@ def _prepared_record(env: Any, evaluated: Any, tmp_path: Path) -> Any:
     _register_truth(env, root)
     register_train_truth_identities(env.engine, dataset_root=root)
     inputs = _inputs_for(env, evaluated)
-    artifact, breakdown, admission, artifact_id, published = _publish(env, tmp_path, inputs)
+    artifact, _upstream_out, admission, artifact_id, published = _publish(env, tmp_path, inputs)
     return build_evaluation_record(
         execution_result_id=_result_id(env, evaluated),
         inputs=inputs,
         artifact=artifact,
-        breakdown=breakdown,
         admission_code=admission,
         authority=_authority(),
         metrics_artifact_id=artifact_id,
@@ -723,19 +724,53 @@ def test_validation_and_test_partitions_are_structurally_absent_from_the_train_s
 # DEFECT E — the production orchestrator, end to end, under the service login
 # --------------------------------------------------------------------------- #
 def _provisioning(tmp_path: Path) -> Any:
+    """Runtime paths only. The reference root is laid out exactly as the pinned validator expects
+    and carries the SAME bytes the execution recorded, so the digest check is real rather than
+    arranged."""
     from minos_engine.evaluation.orchestrator import EvaluationProvisioning
 
-    work = tmp_path / "happy_work"
+    work = tmp_path / "evaluation_work"
     work.mkdir(exist_ok=True)
-    reference = tmp_path / "reference.fa"
-    reference.write_bytes(b">chr18\nACGT\n")
-    region_bed = tmp_path / "regions.bed"
-    region_bed.write_text("chr18\t0\t80373285\n", encoding="utf-8")
+    reference_root = tmp_path / "datasets" / "reference"
+    for chromosome_dir in sorted(p for p in reference_root.iterdir() if p.is_dir()):
+        (chromosome_dir / f"{chromosome_dir.name}.sdf").mkdir(exist_ok=True)
     return EvaluationProvisioning(
         practice_dataset_root=tmp_path / "practice",
-        reference=reference,
-        region_bed=region_bed,
+        reference_root=reference_root,
         work_dir=work,
+    )
+
+
+def _upstream(tmp_path: Path) -> Any:
+    """The synthetic pinned checkout, created once per tmp_path and reused across calls."""
+    from tests.integration.layer2_db.l2f2_fake_upstream import FakeUpstream, build_fake_upstream
+
+    root = tmp_path / "fake_upstream_base"
+    if (root / "fake_minos_subnet").is_dir():
+        import subprocess
+
+        commit = subprocess.run(
+            ["git", "-C", str(root / "fake_minos_subnet"), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        return FakeUpstream(
+            root=root / "fake_minos_subnet",
+            commit=commit,
+            control_path=root / "fake_minos_subnet" / "control.json",
+            seen_path=root / "upstream-seen.json",
+        )
+    root.mkdir(parents=True, exist_ok=True)
+    return build_fake_upstream(root)
+
+
+def _oracle(tmp_path: Path, *, timeout_seconds: int = 300) -> Any:
+    from tests.integration.layer2_db.l2f2_fake_upstream import authority_for, oracle_for
+
+    upstream = _upstream(tmp_path)
+    return oracle_for(
+        upstream, authority_for(upstream, _authority()), timeout_seconds=timeout_seconds
     )
 
 
@@ -750,30 +785,25 @@ def _artifact_publisher(tmp_path: Path) -> Any:
     return EvaluationArtifactPublisher(root)
 
 
-def _good_runner() -> Any:
-    from minos_engine.evaluation.happy_runner import FakeHappyRunner
-
-    return FakeHappyRunner(
-        written_files={"happy.summary.csv": _SUMMARY_CSV},
-        written_bytes={"happy.vcf.gz": _gzip(_HAPPY_VCF_LINES)},
-    )
+def _good_oracle(tmp_path: Path) -> Any:
+    """The synthetic upstream, set to return metrics."""
+    _upstream(tmp_path).set_mode("metrics")
+    return _oracle(tmp_path)
 
 
-def _run(engine: Any, env: Any, evaluated: Any, tmp_path: Path, runner: Any) -> Any:
+def _run(engine: Any, env: Any, evaluated: Any, tmp_path: Path, oracle: Any) -> Any:
     """Invoke the REAL orchestrator for the fixture's completed execution."""
     from minos_engine.evaluation.orchestrator import evaluate_execution
+    from tests.integration.layer2_db.l2f2_fake_upstream import authority_for
 
-    provisioning = _provisioning(tmp_path)
-    result_id = _result_id(env, evaluated)
-    # the runner writes into whatever work_dir it is handed, which is now a FRESH attempt
-    # directory chosen by the orchestrator, under the fixed "happy" prefix.
+    upstream = _upstream(tmp_path)
     return evaluate_execution(
         engine,
-        execution_result_id=result_id,
-        authority=_authority(),
-        happy_runner=runner,
+        execution_result_id=_result_id(env, evaluated),
+        authority=authority_for(upstream, _authority()),
+        oracle=oracle,
         publisher=_artifact_publisher(tmp_path),
-        provisioning=provisioning,
+        provisioning=_provisioning(tmp_path),
     )
 
 
@@ -820,7 +850,7 @@ def test_the_orchestrator_evaluates_one_execution_end_to_end_under_the_service_l
     _provision_real_truth(env, tmp_path / "practice", engine=service)
     result_id = _result_id(env, evaluated)
 
-    outcome = _run(service, env, evaluated, tmp_path, _good_runner())
+    outcome = _run(service, env, evaluated, tmp_path, _good_oracle(tmp_path))
 
     assert outcome.status == "EVALUATED", outcome.failure_code
     assert outcome.persisted is not None
@@ -864,8 +894,8 @@ def test_exact_replay_of_the_orchestrator_converges_without_duplicates(
     _provision_real_truth(env, tmp_path / "practice", engine=service)
     result_id = _result_id(env, evaluated)
 
-    first = _run(service, env, evaluated, tmp_path, _good_runner())
-    second = _run(service, env, evaluated, tmp_path, _good_runner())
+    first = _run(service, env, evaluated, tmp_path, _good_oracle(tmp_path))
+    second = _run(service, env, evaluated, tmp_path, _good_oracle(tmp_path))
 
     assert first.status == second.status == "EVALUATED"
     assert first.metrics_artifact_sha256 == second.metrics_artifact_sha256
@@ -899,7 +929,7 @@ def test_a_closed_partition_is_refused_before_any_truth_path_is_touched(
     result_id = _result_id(env, evaluated)
 
     with pytest.raises(ForbiddenPartitionError):
-        _run(service, env, evaluated, tmp_path, _good_runner())
+        _run(service, env, evaluated, tmp_path, _good_oracle(tmp_path))
 
     # a closed partition leaves NO trace in the scientific ledger at all
     assert _counts(env, result_id) == {"successes": 0, "failures": 0, "metrics_artifacts": 0}
@@ -916,7 +946,7 @@ def test_a_missing_truth_identity_is_a_bounded_durable_failure(
     (tmp_path / "practice").mkdir(exist_ok=True)
     result_id = _result_id(env, evaluated)
 
-    outcome = _run(service, env, evaluated, tmp_path, _good_runner())
+    outcome = _run(service, env, evaluated, tmp_path, _good_oracle(tmp_path))
 
     assert outcome.status == "FAILED"
     assert outcome.failure_code == "TRUTH_IDENTITY_MISSING"
@@ -934,7 +964,7 @@ def test_truth_bytes_that_no_longer_match_the_registered_identity_fail_closed(
         path = tmp_path / "practice" / f"round_{round_id}" / "truth.vcf.gz"
         path.write_bytes(_gzip(_HAPPY_VCF_LINES + "chr18\t3000\t.\tC\tT\t.\tPASS\t.\tBD\tTP\tTP\n"))
 
-    outcome = _run(service, env, evaluated, tmp_path, _good_runner())
+    outcome = _run(service, env, evaluated, tmp_path, _good_oracle(tmp_path))
 
     assert outcome.failure_code == "TRUTH_BYTES_MISMATCH"
     assert _counts(env, result_id) == {"successes": 0, "failures": 1, "metrics_artifacts": 0}
@@ -958,18 +988,18 @@ def test_an_execution_vcf_that_no_longer_matches_its_recorded_digest_fails_close
 
     Path(unquote(urlparse(str(uri)).path)).write_bytes(b"tampered\n")
 
-    outcome = _run(service, env, evaluated, tmp_path, _good_runner())
+    outcome = _run(service, env, evaluated, tmp_path, _good_oracle(tmp_path))
 
     assert outcome.failure_code == "VCF_BYTES_MISMATCH"
     assert _counts(env, result_id) == {"successes": 0, "failures": 1, "metrics_artifacts": 0}
 
 
 @pytest.mark.parametrize(
-    ("runner_kwargs", "expected"),
+    ("upstream_mode", "expected"),
     [
-        ({"exit_code": 3}, "HAPPY_NONZERO_EXIT"),
-        ({"raise_timeout": True}, "HAPPY_TIMEOUT"),
-        ({}, "HAPPY_OUTPUT_INVALID"),
+        ("raise", "HAPPY_NONZERO_EXIT"),
+        ("hang", "HAPPY_TIMEOUT"),
+        ("none", "HAPPY_OUTPUT_INVALID"),
     ],
 )
 def test_every_hap_py_failure_mode_is_bounded_and_durable(
@@ -977,16 +1007,19 @@ def test_every_hap_py_failure_mode_is_bounded_and_durable(
     env: Any,
     evaluated: Any,
     tmp_path: Path,
-    runner_kwargs: dict[str, Any],
+    upstream_mode: str,
     expected: str,
 ) -> None:
-    """The empty-kwargs case writes no output at all, which is unusable output — not a zero score."""
-    from minos_engine.evaluation.happy_runner import FakeHappyRunner
+    """Every way the pinned scorer can fail is a BOUNDED, DURABLE failure — never a zero score.
 
+    ``none`` is the case that matters most: upstream ran and declined to return metrics, which is
+    unusable output, not a terrible configuration.
+    """
     _provision_real_truth(env, tmp_path / "practice", engine=service)
     result_id = _result_id(env, evaluated)
+    _upstream(tmp_path).set_mode(upstream_mode, sleep=30)
 
-    outcome = _run(service, env, evaluated, tmp_path, FakeHappyRunner(**runner_kwargs))
+    outcome = _run(service, env, evaluated, tmp_path, _oracle(tmp_path, timeout_seconds=2))
 
     assert outcome.failure_code == expected
     assert _counts(env, result_id) == {"successes": 0, "failures": 1, "metrics_artifacts": 0}
@@ -997,10 +1030,9 @@ def test_a_failure_is_never_silently_a_zero_score(
     service: Any, env: Any, evaluated: Any, tmp_path: Path
 ) -> None:
     """A broken evaluation must not enter the baseline as a real, terrible configuration."""
-    from minos_engine.evaluation.happy_runner import FakeHappyRunner
-
     _provision_real_truth(env, tmp_path / "practice", engine=service)
-    outcome = _run(service, env, evaluated, tmp_path, FakeHappyRunner())
+    _upstream(tmp_path).set_mode("none")
+    outcome = _run(service, env, evaluated, tmp_path, _oracle(tmp_path))
 
     assert outcome.status == "FAILED"
     assert outcome.persisted is None
@@ -1115,37 +1147,38 @@ def test_the_corrective_downgrades_to_exactly_0009_and_upgrades_back(
 # --------------------------------------------------------------------------- #
 # RUNTIME ISOLATION — fresh attempt directory, and terminal replay never re-executes
 # --------------------------------------------------------------------------- #
-class _CountingRunner:
-    """A HappyRunner that records how often it was actually invoked."""
+class _CountingOracle:
+    """An oracle that records how often the pinned scorer was actually invoked."""
 
     def __init__(self, inner: Any) -> None:
         self._inner = inner
         self.calls = 0
 
-    def run(self, **kwargs: Any) -> Any:
+    def score(self, **kwargs: Any) -> Any:
         self.calls += 1
-        return self._inner.run(**kwargs)
+        return self._inner.score(**kwargs)
 
 
-class _ExplodingRunner:
-    """A HappyRunner that fails the test if it is invoked at all."""
+class _ExplodingOracle:
+    """An oracle that fails the test if the pinned scorer is invoked at all."""
 
     def __init__(self) -> None:
         self.calls = 0
 
-    def run(self, **kwargs: Any) -> Any:
+    def score(self, **kwargs: Any) -> Any:
         self.calls += 1
-        raise AssertionError("hap.py must not run for an already-terminal evaluation")
+        raise AssertionError("the scorer must not run for an already-terminal evaluation")
 
 
-def _run_with(engine: Any, env: Any, evaluated: Any, tmp_path: Path, runner: Any) -> Any:
+def _run_with(engine: Any, env: Any, evaluated: Any, tmp_path: Path, oracle: Any) -> Any:
     from minos_engine.evaluation.orchestrator import evaluate_execution
+    from tests.integration.layer2_db.l2f2_fake_upstream import authority_for
 
     return evaluate_execution(
         engine,
         execution_result_id=_result_id(env, evaluated),
-        authority=_authority(),
-        happy_runner=runner,
+        authority=authority_for(_upstream(tmp_path), _authority()),
+        oracle=oracle,
         publisher=_artifact_publisher(tmp_path),
         provisioning=_provisioning(tmp_path),
     )
@@ -1166,12 +1199,14 @@ def test_each_run_uses_a_fresh_private_attempt_directory(
     modes: list[int] = []
 
     class _Recording:
-        def run(self, **kwargs: Any) -> Any:
+        def score(self, **kwargs: Any) -> Any:
             work_dir = Path(kwargs["work_dir"])
             seen.append(work_dir)
             modes.append(_stat.S_IMODE(work_dir.lstat().st_mode))
-            assert Path(kwargs["output_prefix"]).parent == work_dir
-            return _good_runner().run(**kwargs)
+            # every sandboxed scoring input lives INSIDE the fresh attempt directory
+            for key in ("truth_vcf", "query_vcf", "mutations_vcf"):
+                assert work_dir in Path(kwargs[key]).parents, key
+            return _good_oracle(tmp_path).score(**kwargs)
 
     first = _run_with(service, env, evaluated, tmp_path, _Recording())
     assert first.status == "EVALUATED"
@@ -1185,7 +1220,7 @@ def test_each_run_uses_a_fresh_private_attempt_directory(
     assert len(seen) == 2
     assert seen[0] != seen[1], "an attempt directory is never reused"
     assert modes == [0o700, 0o700]
-    assert seen[0].parent == seen[1].parent == (tmp_path / "happy_work")
+    assert seen[0].parent == seen[1].parent == (tmp_path / "evaluation_work")
     # runtime intermediates do not survive a terminal outcome
     assert not seen[0].exists() and not seen[1].exists()
 
@@ -1204,7 +1239,7 @@ def test_stale_output_in_the_work_root_cannot_influence_the_evaluation(
         (work_root / name).write_text(poisoned, encoding="utf-8")
     (work_root / "happy.vcf.gz").write_bytes(_gzip(_HAPPY_VCF_LINES))
 
-    outcome = _run_with(service, env, evaluated, tmp_path, _good_runner())
+    outcome = _run_with(service, env, evaluated, tmp_path, _good_oracle(tmp_path))
 
     assert outcome.status == "EVALUATED"
     with env.engine.connect() as conn:
@@ -1225,14 +1260,14 @@ def test_an_already_successful_evaluation_is_never_re_executed(
     service: Any, env: Any, evaluated: Any, tmp_path: Path
 ) -> None:
     _provision_real_truth(env, tmp_path / "practice", engine=service)
-    counted = _CountingRunner(_good_runner())
+    counted = _CountingOracle(_good_oracle(tmp_path))
     first = _run_with(service, env, evaluated, tmp_path, counted)
     assert first.status == "EVALUATED" and counted.calls == 1
 
-    exploding = _ExplodingRunner()
+    exploding = _ExplodingOracle()
     second = _run_with(service, env, evaluated, tmp_path, exploding)
 
-    assert exploding.calls == 0, "hap.py must not be launched for a terminal evaluation"
+    assert exploding.calls == 0, "the scorer must not be launched for a terminal evaluation"
     assert second.status == "EVALUATED"
     assert second.persisted is not None and first.persisted is not None
     assert second.persisted.evaluation_id == first.persisted.evaluation_id
@@ -1250,14 +1285,13 @@ def test_an_already_successful_evaluation_is_never_re_executed(
 def test_an_already_failed_evaluation_is_never_automatically_retried(
     service: Any, env: Any, evaluated: Any, tmp_path: Path
 ) -> None:
-    from minos_engine.evaluation.happy_runner import FakeHappyRunner
-
     _provision_real_truth(env, tmp_path / "practice", engine=service)
-    first = _run_with(service, env, evaluated, tmp_path, FakeHappyRunner(exit_code=3))
+    _upstream(tmp_path).set_mode("raise")
+    first = _run_with(service, env, evaluated, tmp_path, _oracle(tmp_path))
     assert first.failure_code == "HAPPY_NONZERO_EXIT"
 
     # a runner that WOULD succeed must not get the chance: the failure is terminal.
-    exploding = _ExplodingRunner()
+    exploding = _ExplodingOracle()
     second = _run_with(service, env, evaluated, tmp_path, exploding)
 
     assert exploding.calls == 0
@@ -1280,7 +1314,7 @@ def test_a_crash_before_any_terminal_row_still_gets_a_fresh_attempt(
     class _Crashing:
         calls = 0
 
-        def run(self, **kwargs: Any) -> Any:
+        def score(self, **kwargs: Any) -> Any:
             type(self).calls += 1
             raise RuntimeError("process died mid-attempt, before anything was recorded")
 
@@ -1294,7 +1328,7 @@ def test_a_crash_before_any_terminal_row_still_gets_a_fresh_attempt(
         "metrics_artifacts": 0,
     }
     # nothing terminal was recorded, so a retry proceeds normally
-    counted = _CountingRunner(_good_runner())
+    counted = _CountingOracle(_good_oracle(tmp_path))
     outcome = _run_with(service, env, evaluated, tmp_path, counted)
     assert counted.calls == 1
     assert outcome.status == "EVALUATED"
@@ -1308,7 +1342,7 @@ def test_a_dual_terminal_outcome_fails_closed(
 
     _provision_real_truth(env, tmp_path / "practice", engine=service)
     result_id = _result_id(env, evaluated)
-    first = _run_with(service, env, evaluated, tmp_path, _good_runner())
+    first = _run_with(service, env, evaluated, tmp_path, _good_oracle(tmp_path))
     assert first.status == "EVALUATED"
 
     # forge the corrupt state the trigger prevents, by disabling it for one statement
@@ -1338,28 +1372,30 @@ def test_a_dual_terminal_outcome_fails_closed(
         )
 
     with pytest.raises(DualTerminalOutcomeError, match="corrupt"):
-        _run_with(service, env, evaluated, tmp_path, _ExplodingRunner())
+        _run_with(service, env, evaluated, tmp_path, _ExplodingOracle())
 
 
 def test_runtime_identity_never_enters_the_evaluation_hash(
     service: Any, env: Any, evaluated: Any, tmp_path: Path
 ) -> None:
     """The stored identity is reproducible from science alone — no path, container or attempt."""
+    import json
+
     from minos_engine.evaluation.contracts import (
         ComparisonScope,
         EvaluationInputs,
         TruthIdentity,
+        UpstreamScoreOutput,
         compute_evaluation_hash,
     )
-    from minos_engine.evaluation.minos_score import AdvancedScoreBreakdown
 
     _provision_real_truth(env, tmp_path / "practice", engine=service)
     seen: list[Path] = []
 
     class _Recording:
-        def run(self, **kwargs: Any) -> Any:
+        def score(self, **kwargs: Any) -> Any:
             seen.append(Path(kwargs["work_dir"]))
-            return _good_runner().run(**kwargs)
+            return _good_oracle(tmp_path).score(**kwargs)
 
     outcome = _run_with(service, env, evaluated, tmp_path, _Recording())
     assert outcome.status == "EVALUATED" and outcome.persisted is not None
@@ -1417,15 +1453,22 @@ def test_runtime_identity_never_enters_the_evaluation_hash(
         ),
         scoring_contract_hash=str(row["scoring_contract_hash"]),
         metrics_artifact_sha256=str(row["metrics_artifact_sha256"]),
-        breakdown=AdvancedScoreBreakdown(
-            core_score=float(row["core_score"]),
-            completeness_score=float(row["completeness_score"]),
-            fp_score=float(row["fp_score"]),
-            quality_score=float(row["quality_score"]),
-            overcall_penalty=float(row["overcall_penalty"]),
-            minos_score_100=float(row["minos_score_100"]),
-            minos_score=float(row["minos_score"]),
+        # the upstream outcome is read back out of the PUBLISHED document, so the identity is
+        # reproducible from durable evidence alone — no local recomputation anywhere.
+        upstream=UpstreamScoreOutput(
+            **json.loads(
+                (
+                    tmp_path / "evaluation_artifacts" / f"{row['metrics_artifact_sha256']}.json"
+                ).read_text(encoding="utf-8")
+            )["upstream"]
         ),
-        admission_code=str(row["admission_code"]),  # type: ignore[arg-type]
     )
     assert recomputed == str(row["evaluation_hash"])
+    # the four AdvancedScorer components are NULL: upstream never exposed them, and nothing
+    # locally reconstructed them to fill the columns in.
+    for component in ("core_score", "completeness_score", "fp_score", "quality_score"):
+        assert row[component] is None, component
+    # what upstream DID expose is stored exactly.
+    assert float(row["minos_score_100"]) == pytest.approx(86.25)
+    assert float(row["minos_score"]) == pytest.approx(0.8625)
+    assert float(row["overcall_penalty"]) == pytest.approx(0.5)

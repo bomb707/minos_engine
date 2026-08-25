@@ -47,6 +47,9 @@ env = _env_fixture
 _F5 = "0008_l2f_execution_results"
 _F2A = "0009_l2f_evaluation_results"
 _F2A_CORRECTIVE = "0010_l2f2_evaluation_corrective"
+#: 0013 makes the four AdvancedScorer components nullable, because the pinned upstream scorer
+#: does not expose them. Evaluation persistence therefore requires it.
+_SCORE_ORACLE = "0013_l2f2_upstream_score_oracle"
 _METRICS = {
     "f1_snp": 0.95,
     "f1_indel": 0.9,
@@ -71,12 +74,12 @@ def _authority() -> Any:
 
 @pytest.fixture
 def evaluated(env: Any) -> Any:
-    """A real successful execution, with the schema advanced to 0009."""
+    """A real successful execution, with the schema advanced to the score-oracle revision."""
     dispatched = env.run()
     assert dispatched is not None and dispatched.status == "SUCCEEDED"
     url = str(env.engine.url.render_as_string(hide_password=False))
     env.engine.dispose()
-    alembic_upgrade(url, _F2A_CORRECTIVE)
+    alembic_upgrade(url, _SCORE_ORACLE)
     from sqlalchemy import create_engine
 
     env.engine = create_engine(url)
@@ -131,25 +134,66 @@ def _register_artifact(env: Any, published: Any) -> str:
     return artifact_id
 
 
+def _oracle_result(**overrides: Any) -> Any:
+    """A stand-in for what the pinned upstream scorer returned. Never computed locally."""
+    from minos_engine.evaluation.minos_subnet_oracle import MinosSubnetOracleResult
+
+    authority = _authority()
+    base: dict[str, Any] = {
+        "scored": True,
+        "metrics": dict(_METRICS),
+        "advanced_score_100": 86.25,
+        "minos_score": 0.8625,
+        "minos_score_accepted": True,
+        "zero_input_fingerprint": False,
+        "admitted": True,
+        "admission_code": "ADMITTED",
+        "upstream_commit": authority.upstream_commit,
+        "upstream_source_sha256": {
+            "utils/scoring.py": authority.scoring_py_sha256,
+            "neurons/validator.py": authority.validator_py_sha256,
+            "templates/tool_params.py": authority.tool_params_py_sha256,
+        },
+        "upstream_provenance": {
+            "happy_docker_image": authority.happy_image,
+            "bcftools_docker_image": authority.bcftools_image,
+        },
+    }
+    base.update(overrides)
+    return MinosSubnetOracleResult(**base)
+
+
+def _scoring_inputs() -> Any:
+    from minos_engine.evaluation.contracts import ScoringInputIdentity
+
+    return ScoringInputIdentity(
+        truth_vcf_sha256="1" * 64,
+        truth_tbi_sha256="2" * 64,
+        mutations_vcf_sha256="3" * 64,
+        mutations_tbi_sha256="4" * 64,
+        query_vcf_sha256="5" * 64,
+        reference_fasta_sha256="6" * 64,
+        reference_sdf_present=True,
+    )
+
+
 def _publish(env: Any, tmp_path: Path, inputs: EvaluationInputs) -> tuple[Any, Any, str, str, Any]:
-    """Score, publish the canonical document, and register it exactly as production does."""
+    """Record an upstream outcome, publish the canonical document, register it as production does."""
     import os
 
     root = tmp_path / "evaluation_artifacts"
     root.mkdir(exist_ok=True)
     os.chmod(root, 0o2750)
-    artifact, breakdown, admission, _contract = evaluate_metrics(
+    artifact, admission, _contract = evaluate_metrics(
         inputs=inputs,
-        happy_metrics=_METRICS,
-        mutation_only_metrics={},
-        assessed_only_metrics={},
-        overcall={},
+        oracle_result=_oracle_result(),
+        scoring_inputs=_scoring_inputs(),
         authority=_authority(),
     )
     payload = build_metrics_artifact_bytes(artifact)
     published = EvaluationArtifactPublisher(root).publish(payload)
     artifact_id = _register_artifact(env, published)
-    return artifact, breakdown, admission, artifact_id, published
+    return artifact, artifact.upstream, admission, artifact_id, published
 
 
 def _inputs_for(env: Any, dispatched: Any) -> EvaluationInputs:
@@ -395,14 +439,13 @@ def test_the_evaluator_cannot_substitute_another_dataset_or_truth(
 # --------------------------------------------------------------------------- #
 def _persist(env: Any, evaluated: Any, tmp_path: Path) -> Any:
     inputs = _inputs_for(env, evaluated)
-    artifact, breakdown, admission, artifact_id, published = _publish(env, tmp_path, inputs)
+    artifact, _upstream_out, admission, artifact_id, published = _publish(env, tmp_path, inputs)
     return record_evaluation_result(
         env.engine,
         build_evaluation_record(
             execution_result_id=_result_id(env, evaluated),
             inputs=inputs,
             artifact=artifact,
-            breakdown=breakdown,
             admission_code=admission,
             authority=_authority(),
             metrics_artifact_id=artifact_id,
@@ -466,14 +509,13 @@ def test_a_conflicting_replay_under_the_same_contract_fails_closed(
     _register_truth(env, root)
     register_train_truth_identities(env.engine, dataset_root=root)
     inputs = _inputs_for(env, evaluated)
-    artifact, breakdown, admission, artifact_id, published = _publish(env, tmp_path, inputs)
+    artifact, _upstream_out, admission, artifact_id, published = _publish(env, tmp_path, inputs)
 
     def _record(evaluation_inputs: EvaluationInputs) -> Any:
         return build_evaluation_record(
             execution_result_id=_result_id(env, evaluated),
             inputs=evaluation_inputs,
             artifact=artifact,
-            breakdown=breakdown,
             admission_code=admission,
             authority=_authority(),
             metrics_artifact_id=artifact_id,

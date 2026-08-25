@@ -284,12 +284,15 @@ def test_legacy_full_plan_backfills_and_remains_downgradable(
 def prepared_phase_a(isolated_pg_base_url: str, tmp_path: Path) -> Any:
     """A 0012 database holding the frozen Phase-A subset plan (local 0..4 / source 0/10/20/30/40)."""
     from minos_engine.storage.l2f2_canary_prepare import prepare_l2f2_phase_a_canary
+    from minos_engine.storage.l2f2_runner import BASELINE_REVISION
     from tests.integration.layer2_db.l2f_plan_seed import seed_upstream_for_plan
     from tests.integration.layer2_db.test_l2f2_canary_prepare import _accepted_plan
     from tests.integration.layer2_db.test_l2f_plan_store import _provisioned_root
 
+    # preparation requires the SHARED baseline revision, which advances past 0012 as later
+    # evaluation migrations land. 0012's own objects are what the assertions below concern.
     with scratch_database(isolated_pg_base_url, _DB) as url:
-        alembic_upgrade(url, _HEAD)
+        alembic_upgrade(url, BASELINE_REVISION)
         engine = _engine(url)
         try:
             with engine.connect() as conn, conn.begin():
@@ -401,7 +404,10 @@ def test_a_persisted_subset_plan_refuses_to_downgrade(prepared_phase_a: Any) -> 
     with pytest.raises(RuntimeError, match="cannot downgrade"):
         alembic_downgrade(url, _PRIOR)
 
-    # the database is untouched: same revision, same column, same FK, same rows.
+    # Later revisions above 0012 may downgrade cleanly on the way past — 0013 does, because this
+    # ledger holds no upstream-scored evaluation — so the chain stops AT 0012, the revision whose
+    # guard refused. What matters is that it stopped there with everything intact: the source
+    # ordinal column, the lineage FK that binds it, and every row unchanged.
     assert _revision(engine) == _HEAD
     assert _SOURCE in _member_columns(engine)
     assert _SOURCE in str(_constraint_def(engine, _MATRIX_FK))
@@ -417,16 +423,29 @@ def test_a_persisted_subset_plan_refuses_to_downgrade(prepared_phase_a: Any) -> 
     assert after == before
 
 
-def test_generic_upgrade_head_reaches_0012(isolated_pg_base_url: str) -> None:
-    """A plain ``alembic upgrade head`` — what CI runs — lands on 0012."""
+def test_this_revision_is_reachable_and_the_repository_has_one_head(
+    isolated_pg_base_url: str,
+) -> None:
+    """0012 is reachable from scratch, and ``upgrade head`` — what CI runs — still resolves.
+
+    The head itself is read DYNAMICALLY: later stages legitimately add migrations on top of 0012,
+    and a seam pinned to "0012 is the head" would break on every one of them.
+    """
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
-    assert list(ScriptDirectory.from_config(Config("alembic.ini")).get_heads()) == [_HEAD]
+    heads = tuple(ScriptDirectory.from_config(Config("alembic.ini")).get_heads())
+    assert len(heads) == 1, heads
     with scratch_database(isolated_pg_base_url, _DB) as url:
-        alembic_upgrade(url, "head")
+        alembic_upgrade(url, _HEAD)
         engine = _engine(url)
         try:
             assert _revision(engine) == _HEAD
+        finally:
+            engine.dispose()
+        alembic_upgrade(url, "head")
+        engine = _engine(url)
+        try:
+            assert _revision(engine) == heads[0]
         finally:
             engine.dispose()

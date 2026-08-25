@@ -1,5 +1,11 @@
 """Parse hap.py output into exactly the metric dictionary ``l2f2-minos-scoring-v1`` scores.
 
+**NOT PRODUCTION SCORE AUTHORITY.** This module is retained for historical tests, independent
+diagnostics and parity audits only. Production scoring executes the pinned MINOS_SUBNET
+implementation through :mod:`minos_engine.evaluation.minos_subnet_oracle`; nothing on the
+production evaluation path imports this module, and a regression test enforces that. Do not
+reintroduce it into the orchestrator, the evaluator or any selection decision.
+
 This reproduces the audited upstream pipeline at commit
 ``649bb92c6abccebde58a736a2b2af7fd77a701c1`` (``utils/scoring.py``), in its exact order:
 

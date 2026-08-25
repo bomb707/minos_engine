@@ -130,6 +130,54 @@ Deliberately **not** granted:
   privileges there, and `0009` preserves that boundary
 * anything reaching validation or test truth
 
+## The pinned scoring checkout — `MINOS_L2F_MINOS_SUBNET_ROOT`
+
+Production scoring does not use a local reimplementation of the Minos score. It **executes the
+exact pinned MINOS_SUBNET implementation**, so the evaluator service needs one more piece of
+provisioning: a checkout of that implementation, and an environment variable naming it.
+
+```
+export MINOS_L2F_MINOS_SUBNET_ROOT="/home/hr/bittensor/minos_l2f2_baseline/minos_subnet_pinned"
+```
+
+Requirements, all enforced at scoring time and all fail-closed:
+
+* **Absolute, existing, not a symlink.** A symlinked root could be repointed between verification
+  and use.
+* **A git checkout or worktree whose HEAD is exactly the authority commit**
+  `649bb92c6abccebde58a736a2b2af7fd77a701c1`. It must be a **detached, pinned** worktree — never
+  the mutable development clone, whose HEAD is free to move.
+* **The three authority files hash exactly** as `manifests/l2f2_scoring_authority_v1.json`
+  records, and git reports them clean. A branch name, a directory name, an mtime or a
+  caller-supplied hash prove nothing and are never consulted.
+
+Create it with `git worktree add --detach <path> 649bb92c…` from the upstream clone. The upstream
+repository is an authority: it is never edited, committed into, rebased, reset or re-branched by
+MINOS_ENGINE.
+
+### The interpreter
+
+The bridge that calls upstream runs under a **separate** interpreter, because upstream's package
+names (`utils`, `templates`, `neurons`, `base`) are generic enough to collide with anything in
+the long-lived evaluator process. That interpreter must already be able to import upstream's own
+dependencies — MINOS_ENGINE never installs them at scoring time.
+
+By default it is `<root>/.venv/bin/python`, so the environment that can import upstream is pinned
+by the same provisioning step as the source. If the pinned worktree does not carry one, set:
+
+```
+export MINOS_L2F_MINOS_SUBNET_PYTHON="/absolute/path/to/python"
+```
+
+It must be an absolute path to an existing executable; anything else is refused.
+
+### Docker
+
+The pinned scorer runs its own containers (hap.py, and bcftools for its internal steps). Those
+are **upstream's** commands: MINOS_ENGINE builds none of them and must not. The evaluator host
+therefore needs Docker reachable by the service account, and `DOCKER_HOST` is one of the few
+variables passed through to the bridge subprocess.
+
 ## Credential handling
 
 The connection secret lives in a `0600` environment file beneath the canonical baseline

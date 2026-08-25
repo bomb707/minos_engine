@@ -7,9 +7,10 @@ connects them, so "the parts exist" can never be mistaken for "the pipeline exis
         -> refuse anything that is not TRAIN     (before any truth path is constructed)
         -> verify the execution's VCF bytes      (against the recorded digest)
         -> resolve + verify TRAIN truth bytes    (against the registered identity)
-        -> run hap.py through HappyRunner        (production: digest-pinned container)
-        -> parse the audited metric families
-        -> score under ONE ScoringAuthority
+        -> copy the scoring inputs into the attempt sandbox and re-verify every byte
+        -> resolve + verify the reference FASTA   (against the execution's recorded digest)
+        -> call the PINNED MINOS_SUBNET scorer    (through the isolated oracle bridge)
+        -> take its metrics, score and admission  (verbatim; nothing is recomputed here)
         -> publish the canonical metrics document (content-addressed, atomic, no-clobber)
         -> register it through the narrow 0010 registrar
         -> build ONE EvaluationRecord and persist it
@@ -30,6 +31,14 @@ Design rules that are load-bearing rather than stylistic:
   evaluation can be replayed and converges on the same artifact, the same catalog row and the
   same evaluation. A published document is never deleted because a later database step failed —
   another evaluation may legitimately share those exact bytes.
+* **One scientific score authority, and it is not this repository.** The score, its
+  normalization and the admission decision come from executing the pinned MINOS_SUBNET
+  implementation. This module runs no hap.py command of its own, parses no metric file and
+  applies no scoring formula; MINOS_ENGINE's historical local scorer is not on this path at all.
+* **The scorer never touches registered evidence.** The upstream implementation legitimately
+  writes intermediates beside the files it is handed, so it is handed COPIES inside the fresh
+  attempt workspace — regular-file copies, never hard links, whose bytes are re-hashed and
+  required to equal the registered identity before scoring begins.
 """
 
 from __future__ import annotations
@@ -49,6 +58,7 @@ from minos_engine.evaluation.artifact_publisher import EvaluationArtifactPublish
 from minos_engine.evaluation.contracts import (
     ComparisonScope,
     EvaluationInputs,
+    ScoringInputIdentity,
     TruthIdentity,
     build_metrics_artifact_bytes,
 )
@@ -57,21 +67,19 @@ from minos_engine.evaluation.evaluator import (
     EvaluationPublishError,
     EvaluationRecordError,
     PersistedEvaluation,
+    ScoreRecordingError,
     build_evaluation_record,
     evaluate_metrics,
     record_evaluation_failure,
     record_evaluation_result,
     register_metrics_artifact,
 )
-from minos_engine.evaluation.happy_metrics import parse_happy_outputs
-from minos_engine.evaluation.happy_runner import (
-    HappyContainmentError,
-    HappyExecutionError,
-    HappyOutputError,
-    HappyRunner,
-    HappyTimeoutError,
+from minos_engine.evaluation.minos_subnet_oracle import (
+    MinosSubnetAuthorityError,
+    MinosSubnetExecutionError,
+    MinosSubnetOracle,
+    MinosSubnetTimeoutError,
 )
-from minos_engine.evaluation.minos_score import ScoreComputationError
 from minos_engine.evaluation.scoring_contract import ScoringAuthority, compute_scoring_contract_hash
 from minos_engine.evaluation.truth_registration import (
     TruthRegistrationError,
@@ -125,8 +133,10 @@ class EvaluationProvisioning:
     """
 
     practice_dataset_root: Path
-    reference: Path
-    region_bed: Path
+    #: the reference ROOT, laid out exactly as the pinned validator expects:
+    #: ``<reference_root>/<chromosome>/<chromosome>.fa`` and ``<chromosome>.sdf``. There is no
+    #: second reference policy here; the chromosome comes from the execution identity.
+    reference_root: Path
     work_dir: Path
 
 
@@ -184,6 +194,128 @@ def _local_path_from_uri(uri: str) -> Path:
     return path
 
 
+@dataclass(frozen=True)
+class ResolvedReference:
+    """The reference assets for one chromosome, under the pinned validator's own layout."""
+
+    fasta: Path
+    sdf: Path | None
+    fasta_sha256: str
+
+
+@dataclass(frozen=True)
+class SandboxedScoringInputs:
+    """Private COPIES of every mutable scoring input, inside one fresh attempt workspace."""
+
+    truth_vcf: Path
+    truth_tbi: Path
+    mutations_vcf: Path
+    mutations_tbi: Path
+    query_vcf: Path
+    truth: TruthIdentity
+    query_vcf_sha256: str
+
+    def identity(self, reference: ResolvedReference) -> ScoringInputIdentity:
+        """The digests of the bytes the upstream scorer was actually handed."""
+        return ScoringInputIdentity(
+            truth_vcf_sha256=self.truth.truth_vcf_sha256,
+            truth_tbi_sha256=self.truth.truth_tbi_sha256,
+            mutations_vcf_sha256=self.truth.mutations_vcf_sha256,
+            mutations_tbi_sha256=self.truth.mutations_tbi_sha256,
+            query_vcf_sha256=self.query_vcf_sha256,
+            reference_fasta_sha256=reference.fasta_sha256,
+            reference_sdf_present=reference.sdf is not None,
+        )
+
+
+def _copy_into_sandbox(source: Path, destination: Path, *, expected_sha256: str) -> Path:
+    """Copy one scoring input into the attempt sandbox and prove the copy is byte-identical.
+
+    ``shutil.copyfile`` is used deliberately: a hard link would share the source inode, so an
+    upstream reindex or rewrite would mutate MINOS_ENGINE's registered immutable evidence. The
+    copy is re-hashed afterwards, so a truncated or racing write cannot pass silently.
+    """
+    import shutil
+
+    if source.is_symlink() or not source.is_file():
+        raise OrchestrationError(f"scoring input {source} is missing or a symlink")
+    shutil.copyfile(source, destination)
+    observed = _sha256_regular_file(destination, label=f"sandboxed {destination.name}")
+    if observed != expected_sha256:
+        raise OrchestrationError(
+            f"sandbox copy {destination.name} hashes {observed}, expected {expected_sha256}"
+        )
+    return destination
+
+
+def _copy_scoring_inputs(
+    *,
+    attempt_dir: Path,
+    truth_dir: Path,
+    vcf_path: Path,
+    truth: TruthIdentity,
+    observed_vcf_sha: str,
+) -> SandboxedScoringInputs:
+    """Materialize every mutable scoring input as a verified private copy.
+
+    The registered originals stay read-only and untouched: nothing downstream is ever given a
+    path into the practice corpus or the execution artifact store.
+    """
+    sandbox = attempt_dir / "scoring-inputs"
+    sandbox.mkdir(mode=0o750)
+    copies = {
+        "truth.vcf.gz": (truth_dir / "truth.vcf.gz", truth.truth_vcf_sha256),
+        "truth.vcf.gz.tbi": (truth_dir / "truth.vcf.gz.tbi", truth.truth_tbi_sha256),
+        "mutations.vcf.gz": (truth_dir / "mutations.vcf.gz", truth.mutations_vcf_sha256),
+        "mutations.vcf.gz.tbi": (truth_dir / "mutations.vcf.gz.tbi", truth.mutations_tbi_sha256),
+    }
+    for name, (source, digest) in copies.items():
+        _copy_into_sandbox(source, sandbox / name, expected_sha256=digest)
+    query = _copy_into_sandbox(vcf_path, sandbox / "query.vcf.gz", expected_sha256=observed_vcf_sha)
+    return SandboxedScoringInputs(
+        truth_vcf=sandbox / "truth.vcf.gz",
+        truth_tbi=sandbox / "truth.vcf.gz.tbi",
+        mutations_vcf=sandbox / "mutations.vcf.gz",
+        mutations_tbi=sandbox / "mutations.vcf.gz.tbi",
+        query_vcf=query,
+        truth=truth,
+        query_vcf_sha256=observed_vcf_sha,
+    )
+
+
+def _resolve_reference(
+    reference_root: Path, *, chromosome: str, expected_sha256: str
+) -> ResolvedReference:
+    """Derive the chromosome's reference assets and bind the FASTA to the execution's digest.
+
+    The layout is the pinned validator's own — ``<root>/<chrom>/<chrom>.fa`` beside
+    ``<chrom>.sdf`` — never a second reference policy invented here. The SDF is EVALUATION-ONLY:
+    it never enters Layer 1, a Layer-2 live feature or the GATK CONFIG search. If the pinned
+    scorer needs it and it is absent, evaluation fails closed rather than scoring approximately.
+    """
+    if not reference_root.is_absolute():
+        raise OrchestrationError(f"reference root {reference_root} must be absolute")
+    if not chromosome or "/" in chromosome or chromosome.startswith("."):
+        raise OrchestrationError(f"unsafe chromosome {chromosome!r}")
+    directory = reference_root / chromosome
+    fasta = directory / f"{chromosome}.fa"
+    sdf = directory / f"{chromosome}.sdf"
+    if fasta.is_symlink() or not fasta.is_file():
+        raise OrchestrationError(f"reference FASTA {fasta} is missing or a symlink")
+    observed = _sha256_regular_file(fasta, label="reference FASTA")
+    if observed != expected_sha256:
+        raise OrchestrationError(
+            f"reference FASTA {fasta} hashes {observed}, but the execution recorded "
+            f"{expected_sha256}; the scorer would compare against a different genome"
+        )
+    if sdf.is_symlink() or not sdf.is_dir():
+        raise OrchestrationError(
+            f"reference SDF {sdf} is missing or a symlink; the pinned scorer requires it and "
+            "evaluation fails closed rather than scoring without it"
+        )
+    return ResolvedReference(fasta=fasta, sdf=sdf, fasta_sha256=observed)
+
+
 def _resolve_execution(engine: Any, execution_result_id: str) -> dict[str, Any]:
     """Read the execution's identity from the narrow evaluator projection."""
     from sqlalchemy import text
@@ -194,7 +326,8 @@ def _resolve_execution(engine: Any, execution_result_id: str) -> dict[str, Any]:
                 text(
                     "SELECT execution_result_id, execution_result_hash, dataset_registry_id, "
                     "       partition, dataset_id, round_id, chromosome, region_start0, "
-                    "       region_end0_exclusive, vcf_artifact_id, vcf_sha256, vcf_uri "
+                    "       region_end0_exclusive, reference_sha256, vcf_artifact_id, "
+                    "       vcf_sha256, vcf_uri "
                     "  FROM evaluation.l2f_completed_execution_inputs "
                     " WHERE execution_result_id = :i"
                 ),
@@ -300,7 +433,7 @@ def evaluate_execution(
     *,
     execution_result_id: str,
     authority: ScoringAuthority,
-    happy_runner: HappyRunner,
+    oracle: MinosSubnetOracle,
     publisher: EvaluationArtifactPublisher,
     provisioning: EvaluationProvisioning,
 ) -> EvaluationOutcome:
@@ -401,7 +534,7 @@ def evaluate_execution(
             execution_result_id=execution_result_id,
             contract_hash=contract_hash,
             authority=authority,
-            happy_runner=happy_runner,
+            oracle=oracle,
             publisher=publisher,
             provisioning=provisioning,
             truth=truth,
@@ -425,7 +558,7 @@ def _evaluate_in_attempt(
     execution_result_id: str,
     contract_hash: str,
     authority: ScoringAuthority,
-    happy_runner: HappyRunner,
+    oracle: MinosSubnetOracle,
     publisher: EvaluationArtifactPublisher,
     provisioning: EvaluationProvisioning,
     truth: TruthIdentity,
@@ -435,33 +568,34 @@ def _evaluate_in_attempt(
     attempt_dir: Path,
     fail: Callable[..., EvaluationOutcome],
 ) -> EvaluationOutcome:
-    """Everything that reads or writes hap.py output, confined to ONE fresh attempt directory."""
+    """Everything the upstream scorer reads or writes, confined to ONE fresh attempt directory."""
     _fail = fail
-    output_prefix = attempt_dir / "happy"
+    chromosome = str(execution["chromosome"])
 
-    # 5. hap.py, through the runner boundary only.
+    # 5. sandbox the scoring inputs. The upstream implementation defensively reindexes and writes
+    #    intermediates beside the paths it is given; the registered evidence must never be what it
+    #    writes beside. These are regular-file COPIES — never hard links, which would share the
+    #    inode and let upstream mutate the registered bytes.
     try:
-        outcome = happy_runner.run(
-            truth_vcf=truth_dir / "truth.vcf.gz",
-            query_vcf=vcf_path,
-            reference=provisioning.reference,
-            region_bed=provisioning.region_bed,
-            output_prefix=output_prefix,
-            work_dir=attempt_dir,
+        sandbox = _copy_scoring_inputs(
+            attempt_dir=attempt_dir,
+            truth_dir=truth_dir,
+            vcf_path=vcf_path,
+            truth=truth,
+            observed_vcf_sha=observed_vcf_sha,
         )
-    except HappyContainmentError:
-        # the container could not be PROVEN stopped: never reported as an ordinary timeout.
-        return _fail("EVALUATION_ERROR")
-    except HappyTimeoutError:
-        return _fail("HAPPY_TIMEOUT")
-    except HappyExecutionError:
-        return _fail("HAPPY_NONZERO_EXIT")
+    except OrchestrationError:
+        return _fail("TRUTH_BYTES_MISMATCH")
 
-    # 6. parse every metric family the scoring contract needs.
+    # 6. the reference, under the pinned validator's own layout, bound to the execution's digest.
     try:
-        parsed = parse_happy_outputs(output_prefix, truth_dir / "mutations.vcf.gz")
-    except HappyOutputError:
-        return _fail("HAPPY_OUTPUT_INVALID", exit_code=outcome.exit_code)
+        reference = _resolve_reference(
+            provisioning.reference_root,
+            chromosome=chromosome,
+            expected_sha256=str(execution["reference_sha256"]),
+        )
+    except OrchestrationError:
+        return _fail("EVALUATION_ERROR")
 
     inputs = EvaluationInputs(
         execution_result_hash=str(execution["execution_result_hash"]),
@@ -480,24 +614,49 @@ def _evaluate_in_attempt(
         ),
     )
 
-    # 7. score under exactly one authority.
+    # 7. THE score — produced by the pinned MINOS_SUBNET implementation, not by this repository.
+    #    Whatever internal tooling that implementation chooses to run (hap.py, Docker, bcftools,
+    #    RTG) is its own business and is deliberately opaque here.
     try:
-        artifact, breakdown, admission, _hash = evaluate_metrics(
+        oracle_result = oracle.score(
+            truth_vcf=sandbox.truth_vcf,
+            query_vcf=sandbox.query_vcf,
+            mutations_vcf=sandbox.mutations_vcf,
+            reference_fasta=reference.fasta,
+            reference_sdf=reference.sdf,
+            confident_bed=None,  # the mutations VCF defines the scope, exactly as upstream does
+            region=inputs.scope.region_source,
+            work_dir=attempt_dir,
+        )
+    except MinosSubnetAuthorityError:
+        # the checkout is not provably the pinned authority: never scored under a substitute.
+        return _fail("EVALUATION_ERROR")
+    except MinosSubnetTimeoutError:
+        return _fail("HAPPY_TIMEOUT")
+    except MinosSubnetExecutionError:
+        return _fail("HAPPY_NONZERO_EXIT")
+
+    if not oracle_result.scored:
+        # upstream ran but declined to produce metrics; that is a bounded, durable failure and
+        # emphatically not a zero score.
+        return _fail("HAPPY_OUTPUT_INVALID")
+
+    # 8. record exactly what came back. No local scoring, no local admission rule.
+    try:
+        artifact, admission, _hash = evaluate_metrics(
             inputs=inputs,
-            happy_metrics=parsed.happy_metrics,
-            mutation_only_metrics=parsed.mutation_only_metrics,
-            assessed_only_metrics=parsed.assessed_only_metrics,
-            overcall=parsed.overcall,
+            oracle_result=oracle_result,
+            scoring_inputs=sandbox.identity(reference),
             authority=authority,
         )
-    except ScoreComputationError:
-        return _fail("SCORER_OUTPUT_INVALID", exit_code=outcome.exit_code)
+    except ScoreRecordingError:
+        return _fail("SCORER_OUTPUT_INVALID")
 
-    # 8. publish the canonical document, then register it through the narrow registrar.
+    # 9. publish the canonical document, then register it through the narrow registrar.
     try:
         published = publisher.publish(build_metrics_artifact_bytes(artifact))
     except EvaluationPublishError:
-        return _fail("ARTIFACT_PUBLISH_FAILED", exit_code=outcome.exit_code)
+        return _fail("ARTIFACT_PUBLISH_FAILED")
 
     try:
         artifact_id, _created = register_metrics_artifact(engine, published)
@@ -505,7 +664,6 @@ def _evaluate_in_attempt(
             execution_result_id=execution_result_id,
             inputs=inputs,
             artifact=artifact,
-            breakdown=breakdown,
             admission_code=admission,
             authority=authority,
             metrics_artifact_id=artifact_id,
@@ -517,7 +675,7 @@ def _evaluate_in_attempt(
     except Exception:
         # the published document is deliberately NOT unpublished: it is content-addressed and
         # another evaluation may legitimately reuse those exact bytes.
-        return _fail("EVALUATION_ERROR", exit_code=outcome.exit_code)
+        return _fail("EVALUATION_ERROR")
 
     return EvaluationOutcome(
         execution_result_id=execution_result_id,

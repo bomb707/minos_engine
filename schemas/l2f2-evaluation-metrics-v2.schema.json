@@ -1,0 +1,219 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "l2f2-evaluation-metrics-v2",
+ "title": "L2-F2 canonical evaluation metrics artifact",
+ "description": "Identities and the EXACT output of the pinned MINOS_SUBNET scorer. Never truth, mutation or VCF bytes. Everything MINOS_SUBNET produced lives under 'upstream'; everything else is MINOS_ENGINE provenance. Nothing MINOS_ENGINE computed may appear under 'upstream'.",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "schema_version",
+  "execution_result_hash",
+  "scoring_contract_hash",
+  "truth_identity",
+  "comparison_scope",
+  "scoring_inputs",
+  "upstream"
+ ],
+ "properties": {
+  "schema_version": {
+   "const": "l2f2-evaluation-metrics-v2"
+  },
+  "execution_result_hash": {
+   "type": "string",
+   "pattern": "^[0-9a-f]{64}$"
+  },
+  "scoring_contract_hash": {
+   "type": "string",
+   "pattern": "^[0-9a-f]{64}$"
+  },
+  "truth_identity": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "truth_vcf_sha256",
+    "truth_tbi_sha256",
+    "mutations_vcf_sha256",
+    "mutations_tbi_sha256"
+   ],
+   "properties": {
+    "truth_vcf_sha256": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{64}$"
+    },
+    "truth_tbi_sha256": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{64}$"
+    },
+    "mutations_vcf_sha256": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{64}$"
+    },
+    "mutations_tbi_sha256": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{64}$"
+    }
+   }
+  },
+  "comparison_scope": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "chromosome",
+    "region_start0",
+    "region_end0_exclusive",
+    "region_source"
+   ],
+   "properties": {
+    "chromosome": {
+     "type": "string",
+     "minLength": 1
+    },
+    "region_start0": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "region_end0_exclusive": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "region_source": {
+     "type": "string",
+     "minLength": 1
+    }
+   }
+  },
+  "scoring_inputs": {
+   "type": "object",
+   "additionalProperties": false,
+   "description": "Digests of the sandbox COPIES actually handed to the upstream scorer.",
+   "required": [
+    "truth_vcf_sha256",
+    "truth_tbi_sha256",
+    "mutations_vcf_sha256",
+    "mutations_tbi_sha256",
+    "query_vcf_sha256",
+    "reference_fasta_sha256",
+    "reference_sdf_present"
+   ],
+   "properties": {
+    "truth_vcf_sha256": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{64}$"
+    },
+    "truth_tbi_sha256": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{64}$"
+    },
+    "mutations_vcf_sha256": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{64}$"
+    },
+    "mutations_tbi_sha256": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{64}$"
+    },
+    "query_vcf_sha256": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{64}$"
+    },
+    "reference_fasta_sha256": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{64}$"
+    },
+    "reference_sdf_present": {
+     "type": "boolean"
+    }
+   }
+  },
+  "upstream": {
+   "type": "object",
+   "additionalProperties": false,
+   "description": "EXACTLY what the pinned MINOS_SUBNET implementation returned.",
+   "required": [
+    "repository",
+    "commit",
+    "source_sha256",
+    "metrics",
+    "advanced_score_100",
+    "minos_score",
+    "minos_score_accepted",
+    "zero_input_fingerprint",
+    "admitted",
+    "admission_code",
+    "happy_docker_image",
+    "bcftools_docker_image"
+   ],
+   "properties": {
+    "repository": {
+     "type": "string",
+     "minLength": 1
+    },
+    "commit": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{40}$"
+    },
+    "source_sha256": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "utils/scoring.py",
+      "neurons/validator.py",
+      "templates/tool_params.py"
+     ],
+     "properties": {
+      "utils/scoring.py": {
+       "type": "string",
+       "pattern": "^[0-9a-f]{64}$"
+      },
+      "neurons/validator.py": {
+       "type": "string",
+       "pattern": "^[0-9a-f]{64}$"
+      },
+      "templates/tool_params.py": {
+       "type": "string",
+       "pattern": "^[0-9a-f]{64}$"
+      }
+     }
+    },
+    "metrics": {
+     "type": "object"
+    },
+    "advanced_score_100": {
+     "type": "number",
+     "minimum": 0,
+     "maximum": 100
+    },
+    "minos_score": {
+     "type": "number",
+     "minimum": 0,
+     "maximum": 1
+    },
+    "minos_score_accepted": {
+     "type": "boolean"
+    },
+    "zero_input_fingerprint": {
+     "type": "boolean"
+    },
+    "admitted": {
+     "type": "boolean"
+    },
+    "admission_code": {
+     "enum": [
+      "ADMITTED",
+      "NONPOSITIVE_SCORE",
+      "OUT_OF_RANGE_SCORE",
+      "ZERO_INPUT_FINGERPRINT"
+     ]
+    },
+    "happy_docker_image": {
+     "type": "string",
+     "minLength": 1
+    },
+    "bcftools_docker_image": {
+     "type": "string",
+     "minLength": 1
+    }
+   }
+  }
+ }
+}

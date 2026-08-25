@@ -92,15 +92,21 @@ Granted by `0011` through `minos_runner`, on top of the existing `0007`/`0008` g
 ### Required baseline schema revision
 
 The runner authority **functions and grants originate in `0011`** and are unchanged since. The
-revision the boundary requires on every connection is nevertheless **`0012_l2f_plan_member_source_idx`**,
-exactly — never a floor, never `head`.
+revision the boundary requires on every connection is nevertheless
+**`0013_l2f2_upstream_score_oracle`**, exactly — never a floor, never `head`.
 
-`0012` grants nothing to any role and changes no function: it adds
-`experiments.l2f_experiment_plan_members.source_matrix_member_index` so a plan member's
-**plan-local** ordinal and the **source feature-matrix** ordinal it references are stored
-separately. A database still at `0011` carries one column for both and therefore cannot represent
-the Phase-A plan at all (local `0..4` over source `0/10/20/30/40`), so the runner refuses it like
-any other wrong revision. The service principal's authority is identical under both revisions.
+The reason it tracks a later revision than its own functions is that the runner and the evaluator
+**share one database**. Neither later migration grants the runner anything:
+
+* `0012` adds `experiments.l2f_experiment_plan_members.source_matrix_member_index`, so a plan
+  member's **plan-local** ordinal and the **source feature-matrix** ordinal it references are
+  stored separately. A database still at `0011` carries one column for both and cannot represent
+  the Phase-A plan at all (local `0..4` over source `0/10/20/30/40`).
+* `0013` makes the four AdvancedScorer component columns nullable, because the pinned upstream
+  scorer exposes only the combined score. It touches no table the runner reads.
+
+The service principal's authority is identical under all three revisions; only the revision the
+boundary will accept moves.
 * the existing `0007`/`0008` claim, start, release, complete-success and fail functions
 
 Deliberately **not** granted:

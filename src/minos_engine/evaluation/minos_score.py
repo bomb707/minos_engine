@@ -1,5 +1,11 @@
 """Minimal, faithful reimplementation of the Minos SN107 score, through to the validator.
 
+**NOT PRODUCTION SCORE AUTHORITY.** This module is retained for historical tests, independent
+diagnostics and parity audits only. Production scoring executes the pinned MINOS_SUBNET
+implementation through :mod:`minos_engine.evaluation.minos_subnet_oracle`; nothing on the
+production evaluation path imports this module, and a regression test enforces that. Do not
+reintroduce it into the orchestrator, the evaluator or any selection decision.
+
 Scope discipline: this is a *compatibility layer*, not a copy of the upstream repository. It
 implements exactly the path a miner's VCF takes after hap.py has produced metrics —
 

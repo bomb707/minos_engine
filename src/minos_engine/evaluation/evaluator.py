@@ -7,11 +7,15 @@ Layer-1/Layer-2 live feature contract.
 
 Two identity rules are structural rather than advisory:
 
-* **One scoring authority.** Every authority-derived field — contract hash, upstream commit,
-  both source digests, both container digests — comes from ONE :class:`ScoringAuthority`. There
-  is no public path on which a caller supplies contract hash A alongside authority metadata B.
+* **One scoring authority, and it is upstream.** The score, its normalization and the admission
+  decision are produced by the pinned MINOS_SUBNET implementation and arrive here as a
+  :class:`MinosSubnetOracleResult`. This module computes no score and applies no admission rule;
+  it records what upstream returned. Every authority-derived field — contract hash, upstream
+  commit, both source digests, both container digests — comes from ONE :class:`ScoringAuthority`,
+  so there is no public path on which a caller supplies contract hash A alongside authority
+  metadata B.
 * **One evaluation record.** :class:`EvaluationRecord` owns the execution identity, truth
-  identity, scoring contract, published metrics artifact, component scores and admission, and
+  identity, scoring contract, published metrics artifact, upstream score and admission, and
   ``evaluation_hash`` is computed *from that record*. A caller cannot hand in scores and an
   independently chosen hash.
 
@@ -40,14 +44,12 @@ from minos_engine.evaluation.contracts import (
     EVALUATION_METRICS_MEDIA_TYPE,
     EvaluationInputs,
     MetricsArtifact,
+    ScoringInputIdentity,
+    UpstreamScoreOutput,
     build_metrics_artifact_bytes,
     compute_evaluation_hash,
 )
-from minos_engine.evaluation.minos_score import (
-    AdvancedScoreBreakdown,
-    compute_advanced_score,
-    decide_admission,
-)
+from minos_engine.evaluation.minos_subnet_oracle import MinosSubnetOracleResult
 from minos_engine.evaluation.scoring_contract import (
     AdmissionCode,
     ScoringAuthority,
@@ -63,6 +65,7 @@ __all__ = [
     "EvaluationRecordError",
     "PersistedEvaluation",
     "PublishedMetricsArtifact",
+    "ScoreRecordingError",
     "build_evaluation_record",
     "evaluate_metrics",
     "evaluation_artifact_root_from_env",
@@ -78,6 +81,15 @@ class EvaluationPersistError(MinosEngineError):
 
 class EvaluationRecordError(MinosEngineError):
     """The evaluation record is internally inconsistent and must not be persisted."""
+
+
+class ScoreRecordingError(MinosEngineError):
+    """The upstream result cannot be recorded: no score, or not from the pinned authority."""
+
+
+def _upstream_overcall(upstream: UpstreamScoreOutput) -> float:
+    """The penalty UPSTREAM applied, read out of its own metrics dictionary. Never recomputed."""
+    return float(upstream.metrics.get("overcall_penalty", 0.0) or 0.0)
 
 
 @dataclass(frozen=True)
@@ -101,11 +113,15 @@ class EvaluationRecord:
     execution_result_id: str
     inputs: EvaluationInputs
     artifact: MetricsArtifact
-    breakdown: AdvancedScoreBreakdown
     admission_code: AdmissionCode
     authority: ScoringAuthority
     metrics_artifact_id: str
     metrics: PublishedMetricsArtifact
+
+    @property
+    def upstream(self) -> UpstreamScoreOutput:
+        """The upstream scientific output this row records — read from the artifact, not recomputed."""
+        return self.artifact.upstream
 
     @property
     def scoring_contract_hash(self) -> str:
@@ -119,52 +135,63 @@ class EvaluationRecord:
             inputs=self.inputs,
             scoring_contract_hash=self.scoring_contract_hash,
             metrics_artifact_sha256=self.metrics.sha256,
-            breakdown=self.breakdown,
-            admission_code=self.admission_code,
+            upstream=self.upstream,
         )
 
 
 def evaluate_metrics(
     *,
     inputs: EvaluationInputs,
-    happy_metrics: dict[str, Any],
-    mutation_only_metrics: dict[str, Any],
-    assessed_only_metrics: dict[str, Any],
-    overcall: dict[str, Any],
+    oracle_result: MinosSubnetOracleResult,
+    scoring_inputs: ScoringInputIdentity,
     authority: ScoringAuthority,
-) -> tuple[MetricsArtifact, AdvancedScoreBreakdown, AdmissionCode, str]:
-    """Score parsed metrics and build the canonical artifact. Pure — no I/O, no database."""
-    breakdown = compute_advanced_score(happy_metrics)
-    admission = decide_admission(happy_metrics, breakdown)
+) -> tuple[MetricsArtifact, AdmissionCode, str]:
+    """Build the canonical artifact around an upstream result. Pure — no I/O, no database.
+
+    This function does NOT score. Every scientific value it places in the artifact was produced by
+    the pinned MINOS_SUBNET implementation and merely crosses this boundary unchanged; the only
+    thing constructed here is MINOS_ENGINE's own provenance envelope around it.
+    """
+    if not oracle_result.scored or oracle_result.admission_code is None:
+        raise ScoreRecordingError(
+            "the pinned upstream scorer returned no metrics; there is no score to record"
+        )
+    if oracle_result.advanced_score_100 is None or oracle_result.minos_score is None:
+        raise ScoreRecordingError("the upstream result carries no score value")
+    if oracle_result.upstream_commit != authority.upstream_commit:
+        raise ScoreRecordingError(
+            f"the upstream result came from commit {oracle_result.upstream_commit}, but the "
+            f"scoring authority pins {authority.upstream_commit}"
+        )
+
     contract_hash = compute_scoring_contract_hash(authority)
+    provenance = oracle_result.upstream_provenance
+    upstream = UpstreamScoreOutput(
+        repository=authority.upstream_repository,
+        commit=oracle_result.upstream_commit,
+        source_sha256=dict(sorted(oracle_result.upstream_source_sha256.items())),
+        metrics=oracle_result.metrics,
+        advanced_score_100=float(oracle_result.advanced_score_100),
+        minos_score=float(oracle_result.minos_score),
+        minos_score_accepted=oracle_result.minos_score_accepted,
+        zero_input_fingerprint=oracle_result.zero_input_fingerprint,
+        admitted=oracle_result.admitted,
+        admission_code=oracle_result.admission_code,
+        happy_docker_image=str(provenance.get("happy_docker_image", authority.happy_image)),
+        bcftools_docker_image=str(
+            provenance.get("bcftools_docker_image", authority.bcftools_image)
+        ),
+    )
     artifact = MetricsArtifact(
         execution_result_hash=inputs.execution_result_hash,
         scoring_contract_hash=contract_hash,
         truth_identity=inputs.truth,
         comparison_scope=inputs.scope,
-        happy_metrics=happy_metrics,
-        mutation_only_metrics=mutation_only_metrics,
-        assessed_only_metrics=assessed_only_metrics,
-        overcall=overcall,
-        advanced_scorer={
-            "completeness_score": breakdown.completeness_score,
-            "core_score": breakdown.core_score,
-            "fp_score": breakdown.fp_score,
-            "minos_score": breakdown.minos_score,
-            "minos_score_100": breakdown.minos_score_100,
-            "overcall_penalty": breakdown.overcall_penalty,
-            "quality_score": breakdown.quality_score,
-        },
-        admission={"admitted": admission == "ADMITTED", "admission_code": admission},
-        tool_identity={
-            "bcftools_image": authority.bcftools_image,
-            "happy_image": authority.happy_image,
-            "scoring_py_sha256": authority.scoring_py_sha256,
-            "upstream_commit": authority.upstream_commit,
-            "validator_py_sha256": authority.validator_py_sha256,
-        },
+        scoring_inputs=scoring_inputs,
+        upstream=upstream,
     )
-    return artifact, breakdown, admission, contract_hash
+    admission: AdmissionCode = oracle_result.admission_code
+    return artifact, admission, contract_hash
 
 
 def build_evaluation_record(
@@ -172,7 +199,6 @@ def build_evaluation_record(
     execution_result_id: str,
     inputs: EvaluationInputs,
     artifact: MetricsArtifact,
-    breakdown: AdvancedScoreBreakdown,
     admission_code: AdmissionCode,
     authority: ScoringAuthority,
     metrics_artifact_id: str,
@@ -214,11 +240,18 @@ def build_evaluation_record(
             f"metrics artifact provenance {metrics.provenance!r} is not "
             f"{EVALUATION_METRICS_PROVENANCE!r}"
         )
+    if artifact.upstream.admission_code != admission_code:
+        raise EvaluationRecordError(
+            "the admission code disagrees with the upstream outcome recorded in the artifact"
+        )
+    if artifact.upstream.commit != authority.upstream_commit:
+        raise EvaluationRecordError(
+            "the metrics artifact cites a different upstream commit than the scoring authority"
+        )
     return EvaluationRecord(
         execution_result_id=execution_result_id,
         inputs=inputs,
         artifact=artifact,
-        breakdown=breakdown,
         admission_code=admission_code,
         authority=authority,
         metrics_artifact_id=metrics_artifact_id,
@@ -257,7 +290,7 @@ def record_evaluation_result(engine: Any, record: EvaluationRecord) -> Persisted
     from sqlalchemy import text
 
     authority = record.authority
-    breakdown = record.breakdown
+    upstream = record.upstream
     with engine.connect() as conn, conn.begin():
         row = conn.execute(
             text(
@@ -277,13 +310,18 @@ def record_evaluation_result(engine: Any, record: EvaluationRecord) -> Persisted
                 "artifact_id": record.metrics_artifact_id,
                 "artifact_sha": record.metrics.sha256,
                 "media_type": record.metrics.media_type,
-                "core": breakdown.core_score,
-                "completeness": breakdown.completeness_score,
-                "fp": breakdown.fp_score,
-                "quality": breakdown.quality_score,
-                "overcall": breakdown.overcall_penalty,
-                "score100": breakdown.minos_score_100,
-                "score": breakdown.minos_score,
+                # the four AdvancedScorer components are LOCAL VARIABLES inside the pinned
+                # upstream function and are never returned by it. They are stored NULL (0013)
+                # rather than recomputed here, which would be a second implementation of the
+                # very formula this row is meant to attest.
+                "core": None,
+                "completeness": None,
+                "fp": None,
+                "quality": None,
+                # upstream DOES expose this one, inside its own metrics dictionary.
+                "overcall": _upstream_overcall(upstream),
+                "score100": upstream.advanced_score_100,
+                "score": upstream.minos_score,
                 "admission": record.admission_code,
                 "eval_hash": record.evaluation_hash,
             },

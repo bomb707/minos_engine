@@ -94,11 +94,17 @@ __all__ = [
 #: the dedicated baseline store. The operational database is NEVER a valid target here.
 BASELINE_DATABASE_NAME = "minos_l2f2_baseline"
 #: the exact revision this boundary requires on EVERY connection it opens. It is EXACT, never a
-#: floor and never ``head``: the runner fails closed on any other revision. ``0011`` introduced
-#: this boundary's own SECURITY DEFINER functions and grants, and ``0012`` — which adds no
-#: privilege whatsoever — separated the plan-local member ordinal from the source feature-matrix
-#: ordinal, so a database still at ``0011`` cannot represent the Phase-A plan the runner executes.
-BASELINE_REVISION = "0012_l2f_plan_member_source_idx"
+#: floor and never ``head`` resolved at runtime: the runner fails closed on any other revision.
+#:
+#: It tracks the baseline store's revision rather than only the migrations the runner itself
+#: needs, because the runner and the evaluator share ONE database. ``0011`` introduced this
+#: boundary's own SECURITY DEFINER functions and grants; ``0012`` separated the plan-local member
+#: ordinal from the source feature-matrix ordinal, without which the Phase-A plan is
+#: unrepresentable; ``0013`` made the AdvancedScorer component columns nullable so evaluation can
+#: store exactly what the pinned upstream scorer exposes. Neither ``0012`` nor ``0013`` grants the
+#: runner anything, and ``0013`` touches no table the runner reads — but a database the evaluator
+#: has advanced is still a database this boundary must recognise.
+BASELINE_REVISION = "0013_l2f2_upstream_score_oracle"
 
 #: the ONLY MINOS group role the runner service may hold.
 _REQUIRED_MEMBERSHIP = "minos_runner"

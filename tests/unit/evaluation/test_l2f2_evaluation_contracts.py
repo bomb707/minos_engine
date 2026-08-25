@@ -204,8 +204,69 @@ def test_both_container_digests_are_pinned_in_the_committed_manifest() -> None:
 # --------------------------------------------------------------------------- #
 # EVALUATION IDENTITY
 # --------------------------------------------------------------------------- #
-def _breakdown() -> Any:
-    return compute_advanced_score({"f1_snp": 0.9, "f1_indel": 0.8, "truth_total_snp": 100})
+def _upstream(**overrides: Any) -> Any:
+    """A stand-in for what the pinned upstream scorer returned. Never computed locally."""
+    from minos_engine.evaluation.contracts import UpstreamScoreOutput
+
+    authority = load_scoring_authority(_repo_root())
+    base: dict[str, Any] = {
+        "repository": authority.upstream_repository,
+        "commit": authority.upstream_commit,
+        "source_sha256": {
+            "utils/scoring.py": authority.scoring_py_sha256,
+            "neurons/validator.py": authority.validator_py_sha256,
+            "templates/tool_params.py": authority.tool_params_py_sha256,
+        },
+        "metrics": {"f1_snp": 0.9, "f1_indel": 0.8, "overcall_penalty": 0.0},
+        "advanced_score_100": 84.5,
+        "minos_score": 0.845,
+        "minos_score_accepted": True,
+        "zero_input_fingerprint": False,
+        "admitted": True,
+        "admission_code": "ADMITTED",
+        "happy_docker_image": authority.happy_image,
+        "bcftools_docker_image": authority.bcftools_image,
+    }
+    base.update(overrides)
+    return UpstreamScoreOutput(**base)
+
+
+def _oracle_result(**overrides: Any) -> Any:
+    from minos_engine.evaluation.minos_subnet_oracle import MinosSubnetOracleResult
+
+    upstream = _upstream()
+    base: dict[str, Any] = {
+        "scored": True,
+        "metrics": upstream.metrics,
+        "advanced_score_100": upstream.advanced_score_100,
+        "minos_score": upstream.minos_score,
+        "minos_score_accepted": True,
+        "zero_input_fingerprint": False,
+        "admitted": True,
+        "admission_code": "ADMITTED",
+        "upstream_commit": upstream.commit,
+        "upstream_source_sha256": upstream.source_sha256,
+        "upstream_provenance": {
+            "happy_docker_image": upstream.happy_docker_image,
+            "bcftools_docker_image": upstream.bcftools_docker_image,
+        },
+    }
+    base.update(overrides)
+    return MinosSubnetOracleResult(**base)
+
+
+def _scoring_inputs() -> Any:
+    from minos_engine.evaluation.contracts import ScoringInputIdentity
+
+    return ScoringInputIdentity(
+        truth_vcf_sha256=_H["1"],
+        truth_tbi_sha256=_H["2"],
+        mutations_vcf_sha256=_H["3"],
+        mutations_tbi_sha256=_H["4"],
+        query_vcf_sha256=_H["5"],
+        reference_fasta_sha256=_H["6"],
+        reference_sdf_present=True,
+    )
 
 
 def test_the_evaluation_hash_is_deterministic() -> None:
@@ -213,8 +274,7 @@ def test_the_evaluation_hash_is_deterministic() -> None:
         "inputs": _inputs(),
         "scoring_contract_hash": _H["c"],
         "metrics_artifact_sha256": _H["d"],
-        "breakdown": _breakdown(),
-        "admission_code": "ADMITTED",
+        "upstream": _upstream(),
     }
     assert compute_evaluation_hash(**args) == compute_evaluation_hash(**args)
 
@@ -232,8 +292,7 @@ def test_every_scientific_input_moves_the_evaluation_hash(mutation: dict[str, An
     common: dict[str, Any] = {
         "scoring_contract_hash": _H["c"],
         "metrics_artifact_sha256": _H["d"],
-        "breakdown": _breakdown(),
-        "admission_code": "ADMITTED",
+        "upstream": _upstream(),
     }
     base = compute_evaluation_hash(inputs=_inputs(), **common)
     assert compute_evaluation_hash(inputs=_inputs(**mutation), **common) != base
@@ -243,8 +302,7 @@ def test_truth_bytes_move_the_evaluation_hash() -> None:
     common: dict[str, Any] = {
         "scoring_contract_hash": _H["c"],
         "metrics_artifact_sha256": _H["d"],
-        "breakdown": _breakdown(),
-        "admission_code": "ADMITTED",
+        "upstream": _upstream(),
     }
     base = compute_evaluation_hash(inputs=_inputs(), **common)
     other = _inputs(
@@ -258,25 +316,57 @@ def test_truth_bytes_move_the_evaluation_hash() -> None:
     assert compute_evaluation_hash(inputs=other, **common) != base
 
 
-def test_the_scoring_contract_and_admission_move_the_evaluation_hash() -> None:
+def test_the_scoring_contract_and_upstream_outcome_move_the_evaluation_hash() -> None:
+    common: dict[str, Any] = {"inputs": _inputs(), "metrics_artifact_sha256": _H["d"]}
+    base = compute_evaluation_hash(scoring_contract_hash=_H["c"], upstream=_upstream(), **common)
+    assert (
+        compute_evaluation_hash(scoring_contract_hash=_H["8"], upstream=_upstream(), **common)
+        != base
+    )
+    for mutation in (
+        {"admission_code": "NONPOSITIVE_SCORE", "admitted": False, "minos_score_accepted": False},
+        {"advanced_score_100": 84.6},
+        {"minos_score": 0.846},
+        {"metrics": {"f1_snp": 0.9, "f1_indel": 0.8, "overcall_penalty": 2.5}},
+    ):
+        assert (
+            compute_evaluation_hash(
+                scoring_contract_hash=_H["c"], upstream=_upstream(**mutation), **common
+            )
+            != base
+        ), mutation
+
+
+def test_the_upstream_source_identity_moves_the_evaluation_hash() -> None:
+    """Two scores from different upstream bytes are different evaluations, by identity."""
     common: dict[str, Any] = {
         "inputs": _inputs(),
         "metrics_artifact_sha256": _H["d"],
-        "breakdown": _breakdown(),
+        "scoring_contract_hash": _H["c"],
     }
-    base = compute_evaluation_hash(
-        scoring_contract_hash=_H["c"], admission_code="ADMITTED", **common
-    )
+    base = compute_evaluation_hash(upstream=_upstream(), **common)
+    assert compute_evaluation_hash(upstream=_upstream(commit="b" * 40), **common) != base
+    other_sources = {
+        "utils/scoring.py": _H["7"],
+        "neurons/validator.py": _H["8"],
+        "templates/tool_params.py": _H["9"],
+    }
     assert (
-        compute_evaluation_hash(scoring_contract_hash=_H["8"], admission_code="ADMITTED", **common)
-        != base
+        compute_evaluation_hash(upstream=_upstream(source_sha256=other_sources), **common) != base
     )
-    assert (
-        compute_evaluation_hash(
-            scoring_contract_hash=_H["c"], admission_code="NONPOSITIVE_SCORE", **common
-        )
-        != base
-    )
+
+
+def test_the_evaluation_identity_binds_no_locally_computed_component() -> None:
+    """The four AdvancedScorer components are not upstream output, so they are not in the identity."""
+    import inspect
+
+    from minos_engine.evaluation import contracts
+
+    body = inspect.getsource(contracts.compute_evaluation_hash).split("content = {")[1]
+    for component in ("core_score", "completeness_score", "fp_score", "quality_score"):
+        assert component not in body, component
+    assert "upstream_commit" in body
+    assert "upstream_source_sha256" in body
 
 
 def test_no_path_timestamp_or_locator_enters_the_evaluation_identity() -> None:
@@ -310,13 +400,10 @@ def test_no_path_timestamp_or_locator_enters_the_evaluation_identity() -> None:
 # METRICS ARTIFACT
 # --------------------------------------------------------------------------- #
 def _artifact() -> MetricsArtifact:
-    inputs = _inputs()
-    artifact, _, _, _ = evaluate_metrics(
-        inputs=inputs,
-        happy_metrics={"f1_snp": 0.9, "f1_indel": 0.8, "truth_total_snp": 100},
-        mutation_only_metrics={"f1": 0.7},
-        assessed_only_metrics={"f1": 0.75},
-        overcall={"overcall_penalty": 0.0},
+    artifact, _admission, _hash = evaluate_metrics(
+        inputs=_inputs(),
+        oracle_result=_oracle_result(),
+        scoring_inputs=_scoring_inputs(),
         authority=load_scoring_authority(_repo_root()),
     )
     return artifact
@@ -326,14 +413,14 @@ def test_the_metrics_artifact_is_canonical_and_deterministic() -> None:
     first = build_metrics_artifact_bytes(_artifact())
     assert first == build_metrics_artifact_bytes(_artifact())
     reparsed = json.loads(first)
-    assert reparsed["schema_version"] == "l2f2-evaluation-metrics-v1"
+    assert reparsed["schema_version"] == "l2f2-evaluation-metrics-v2"
 
 
 def test_the_metrics_artifact_validates_against_its_committed_schema() -> None:
     import jsonschema
 
     schema = json.loads(
-        (_repo_root() / "schemas" / "l2f2-evaluation-metrics-v1.schema.json").read_text("utf-8")
+        (_repo_root() / "schemas" / "l2f2-evaluation-metrics-v2.schema.json").read_text("utf-8")
     )
     jsonschema.validate(json.loads(build_metrics_artifact_bytes(_artifact())), schema)
 
