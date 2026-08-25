@@ -27,13 +27,13 @@ does not restate or override them.
 | HARNESS historical Alembic head | `0008_l2f_execution_results` (stage-scoped; the repository head advances independently) |
 | Operational DB revision | `0005_l2e_feature_view` |
 | Next gate | **BASELINE-QUALIFIED** (designed in `docs/layer2/BASELINE_QUALIFICATION.md`, not implemented) |
-| Current task | **L2-F2-C — MINOS-SUBNET-SCORING-ORACLE (source); canary environment prepared at `0012`, canary NOT run** |
+| Current task | **L2-F2-C — REAL CANARY: PASS.** One GATK execution, one exact MINOS_SUBNET score, independently verified. Phase-A jobs 1..194 NOT enqueued |
 | Previous task | L2-F2-B — baseline search protocol — **CLOSED** at PROTOCOL_FROZEN |
 | Source Alembic head | `0013_l2f2_upstream_score_oracle` (migrations `0001`–`0013`) |
 | Baseline DB revision required by the runner | `0013_l2f2_upstream_score_oracle` (exact; every other revision is refused) |
 | Production score authority | pinned `minos-protocol/minos_subnet` @ `649bb92c…` — executed, not reimplemented |
 | Scoring contract | `l2f2-minos-scoring-v2` (`b24a07e2…`); v1 `d6f29e11…` superseded, still recomputable |
-| Real baseline DB revision | `0012_l2f_plan_member_source_idx` — migrating it to `0013` is the next environment task |
+| Real baseline DB revision | `0013_l2f2_upstream_score_oracle` |
 
 `select_config` remains deliberately blocked by `StageNotReadyError` and stays
 blocked until L2-H.
@@ -444,6 +444,52 @@ upstream references live in the metrics artifact. Persistence refuses any result
 identities or source digests disagree with the authority.
 
 No migration was needed: `0013` already represents these values.
+
+#### L2-F2-C REAL CANARY — **PASS**
+
+The first real end-to-end scientific run completed on 2026-08-25. One GATK execution, one exact
+MINOS_SUBNET score, both independently verified.
+
+**GATK.** `execute_next_l2f2_phase_a_job(worker_id="l2f2-canary-001")` — the accepted production
+entry, no private helper, no manually chosen job — claimed the only enqueued row, the frozen
+canary `b25fabaf…`: `minos-chr18-028662fb934529d7`, round `028662fb934529d7`, chr18, member 0,
+config 0 (`4251cb85…`). **SUCCEEDED in 71 962 ms.** Execution result
+`d1f43fa8-c2db-4006-a11a-99afd6a6aa1a`, result hash `ca549838…`, VCF `a91a2c0e…` (2 208 702 B),
+result manifest `a477c413…`. Both artifacts are content-addressed regular files, mode `0640`,
+re-hashed to their recorded digests.
+
+**Score.** `evaluate_execution(...)` ran the pinned MINOS_SUBNET implementation at
+`649bb92c…` through the isolated bridge (`l2f2-minos-subnet-bridge-v2`) under scoring contract
+`b24a07e2…`:
+
+| | |
+|---|---|
+| `advanced_score_100` | **61.8836338270872** |
+| `minos_score` | **0.618836338270872** |
+| admission | **ADMITTED** |
+| `overcall_penalty` | 0.0 |
+| f1_snp / f1_indel | 0.826530612244898 / 0.6 |
+| truth totals (snp/indel) | 98 / 5 |
+
+Evaluation `a523cb8a-…`, hash `7768a9c7…`, metrics artifact `c561912c…`
+(`l2f2-evaluation-metrics-v2`, 33 upstream metric keys). The four AdvancedScorer components are
+**NULL**, exactly as `0013` intends — upstream exposes only the combined score.
+
+**Independent verification.** Three checks, none of which re-ran hap.py:
+
+* the pinned upstream `AdvancedScorer` and validator helpers, invoked directly under the pinned
+  worktree over the **persisted** upstream metrics, reproduced `61.8836338270872`,
+  `0.618836338270872` and `zero_input=False` — bit for bit;
+* `compute_evaluation_hash` over the persisted execution identity and the published artifact
+  reproduced `7768a9c7…` exactly;
+* a terminal replay of `evaluate_execution` returned the same evaluation id, hash, artifact id
+  and artifact digest with `created=False`, publishing nothing new.
+
+**Containment.** Exactly 1 job exists and 1 was executed. **Phase-A jobs 1..194 remain NOT
+ENQUEUED and NOT EXECUTED.** One canary proves the execution and evaluation pipeline end to end;
+it is not evidence about candidate quality, and no CONFIG was selected, promoted or ranked. D1–D8
+are unchanged. The operational database stayed at `0005_l2e_feature_view`, and neither the
+upstream clone nor the pinned worktree was modified.
 
 #### Score-time source attestation — provenance proven at the moment of scoring
 
