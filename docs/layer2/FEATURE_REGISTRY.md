@@ -72,7 +72,7 @@ production API cannot receive it). A real promotion is a future stage requiring 
 repository-owned, hash-bound, git-bound accepted promotion artifact binding: field
 path, previous/new states, registry hash, split-manifest hash, training and
 validation evidence hashes, qualification report, accepted commit/tree, and explicit
-owner authorization. Test-set evidence may never authorize a promotion
+authorization. Test-set evidence may never authorize a promotion
 (`PromotionRecord` rejects a `TEST` evidence partition). The seven-step promotion
 protocol is in `reports/LAYER2_DATASET_SPLIT_POLICY.md`.
 

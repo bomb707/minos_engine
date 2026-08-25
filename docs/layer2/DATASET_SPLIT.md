@@ -202,6 +202,6 @@ regenerated gate and the new `LAYER2_L2C_SPLIT_FINAL_CLOSURE_REPORT.md` (the his
 report is never overwritten). The report deliberately omits the gate hash, report hash, and
 payload hash, so hashing the report bytes is well defined. The gate does **not** embed
 Commit X's own SHA/tree; Commit X's identity is established externally — reported after
-push, frozen by owner acceptance, and pinned by the next stage as its prerequisite. At
+push, frozen by acceptance, and pinned by the next stage as its prerequisite. At
 verification the gate may require HEAD to descend Commit W and verifies the payload from the
 current tree; it never claims to internally bind Commit X's own SHA.

@@ -64,7 +64,7 @@ HEX64_SQL_REGEX = "^[0-9a-f]{64}$"
 ENV_DATABASE_URL = "MINOS_DATABASE_URL"
 
 #: Canonical PostgreSQL database name for the persistent MINOS Engine operational
-#: store (owner decision). This is the DATABASE name inside a PostgreSQL cluster — it
+#: store (design decision). This is the DATABASE name inside a PostgreSQL cluster — it
 #: is NOT a cluster/data-directory path, host, or role. The connection itself still
 #: comes only from ``MINOS_DATABASE_URL`` (no default DSN, no hard-coded host); this
 #: name is used solely by the fail-closed operational identity check to confirm that a

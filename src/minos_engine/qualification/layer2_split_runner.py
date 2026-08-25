@@ -1077,8 +1077,8 @@ def _render_final_report(
 * **Commit X** contains this report and the regenerated gate. The gate does **not**
   embed Commit X's own SHA or tree — doing so would be cryptographically circular
   (changing the gate changes the tree, hence the commit SHA). Commit X's identity is
-  established externally: after it is pushed, its SHA/tree are reported to the owner,
-  frozen by owner acceptance, and pinned by the next stage as its prerequisite.
+  established externally: after it is pushed, its SHA/tree are reported for acceptance,
+  frozen by acceptance, and pinned by the next stage as its prerequisite.
 * The verifier at Commit X may require HEAD to descend Commit W and verifies the
   evidence payload from the current Git tree. It never claims the gate internally
   binds Commit X's own SHA.

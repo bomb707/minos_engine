@@ -34,7 +34,7 @@ an **epoched, grandfathered** assignment rule.
 
 ## 3. Epoch creation procedure (owner-authorized)
 
-Creating an epoch is an explicit owner decision — never automatic:
+Creating an epoch is an explicit design decision — never automatic:
 
 1. New rounds are registered in `catalog.dataset_registry` (full identity tuples).
 2. `build_next_epoch_manifest(parent_manifest, new_samples)` produces the canonical
@@ -47,7 +47,7 @@ Creating an epoch is an explicit owner decision — never automatic:
    snapshot + allocations. Append-only triggers make the rows immutable; UNIQUE
    constraints make an epoch writable exactly once.
 5. The epoch manifest is committed under `manifests/` and bound by the next gate
-   regeneration. Owner acceptance of that gate freezes the epoch.
+   regeneration. Acceptance of that gate freezes the epoch.
 
 ## 4. Active epoch
 
@@ -74,7 +74,7 @@ epoch ≥ N (the cohort can only have grown).
 ## 7. Sample-removal prohibition
 
 Samples are never removed from an epoch lineage. If a sample is discovered to be
-defective, it is handled by an owner decision recorded here (e.g. an exclusion list in a
+defective, it is handled by an explicit design decision recorded here (e.g. an exclusion list in a
 future policy version) — the historical epochs remain byte-identical. Silent removal or
 identity replacement fails verification (`no_parent_removed`,
 `no_round_id_replacement`) and persistence.
@@ -86,7 +86,7 @@ The test cohort is **SEALED** by default:
 | State | Meaning | Database posture |
 |---|---|---|
 | `SEALED` (current) | No consumer may read any test allocation. | `evaluation.sealed_test_epoch_allocations` exists with **no grant**; no application role can select from it or the base tables. |
-| `FINAL_EVAL_AUTHORIZED` | Owner has frozen the controller and authorized a final evaluation on a named epoch. | A separate, explicitly-authorized migration grants `SELECT` on the sealed view to `minos_evaluator` for that decision; the authorization commit records the epoch, the model identity, and the owner decision. |
+| `FINAL_EVAL_AUTHORIZED` | The controller is frozen and a final evaluation is explicitly authorized on a named epoch. | A separate, explicitly-authorized migration grants `SELECT` on the sealed view to `minos_evaluator` for that decision; the authorization commit records the epoch, the model identity, and the authorizing protocol decision. |
 
 Transitioning to `FINAL_EVAL_AUTHORIZED` is out of scope for SPLIT-FROZEN-V2 and
 requires its own owner-approved change; nothing in this stage grants test access.

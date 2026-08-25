@@ -13,7 +13,7 @@ access.
 | Current stage | L2-F2 (see `docs/DEVELOPMENT_STATUS.md`) |
 
 Verdict vocabulary: **VERIFIED**, **PARTIAL**, **MISSING**, **INCOMPATIBLE**,
-**OWNER DECISION REQUIRED**. Severity vocabulary: **BLOCKER**, **DEFECT**,
+**PROTOCOL DECISION**. Severity vocabulary: **BLOCKER**, **DEFECT**,
 **HARDENING**, **COSMETIC**.
 
 ---
@@ -23,13 +23,13 @@ Verdict vocabulary: **VERIFIED**, **PARTIAL**, **MISSING**, **INCOMPATIBLE**,
 | # | Finding | Verdict | Severity |
 |---|---|---|---|
 | 1 | Minos scoring authority is fully traceable end-to-end, including the post-`AdvancedScorer` transformation | **VERIFIED** | — |
-| 2 | Reward is **rank-based**, not proportional to score | **VERIFIED** | OWNER DECISION REQUIRED |
+| 2 | Reward is **rank-based**, not proportional to score | **VERIFIED** | PROTOCOL DECISION |
 | 3 | `evaluation.evaluations` targets the legacy `experiments.results`, not `experiments.l2f_execution_results` | **INCOMPATIBLE** | **BLOCKER** for L2-F2 persistence |
 | 4 | Truth/mutation material exists on disk for all 75 rounds but is registered nowhere | **PARTIAL** | **BLOCKER** for evaluation |
 | 5 | Built-in `minos_evaluator` group role is intentionally NOLOGIN; no **external evaluator service login principal** exists | **VERIFIED** (group role) / **MISSING** (service login) | **BLOCKER** for evaluator isolation |
 | 6 | The accepted 39 candidates are pure one-at-a-time; zero interactions tested | **VERIFIED** | search-design input |
 | 7 | Split is exactly 50/10/15 and perfectly chromosome-balanced | **VERIFIED** | enables cheap screening |
-| 8 | Robust objective J(c) is not mandated in full by the specification | **OWNER DECISION REQUIRED** | must freeze before compute |
+| 8 | Robust objective J(c) is not mandated in full by the specification | **PROTOCOL DECISION** | must freeze before compute |
 
 **Three blockers** must clear before baseline compute begins. None requires
 reopening L2-F1; all are additive L2-F2 work.
@@ -136,7 +136,7 @@ emphasis(m, γ) = 1 − (1 − clamp(m, 0, 0.999999))^γ
   **winner-take-most plus decaying dust to the top N, with burn** — a function of
   **rank**, not of score magnitude.
 
-**Consequence — OWNER DECISION REQUIRED.** Maximising mean score and maximising
+**Consequence — PROTOCOL DECISION.** Maximising mean score and maximising
 reward are different objectives. A CONFIG that is reliably second is worth far
 less than one that wins sometimes. Section 6 offers objectives for both readings.
 
@@ -153,7 +153,7 @@ less than one that wins sometimes. Section 6 offers objectives for both readings
 | Final score range and normalisation | VERIFIED — `/100`, `(0, 1]` |
 | Validator weighting | VERIFIED — rank-based, platform-supplied policy |
 | Chromosome weighting inside the scorer | **none found** — chromosome effects enter only through the data |
-| Reward policy values (`winner_weight`, `dust_*`, `burn_rate`) | **MISSING locally** — served by the platform at runtime; cannot be frozen offline (OWNER DECISION on how to model them) |
+| Reward policy values (`winner_weight`, `dust_*`, `burn_rate`) | **MISSING locally** — served by the platform at runtime; cannot be frozen offline (PROTOCOL DECISION on how to model them) |
 
 **No scorer needs to be invented.** Baseline implementation is not blocked on
 scoring authority.
@@ -332,7 +332,7 @@ Budgets are in `docs/layer2/BASELINE_QUALIFICATION.md` §9.
 
 ---
 
-## 6. Robust objective — **OWNER DECISION REQUIRED**
+## 6. Robust objective — **PROTOCOL DECISION**
 
 The specification requires a robust objective and chromosome-aware analysis but
 does not fully mandate the functional form. Three options with equations, and a
@@ -368,7 +368,7 @@ setgid propagates to per-attempt directories and breaks the production
 
 ---
 
-## 8. Unresolved owner decisions
+## 8. Unresolved protocol decisions
 
 | # | Decision | Why it cannot be defaulted |
 |---|---|---|
@@ -377,7 +377,7 @@ setgid propagates to per-attempt directories and breaks the production
 | D3 | Lower-tail parameter (CVaR α) and per-chromosome floor | Sets risk appetite |
 | D4 | Runtime constraint — hard cap, tie-break, or ignored | Affects feasibility under round deadlines |
 | D5 | Search budget tier (LEAN / STANDARD / HIGH-CONFIDENCE) | Cost vs confidence |
-| D6 | Whether VALIDATION may be read at L2-F2-F or is deferred to L2-G | Specification permits post-freeze use; exact timing is owner-controlled |
+| D6 | Whether VALIDATION may be read at L2-F2-F or is deferred to L2-G | Specification permits post-freeze use; exact timing is a protocol decision |
 | D7 | Whether to model the platform reward policy offline | `winner_weight` / `dust_*` / `burn_rate` are served at runtime and unavailable locally |
 | D8 | Phase-B design family (Sobol / LHS / fractional-factorial) | Any is defensible; must be pre-registered |
 
@@ -391,5 +391,5 @@ principal (§2.3 — the built-in group role stays NOLOGIN by design).
 All are additive L2-F2-A work. None reopens L2-F1, none requires touching
 HARNESS evidence, and none requires inventing a scorer.
 
-Eight **owner decisions** (§8) must be resolved and frozen before Phase-A
+Eight **protocol decisions** (§8) must be resolved and frozen before Phase-A
 compute begins.

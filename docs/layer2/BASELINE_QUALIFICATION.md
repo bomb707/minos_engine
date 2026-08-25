@@ -1,7 +1,7 @@
 # L2-F2 — Baseline Discovery and Baseline Qualification (proposed contract)
 
 **Status: PROPOSED, not frozen and not implemented.** This document is the design
-input for L2-F2. Items marked **OWNER DECISION REQUIRED** are genuinely open and
+input for L2-F2. Items marked **PROTOCOL DECISION** are genuinely open and
 are not presented as settled. Current stage state lives in
 `docs/DEVELOPMENT_STATUS.md`; supporting evidence lives in
 `reports/LAYER2_BASELINE_PREIMPLEMENTATION_AUDIT.md`.
@@ -125,7 +125,7 @@ separately versioned baseline-search candidate design
 (`l2f2-baseline-candidate-design-v1`) with its own hash. Historical HARNESS
 evidence is untouched.
 
-## 7. Robust objective — OWNER DECISION REQUIRED
+## 7. Robust objective — PROTOCOL DECISION
 
 Notation: candidate `c`; TRAIN BAMs `i ∈ B`; chromosomes `k ∈ K` (chr18–chr22);
 `s_i(c) ∈ [0, 1]` the admitted Minos score; `F(c)` the set of failed or
@@ -175,7 +175,7 @@ it is also higher-variance and needs more BAMs per candidate.
 gives a defensible, low-variance, robustness-first baseline; Option C reveals
 whether the B-winner would also *win rounds*, which is what the rank-based reward
 actually pays for. If B's winner is consistently rank-mediocre, that is an
-explicit owner decision point — not something to silently re-optimise.
+explicit protocol decision point — not something to silently re-optimise.
 
 Open: **D2** (form), **D3** (α and floor weight), **D4** (runtime), **D1**
 (rank vs level emphasis), **D7** (modelling the platform reward policy).
@@ -345,7 +345,7 @@ and `select_config` activation (L2-H); locked-test evaluation (L2-I); production
 and delayed feedback (L2-J); any change to HARNESS evidence or the accepted 39
 candidates; DeepVariant or bcftools as callers; DB-V2.
 
-## 16. Owner decisions still required
+## 16. Protocol decisions still open
 
 | # | Decision |
 |---|---|
@@ -359,4 +359,7 @@ candidates; DeepVariant or bcftools as callers; DB-V2.
 | D8 | Phase-B design family — Sobol / LHS / fractional-factorial |
 
 None of these is frozen. Nothing above should be read as an accepted contract
-until the owner resolves them and the protocol hash is committed.
+until they are resolved and frozen into `l2f2-baseline-search-protocol-v1`, whose
+canonical manifest and protocol hash are committed. Their authority then comes from
+that committed protocol, its hash, its tests and its evidence — there is no separate
+approval step and no approval artifact.

@@ -158,7 +158,7 @@ or changing any value, epoch, count, or bound identity changes the respective ha
 
 E0 (this document + pins + inventory test) → E1 contracts → E2 extraction/verifiers →
 E3 migration + storage + grant boundary → E4 epoch-1 build + evidence →
-E5 gates/closures. Each step starts only on explicit owner authorization.
+E5 gates/closures. Each step starts only on explicit authorization.
 
 ## E0 addendum — canonical Parquet bumped to `feature-matrix-parquet-v2`
 

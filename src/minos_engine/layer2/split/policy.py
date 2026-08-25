@@ -3,7 +3,7 @@
 The split is a pure function of ``{SALT, round_id, chromosome}``. It never consults
 truth, mutation labels, scores, Layer 1 profiles, model outcomes, filesystem order,
 wall-clock, locale, timezone, or Python hash randomization. Changing :data:`SALT`
-defines a *new* split identity and is an explicit owner decision.
+defines a *new* split identity and is an explicit design decision.
 
 Algorithm (authoritative):
   * group complete samples by confirmed contig (each chromosome has exactly 15);
@@ -47,7 +47,7 @@ __all__ = [
     "SplitPolicyError",
 ]
 
-#: Fixed split salt. Changing this defines a NEW split identity (owner-only).
+#: Fixed split salt. Changing this defines a NEW split identity (design decision only).
 SALT: str = "minos-l2-split-v1"
 SPLIT_ALGORITHM: str = "hash-stratified"
 SPLIT_POLICY_VERSION: str = "layer2-dataset-split-v1"

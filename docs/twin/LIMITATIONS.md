@@ -3,7 +3,7 @@
 1. **Composite AdvancedScorer is UNAVAILABLE.** The pinned scorer formula is not
    defined in the authoritative specifications; the final/composite Minos score
    is typed-unavailable (`AUTHORITATIVE_SCORER_NOT_AVAILABLE`). No numerical
-   validator parity is claimed. Resolution requires the owner/spec to provide the
+   validator parity is claimed. Resolution requires the specification to provide the
    pinned scorer.
 2. **No real tool execution.** GATK and hap.py are not run (plan construction,
    result parsing, and fixture replay only). Declared parity is `FIXTURE_REPLAY`,

@@ -22,7 +22,7 @@ constrained: an override must be a repo-relative path that resolves within
 and symlink escapes (`EXTERNAL_PATH_SYMLINK`) are rejected before any bytes are read,
 even if those bytes carry an accepted hash. Callers cannot select the expected gate
 hash, source commit/tree, schema hash, profiler hash, or version (extra fields are
-forbidden). Updating an accepted identity is an owner decision made by editing
+forbidden). Updating an accepted identity is a deliberate design decision made by editing
 `prerequisites.py` — never an environment, CLI, or caller input.
 
 ## The 34 proven invariants
@@ -36,8 +36,8 @@ commit/tree equal the accepted. 16. Qualified source commit exists. 17. Its tree
 equals the accepted tree. 18. Accepted artifact commit exists. 19. Its tree equals
 the accepted artifact tree. 20. Artifact **properly** descends the source. 21. HEAD
 descends the artifact. 22. v2 framework commit exists and descends the artifact.
-23. v2 evidence descends the framework. 24. Owner acceptance commit descends v2
-evidence. 25. HEAD descends the owner commit. 26. All pinned git objects present.
+23. v2 evidence descends the framework. 24. Acceptance commit descends v2
+evidence. 25. HEAD descends the acceptance commit. 26. All pinned git objects present.
 27. History not shallow/incomplete. 28. No divergent/sibling/unrelated history.
 29. Evidence non-empty. 30. Evidence paths unique. 31. No evidence path escapes the
 repo (absolute / `..`). 32. No symlink-based evidence escape. 33. Gate fields well

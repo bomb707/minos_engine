@@ -17,7 +17,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          # Canonical operational database name (owner decision) — CI exercises the
+          # Canonical operational database name (design decision) — CI exercises the
           # real operational identity, not a throwaway CI-only name.
           POSTGRES_DB: minos_engine_db
         ports:

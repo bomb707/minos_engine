@@ -51,7 +51,7 @@ __all__ = [
     "SplitPolicyError",
 ]
 
-#: Fixed v2 split salt. Changing this defines a NEW split identity (owner-only).
+#: Fixed v2 split salt. Changing this defines a NEW split identity (design decision only).
 SALT: str = "minos-l2-split-v2"
 SPLIT_ALGORITHM: str = "hash-ordered-ratio-filled-grandfathered"
 SPLIT_POLICY_VERSION: str = "layer2-dataset-split-v2"

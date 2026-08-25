@@ -5,7 +5,7 @@ canonical tables and six external mapping stubs, the additive composite-UNIQUE t
 immutable 0004/0005 tables, the declarative composite foreign keys, the immutability triggers,
 the L2-F job identity function, and the byte SHA-256 of every accepted prior migration.
 
-F3-A closure adds an **exhaustive frozen static inventory (pending owner acceptance)**
+F3-A closure adds an **exhaustive frozen static inventory (pending acceptance)**
 (``L2F_STATIC_INVENTORY``) of the deployed 0006 schema — every owned table's ordered
 columns/types/nullability/defaults, all constraints with full normalized definitions and
 options, all indexes, the six composite targets, the six triggers, the job function, ownership,
@@ -14,7 +14,7 @@ absence of effective application-role/PUBLIC table grants. The inventory was cap
 a live scratch upgrade using the read-only introspector at
 ``tests/integration/layer2_db/l2f_introspect.py``; tests re-derive the live inventory and assert
 exact equality. Until this corrective commit is reviewed and explicitly accepted, treat this as
-"frozen static inventory pending owner acceptance", not owner-reviewed.
+"frozen static inventory pending acceptance", not owner-reviewed.
 
 ``L2F_MIGRATION_SHA256`` freezes the migration file bytes and ``L2F_CONTRACT_HASH`` is a
 domain-separated canonical hash over the migration SHA + revision lineage + accepted prior
@@ -162,7 +162,7 @@ L2F_INVENTORY: dict[str, object] = {
 }
 
 # --------------------------------------------------------------------------- #
-# Exhaustive frozen static inventory (pending owner acceptance), captured once from a live
+# Exhaustive frozen static inventory (pending acceptance), captured once from a live
 # scratch 0006 upgrade via tests/integration/layer2_db/l2f_introspect.py with raw + effective
 # ACLs. Tests re-derive the live inventory and assert exact equality against this literal.
 # --------------------------------------------------------------------------- #

@@ -1035,7 +1035,7 @@ mapping's.
 `tests/integration/layer2_db/l2f_introspect.py` is a reusable read-only normalized
 introspector (**test infrastructure**, not a production module) built entirely from
 `pg_catalog` + `aclexplode` over `COALESCE(acl, acldefault(...))` (never `information_schema`
-grant views). The **frozen static inventory pending owner acceptance** `L2F_STATIC_INVENTORY`
+grant views). The **frozen static inventory pending acceptance** `L2F_STATIC_INVENTORY`
 enumerates every owned table's ordered columns/types/nullability/defaults, every PK/UNIQUE/CHECK/FK
 with full definitions and options, every index, the six composite targets, the six triggers, the
 job function, ownership, and both **raw and effective** ACLs (so the job function's NULL raw ACL

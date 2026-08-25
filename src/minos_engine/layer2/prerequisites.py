@@ -14,10 +14,10 @@ git history against :data:`ACCEPTED`. Accepted identities are never inferred fro
 whatever gate happens to be present on disk — a locally regenerated gate can
 never authorize Layer 2.
 
-Update procedure (owner-only):
-  A change to any pinned value is an explicit owner acceptance decision. It
+Update procedure (deliberate design change only):
+  A change to any pinned value is an explicit acceptance decision. It
   requires (1) a new Layer 1 qualification producing a new PASS ``l1-ready.json``,
-  (2) an owner acceptance record analogous to
+  (2) an acceptance record analogous to
   ``reports/LAYER1_FINAL_ACCEPTANCE_DECISION.md``, and (3) editing the constants
   below in a reviewed commit. Do not edit these values to make a failing gate
   pass; that inverts the trust relationship this module exists to enforce.
@@ -118,7 +118,7 @@ ACCEPTED_FEATURE_REGISTRY_HASH = "0d8612707c6673060546511d8f5e8d1ba47048ef440e6c
 
 # Accepted L2-B DB-READY closure identities (bound by the L2-C SPLIT-FROZEN gate; the
 # L2-C qualified source must properly descend the DB-READY evidence commit). A change
-# to any of these is an explicit owner acceptance decision (see update procedure above).
+# to any of these is an explicit acceptance decision (see update procedure above).
 DB_READY_GATE_HASH = "259986a0423a1b8317bb4c6b1a1cb9213708444a8a6764fc8c7703cf80499698"
 DB_READY_SOURCE_COMMIT = "695901ee95c529acf8a434c1babe06f364efa790"
 DB_READY_SOURCE_TREE = "462106b2a98a5c00ca49faa771531d2730b435da"
@@ -128,7 +128,7 @@ DB_READY_EVIDENCE_COMMIT = "2df03a2cdf37b8c83d34d3e0347ba06a7159310d"
 # *within* stage L2-C: the SPLIT-FROZEN-v2 gate binds these accepted v1 identities and its
 # qualified source must properly descend the v1 SPLIT-FROZEN evidence commit. v1 stays
 # byte-identical and historical (its gate/manifest/migration are never modified). A change
-# to any of these is an explicit owner acceptance decision (see update procedure above).
+# to any of these is an explicit acceptance decision (see update procedure above).
 #   * source commit (Commit Y): the v1 verifier-closure source (inventory-path identity).
 #   * evidence commit: adds gates/split-frozen.json + the v1 final closure report only.
 SPLIT_FROZEN_GATE_HASH = "5520328868f408fe705a9d6618e3d67c081fa4e0aaa8dd764bb933aea866c702"
@@ -137,10 +137,10 @@ SPLIT_FROZEN_SOURCE_TREE = "49b49c53137528da309ebb39ee3a9e456f6ead4a"
 SPLIT_FROZEN_EVIDENCE_COMMIT = "b03ac174672a70c360f6678ca28e324b49852c26"
 
 # Accepted L2-C SPLIT-FROZEN-V2 (epoched split) closure identities — the corrected
-# closure (exact v1 inheritance, zero transitions) merged to dev via PR #1 and accepted
-# by the owner. L2-D (INGEST-READY) binds these and its qualified source must properly
+# closure (exact v1 inheritance, zero transitions) merged to dev via PR #1 and accepted.
+# L2-D (INGEST-READY) binds these and its qualified source must properly
 # descend the SPLIT-FROZEN-V2 evidence commit. A change to any of these is an explicit
-# owner acceptance decision (see update procedure above).
+# acceptance decision (see update procedure above).
 #   * source commit (Commit Y): the corrected v2 source (inheritance + sealed test).
 #   * evidence commit (Commit Z): adds gates/split-frozen-v2.json + the closure report.
 SPLIT_FROZEN_V2_GATE_HASH = "6bd9f472720d56055e57ada0a6e955a8ab0b617a0fe849021a5b0ddfafd19392"
@@ -149,9 +149,9 @@ SPLIT_FROZEN_V2_SOURCE_TREE = "5d6569801e5e75aa398c3f0f835d3d189c506eee"
 SPLIT_FROZEN_V2_EVIDENCE_COMMIT = "a8940ac44eef72cbcbdc8f943a163e33f3a3b742"
 
 # Accepted L2-D INGEST-READY closure identities (capability gate; per-epoch
-# PROFILE-SNAPSHOT-FROZEN evidence is separate). Owner-accepted after the corrective
+# PROFILE-SNAPSHOT-FROZEN evidence is separate). Accepted after the corrective
 # review rounds; CI green on both commits. A change to any of these is an explicit
-# owner acceptance decision (see update procedure above).
+# acceptance decision (see update procedure above).
 INGEST_READY_GATE_HASH = "91f55da0bfe4df8620508ddb9566a0fd9ed838ca1beb2d2522bcb655d8061599"
 INGEST_READY_SOURCE_COMMIT = "87835a99918812172343eabb7a1e8037e317eaec"
 INGEST_READY_SOURCE_TREE = "06e8f6ab9832f382624c06b986f207cc75810247"
@@ -159,7 +159,7 @@ INGEST_READY_EVIDENCE_COMMIT = "5ed620a6371f771be2cfead8caeb712bf4701121"
 
 # Accepted L2-D epoch-1 corpus evidence (externally accepted; S2 55f4a472 / E2 0281a87e,
 # CI-green, merged to dev 24184347). Immutable L2-E prerequisites: the FEATURE-VIEW may
-# consume ONLY this frozen snapshot. A change is an explicit owner acceptance decision.
+# consume ONLY this frozen snapshot. A change is an explicit acceptance decision.
 PROFILE_SNAPSHOT_FROZEN_1_GATE_HASH = (
     "d48c530e97fc26e85396467afa862eba5da5359707f036a33060d6e5bff30f31"
 )
@@ -202,13 +202,13 @@ E4_TRAIN_ARTIFACT_SHA256 = "0396cb07734a18df803ac813d9d1224ecdc3ec9901d7b8a202ac
 E4_VALIDATION_MATRIX_HASH = "7adf58eb84de471523a6a0c3507dcdfb8c2030bdee0f4eaef178fa72477a894d"
 E4_VALIDATION_ARTIFACT_SHA256 = "437a5a4a803bb2d216032019021044d6edf33cea1d73816b39081f77c9c2ab42"
 
-# Accepted L2-E E5 prerequisite closure — the owner-accepted FEATURE-VIEW-READY and
+# Accepted L2-E E5 prerequisite closure — the accepted FEATURE-VIEW-READY and
 # FEATURE-MATRIX-FROZEN-1 gates (CI-green at tip ba4fda2d). These are the ONLY identities
 # under which F3-B may proceed: the committed gates must verify against these exact hashes
 # with PASS status, the E5 qualified source commit/tree must descend the E4 evidence commit,
 # the E5 evidence must descend the qualified source, and the current HEAD must descend the
 # evidence. A locally regenerated PASS gate can never authorize F3-B. A change to any of
-# these is an explicit owner acceptance decision (see update procedure above).
+# these is an explicit acceptance decision (see update procedure above).
 FEATURE_VIEW_READY_GATE_HASH = "c0ff49856689c994499dd3a7c04d7a1fb8ba0992b2eb1e099672bf828d515234"
 FEATURE_MATRIX_FROZEN_1_GATE_HASH = (
     "cd34bdf96f3e7853039b2719e74a12a95740904c1b15f2f5c747516e0260d3ef"

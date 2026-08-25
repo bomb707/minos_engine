@@ -360,7 +360,7 @@ class PromotionRecord(_Frozen):
     repository-owned, hash-bound, git-bound accepted promotion *artifact* binding
     field path, previous/new states, registry hash, split-manifest hash, training
     and validation evidence hashes, qualification report, accepted commit/tree, and
-    explicit owner authorization — test-set evidence may never authorize a
+    explicit authorization — test-set evidence may never authorize a
     promotion. This descriptive object carries none of that authority.
     """
 

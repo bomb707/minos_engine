@@ -194,6 +194,33 @@ and is deliberately not implemented here.
 * no baseline search plan, candidate set or job exists;
 * `BASELINE-QUALIFIED` is **not** issued and the objective (D1–D8) is **not** frozen.
 
+#### Terminology — D1–D8 are protocol decisions
+
+An earlier document convention labelled the open L2-F2 questions D1–D8 "OWNER DECISION
+REQUIRED". That framing is **not part of the engine architecture** and is no longer used:
+there is no owner-decision layer, no approval workflow, no approval field, no owner
+identity or signature, and no owner-specific gate anywhere in MINOS_ENGINE.
+
+D1–D8 are **protocol decisions** — engineering and scientific choices that must be resolved
+and pre-registered before any score-producing experiment, because the experiment protocol
+has to be deterministic and fixed in advance, not because anyone must personally approve
+them. The decisions themselves are unchanged:
+
+| # | Protocol decision |
+|---|---|
+| D1 | Primary optimization target |
+| D2 | Objective form |
+| D3 | Robustness parameters |
+| D4 | Runtime treatment |
+| D5 | Compute budget |
+| D6 | Validation timing |
+| D7 | Platform-reward modelling policy |
+| D8 | Phase-B design family |
+
+Once L2-F2-B freezes them into `l2f2-baseline-search-protocol-v1`, their authority comes
+from the committed protocol, its canonical manifest, its protocol hash, its tests and its
+evidence — never from an "owner" concept.
+
 ---
 
 ## Canonical roadmap

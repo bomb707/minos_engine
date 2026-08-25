@@ -68,7 +68,7 @@ frozen v1/v2 split artifacts or any accepted gate.
 | State | Meaning | Transition |
 |---|---|---|
 | `SEALED` | `evaluation.sealed_test_profile_members` + `evaluation.sealed_test_epoch_allocations` carry **no grant**; no role can read test membership. | Initial state (migration 0003/0004). |
-| `FINAL_EVAL_AUTHORIZED` | A separate, explicitly owner-authorized migration grants evaluator SELECT for the final-evaluation run. | Owner decision only; new migration + gate. |
+| `FINAL_EVAL_AUTHORIZED` | A separate, explicitly authorized migration grants evaluator SELECT for the final-evaluation run. | Protocol decision only; new migration + gate. |
 
 Trainer reads train membership only (`profiling.training_profile_members`); the evaluator
 reads validation membership only (`evaluation.validation_profile_members`). Views expose

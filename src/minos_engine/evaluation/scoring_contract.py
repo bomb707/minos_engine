@@ -1,7 +1,7 @@
 """L2-F2 scoring contract — the frozen identity of the Minos scoring semantics we reproduce.
 
 This module owns *evaluation semantics only*. It deliberately contains no baseline-ranking
-policy: the robust objective, tie-breaks and search budget (owner decisions D1-D8) belong to
+policy: the robust objective, tie-breaks and search budget (protocol decisions D1-D8) belong to
 L2-F2-B and must never enter ``scoring_contract_hash``, or a later objective change would
 retroactively invalidate every stored evaluation.
 

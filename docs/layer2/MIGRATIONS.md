@@ -6,7 +6,7 @@ only from `MINOS_DATABASE_URL` via `migrations/env.py` (synchronous psycopg 3 en
 
 ## Canonical operational database
 The persistent MINOS Engine operational store is the single PostgreSQL **database**
-named **`minos_engine_db`** (owner decision; the code-owned constant
+named **`minos_engine_db`** (design decision; the code-owned constant
 `CANONICAL_OPERATIONAL_DATABASE_NAME` in `src/minos_engine/storage/constants.py`). All
 stages (L2-B → L2-E, and E4 onward) share this one database; each stage's migration
 *adds* schema to it. There is no per-stage database.
@@ -116,7 +116,7 @@ The audited operational store is on the cluster at **host `127.0.0.1`, port `543
 75-profile corpus, accepted epoch-1 snapshot). It is carried onto the canonical database
 `minos_engine_db` **without data loss**.
 
-> **Completed operation (record).** The owner performed a direct, in-place rename
+> **Completed operation (record).** The operator performed a direct, in-place rename
 > `ALTER DATABASE postgres RENAME TO minos_engine_db;` on the `127.0.0.1:5433` cluster.
 > No dump/restore or database copy was performed and the data directory is unchanged.
 > Post-rename verification confirmed `current_database() = minos_engine_db`, Alembic still
