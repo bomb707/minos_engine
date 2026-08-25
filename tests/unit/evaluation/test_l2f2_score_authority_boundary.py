@@ -204,7 +204,9 @@ def test_the_bridge_contains_no_scoring_arithmetic() -> None:
         assert required in code, required
     # it runs under a DIFFERENT interpreter, so it may not import this package at all.
     assert not any(name.startswith("minos_engine") for name in _all_imports(path))
-    assert not _executed_argv_literals(path), "the bridge starts no process of its own"
+    # it runs exactly ONE process of its own: git, to derive its own source attestation. No
+    # scientific command — every one of those belongs to the upstream code it calls.
+    assert _executed_argv_literals(path) <= {"git", "-C", "rev-parse", "HEAD"}
 
 
 def _all_imports(path: Path) -> set[str]:

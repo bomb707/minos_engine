@@ -3,7 +3,7 @@
 MINOS_ENGINE does not define the Minos score. It never did in principle, and after this module
 it does not in practice either: the final score, the normalization and the admission decision all
 come from executing the exact upstream bytes recorded in
-``manifests/l2f2_scoring_authority_v1.json``.
+``manifests/l2f2_scoring_authority_v2.json``.
 
 The division of responsibility is strict:
 
@@ -15,14 +15,26 @@ The division of responsibility is strict:
   be touched at all, byte identity of every input, workspace isolation, persistence, replay and
   the experiment objective.
 
-Two properties make that credible rather than aspirational. **Provenance is verified, not
-trusted**: the upstream root must be a Git checkout whose HEAD is exactly the authority commit
-*and* whose three authority files hash exactly as the manifest says — a branch name, a directory
-name, an mtime or a caller-supplied hash proves nothing here. And **the import is isolated**: the
-upstream package names (``utils``, ``templates``, ``neurons``, ``base``) are generic enough to
-collide with anything, so they are never imported into the evaluator process; a separate
-interpreter runs :mod:`_minos_subnet_bridge` with its working directory inside the verified
-checkout.
+Three properties make that credible rather than aspirational.
+
+**Provenance is verified, not trusted.** The upstream root must be a Git checkout whose HEAD is
+exactly the authority commit *and* whose three authority files hash exactly as the manifest says
+— a branch name, a directory name, an mtime or a caller-supplied hash proves nothing here.
+
+**Provenance is verified AT SCORE TIME, not merely before it.** A pre-flight observation is made
+before the scoring subprocess exists, so on its own it can only ever describe a checkout that
+*was* correct; it cannot speak for the bytes that process actually imported and ran. So the
+identity is established three times over: the pre-flight here, the bridge's own independent
+derivation inside the subprocess (before its imports, after them, and after scoring), and a fresh
+re-derivation here after the subprocess exits. All three must agree with each other and with the
+committed authority, or no result is built. Unchanged container references are explicitly *not*
+accepted as evidence that the scientific source held still.
+
+**The import is isolated.** The upstream package names (``utils``, ``templates``, ``neurons``,
+``base``) are generic enough to collide with anything, so they are never imported into the
+evaluator process; a separate interpreter runs :mod:`_minos_subnet_bridge` with its working
+directory inside the verified checkout, and that bridge proves the modules it actually imported
+resolve beneath that root rather than from a shadowing path.
 
 There is deliberately no vendored copy, no network import and no install step at scoring time.
 """
@@ -57,6 +69,7 @@ __all__ = [
     "MinosSubnetOracleError",
     "MinosSubnetOracleResult",
     "MinosSubnetRuntimeProvenanceError",
+    "MinosSubnetSourceAttestationError",
     "MinosSubnetTimeoutError",
     "VerifiedUpstreamRoot",
     "verify_upstream_root",
@@ -77,7 +90,7 @@ UPSTREAM_AUTHORITY_FILES: tuple[str, ...] = (
 )
 
 _BRIDGE = Path(__file__).with_name("_minos_subnet_bridge.py")
-_BRIDGE_SCHEMA = "l2f2-minos-subnet-bridge-v1"
+_BRIDGE_SCHEMA = "l2f2-minos-subnet-bridge-v2"
 _CHUNK = 1024 * 1024
 
 #: the upstream scorer can legitimately take a long time; it is still bounded.
@@ -106,6 +119,10 @@ class MinosSubnetTimeoutError(MinosSubnetExecutionError):
 
 class MinosSubnetRuntimeProvenanceError(MinosSubnetAuthorityError):
     """The containers the pinned scorer would run are not the ones the authority audited."""
+
+
+class MinosSubnetSourceAttestationError(MinosSubnetAuthorityError):
+    """The source the scoring subprocess actually ran is not provably the pinned authority."""
 
 
 @dataclass(frozen=True)
@@ -320,6 +337,9 @@ class MinosSubnetOracle:
             work_dir=work_dir,
             verified=verified,
         )
+        # even the probe must have run under the pinned source; otherwise the container
+        # references it reports say nothing about what a score would use.
+        self._require_attested_source(response, pre=verified)
         return dict(response.get("provenance") or {})
 
     def verify_runtime_provenance(self, *, work_dir: Path) -> dict[str, LocalImage]:
@@ -377,12 +397,14 @@ class MinosSubnetOracle:
         legitimately writes intermediates beside the files it is given, and MINOS_ENGINE's
         registered evidence must never be what it writes beside.
         """
-        verified = self.verify()
-        # BEFORE any biological byte is read: prove the containers the pinned source will run are
-        # the audited ones. Fails closed; upstream's own commands are never altered.
+        # (1) PRE: the checkout is the pinned authority before anything runs.
+        pre = self.verify()
+        # (2) BEFORE any biological byte is read: prove the containers the pinned source will run
+        #     are the audited ones. Fails closed; upstream's own commands are never altered.
         self.verify_runtime_provenance(work_dir=work_dir)
         request = {
-            "upstream_root": str(verified.path),
+            "upstream_root": str(pre.path),
+            "mode": "score",
             "truth_vcf": str(truth_vcf),
             "query_vcf": str(query_vcf),
             "mutations_vcf": str(mutations_vcf),
@@ -391,8 +413,95 @@ class MinosSubnetOracle:
             "confident_bed": str(confident_bed) if confident_bed is not None else None,
             "region": region,
         }
-        response = self._invoke_bridge(request, work_dir=work_dir, verified=verified)
-        return self._build_result(response, verified)
+        # (3) the score itself, in the isolated subprocess.
+        response = self._invoke_bridge(request, work_dir=work_dir, verified=pre)
+
+        # (4) the subprocess's OWN attestation of the source it ran, checked against the
+        #     pre-flight observation and the committed authority. A checkout mutated between (1)
+        #     and (3) is caught here rather than silently attributed to the stale observation.
+        attested = self._require_attested_source(response, pre=pre)
+
+        # (5) POST: re-derive the identity independently, AFTER the subprocess has exited. This
+        #     catches a mutation that lands after the bridge returns but before anything is built.
+        #     A failure here is reported as an ATTESTATION failure rather than a plain authority
+        #     failure: the distinction between "this checkout was never right" and "this checkout
+        #     changed while we were scoring it" is exactly what an operator needs to see.
+        try:
+            post = self.verify()
+        except MinosSubnetAuthorityError as exc:
+            raise MinosSubnetSourceAttestationError(
+                f"the pinned checkout no longer matches the scoring authority after scoring: {exc}"
+            ) from exc
+        if post.commit != pre.commit or post.source_sha256 != pre.source_sha256:
+            raise MinosSubnetSourceAttestationError(
+                f"the pinned checkout changed while scoring: pre {pre.commit} "
+                f"{sorted(pre.source_sha256.items())} vs post {post.commit} "
+                f"{sorted(post.source_sha256.items())}"
+            )
+
+        # only now, from an identity proven by all three observations, is a result built.
+        return self._build_result(response, attested)
+
+    def _require_attested_source(
+        self, response: dict[str, Any], *, pre: VerifiedUpstreamRoot
+    ) -> VerifiedUpstreamRoot:
+        """Require the SCORING SUBPROCESS's own source identity to be the pinned authority.
+
+        The pre-flight verified the checkout, but it did so before the subprocess existed — it
+        cannot speak for what that subprocess imported and ran. The bridge therefore derives the
+        identity itself, and this is where that independent derivation is held to the same
+        authority. Hashes the caller supplied would prove nothing, so none are sent.
+        """
+        attestation = response.get("source_attestation")
+        if not isinstance(attestation, dict):
+            raise MinosSubnetSourceAttestationError(
+                "the bridge returned no source attestation; a score without one cannot be "
+                "attributed to any particular source bytes"
+            )
+        provenance = response.get("provenance") or {}
+        if not provenance.get("modules_within_root"):
+            raise MinosSubnetSourceAttestationError(
+                "the bridge did not prove its upstream modules resolved beneath the pinned root"
+            )
+
+        head = attestation.get("git_head")
+        if head != pre.commit or head != self.authority.upstream_commit:
+            raise MinosSubnetSourceAttestationError(
+                f"the scoring subprocess ran at git HEAD {head!r}; the pre-flight saw "
+                f"{pre.commit!r} and the authority pins {self.authority.upstream_commit!r}"
+            )
+
+        expected = {
+            "utils/scoring.py": self.authority.scoring_py_sha256,
+            "neurons/validator.py": self.authority.validator_py_sha256,
+            "templates/tool_params.py": self.authority.tool_params_py_sha256,
+        }
+        # every snapshot the bridge took must agree with the pre-flight AND with the authority.
+        for stage in ("before_import", "after_import", "after_score"):
+            observed = attestation.get(stage)
+            if not isinstance(observed, dict):
+                raise MinosSubnetSourceAttestationError(
+                    f"the bridge reported no source digests {stage.replace('_', ' ')}"
+                )
+            if observed != expected:
+                differing = sorted(
+                    name for name in expected if observed.get(name) != expected[name]
+                )
+                raise MinosSubnetSourceAttestationError(
+                    f"the scoring subprocess observed {differing} {stage.replace('_', ' ')} that "
+                    "the scoring authority does not record"
+                )
+            if observed != dict(pre.source_sha256):
+                raise MinosSubnetSourceAttestationError(
+                    f"the scoring subprocess's source digests {stage.replace('_', ' ')} disagree "
+                    "with the pre-flight observation"
+                )
+        return VerifiedUpstreamRoot(
+            path=pre.path,
+            commit=str(head),
+            source_sha256=dict(expected),
+            interpreter=pre.interpreter,
+        )
 
     def _invoke_bridge(
         self, request: dict[str, Any], *, work_dir: Path, verified: VerifiedUpstreamRoot
@@ -439,6 +548,10 @@ class MinosSubnetOracle:
             raise MinosSubnetExecutionError(
                 f"unexpected bridge schema {response.get('bridge_schema')!r}"
             )
+        if "source_authority_error" in response:
+            raise MinosSubnetSourceAttestationError(
+                f"the scoring subprocess refused its own source: {response['source_authority_error']}"
+            )
         if "error" in response:
             raise MinosSubnetExecutionError(
                 f"the pinned MINOS_SUBNET implementation raised:\n{response['error']}"
@@ -446,8 +559,9 @@ class MinosSubnetOracle:
         return dict(response)
 
     def _build_result(
-        self, response: dict[str, Any], verified: VerifiedUpstreamRoot
+        self, response: dict[str, Any], attested: VerifiedUpstreamRoot
     ) -> MinosSubnetOracleResult:
+        """Build the result from the identity PROVEN across pre-flight, bridge and post-check."""
         provenance = dict(response.get("provenance") or {})
         # the scoring run must have used the same literal references the pre-flight verified; a
         # divergence between probe and score would mean the checkout changed underneath us.
@@ -471,8 +585,8 @@ class MinosSubnetOracle:
             zero_input_fingerprint=bool(response.get("zero_input_fingerprint")),
             admitted=bool(response.get("admitted")),
             admission_code=response.get("admission_code"),
-            upstream_commit=verified.commit,
-            upstream_source_sha256=dict(verified.source_sha256),
+            upstream_commit=attested.commit,
+            upstream_source_sha256=dict(attested.source_sha256),
             upstream_provenance=provenance,
             happy_upstream_ref=self.authority.happy.upstream_ref,
             happy_resolved_digest=self.authority.happy.resolved_digest,

@@ -445,8 +445,41 @@ identities or source digests disagree with the authority.
 
 No migration was needed: `0013` already represents these values.
 
+#### Score-time source attestation — provenance proven at the moment of scoring
+
+The oracle verified the pinned checkout **before** launching the scoring subprocess, then recorded
+the digests from that pre-flight observation onto the result. But a pre-flight is made before the
+subprocess exists: it can only ever say "this checkout *was* correct", never speak for the bytes
+that process actually imported and ran. A checkout edited between the two — by a concurrent
+operator, a rebuild, an errant sync — would have produced a real scientific result stamped with
+digests that did not produce it. Unchanged container references were no help: they were exactly
+what the previous corrective already checked, and a source edit can leave both untouched.
+
+The identity is now established **three times**, and all three must agree with the committed
+authority before any result is built:
+
+1. **Pre-flight**, in the evaluator process, as before.
+2. **Inside the scoring subprocess**, derived by the bridge itself from the root it was given —
+   never from caller-supplied hashes, which would prove only that the caller can repeat itself.
+   It hashes the three authority files before its upstream imports, again after them, and again
+   after scoring completes, and requires all three snapshots to be identical. It also proves the
+   modules it actually imported resolve beneath that root, so a shadowing `sys.path` entry cannot
+   supply the scientific implementation.
+3. **Post-score**, re-derived in the evaluator process after the subprocess has exited.
+
+Any disagreement is a typed `MinosSubnetSourceAttestationError` and no result reaches persistence.
+A post-score failure is reported distinctly from a pre-flight one, because "this checkout was
+never right" and "this checkout changed while we were scoring it" call for different operator
+responses.
+
+The bridge protocol is `l2f2-minos-subnet-bridge-v2`. That is MINOS_ENGINE adapter plumbing: the
+scoring contract hash, the metrics artifact schema and the evaluation-hash domain are all
+unchanged, and no migration was needed.
+
 The evaluator service will need `MINOS_L2F_MINOS_SUBNET_ROOT` pointing at a detached pinned
-worktree; see `docs/layer2/EVALUATOR_SERVICE_PROVISIONING.md`.
+worktree; see `docs/layer2/EVALUATOR_SERVICE_PROVISIONING.md`. **That worktree must not be edited
+while an evaluation is running** — an edit mid-score is now detected and refused rather than
+silently mis-attributed.
 
 Running the canary requires the next environment task: migrate the real baseline database from
 `0011` to `0012`, then replay preparation. `minos_runner_svc` is already provisioned with

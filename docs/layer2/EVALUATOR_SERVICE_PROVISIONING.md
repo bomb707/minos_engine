@@ -147,9 +147,19 @@ Requirements, all enforced at scoring time and all fail-closed:
 * **A git checkout or worktree whose HEAD is exactly the authority commit**
   `649bb92c6abccebde58a736a2b2af7fd77a701c1`. It must be a **detached, pinned** worktree — never
   the mutable development clone, whose HEAD is free to move.
-* **The three authority files hash exactly** as `manifests/l2f2_scoring_authority_v1.json`
-  records, and git reports them clean. A branch name, a directory name, an mtime or a
-  caller-supplied hash prove nothing and are never consulted.
+* **The three authority files hash exactly** as `manifests/l2f2_scoring_authority_v2.json`
+  records — the production authority; `…_v1.json` is superseded history, kept only so its
+  published contract hash stays recomputable — and git reports them clean. A branch name, a
+  directory name, an mtime or a caller-supplied hash prove nothing and are never consulted.
+
+Those checks run **before** the scoring subprocess starts, which on its own only establishes that
+the checkout *was* correct. The identity is therefore established two more times: the scoring
+subprocess independently derives the git HEAD and the three digests itself — before its upstream
+imports, again after them, and again after scoring — and the parent re-derives them once more
+after that process exits. All of it must agree with the committed authority, or no result is
+produced. In practice this means **the pinned worktree must not be edited, synced or rebuilt
+while an evaluation is running**; if it is, the evaluation fails closed rather than attributing a
+real score to source bytes that did not produce it.
 
 Create it with `git worktree add --detach <path> 649bb92c…` from the upstream clone. The upstream
 repository is an authority: it is never edited, committed into, rebased, reset or re-branched by
