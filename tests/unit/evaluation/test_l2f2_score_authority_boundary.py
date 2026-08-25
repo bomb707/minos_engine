@@ -217,6 +217,78 @@ def _all_imports(path: Path) -> set[str]:
     return out
 
 
+def test_the_scientific_contract_and_the_persistence_envelope_are_separate() -> None:
+    """Two identities, two versions, deliberately not one.
+
+    The scoring contract answers "which Minos score is this". The metrics artifact schema and the
+    evaluation-hash domain answer "how did MINOS_ENGINE store it". v1 conflated them, so moving
+    the envelope to v2 silently made the v1 contract hash a false statement. They now version
+    independently, and the scientific contract's content may not mention the envelope at all.
+    """
+    from minos_engine.evaluation.contracts import (
+        EVALUATION_HASH_DOMAIN,
+        EVALUATION_METRICS_SCHEMA,
+    )
+    from minos_engine.evaluation.scoring_contract import (
+        SCORING_CONTRACT_DOMAIN,
+        SCORING_CONTRACT_VERSION,
+        load_scoring_authority,
+    )
+
+    # they are genuinely distinct identities, not two names for one thing.
+    assert SCORING_CONTRACT_DOMAIN != EVALUATION_HASH_DOMAIN
+    assert SCORING_CONTRACT_VERSION not in EVALUATION_METRICS_SCHEMA
+    assert EVALUATION_METRICS_SCHEMA not in SCORING_CONTRACT_VERSION
+
+    content = load_scoring_authority().contract_content()
+    blob = __import__("json").dumps(content)
+    assert EVALUATION_METRICS_SCHEMA not in blob
+    assert EVALUATION_HASH_DOMAIN.strip() not in blob
+
+
+def test_the_scoring_contract_module_binds_no_persistence_concept() -> None:
+    """Structural, not just data: the contract module never imports the persistence envelope,
+    and no ``contract_content`` body mentions one.
+
+    The ban is scoped to the hashed content rather than the whole file, because the loader
+    legitimately names ``metrics_artifact_schema`` — to REFUSE it. A control that failed on the
+    guard enforcing the rule would be a control arguing against itself."""
+    import inspect as _inspect
+
+    from minos_engine.evaluation import scoring_contract
+
+    imported = _local_imports(_src("evaluation", "scoring_contract.py"))
+    assert not any(name.rsplit(".", 1)[-1] == "contracts" for name in imported), imported
+
+    for model in (scoring_contract.ScoringAuthority, scoring_contract.HistoricalScoringAuthorityV1):
+        body = _inspect.getsource(model.contract_content).lower()
+        for banned in ("metrics_artifact", "evaluation_hash", "media_type", "alembic", "migration"):
+            assert banned not in body, f"{model.__name__}.contract_content binds {banned!r}"
+
+
+def test_the_runtime_verifier_never_mutates_or_pulls() -> None:
+    """It inspects. It does not pull, tag, run or remove — a scoring call fetches nothing."""
+    path = _src("evaluation", "runtime_images.py")
+    argv = _executed_argv_literals(path)
+    assert "docker" in argv and "inspect" in argv
+    for banned in ("pull", "tag", "run", "rmi", "push", "build", "create", "load", "save"):
+        assert banned not in argv, f"the runtime verifier constructs a docker {banned}"
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Call) and getattr(node.func, "attr", None) in _SUBPROCESS_CALLS:
+            assert not [kw for kw in node.keywords if kw.arg == "shell"]
+
+
+def test_the_oracle_verifies_runtime_provenance_before_it_scores() -> None:
+    """Ordering is the whole point: provenance is proven before a biological byte is read."""
+    import inspect as _inspect
+
+    from minos_engine.evaluation.minos_subnet_oracle import MinosSubnetOracle
+
+    body = _inspect.getsource(MinosSubnetOracle.score)
+    assert "verify_runtime_provenance" in body
+    assert body.index("verify_runtime_provenance") < body.index("_invoke_bridge")
+
+
 # --------------------------------------------------------------------------- #
 # the caller is GATK, and only GATK
 # --------------------------------------------------------------------------- #

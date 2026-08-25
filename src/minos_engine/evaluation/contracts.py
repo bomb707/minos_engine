@@ -149,8 +149,14 @@ class UpstreamScoreOutput(BaseModel):
     zero_input_fingerprint: bool
     admitted: bool
     admission_code: str = Field(min_length=1)
-    happy_docker_image: str = Field(min_length=1)
-    bcftools_docker_image: str = Field(min_length=1)
+    #: two DISTINCT identities per container, never conflated. ``*_upstream_ref`` is the literal
+    #: string the pinned source itself used — a tag for bcftools, a digest for hap.py — and
+    #: ``*_resolved_digest`` is the immutable content it was PROVEN to resolve to before scoring.
+    #: A tag is never recorded as a digest, and a digest is never recorded as the upstream ref.
+    happy_upstream_ref: str = Field(min_length=1)
+    happy_resolved_digest: str = Field(min_length=1)
+    bcftools_upstream_ref: str = Field(min_length=1)
+    bcftools_resolved_digest: str = Field(min_length=1)
 
 
 class MetricsArtifact(BaseModel):

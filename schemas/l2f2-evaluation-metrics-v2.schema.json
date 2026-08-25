@@ -128,7 +128,7 @@
   "upstream": {
    "type": "object",
    "additionalProperties": false,
-   "description": "EXACTLY what the pinned MINOS_SUBNET implementation returned.",
+   "description": "EXACTLY what the pinned MINOS_SUBNET implementation returned, plus the two DISTINCT identities of each container it runs: the literal reference the pinned source itself uses (*_upstream_ref, a tag for bcftools) and the immutable content that reference was proven to resolve to before scoring (*_resolved_digest). A tag is never recorded as a digest.",
    "required": [
     "repository",
     "commit",
@@ -140,8 +140,10 @@
     "zero_input_fingerprint",
     "admitted",
     "admission_code",
-    "happy_docker_image",
-    "bcftools_docker_image"
+    "happy_upstream_ref",
+    "happy_resolved_digest",
+    "bcftools_upstream_ref",
+    "bcftools_resolved_digest"
    ],
    "properties": {
     "repository": {
@@ -205,11 +207,19 @@
       "ZERO_INPUT_FINGERPRINT"
      ]
     },
-    "happy_docker_image": {
+    "happy_upstream_ref": {
      "type": "string",
      "minLength": 1
     },
-    "bcftools_docker_image": {
+    "happy_resolved_digest": {
+     "type": "string",
+     "minLength": 1
+    },
+    "bcftools_upstream_ref": {
+     "type": "string",
+     "minLength": 1
+    },
+    "bcftools_resolved_digest": {
      "type": "string",
      "minLength": 1
     }

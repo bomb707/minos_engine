@@ -11,6 +11,10 @@ container command — every one of those belongs to MINOS_SUBNET, whose exact by
 the scoring authority. If upstream changes, a new upstream commit is pinned; nothing here is
 edited to match.
 
+Two modes. ``probe`` imports upstream and reports the literal container references it would use,
+scoring nothing — that is what lets MINOS_ENGINE verify runtime provenance before a single
+biological byte is read. ``score`` runs the real thing.
+
 Protocol: ``python _minos_subnet_bridge.py <request.json> <response.json>``. The response is
 written to a FILE rather than stdout because the upstream scorer prints diagnostics to stdout and
 would otherwise corrupt the channel; stdout and stderr are captured by the caller for diagnostics
@@ -45,15 +49,27 @@ def _run(request: dict[str, Any]) -> dict[str, Any]:
     )
 
     scorer = HappyScorer()
+    # the LITERAL references the pinned source itself uses. Reported, never rewritten: the caller
+    # verifies them against the authority and checks what they resolve to locally, but upstream
+    # keeps constructing its own commands from its own constants.
     provenance = {
         "python_version": sys.version.split()[0],
-        "happy_docker_image": scorer.docker_image,
-        "bcftools_docker_image": upstream_scoring.BCFTOOLS_DOCKER_IMAGE,
+        "happy_upstream_ref": scorer.docker_image,
+        "bcftools_upstream_ref": upstream_scoring.BCFTOOLS_DOCKER_IMAGE,
         "module_files": {
             "utils.scoring": upstream_scoring.__file__,
             "neurons.validator": upstream_validator.__file__,
         },
     }
+    if request.get("mode") == "probe":
+        # PROBE: import upstream and report what it would run, WITHOUT scoring anything. This is
+        # what lets provenance be verified before a single biological byte is read.
+        return {
+            "bridge_schema": BRIDGE_SCHEMA,
+            "mode": "probe",
+            "scored": False,
+            "provenance": provenance,
+        }
 
     # exactly the arguments the Minos validator supplies to its own scorer.
     metrics = scorer.score_vcf(
@@ -69,6 +85,7 @@ def _run(request: dict[str, Any]) -> dict[str, Any]:
         # upstream declined to produce metrics at all; that is not an admission outcome.
         return {
             "bridge_schema": BRIDGE_SCHEMA,
+            "mode": "score",
             "scored": False,
             "metrics": None,
             "advanced_score_100": None,
@@ -99,6 +116,7 @@ def _run(request: dict[str, Any]) -> dict[str, Any]:
         code = "NONPOSITIVE_SCORE" if normalized <= 0.0 else "OUT_OF_RANGE_SCORE"
         return {
             "bridge_schema": BRIDGE_SCHEMA,
+            "mode": "score",
             "scored": True,
             "metrics": metrics,
             "advanced_score_100": advanced_score_100,
@@ -115,6 +133,7 @@ def _run(request: dict[str, Any]) -> dict[str, Any]:
     )
     return {
         "bridge_schema": BRIDGE_SCHEMA,
+        "mode": "score",
         "scored": True,
         "metrics": metrics,
         "advanced_score_100": advanced_score_100,
@@ -139,6 +158,7 @@ def main(argv: list[str]) -> int:
     except BaseException:  # reported as data, so the caller sees WHY upstream could not run
         response = {
             "bridge_schema": BRIDGE_SCHEMA,
+            "mode": request.get("mode", "score"),
             "scored": False,
             "error": traceback.format_exc(limit=12),
         }

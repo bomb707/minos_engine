@@ -155,9 +155,13 @@ def _oracle_result(**overrides: Any) -> Any:
             "templates/tool_params.py": authority.tool_params_py_sha256,
         },
         "upstream_provenance": {
-            "happy_docker_image": authority.happy_image,
-            "bcftools_docker_image": authority.bcftools_image,
+            "happy_upstream_ref": authority.happy.upstream_ref,
+            "bcftools_upstream_ref": authority.bcftools.upstream_ref,
         },
+        "happy_upstream_ref": authority.happy.upstream_ref,
+        "happy_resolved_digest": authority.happy.resolved_digest,
+        "bcftools_upstream_ref": authority.bcftools.upstream_ref,
+        "bcftools_resolved_digest": authority.bcftools.resolved_digest,
     }
     base.update(overrides)
     return MinosSubnetOracleResult(**base)

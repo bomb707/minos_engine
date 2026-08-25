@@ -39,6 +39,12 @@ from typing import Any
 
 from minos_engine.common.errors import MinosEngineError
 from minos_engine.common.hashing import sha256_hex
+from minos_engine.evaluation.runtime_images import (
+    LocalImage,
+    RuntimeImageError,
+    RuntimeImageInspector,
+    verify_runtime_image,
+)
 from minos_engine.evaluation.scoring_contract import AdmissionCode, ScoringAuthority
 
 __all__ = [
@@ -50,6 +56,7 @@ __all__ = [
     "MinosSubnetOracle",
     "MinosSubnetOracleError",
     "MinosSubnetOracleResult",
+    "MinosSubnetRuntimeProvenanceError",
     "MinosSubnetTimeoutError",
     "VerifiedUpstreamRoot",
     "verify_upstream_root",
@@ -97,6 +104,10 @@ class MinosSubnetTimeoutError(MinosSubnetExecutionError):
     """The pinned upstream scorer exceeded its bounded runtime."""
 
 
+class MinosSubnetRuntimeProvenanceError(MinosSubnetAuthorityError):
+    """The containers the pinned scorer would run are not the ones the authority audited."""
+
+
 @dataclass(frozen=True)
 class VerifiedUpstreamRoot:
     """A checkout PROVEN to be the pinned authority: commit and every source hash re-derived."""
@@ -130,6 +141,12 @@ class MinosSubnetOracleResult:
     upstream_commit: str
     upstream_source_sha256: dict[str, str]
     upstream_provenance: dict[str, Any]
+    #: the LITERAL references the pinned source uses, and the immutable content each was proven
+    #: to resolve to locally before scoring. Never conflated: a tag is not a digest.
+    happy_upstream_ref: str
+    happy_resolved_digest: str
+    bcftools_upstream_ref: str
+    bcftools_resolved_digest: str
 
     @property
     def overcall_penalty(self) -> float:
@@ -278,10 +295,14 @@ class MinosSubnetOracle:
     authority: ScoringAuthority
     root: Path
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
+    #: TEST-ONLY seam. Production leaves this ``None`` and the real Docker inspector is used;
+    #: substituting it lets the whole verification POLICY be exercised without a daemon. It is
+    #: never reachable from :meth:`from_env`, which is the production construction path.
+    image_inspector: RuntimeImageInspector | None = None
 
     @classmethod
     def from_env(cls, authority: ScoringAuthority, *, timeout_seconds: int | None = None) -> Any:
-        """Construct from the provisioned environment. No caller-supplied path or hash."""
+        """Construct from the provisioned environment. No caller-supplied path, hash or seam."""
         return cls(
             authority=authority,
             root=_root_from_env(),
@@ -290,6 +311,53 @@ class MinosSubnetOracle:
 
     def verify(self) -> VerifiedUpstreamRoot:
         return verify_upstream_root(self.root, self.authority)
+
+    def probe_runtime(self, *, work_dir: Path) -> dict[str, Any]:
+        """Ask the pinned source what containers it would run — WITHOUT scoring anything."""
+        verified = self.verify()
+        response = self._invoke_bridge(
+            {"upstream_root": str(verified.path), "mode": "probe"},
+            work_dir=work_dir,
+            verified=verified,
+        )
+        return dict(response.get("provenance") or {})
+
+    def verify_runtime_provenance(self, *, work_dir: Path) -> dict[str, LocalImage]:
+        """Prove, BEFORE any biological byte is read, which container bytes upstream will run.
+
+        Three separate claims, each of which can fail on its own:
+
+        1. the pinned source's own literal references are exactly the ones the authority records
+           — so upstream has not changed which container it names;
+        2. each of those references names an image that exists on this host — MINOS_ENGINE never
+           pulls during scoring, because a scoring call must not fetch new bytes off the network;
+        3. each resolves to exactly the immutable digest the authority audited — so a moving tag
+           cannot silently swap the implementation underneath a fixed name.
+
+        Upstream's commands are untouched throughout. This verifies; it never substitutes.
+        """
+        provenance = self.probe_runtime(work_dir=work_dir)
+        expected = {
+            "hap.py": (self.authority.happy, provenance.get("happy_upstream_ref")),
+            "bcftools": (self.authority.bcftools, provenance.get("bcftools_upstream_ref")),
+        }
+        resolved: dict[str, LocalImage] = {}
+        for label, (identity, observed) in expected.items():
+            if observed != identity.upstream_ref:
+                raise MinosSubnetRuntimeProvenanceError(
+                    f"the pinned source names {label} as {observed!r}, but the scoring authority "
+                    f"records {identity.upstream_ref!r}"
+                )
+            try:
+                resolved[label] = verify_runtime_image(
+                    identity.upstream_ref,
+                    expected_digest=identity.resolved_digest,
+                    label=label,
+                    inspector=self.image_inspector,
+                )
+            except RuntimeImageError as exc:
+                raise MinosSubnetRuntimeProvenanceError(str(exc)) from exc
+        return resolved
 
     def score(
         self,
@@ -310,7 +378,9 @@ class MinosSubnetOracle:
         registered evidence must never be what it writes beside.
         """
         verified = self.verify()
-        # the scorer the oracle is about to invoke must be the one the authority audited.
+        # BEFORE any biological byte is read: prove the containers the pinned source will run are
+        # the audited ones. Fails closed; upstream's own commands are never altered.
+        self.verify_runtime_provenance(work_dir=work_dir)
         request = {
             "upstream_root": str(verified.path),
             "truth_vcf": str(truth_vcf),
@@ -379,12 +449,18 @@ class MinosSubnetOracle:
         self, response: dict[str, Any], verified: VerifiedUpstreamRoot
     ) -> MinosSubnetOracleResult:
         provenance = dict(response.get("provenance") or {})
-        observed_happy = provenance.get("happy_docker_image")
-        if response.get("scored") and observed_happy != self.authority.happy_image:
-            raise MinosSubnetAuthorityError(
-                f"the upstream scorer used hap.py image {observed_happy!r}, but the scoring "
-                f"authority audited {self.authority.happy_image!r}"
-            )
+        # the scoring run must have used the same literal references the pre-flight verified; a
+        # divergence between probe and score would mean the checkout changed underneath us.
+        for label, identity, key in (
+            ("hap.py", self.authority.happy, "happy_upstream_ref"),
+            ("bcftools", self.authority.bcftools, "bcftools_upstream_ref"),
+        ):
+            observed = provenance.get(key)
+            if observed != identity.upstream_ref:
+                raise MinosSubnetRuntimeProvenanceError(
+                    f"the upstream scorer used {label} reference {observed!r}, but the scoring "
+                    f"authority records {identity.upstream_ref!r}"
+                )
         metrics = response.get("metrics")
         return MinosSubnetOracleResult(
             scored=bool(response.get("scored")),
@@ -398,4 +474,8 @@ class MinosSubnetOracle:
             upstream_commit=verified.commit,
             upstream_source_sha256=dict(verified.source_sha256),
             upstream_provenance=provenance,
+            happy_upstream_ref=self.authority.happy.upstream_ref,
+            happy_resolved_digest=self.authority.happy.resolved_digest,
+            bcftools_upstream_ref=self.authority.bcftools.upstream_ref,
+            bcftools_resolved_digest=self.authority.bcftools.resolved_digest,
         )

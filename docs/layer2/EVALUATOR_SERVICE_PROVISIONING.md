@@ -171,12 +171,40 @@ export MINOS_L2F_MINOS_SUBNET_PYTHON="/absolute/path/to/python"
 
 It must be an absolute path to an existing executable; anything else is refused.
 
-### Docker
+### Docker, and the two images that must already be present
 
 The pinned scorer runs its own containers (hap.py, and bcftools for its internal steps). Those
 are **upstream's** commands: MINOS_ENGINE builds none of them and must not. The evaluator host
-therefore needs Docker reachable by the service account, and `DOCKER_HOST` is one of the few
-variables passed through to the bridge subprocess.
+needs Docker reachable by the service account, and `DOCKER_HOST` is one of the few variables
+passed through to the bridge subprocess.
+
+Both images must be **provisioned in advance**. MINOS_ENGINE never pulls during scoring — a
+scoring call must not fetch new bytes off the network — so an absent image is a refusal, not a
+download:
+
+```
+docker pull genonet/hap-py@sha256:03acabe84bbfba35f5a7234129d524c563f5657e1f21150a2ea2797f8e6d05f2
+docker pull quay.io/biocontainers/bcftools:1.20--h8b25389_0
+```
+
+Note the asymmetry, which is upstream's own and is reproduced rather than corrected: **hap.py is
+digest-pinned in the pinned source, bcftools is tag-pinned.** MINOS_ENGINE does not rewrite the
+tag — rewriting it would change the command upstream constructs. Instead it verifies, before
+every real score, that the tag resolves on this host to the audited immutable content:
+
+```
+quay.io/biocontainers/bcftools@sha256:badc3a0c7af72a83e5761ab0e881aa84204694bdead003b47552cb283958f78d
+```
+
+If the tag has been moved upstream and a fresh pull brings different bytes, evaluation fails
+closed rather than scoring against unaudited content. Re-auditing the new bytes and issuing a new
+scoring authority is the deliberate operator action in that case — never a silent acceptance.
+
+Verify a host is ready with:
+
+```
+docker image inspect quay.io/biocontainers/bcftools:1.20--h8b25389_0 --format '{{json .RepoDigests}}'
+```
 
 ## Credential handling
 

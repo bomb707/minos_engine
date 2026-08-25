@@ -32,6 +32,7 @@ does not restate or override them.
 | Source Alembic head | `0013_l2f2_upstream_score_oracle` (migrations `0001`–`0013`) |
 | Baseline DB revision required by the runner | `0013_l2f2_upstream_score_oracle` (exact; every other revision is refused) |
 | Production score authority | pinned `minos-protocol/minos_subnet` @ `649bb92c…` — executed, not reimplemented |
+| Scoring contract | `l2f2-minos-scoring-v2` (`b24a07e2…`); v1 `d6f29e11…` superseded, still recomputable |
 | Real baseline DB revision | `0012_l2f_plan_member_source_idx` — migrating it to `0013` is the next environment task |
 
 `select_config` remains deliberately blocked by `StageNotReadyError` and stays
@@ -392,6 +393,57 @@ change, only the implementation that now genuinely uses it. The **evaluation-has
 v2**, because v1 bound locally-computed component values; v2 binds the upstream outcome and the
 upstream source identity instead. No evaluation had ever been persisted, so nothing is
 invalidated.
+
+#### Scoring contract v2 — scientific authority separated from persistence envelope
+
+Two identity defects were closed before the first real score.
+
+**The contract claimed the wrong envelope.** `l2f2-minos-scoring-v1` embedded
+`metrics_artifact_schema: l2f2-evaluation-metrics-v1` inside its `semantics`, and
+`contract_content()` hashed the whole semantics block. When production moved to metrics artifact
+**v2**, the v1 contract hash became an internally false statement: it asserted a v1 envelope for
+rows that would be written in a v2 one. The fix is not to edit the number — it is that the
+envelope never belonged in the scientific contract at all.
+
+There are now **two identities that version independently**:
+
+| Identity | Answers | Version |
+|---|---|---|
+| Scoring contract | *which Minos score is this* | `l2f2-minos-scoring-v2`, hash `b24a07e2…` |
+| Metrics artifact + evaluation hash | *how did MINOS_ENGINE store it* | `l2f2-evaluation-metrics-v2`, domain `…:v2` |
+
+The scientific contract binds upstream repository, commit, the three source digests, the
+containers upstream runs, and Minos scoring semantics. It binds **no** artifact schema, no
+evaluation-hash domain, no media type, no migration revision and no path — a loader guard refuses
+a manifest that tries to re-admit one.
+
+`manifests/l2f2_scoring_authority_v1.json` is untouched history and its hash still recomputes to
+`d6f29e11eba9a25d5e28c80b0ba746795390042dee618a33f579f6c47af29fee`. Production loads
+`manifests/l2f2_scoring_authority_v2.json`. Zero evaluations had been persisted, so no scientific
+row is reinterpreted.
+
+**The bcftools reference was never resolved.** The pinned upstream source names hap.py by digest
+but bcftools by **tag** (`quay.io/biocontainers/bcftools:1.20--h8b25389_0`). MINOS_ENGINE does not
+rewrite that tag — rewriting it would change the command upstream constructs, which is the exact
+substitution this architecture exists to prevent. Instead the authority now records **both
+identities per container**:
+
+* `upstream_ref` — the literal string the pinned source itself uses, verbatim;
+* `resolved_digest` — the immutable content that reference must resolve to locally.
+
+Before any biological byte is read, the oracle probes the pinned checkout for its own literal
+references, requires them to equal the authority's, and asks the local Docker daemon what each
+one currently resolves to, requiring the audited digest. It **never pulls** — a scoring call must
+not fetch new bytes off the network — never tags, never runs a container, and fails closed if the
+image is absent or resolves to anything else. Upstream's commands are untouched throughout.
+
+The metrics artifact and the SQL columns now keep the two apart by name: `happy_upstream_ref` /
+`happy_resolved_digest` and `bcftools_upstream_ref` / `bcftools_resolved_digest`. A tag is never
+recorded as a digest. SQL stores the **resolved** digests, one defined meaning; the literal
+upstream references live in the metrics artifact. Persistence refuses any result whose tool
+identities or source digests disagree with the authority.
+
+No migration was needed: `0013` already represents these values.
 
 The evaluator service will need `MINOS_L2F_MINOS_SUBNET_ROOT` pointing at a detached pinned
 worktree; see `docs/layer2/EVALUATOR_SERVICE_PROVISIONING.md`.

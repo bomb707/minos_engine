@@ -27,6 +27,7 @@ the historical pre-implementation evidence lives in
 | Baseline workspace and database | **ENVIRONMENT_READY** — `/home/hr/bittensor/minos_l2f2_baseline`, database at `0010_l2f2_evaluation_corrective` |
 | Database connection isolation | **CLOSED** — `PUBLIC` `CONNECT` revoked on both databases; the evaluator credential cannot reach `minos_engine_db` |
 | Real-GATK canary boundary | **CANARY ENVIRONMENT READY at `0012`, canary NOT run.** The source execution boundary (migration `0011` + `execute_next_l2f2_phase_a_job`) remains accepted and unchanged. Migration `0012_l2f_plan_member_source_idx` corrected the subset-persistence assumption — the plan member's ordinal was serving as both the plan-local index and the source feature-matrix index, which a 5-of-50 subset plan cannot satisfy — and the real baseline now holds the frozen Phase-A plan, its authority and exactly one PENDING canary. **The canary has still NOT run** |
+| Scoring contract | **`l2f2-minos-scoring-v2`**, hash `b24a07e2…`. It binds the upstream source identity, the containers that source runs (literal reference *and* resolved digest), and Minos scoring semantics — and deliberately **not** MINOS_ENGINE's persistence envelope. v1 (`d6f29e11…`) bound the metrics artifact schema, which made it a false statement once the envelope moved to v2; it is untouched history and still recomputable |
 | Offline score authority | **The exact pinned MINOS_SUBNET implementation, executed.** `minos_engine.evaluation.minos_subnet_oracle` runs the real `HappyScorer`, `AdvancedScorer` and validator admission helpers at commit `649bb92c…` in an isolated interpreter rooted at a provenance-verified checkout. MINOS_ENGINE defines no Minos score of its own; its historical compatibility layer is retained for audits only and is enforced out of the production import closure. Migration `0013_l2f2_upstream_score_oracle` makes the four AdvancedScorer components nullable because upstream does not expose them |
 
 ---
@@ -310,9 +311,12 @@ canonical, content-addressed metrics artifact is cleaner, keeps the schema small
 and preserves reproducibility; only the few fields the baseline and model stages
 must *query* are promoted to columns.
 
-Since the scoring-oracle corrective the metrics artifact is `l2f2-evaluation-metrics-v2`, which
-separates **`upstream`** — exactly what the pinned MINOS_SUBNET implementation returned, verbatim
-— from MINOS_ENGINE provenance (execution identity, truth digests, comparison scope, and the
+The metrics artifact is versioned **independently of the scoring contract**: it answers "how did
+MINOS_ENGINE store this result", not "which Minos score is this". Conflating the two is what made
+scoring contract v1 unusable once the envelope changed.
+
+The artifact is `l2f2-evaluation-metrics-v2`, which separates **`upstream`** — exactly what the
+pinned MINOS_SUBNET implementation returned, verbatim — from MINOS_ENGINE provenance (execution identity, truth digests, comparison scope, and the
 digests of the sandbox copies the scorer was handed). Nothing MINOS_ENGINE computed appears under
 `upstream`. The four AdvancedScorer component columns are **nullable and stored NULL**: upstream
 returns only the combined score, and recomputing the components locally to populate them would
@@ -338,7 +342,8 @@ Bindings:
 
 * HARNESS-READY gate hash `0e8411eb…` and qualification hash `b1d1cc5d…`;
 * scorer source identity (commit + file SHAs, **verified at scoring time against the pinned
-  checkout**) and hap.py/bcftools image identity;
+  checkout**) and hap.py/bcftools identity under BOTH forms — the literal reference the pinned
+  source uses, and the immutable digest it was proven to resolve to locally before scoring;
 * evaluation contract hash and evaluation schema revision;
 * split snapshot identity; feature matrix identity;
 * baseline-search **protocol hash**, **objective hash**, **candidate-design hash**;

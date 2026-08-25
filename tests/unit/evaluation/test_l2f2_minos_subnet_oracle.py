@@ -26,15 +26,51 @@ from minos_engine.evaluation.minos_subnet_oracle import (
     MinosSubnetAuthorityError,
     MinosSubnetExecutionError,
     MinosSubnetOracle,
+    MinosSubnetRuntimeProvenanceError,
     verify_upstream_root,
 )
-from minos_engine.evaluation.scoring_contract import ScoringAuthority, load_scoring_authority
+from minos_engine.evaluation.runtime_images import (
+    LocalImage,
+    RuntimeImageAbsentError,
+    RuntimeImageError,
+)
+from minos_engine.evaluation.scoring_contract import (
+    RuntimeImageIdentity,
+    ScoringAuthority,
+    load_scoring_authority,
+)
+
+_HAPPY_REF = "fake/happy@sha256:" + "a" * 64
+_HAPPY_DIGEST = _HAPPY_REF
+_BCFTOOLS_TAG = "fake/bcftools:1.20--test"
+_BCFTOOLS_DIGEST = "fake/bcftools@sha256:" + "b" * 64
+
+
+def _inspector(resolved: dict[str, str]) -> Any:
+    """A Docker-free inspection seam that resolves exactly what the test says it resolves."""
+
+    def _inspect(reference: str) -> LocalImage:
+        if reference not in resolved:
+            raise RuntimeImageAbsentError(f"{reference!r} is not present on this host")
+        digests = resolved[reference]
+        return LocalImage(
+            reference=reference,
+            image_id="sha256:" + "e" * 64,
+            repo_digests=() if digests is None else (digests,),
+        )
+
+    return _inspect
+
+
+def _good_inspector() -> Any:
+    return _inspector({_HAPPY_REF: _HAPPY_DIGEST, _BCFTOOLS_TAG: _BCFTOOLS_DIGEST})
+
 
 # --------------------------------------------------------------------------- #
 # a synthetic upstream checkout: real git, real packages, trivial "science"
 # --------------------------------------------------------------------------- #
 _SCORING_PY = """\
-BCFTOOLS_DOCKER_IMAGE = "fake/bcftools@sha256:" + "b" * 64
+BCFTOOLS_DOCKER_IMAGE = "fake/bcftools:1.20--test"
 
 
 class HappyScorer:
@@ -133,8 +169,11 @@ def _authority_for(root: Path, commit: str) -> ScoringAuthority:
             "scoring_py_sha256": digest("utils/scoring.py"),
             "validator_py_sha256": digest("neurons/validator.py"),
             "tool_params_py_sha256": digest("templates/tool_params.py"),
-            "happy_image": "fake/happy@sha256:" + "a" * 64,
-            "bcftools_image": "fake/bcftools@sha256:" + "b" * 64,
+            "happy": RuntimeImageIdentity(upstream_ref=_HAPPY_REF, resolved_digest=_HAPPY_DIGEST),
+            # tag-pinned upstream, digest-resolved locally — the real bcftools shape.
+            "bcftools": RuntimeImageIdentity(
+                upstream_ref=_BCFTOOLS_TAG, resolved_digest=_BCFTOOLS_DIGEST
+            ),
         }
     )
 
@@ -160,11 +199,16 @@ def _plan(tmp_path: Path, metrics: dict[str, Any] | None) -> Path:
     return path
 
 
-def _oracle(root: Path, authority: ScoringAuthority) -> MinosSubnetOracle:
-    return MinosSubnetOracle(authority=authority, root=root, timeout_seconds=300)
+def _oracle(root: Path, authority: ScoringAuthority, *, inspector: Any = None) -> MinosSubnetOracle:
+    return MinosSubnetOracle(
+        authority=authority,
+        root=root,
+        timeout_seconds=300,
+        image_inspector=inspector or _good_inspector(),
+    )
 
 
-def _score(oracle: MinosSubnetOracle, tmp_path: Path, metrics: dict[str, Any] | None) -> Any:
+def _score(oracle: Any, tmp_path: Path, metrics: dict[str, Any] | None) -> Any:
     work = tmp_path / "attempt"
     work.mkdir(exist_ok=True)
     return oracle.score(
@@ -421,12 +465,108 @@ def test_the_oracle_result_equals_calling_the_same_upstream_directly(
     assert wrapped.zero_input_fingerprint is reference["z"]
 
 
-def test_a_wrong_happy_image_is_refused(upstream: Any, tmp_path: Path) -> None:
-    """The scorer that actually ran must be the one the authority audited."""
+# --------------------------------------------------------------------------- #
+# runtime container provenance — verified BEFORE any biological byte is read
+# --------------------------------------------------------------------------- #
+def test_both_container_identities_are_verified_before_scoring(
+    upstream: Any, tmp_path: Path
+) -> None:
+    """The pre-flight resolves BOTH references, and it happens before score_vcf is ever called."""
     root, _commit, authority = upstream
-    substituted = authority.model_copy(update={"happy_image": "other/happy@sha256:" + "c" * 64})
-    with pytest.raises(MinosSubnetAuthorityError, match="hap.py image"):
+    seen: list[str] = []
+
+    def _recording(reference: str) -> LocalImage:
+        seen.append(reference)
+        return _good_inspector()(reference)
+
+    work = tmp_path / "attempt"
+    work.mkdir(exist_ok=True)
+    resolved = _oracle(root, authority, inspector=_recording).verify_runtime_provenance(
+        work_dir=work
+    )
+    assert sorted(seen) == sorted([_HAPPY_REF, _BCFTOOLS_TAG])
+    assert sorted(resolved) == ["bcftools", "hap.py"]
+    # the probe scored nothing: no query plan was ever read.
+    assert not list(work.glob("*.json"))
+
+
+def test_an_absent_bcftools_tag_is_refused(upstream: Any, tmp_path: Path) -> None:
+    """MINOS_ENGINE never pulls during scoring, so an unprovisioned image fails closed."""
+    root, _commit, authority = upstream
+    inspector = _inspector({_HAPPY_REF: _HAPPY_DIGEST})
+    with pytest.raises(MinosSubnetRuntimeProvenanceError, match="not present on this host"):
+        _score(_oracle(root, authority, inspector=inspector), tmp_path, _ADMITTED)
+
+
+def test_a_bcftools_tag_resolving_to_other_content_is_refused(
+    upstream: Any, tmp_path: Path
+) -> None:
+    """The whole point of resolving a TAG: it may have been moved underneath the same name."""
+    root, _commit, authority = upstream
+    inspector = _inspector(
+        {_HAPPY_REF: _HAPPY_DIGEST, _BCFTOOLS_TAG: "fake/bcftools@sha256:" + "9" * 64}
+    )
+    with pytest.raises(MinosSubnetRuntimeProvenanceError, match="audited"):
+        _score(_oracle(root, authority, inspector=inspector), tmp_path, _ADMITTED)
+
+
+def test_a_happy_image_resolving_to_other_content_is_refused(upstream: Any, tmp_path: Path) -> None:
+    root, _commit, authority = upstream
+    inspector = _inspector(
+        {_HAPPY_REF: "fake/happy@sha256:" + "9" * 64, _BCFTOOLS_TAG: _BCFTOOLS_DIGEST}
+    )
+    with pytest.raises(MinosSubnetRuntimeProvenanceError, match="audited"):
+        _score(_oracle(root, authority, inspector=inspector), tmp_path, _ADMITTED)
+
+
+@pytest.mark.parametrize("tool", ["happy", "bcftools"])
+def test_an_unexpected_upstream_reference_is_refused(
+    upstream: Any, tmp_path: Path, tool: str
+) -> None:
+    """If the pinned source names a DIFFERENT container than the authority records, refuse."""
+    root, _commit, authority = upstream
+    identity = getattr(authority, tool)
+    substituted = authority.model_copy(
+        update={
+            tool: identity.model_copy(update={"upstream_ref": "other/thing:9.9"}),
+        }
+    )
+    with pytest.raises(MinosSubnetRuntimeProvenanceError, match="scoring authority records"):
         _score(_oracle(root, substituted), tmp_path, _ADMITTED)
+
+
+def test_a_docker_inspection_failure_is_refused(upstream: Any, tmp_path: Path) -> None:
+    """A timeout or malformed daemon response is a refusal, never an assumed pass."""
+    root, _commit, authority = upstream
+
+    def _broken(reference: str) -> LocalImage:
+        raise RuntimeImageError("docker image inspect exceeded its timeout")
+
+    with pytest.raises(MinosSubnetRuntimeProvenanceError, match="timeout"):
+        _score(_oracle(root, authority, inspector=_broken), tmp_path, _ADMITTED)
+
+
+def test_the_scored_result_carries_both_identities_for_both_containers(
+    upstream: Any, tmp_path: Path
+) -> None:
+    root, _commit, authority = upstream
+    result = _score(_oracle(root, authority), tmp_path, _ADMITTED)
+    assert result.happy_upstream_ref == _HAPPY_REF
+    assert result.happy_resolved_digest == _HAPPY_DIGEST
+    assert result.bcftools_upstream_ref == _BCFTOOLS_TAG
+    assert result.bcftools_resolved_digest == _BCFTOOLS_DIGEST
+    # a tag is never recorded as a digest.
+    assert "@sha256:" not in result.bcftools_upstream_ref
+    assert "@sha256:" in result.bcftools_resolved_digest
+
+
+def test_production_construction_uses_the_real_docker_inspector(
+    upstream: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The inspection seam is test-only: the production entry point never populates it."""
+    root, _commit, authority = upstream
+    monkeypatch.setenv(ENV_MINOS_SUBNET_ROOT, str(root))
+    assert MinosSubnetOracle.from_env(authority).image_inspector is None
 
 
 def test_an_upstream_exception_becomes_a_typed_execution_error(

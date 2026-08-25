@@ -168,7 +168,7 @@ def test_the_scoring_contract_hash_is_deterministic_and_domain_separated() -> No
     first = compute_scoring_contract_hash(authority)
     assert first == compute_scoring_contract_hash(load_scoring_authority(_repo_root()))
     assert len(first) == 64
-    assert SCORING_CONTRACT_VERSION == "l2f2-minos-scoring-v1"
+    assert SCORING_CONTRACT_VERSION == "l2f2-minos-scoring-v2"
 
 
 def test_the_contract_hash_covers_semantics_and_never_ranking_policy() -> None:
@@ -179,26 +179,126 @@ def test_the_contract_hash_covers_semantics_and_never_ranking_policy() -> None:
         assert not any(forbidden in key.lower() for key in content)
 
 
-@pytest.mark.parametrize("image_key", ["happy_image", "bcftools_image"])
-def test_a_tag_pinned_container_is_refused(image_key: str, tmp_path: Path) -> None:
-    """Both container identities must be immutable digests; a tag can be moved underneath us."""
+def _v2_manifest(tmp_path: Path, mutate: Any) -> Path:
     raw = json.loads(
-        (_repo_root() / "manifests" / "l2f2_scoring_authority_v1.json").read_text("utf-8")
+        (_repo_root() / "manifests" / "l2f2_scoring_authority_v2.json").read_text("utf-8")
     )
-    key = "happy" if image_key == "happy_image" else "bcftools"
-    raw["containers"][key] = "example/image:1.0"
-    (tmp_path / "manifests").mkdir()
-    (tmp_path / "manifests" / "l2f2_scoring_authority_v1.json").write_text(
+    mutate(raw)
+    (tmp_path / "manifests").mkdir(exist_ok=True)
+    (tmp_path / "manifests" / "l2f2_scoring_authority_v2.json").write_text(
         json.dumps(raw), encoding="utf-8"
     )
+    return tmp_path
+
+
+@pytest.mark.parametrize("tool", ["happy", "bcftools"])
+def test_a_tag_pinned_resolved_identity_is_refused(tool: str, tmp_path: Path) -> None:
+    """A RESOLVED identity must be an immutable digest; a tag can be moved underneath us.
+
+    The *upstream* reference may legitimately be a tag — that is upstream's own choice and is
+    reproduced verbatim — but what it resolves to must be content-addressed or nothing is pinned.
+    """
+
+    def _mutate(raw: dict[str, Any]) -> None:
+        raw["runtime"][tool]["resolved_digest"] = "example/image:1.0"
+
     with pytest.raises(ScoringContractError, match="tag-pinned"):
-        load_scoring_authority(tmp_path)
+        load_scoring_authority(_v2_manifest(tmp_path, _mutate))
 
 
-def test_both_container_digests_are_pinned_in_the_committed_manifest() -> None:
+def test_the_scientific_contract_refuses_to_bind_the_persistence_envelope(tmp_path: Path) -> None:
+    """The metrics artifact schema is how MINOS_ENGINE stores a result, not a Minos semantic.
+
+    v1 bound it, which made the v1 hash assert a v1 envelope for rows written in a v2 one. The
+    loader now refuses the mistake outright rather than re-admitting it by manifest edit.
+    """
+
+    def _mutate(raw: dict[str, Any]) -> None:
+        raw["semantics"]["metrics_artifact_schema"] = "l2f2-evaluation-metrics-v2"
+
+    with pytest.raises(ScoringContractError, match="persistence envelope"):
+        load_scoring_authority(_v2_manifest(tmp_path, _mutate))
+
+
+def test_the_committed_authority_records_both_identities_for_both_containers() -> None:
     authority = load_scoring_authority(_repo_root())
-    assert authority.happy_image.startswith("genonet/hap-py@sha256:")
-    assert authority.bcftools_image.startswith("quay.io/biocontainers/bcftools@sha256:")
+    # hap.py is digest-pinned by upstream itself; bcftools is tag-pinned by upstream itself.
+    assert authority.happy.upstream_ref.startswith("genonet/hap-py@sha256:")
+    assert authority.happy.upstream_ref_is_digest_pinned is True
+    assert authority.bcftools.upstream_ref == "quay.io/biocontainers/bcftools:1.20--h8b25389_0"
+    assert authority.bcftools.upstream_ref_is_digest_pinned is False
+    # both must nonetheless RESOLVE to audited immutable content.
+    assert authority.happy.resolved_digest.startswith("genonet/hap-py@sha256:")
+    assert authority.bcftools.resolved_digest.startswith("quay.io/biocontainers/bcftools@sha256:")
+
+
+def test_the_scientific_contract_excludes_every_persistence_concept() -> None:
+    """Nothing about how this repository stores a result may enter the score authority."""
+    content = load_scoring_authority(_repo_root()).contract_content()
+    blob = json.dumps(content).lower()
+    for forbidden in (
+        "metrics_artifact_schema",
+        "evaluation-metrics-v",
+        "evaluation_hash",
+        "media_type",
+        "alembic",
+        "migration",
+        "/home/",
+    ):
+        assert forbidden not in blob, forbidden
+
+
+def test_the_historical_v1_contract_hash_is_still_recomputable() -> None:
+    """v1 is superseded, not rewritten: its published identity must still reproduce exactly."""
+    from minos_engine.evaluation.scoring_contract import (
+        SCORING_CONTRACT_VERSION_V1,
+        load_historical_scoring_authority_v1,
+    )
+
+    historical = load_historical_scoring_authority_v1(_repo_root())
+    assert SCORING_CONTRACT_VERSION_V1 == "l2f2-minos-scoring-v1"
+    assert (
+        compute_scoring_contract_hash(historical)
+        == "d6f29e11eba9a25d5e28c80b0ba746795390042dee618a33f579f6c47af29fee"
+    )
+    # and it is genuinely the superseded shape: it DID bind the persistence envelope.
+    assert historical.semantics["metrics_artifact_schema"] == "l2f2-evaluation-metrics-v1"
+    assert compute_scoring_contract_hash(historical) != compute_scoring_contract_hash(
+        load_scoring_authority(_repo_root())
+    )
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda raw: raw["upstream"].update(commit="b" * 40),
+        lambda raw: raw["upstream"]["source_sha256"].update({"utils/scoring.py": "c" * 64}),
+        lambda raw: raw["upstream"]["source_sha256"].update({"neurons/validator.py": "d" * 64}),
+        lambda raw: raw["upstream"]["source_sha256"].update({"templates/tool_params.py": "e" * 64}),
+        lambda raw: raw["runtime"]["bcftools"].update(upstream_ref="quay.io/x/bcftools:9.9"),
+        lambda raw: raw["runtime"]["bcftools"].update(
+            resolved_digest="quay.io/biocontainers/bcftools@sha256:" + "f" * 64
+        ),
+        lambda raw: raw["runtime"]["happy"].update(
+            resolved_digest="genonet/hap-py@sha256:" + "0" * 64
+        ),
+        lambda raw: raw["semantics"].update(admission_rule="anything at all"),
+    ],
+    ids=[
+        "upstream_commit",
+        "scoring_py",
+        "validator_py",
+        "tool_params",
+        "bcftools_upstream_ref",
+        "bcftools_resolved_digest",
+        "happy_resolved_digest",
+        "scientific_semantic",
+    ],
+)
+def test_every_scientific_input_moves_the_v2_contract_hash(mutate: Any, tmp_path: Path) -> None:
+    base = compute_scoring_contract_hash(load_scoring_authority(_repo_root()))
+    moved = compute_scoring_contract_hash(load_scoring_authority(_v2_manifest(tmp_path, mutate)))
+    assert moved != base
 
 
 # --------------------------------------------------------------------------- #
@@ -224,8 +324,10 @@ def _upstream(**overrides: Any) -> Any:
         "zero_input_fingerprint": False,
         "admitted": True,
         "admission_code": "ADMITTED",
-        "happy_docker_image": authority.happy_image,
-        "bcftools_docker_image": authority.bcftools_image,
+        "happy_upstream_ref": authority.happy.upstream_ref,
+        "happy_resolved_digest": authority.happy.resolved_digest,
+        "bcftools_upstream_ref": authority.bcftools.upstream_ref,
+        "bcftools_resolved_digest": authority.bcftools.resolved_digest,
     }
     base.update(overrides)
     return UpstreamScoreOutput(**base)
@@ -247,9 +349,13 @@ def _oracle_result(**overrides: Any) -> Any:
         "upstream_commit": upstream.commit,
         "upstream_source_sha256": upstream.source_sha256,
         "upstream_provenance": {
-            "happy_docker_image": upstream.happy_docker_image,
-            "bcftools_docker_image": upstream.bcftools_docker_image,
+            "happy_upstream_ref": upstream.happy_upstream_ref,
+            "bcftools_upstream_ref": upstream.bcftools_upstream_ref,
         },
+        "happy_upstream_ref": upstream.happy_upstream_ref,
+        "happy_resolved_digest": upstream.happy_resolved_digest,
+        "bcftools_upstream_ref": upstream.bcftools_upstream_ref,
+        "bcftools_resolved_digest": upstream.bcftools_resolved_digest,
     }
     base.update(overrides)
     return MinosSubnetOracleResult(**base)

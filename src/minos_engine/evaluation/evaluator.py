@@ -164,8 +164,40 @@ def evaluate_metrics(
             f"scoring authority pins {authority.upstream_commit}"
         )
 
+    for label, observed, expected in (
+        ("hap.py upstream ref", oracle_result.happy_upstream_ref, authority.happy.upstream_ref),
+        (
+            "hap.py resolved digest",
+            oracle_result.happy_resolved_digest,
+            authority.happy.resolved_digest,
+        ),
+        (
+            "bcftools upstream ref",
+            oracle_result.bcftools_upstream_ref,
+            authority.bcftools.upstream_ref,
+        ),
+        (
+            "bcftools resolved digest",
+            oracle_result.bcftools_resolved_digest,
+            authority.bcftools.resolved_digest,
+        ),
+    ):
+        if observed != expected:
+            raise ScoreRecordingError(
+                f"the upstream result reports {label} {observed!r}, but the scoring authority "
+                f"records {expected!r}; no mismatched tool identity may be persisted"
+            )
+    expected_sources = {
+        "utils/scoring.py": authority.scoring_py_sha256,
+        "neurons/validator.py": authority.validator_py_sha256,
+        "templates/tool_params.py": authority.tool_params_py_sha256,
+    }
+    if dict(oracle_result.upstream_source_sha256) != expected_sources:
+        raise ScoreRecordingError(
+            "the upstream result came from source bytes the scoring authority does not record"
+        )
+
     contract_hash = compute_scoring_contract_hash(authority)
-    provenance = oracle_result.upstream_provenance
     upstream = UpstreamScoreOutput(
         repository=authority.upstream_repository,
         commit=oracle_result.upstream_commit,
@@ -177,10 +209,10 @@ def evaluate_metrics(
         zero_input_fingerprint=oracle_result.zero_input_fingerprint,
         admitted=oracle_result.admitted,
         admission_code=oracle_result.admission_code,
-        happy_docker_image=str(provenance.get("happy_docker_image", authority.happy_image)),
-        bcftools_docker_image=str(
-            provenance.get("bcftools_docker_image", authority.bcftools_image)
-        ),
+        happy_upstream_ref=oracle_result.happy_upstream_ref,
+        happy_resolved_digest=oracle_result.happy_resolved_digest,
+        bcftools_upstream_ref=oracle_result.bcftools_upstream_ref,
+        bcftools_resolved_digest=oracle_result.bcftools_resolved_digest,
     )
     artifact = MetricsArtifact(
         execution_result_hash=inputs.execution_result_hash,
@@ -305,8 +337,10 @@ def record_evaluation_result(engine: Any, record: EvaluationRecord) -> Persisted
                 "commit": authority.upstream_commit,
                 "scoring_py": authority.scoring_py_sha256,
                 "validator_py": authority.validator_py_sha256,
-                "happy": authority.happy_image,
-                "bcftools": authority.bcftools_image,
+                # ONE defined meaning: the immutable RESOLVED content each reference was proven
+                # to name before scoring. The literal upstream refs live in the metrics artifact.
+                "happy": upstream.happy_resolved_digest,
+                "bcftools": upstream.bcftools_resolved_digest,
                 "artifact_id": record.metrics_artifact_id,
                 "artifact_sha": record.metrics.sha256,
                 "media_type": record.metrics.media_type,

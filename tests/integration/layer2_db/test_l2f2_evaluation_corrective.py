@@ -85,8 +85,9 @@ def _record_params(record: Any) -> dict[str, Any]:
         "commit": authority.upstream_commit,
         "scoring_py": authority.scoring_py_sha256,
         "validator_py": authority.validator_py_sha256,
-        "happy": authority.happy_image,
-        "bcftools": authority.bcftools_image,
+        # the SQL columns carry the immutable RESOLVED content, one defined meaning.
+        "happy": upstream.happy_resolved_digest,
+        "bcftools": upstream.bcftools_resolved_digest,
         "artifact_id": record.metrics_artifact_id,
         "artifact_sha": record.metrics.sha256,
         "media_type": record.metrics.media_type,

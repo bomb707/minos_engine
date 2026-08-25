@@ -21,12 +21,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from minos_engine.evaluation.scoring_contract import RuntimeImageIdentity
+
 _SCORING_PY = """\
 import json
 import pathlib
 import time
 
-BCFTOOLS_DOCKER_IMAGE = "fake/bcftools@sha256:" + "b" * 64
+BCFTOOLS_DOCKER_IMAGE = "fake/bcftools:1.20--test"
 HAPPY_DOCKER_IMAGE = "fake/happy@sha256:" + "a" * 64
 
 
@@ -188,9 +190,37 @@ def authority_for(upstream: FakeUpstream, base: Any) -> Any:
             "scoring_py_sha256": digest("utils/scoring.py"),
             "validator_py_sha256": digest("neurons/validator.py"),
             "tool_params_py_sha256": digest("templates/tool_params.py"),
-            "happy_image": "fake/happy@sha256:" + "a" * 64,
-            "bcftools_image": "fake/bcftools@sha256:" + "b" * 64,
+            "happy": RuntimeImageIdentity(
+                upstream_ref="fake/happy@sha256:" + "a" * 64,
+                resolved_digest="fake/happy@sha256:" + "a" * 64,
+            ),
+            # tag-pinned upstream, digest-resolved locally — exactly the real shape.
+            "bcftools": RuntimeImageIdentity(
+                upstream_ref="fake/bcftools:1.20--test",
+                resolved_digest="fake/bcftools@sha256:" + "b" * 64,
+            ),
         }
+    )
+
+
+def fake_image_inspector(reference: str) -> Any:
+    """A Docker-free inspection seam: every reference resolves to what the fixture authority says.
+
+    Real image verification is exercised against real local images elsewhere; here the point is
+    that the surrounding production policy runs unchanged without a daemon.
+    """
+    from minos_engine.evaluation.runtime_images import LocalImage, RuntimeImageAbsentError
+
+    resolved = {
+        "fake/happy@sha256:" + "a" * 64: "fake/happy@sha256:" + "a" * 64,
+        "fake/bcftools:1.20--test": "fake/bcftools@sha256:" + "b" * 64,
+    }
+    if reference not in resolved:
+        raise RuntimeImageAbsentError(f"{reference!r} is not present on this host")
+    return LocalImage(
+        reference=reference,
+        image_id="sha256:" + "e" * 64,
+        repo_digests=(resolved[reference],),
     )
 
 
@@ -209,5 +239,8 @@ def oracle_for(upstream: FakeUpstream, authority: Any, *, timeout_seconds: int =
 
     os.environ[ENV_MINOS_SUBNET_PYTHON] = sys.executable
     return MinosSubnetOracle(
-        authority=authority, root=upstream.root, timeout_seconds=timeout_seconds
+        authority=authority,
+        root=upstream.root,
+        timeout_seconds=timeout_seconds,
+        image_inspector=fake_image_inspector,
     )
