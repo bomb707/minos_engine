@@ -89,7 +89,7 @@ The test cohort is **SEALED** by default:
 | `FINAL_EVAL_AUTHORIZED` | The controller is frozen and a final evaluation is explicitly authorized on a named epoch. | A separate, explicitly-authorized migration grants `SELECT` on the sealed view to `minos_evaluator` for that decision; the authorization commit records the epoch, the model identity, and the authorizing protocol decision. |
 
 Transitioning to `FINAL_EVAL_AUTHORIZED` is out of scope for SPLIT-FROZEN-V2 and
-requires its own owner-approved change; nothing in this stage grants test access.
+requires its own explicitly authorized protocol change; nothing in this stage grants test access.
 Consuming the test cohort **burns** it for the models evaluated; a new sealed cohort can
 only come from newly-added samples in later epochs (which enter `test` per the ratio
 policy and are sealed from birth).

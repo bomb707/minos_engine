@@ -1,0 +1,184 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "https://minos-engine.invalid/schemas/l2f2-baseline-protocol-v1.schema.json",
+ "title": "L2-F2 baseline search protocol v1",
+ "description": "The frozen, pre-registered protocol that decides how scored executions are compared and promoted. It binds decisions only: no observed score, no selected dimension, no generated candidate, no repository SHA, timestamp, hostname or path may appear.",
+ "type": "object",
+ "additionalProperties": false,
+ "required": ["schema_version", "protocol_version", "protocol_hash", "content"],
+ "properties": {
+  "schema_version": {"const": "l2f2-baseline-search-protocol-v1"},
+  "protocol_version": {"const": "l2f2-baseline-search-protocol-v1"},
+  "protocol_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+  "content": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "schema_version",
+    "decisions",
+    "objective",
+    "tie_break",
+    "timeouts_seconds",
+    "budget",
+    "train_schedule",
+    "phase_a",
+    "phase_b",
+    "racing",
+    "promotion",
+    "validation",
+    "test_lock",
+    "failure_classification",
+    "rank_diagnostics"
+   ],
+   "properties": {
+    "schema_version": {"const": "l2f2-baseline-search-protocol-v1"},
+    "decisions": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "D1_primary_optimization_target",
+      "D2_objective_form",
+      "D3_robustness_parameters",
+      "D4_runtime_treatment",
+      "D5_compute_budget",
+      "D6_validation_timing",
+      "D7_platform_reward_modelling",
+      "D8_phase_b_design_family"
+     ],
+     "properties": {
+      "D1_primary_optimization_target": {"type": "string", "minLength": 1},
+      "D2_objective_form": {"type": "string", "minLength": 1},
+      "D3_robustness_parameters": {"type": "string", "minLength": 1},
+      "D4_runtime_treatment": {"type": "string", "minLength": 1},
+      "D5_compute_budget": {"type": "string", "minLength": 1},
+      "D6_validation_timing": {"type": "string", "minLength": 1},
+      "D7_platform_reward_modelling": {"type": "string", "minLength": 1},
+      "D8_phase_b_design_family": {"type": "string", "minLength": 1}
+     }
+    },
+    "objective": {
+     "type": "object",
+     "required": [
+      "cvar_alpha",
+      "weight_cvar",
+      "weight_floor",
+      "weight_mean",
+      "failure_penalty_lambda",
+      "aggregation_utility_rule",
+      "missing_rule"
+     ],
+     "properties": {
+      "cvar_alpha": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+      "weight_cvar": {"type": "number", "minimum": 0, "maximum": 1},
+      "weight_floor": {"type": "number", "minimum": 0, "maximum": 1},
+      "weight_mean": {"type": "number", "minimum": 0, "maximum": 1},
+      "failure_penalty_lambda": {"type": "number", "minimum": 0}
+     }
+    },
+    "tie_break": {"type": "array", "minItems": 4, "items": {"type": "string"}},
+    "timeouts_seconds": {
+     "type": "object",
+     "required": ["gatk", "happy"],
+     "properties": {
+      "gatk": {"type": "integer", "exclusiveMinimum": 0},
+      "happy": {"type": "integer", "exclusiveMinimum": 0}
+     }
+    },
+    "budget": {
+     "type": "object",
+     "required": ["tier", "phase_maximums", "maximum_evaluation_pairs"],
+     "properties": {
+      "tier": {"type": "string", "minLength": 1},
+      "maximum_evaluation_pairs": {"type": "integer", "exclusiveMinimum": 0}
+     }
+    },
+    "train_schedule": {
+     "type": "object",
+     "required": ["split_manifest_sha256", "train_count", "batch_count", "batch_size"],
+     "properties": {
+      "split_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+      "train_count": {"const": 50},
+      "batch_count": {"const": 10},
+      "batch_size": {"const": 5}
+     }
+    },
+    "phase_a": {
+     "type": "object",
+     "required": ["candidate_set_hash", "candidate_count", "influential_dimension_count"],
+     "properties": {
+      "candidate_set_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+      "candidate_count": {"const": 39},
+      "influential_dimension_count": {"const": 6}
+     }
+    },
+    "phase_b": {
+     "type": "object",
+     "required": ["candidate_count", "composition", "parameter_space_hash", "lhs_domain"],
+     "properties": {
+      "candidate_count": {"const": 48},
+      "parameter_space_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+      "lhs_domain": {"type": "string", "minLength": 1}
+     }
+    },
+    "racing": {
+     "type": "object",
+     "required": [
+      "optimistic_unseen_utility",
+      "pessimistic_unseen_utility",
+      "seed_never_eliminated"
+     ],
+     "properties": {
+      "optimistic_unseen_utility": {"const": 1.0},
+      "pessimistic_unseen_utility": {"const": 0.0},
+      "seed_never_eliminated": {"const": true}
+     }
+    },
+    "promotion": {
+     "type": "object",
+     "required": ["phase_c_survivors", "validation_finalists", "seed_control"],
+     "properties": {
+      "phase_c_survivors": {"const": 10},
+      "validation_finalists": {"const": 4}
+     }
+    },
+    "validation": {
+     "type": "object",
+     "required": ["stage", "member_count", "evaluations", "isolation"],
+     "properties": {
+      "stage": {"const": "L2-F2-F"},
+      "member_count": {"const": 10},
+      "evaluations": {"const": 40}
+     }
+    },
+    "test_lock": {
+     "type": "object",
+     "required": ["member_count", "l2f2_usage", "sealed_until"],
+     "properties": {
+      "member_count": {"const": 15},
+      "l2f2_usage": {"const": "ZERO"},
+      "sealed_until": {"const": "L2-I"}
+     }
+    },
+    "failure_classification": {
+     "type": "object",
+     "required": [
+      "candidate_failure_codes",
+      "infrastructure_incident_codes",
+      "infrastructure_abort_threshold"
+     ],
+     "properties": {
+      "infrastructure_abort_threshold": {"type": "number", "exclusiveMinimum": 0, "maximum": 1}
+     }
+    },
+    "rank_diagnostics": {
+     "type": "object",
+     "required": ["policy", "may_influence", "must_never_influence"],
+     "properties": {
+      "policy": {"const": "DIAGNOSTIC_ONLY"},
+      "may_influence": {"type": "array", "maxItems": 0}
+     }
+    }
+   }
+  }
+ }
+}

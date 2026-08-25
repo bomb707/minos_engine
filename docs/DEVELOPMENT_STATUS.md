@@ -27,13 +27,14 @@ does not restate or override them.
 | HARNESS historical Alembic head | `0008_l2f_execution_results` (stage-scoped; the repository head advances independently) |
 | Operational DB revision | `0005_l2e_feature_view` |
 | Next gate | **BASELINE-QUALIFIED** (designed in `docs/layer2/BASELINE_QUALIFICATION.md`, not implemented) |
-| Current task | **L2-F2-A — offline evaluation foundation: ENVIRONMENT_READY** |
+| Current task | **L2-F2-B — baseline search protocol: PROTOCOL_FROZEN** |
+| Previous task | L2-F2-A — offline evaluation foundation — **CLOSED** (source + environment) |
 | Source Alembic head | `0010_l2f2_evaluation_corrective` (migrations `0001`–`0010`) |
 
 `select_config` remains deliberately blocked by `StageNotReadyError` and stays
 blocked until L2-H.
 
-### L2-F2-A status — ENVIRONMENT_READY
+### L2-F2-A status — CLOSED (source + environment)
 
 The **source** path is complete and tested end to end: migration `0009` (evaluation ledger,
 projections, `SECURITY DEFINER` persistence, evaluator grants), migration `0010` (the
@@ -171,6 +172,47 @@ changed**, and the operational scientific/schema/data fingerprint is byte-identi
 historical F7 qualification databases were deliberately left unchanged; each is at `0008` with
 0 split allocations and 0 truth identities, so none exposes closed-partition or truth-sensitive
 state.
+
+### L2-F2-B status — PROTOCOL_FROZEN
+
+`l2f2-baseline-search-protocol-v1` is committed, hashed and **pre-registered before the first
+real score exists**. Manifest `manifests/l2f2_baseline_protocol_v1.json`, schema
+`schemas/l2f2-baseline-protocol-v1.schema.json`, evidence
+`reports/layer2/l2f2-b-protocol-freeze-result.json`.
+
+| | |
+|---|---|
+| Protocol hash | `c548e190571f5e964560cf30021a520ea8aad6674569fa3202af880d7dff77d1` |
+| TRAIN schedule | `manifests/l2f2_train_schedule_v1.json` — 50 TRAIN, 10 per chromosome, 10 balanced batches of 5 |
+| Budget (STANDARD) | maximum **1215** evaluation pairs: 39×5 + 48×10 + 10×50 + 4×10 |
+
+**Protocol decisions, resolved.** D1 absolute robust score primary with rank as diagnostic only;
+D2 Option B; D3 α=0.25 and weights 0.50/0.30/0.20 with λ=1.00; D4 runtime is a tie-break, never
+a weighted term; D5 STANDARD; D6 validation at L2-F2-F only; D7 no simulated opponent
+distribution; D8 deterministic mixed-domain Latin hypercube.
+
+    J(c) = 0.50·CVaR₀.₂₅(c) + 0.30·min_k(chr_mean_k(c)) + 0.20·mean(c) − 1.00·failure_rate(c)
+
+Three distinctions are load-bearing. A known candidate failure contributes aggregation utility
+`0.0` **and** a penalty, but never rewrites the evaluation ledger. A *missing* evaluation is
+neither zero nor failure — the candidate is simply not complete and may participate only through
+the bounded racing rules. And a failure of *our* harness (hap.py, truth resolution, publication,
+persistence) is phase health, not the candidate's fault; it is never charged against a config,
+and a phase aborts when infrastructure failures exceed 5% of attempts.
+
+Racing eliminates only when a candidate's optimistic bound is **strictly** below the threshold
+rival's pessimistic bound, is evaluated only on complete chromosome-balanced batches, and never
+eliminates the seed. Promotion is seed-controlled: exactly 10 into Phase C and exactly 4 into
+validation, always including the seed.
+
+The implementation is pure — `src/minos_engine/baseline/` runs no process, touches no truth, and
+writes to no database. Determinism was proven by regenerating the protocol and schedule in two
+independent temporary directories (identical bytes and hashes, and identical to the committed
+manifests), by confirming the runtime environment cannot move the hash, and by confirming that
+moving α from 0.25 to 0.20 does.
+
+**Nothing has been executed.** No Phase-A run, no observed score, no baseline candidate, no
+validation access. TEST stays sealed until L2-I.
 
 #### Future L2-F2-C canary execution boundary — **BLOCKED**
 

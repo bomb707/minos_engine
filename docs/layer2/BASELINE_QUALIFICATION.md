@@ -1,10 +1,32 @@
-# L2-F2 — Baseline Discovery and Baseline Qualification (proposed contract)
+# L2-F2 — Baseline Discovery and Baseline Qualification
 
-**Status: PROPOSED, not frozen and not implemented.** This document is the design
-input for L2-F2. Items marked **PROTOCOL DECISION** are genuinely open and
-are not presented as settled. Current stage state lives in
-`docs/DEVELOPMENT_STATUS.md`; supporting evidence lives in
+**Status: the search protocol is FROZEN; the search itself has not run.**
+
+`l2f2-baseline-search-protocol-v1` is committed, hashed and pre-registered in
+`manifests/l2f2_baseline_protocol_v1.json`, with freeze evidence in
+`reports/layer2/l2f2-b-protocol-freeze-result.json`. **D1–D8 are resolved** (§16) and no rule
+below may be altered on the basis of an observed score — that is the entire point of freezing
+them before the first score exists.
+
+Sections that present *alternatives and recommendations* are retained as the design record that
+led to the frozen choice. Where an option was considered and rejected it is marked as such; the
+frozen answer is always the one stated in §16 and in the committed manifest.
+
+**Not yet done:** no Phase-A/B/C execution, no observed score, no validation access, and
+`BASELINE-QUALIFIED` is not issued. Current stage state lives in `docs/DEVELOPMENT_STATUS.md`;
+the historical pre-implementation evidence lives in
 `reports/LAYER2_BASELINE_PREIMPLEMENTATION_AUDIT.md`.
+
+## L2-F2-A prerequisites — CLOSED
+
+| Prerequisite | State |
+|---|---|
+| Evaluation persistence contract | **CLOSED** — migrations `0009` + `0010` are applied to the baseline store |
+| TRAIN truth identities | **REGISTERED** — exactly 50 real TRAIN identities in `minos_l2f2_baseline` |
+| Evaluator service principal | **PROVISIONED** — `minos_evaluator_svc`, `LOGIN`, member of `minos_evaluator` only |
+| Baseline workspace and database | **ENVIRONMENT_READY** — `/home/hr/bittensor/minos_l2f2_baseline`, database at `0010_l2f2_evaluation_corrective` |
+| Database connection isolation | **CLOSED** — `PUBLIC` `CONNECT` revoked on both databases; the evaluator credential cannot reach `minos_engine_db` |
+| Real-GATK canary boundary | **BLOCKED** — `L2-F2-C-EXECUTION-BOUNDARY-BLOCKER`; a qualification-grade boundary for the baseline database is a later source task |
 
 ---
 
@@ -84,11 +106,11 @@ truth or scoring path. This is already enforced and gate-bound
 stays: group roles carry authority, not credentials. Do **not** grant it LOGIN and
 do **not** give it a password.
 
-What is missing is an **external evaluator service login principal** — conceptually
-`minos_evaluator_svc LOGIN` — granted `minos_evaluator` and nothing more, so it
-gets: `SELECT` on the execution/plan/catalog tables it needs, `INSERT` on
-`evaluation.*`, and **no** write privilege on `experiments.*`. Provisioning that
-service identity belongs to L2-F2-A.
+The external service login principal `minos_evaluator_svc` **is now provisioned** (L2-F2-A):
+`LOGIN`, granted `minos_evaluator` and nothing more, with no write privilege on `experiments.*`
+and no direct `INSERT` on `catalog.artifacts`. It reaches the catalog only through the narrow
+`0010` metrics registrar, and an explicit per-database `CONNECT` allowlist prevents it from
+opening the operational store at all.
 
 ## 5. Partition policy
 
@@ -125,7 +147,7 @@ separately versioned baseline-search candidate design
 (`l2f2-baseline-candidate-design-v1`) with its own hash. Historical HARNESS
 evidence is untouched.
 
-## 7. Robust objective — PROTOCOL DECISION
+## 7. Robust objective — FROZEN as Option B (design record below)
 
 Notation: candidate `c`; TRAIN BAMs `i ∈ B`; chromosomes `k ∈ K` (chr18–chr22);
 `s_i(c) ∈ [0, 1]` the admitted Minos score; `F(c)` the set of failed or
@@ -262,9 +284,10 @@ The canary is L2-F2-C and is **not** run during the audit stage.
 its foreign key targets the legacy `experiments.results`, not
 `experiments.l2f_execution_results`. It must not be forced into service.
 
-A **minimal additive** contract is required — conceptually
-`0009_l2f_evaluation_results`, **not implemented and not authorised here**.
-DB-V2 remains abandoned; this is not permission to revive it.
+The minimal additive contract `0009_l2f_evaluation_results` **is implemented and applied**,
+together with the `0010_l2f2_evaluation_corrective` corrective (exclusive XOR serialization,
+composite metrics-artifact identity, and the narrow metrics registrar). DB-V2 remains abandoned;
+this is not permission to revive it.
 
 Minimum bindings for one immutable evaluation record:
 
@@ -345,21 +368,24 @@ and `select_config` activation (L2-H); locked-test evaluation (L2-I); production
 and delayed feedback (L2-J); any change to HARNESS evidence or the accepted 39
 candidates; DeepVariant or bcftools as callers; DB-V2.
 
-## 16. Protocol decisions still open
+## 16. Protocol decisions — RESOLVED and FROZEN
 
-| # | Decision |
-|---|---|
-| D1 | Rank-oriented vs level-oriented objective emphasis |
-| D2 | Objective form — Option A / B / C |
-| D3 | CVaR α and per-chromosome floor weight |
-| D4 | Runtime — hard constraint, tie-break, or ignored |
-| D5 | Budget tier — LEAN / STANDARD / HIGH-CONFIDENCE |
-| D6 | Whether VALIDATION is read at L2-F2-F or deferred |
-| D7 | Whether to model the platform reward policy offline |
-| D8 | Phase-B design family — Sobol / LHS / fractional-factorial |
+| # | Decision | Frozen answer |
+|---|---|---|
+| D1 | Objective emphasis | **Absolute robust score is primary**; within-our-set rank is a diagnostic only. Competitor submissions are unavailable, so an internal rank cannot stand for the platform reward distribution. |
+| D2 | Objective form | **Option B** — lower-tail CVaR + worst-chromosome floor + mean − failure penalty. |
+| D3 | Robustness constants | **α = 0.25**, weights **0.50 / 0.30 / 0.20**, failure penalty **λ = 1.00**. |
+| D4 | Runtime | **Not a weighted term.** Bounded 3600 s timeouts; mean GATK runtime is a tie-break only. hap.py runtime is excluded — it is offline evaluation infrastructure, not live inference. |
+| D5 | Budget tier | **STANDARD** — a protocol maximum of **1215** evaluation pairs. Reuse and racing may only reduce it. |
+| D6 | Validation timing | **L2-F2-F**, after Phase C is complete, TRAIN ranking is final and the four finalist hashes are frozen. Never in the canary or Phases A–C, and never deferred to L2-G. |
+| D7 | Platform reward modelling | **No simulated opponent distribution.** Fabricating a competitor score distribution would optimise against an invented adversary. |
+| D8 | Phase-B design family | **Deterministic mixed-domain Latin hypercube** over the six most influential dimensions, seeded by a domain-separated hash — no system RNG, clock, `hash()`, hostname or PID. |
 
-None of these is frozen. Nothing above should be read as an accepted contract
-until they are resolved and frozen into `l2f2-baseline-search-protocol-v1`, whose
-canonical manifest and protocol hash are committed. Their authority then comes from
-that committed protocol, its hash, its tests and its evidence — there is no separate
-approval step and no approval artifact.
+The equation, tie-break, racing bounds, seed-control policy, phase sizes, failure-vs-missing
+semantics and the TEST lock are all bound into `protocol_hash`
+`c548e190571f5e964560cf30021a520ea8aad6674569fa3202af880d7dff77d1`.
+
+These are now frozen into `l2f2-baseline-search-protocol-v1`, whose canonical manifest and
+protocol hash are committed. Their authority comes from that committed protocol, its hash, its
+tests and its evidence — there is no separate approval step and no approval artifact. Changing
+any of them requires a NEW protocol version with a NEW hash; it cannot alter this one.

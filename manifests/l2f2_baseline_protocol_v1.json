@@ -1,0 +1,199 @@
+{
+ "content": {
+  "budget": {
+   "maximum_evaluation_pairs": 1215,
+   "phase_maximums": {
+    "phase_a": 195,
+    "phase_b": 480,
+    "phase_c": 500,
+    "phase_d": 40
+   },
+   "reuse_and_racing_may_only_reduce": true,
+   "tier": "STANDARD"
+  },
+  "decisions": {
+   "D1_primary_optimization_target": "LEVEL_ROBUST_PRIMARY_RANK_DIAGNOSTIC",
+   "D2_objective_form": "OPTION_B_CVAR_FLOOR_MEAN_FAILURE_PENALTY",
+   "D3_robustness_parameters": "alpha=0.25;cvar=0.5;floor=0.3;mean=0.2;failure_penalty=1.0",
+   "D4_runtime_treatment": "NOT_A_WEIGHTED_TERM;bounded_timeouts;gatk_runtime_is_tie_break_only",
+   "D5_compute_budget": "STANDARD",
+   "D6_validation_timing": "L2F2F_AFTER_TRAIN_RANKING_FINAL",
+   "D7_platform_reward_modelling": "NO_SIMULATED_OPPONENT_DISTRIBUTION",
+   "D8_phase_b_design_family": "DETERMINISTIC_MIXED_DOMAIN_LATIN_HYPERCUBE"
+  },
+  "failure_classification": {
+   "candidate_failure_codes": [
+    "GATK_NONZERO_EXIT",
+    "GATK_TIMEOUT",
+    "GATK_OUTPUT_INVALID",
+    "GATK_OUTPUT_MISSING"
+   ],
+   "candidate_failures_never_count_toward_infrastructure_abort": true,
+   "infrastructure_abort_threshold": 0.05,
+   "infrastructure_incident_codes": [
+    "ARTIFACT_PUBLISH_FAILED",
+    "EVALUATION_ERROR",
+    "EXECUTION_ERROR",
+    "HAPPY_NONZERO_EXIT",
+    "HAPPY_OUTPUT_INVALID",
+    "HAPPY_TIMEOUT",
+    "PREPARATION_FAILED",
+    "SCORER_OUTPUT_INVALID",
+    "TRUTH_BYTES_MISMATCH",
+    "TRUTH_IDENTITY_MISSING",
+    "VCF_BYTES_MISMATCH"
+   ],
+   "non_admission_is_candidate_failure": true
+  },
+  "objective": {
+   "aggregation_utility_rule": "admitted -> minos_score in [0,1]; known candidate failure or non-admission -> 0.0 for AGGREGATION ONLY, never written to the evaluation ledger",
+   "cvar_alpha": 0.25,
+   "failure_penalty_lambda": 1.0,
+   "failure_rate_denominator": "required_member_count",
+   "form": "J = w_cvar*CVaR_alpha + w_floor*min_k(chr_mean_k) + w_mean*mean - lambda*failure_rate",
+   "higher_is_better": true,
+   "missing_rule": "a missing evaluation is neither zero nor failure; the candidate is not complete and not finally rankable, and may participate only through the frozen racing bounds",
+   "weight_cvar": 0.5,
+   "weight_floor": 0.3,
+   "weight_mean": 0.2
+  },
+  "phase_a": {
+   "anchor_rule": [
+    "higher_phase_a_objective",
+    "lower_mean_gatk_runtime_ms",
+    "lower_accepted_candidate_index",
+    "lexicographically_smaller_config_hash"
+   ],
+   "candidate_count": 39,
+   "candidate_set_hash": "50d5f36918758de204e4b34cdd3fc8560a14debfcdb25869f713690c6085057d",
+   "dimension_order": [
+    "descending_impact",
+    "ascending_live_parameter_index",
+    "lexicographically_smaller_name"
+   ],
+   "impact_rule": "delta_i(a)=|u_i(a)-u_i(seed)|; impact(a)=mean_i delta_i(a); impact(p)=max over alternatives of p",
+   "influential_dimension_count": 6,
+   "purpose": "SENSITIVITY_SCREEN_NOT_FINAL_OPTIMISATION"
+  },
+  "phase_b": {
+   "candidate_count": 48,
+   "composition": {
+    "anchors": 6,
+    "lhs": 41,
+    "seed": 1
+   },
+   "design_family": "DETERMINISTIC_MIXED_DOMAIN_LATIN_HYPERCUBE",
+   "entropy_sources_forbidden": [
+    "system_random_seed",
+    "current_time",
+    "python_hash",
+    "hostname",
+    "pid"
+   ],
+   "insufficient_valid_proposals": "FAIL_CLOSED_NEVER_SHRINK",
+   "invalid_or_duplicate_proposal": "SKIP_DETERMINISTICALLY_AND_CONTINUE",
+   "lhs_domain": "minos:l2f2-phase-b-lhs:v1",
+   "lhs_proposal_ceiling": 256,
+   "mapping": {
+    "bool_and_enum": "quantize into the canonical allowed-value order",
+    "float": "canonical bounds, linear map",
+    "int": "canonical min/max, uniform strata, clamped to max",
+    "singleton_domain": "FIXED, never varied"
+   },
+   "non_selected_parameters": "REMAIN_EXACTLY_AT_SEED",
+   "parameter_space_hash": "b2d401918084d64023305d9262baf5011a89fe517bee4e0bd33af79fb14aee2e",
+   "varying_dimensions": 6
+  },
+  "promotion": {
+   "phase_c_survivors": 10,
+   "seed_control": "if the seed ranks naturally within the promoted count take the natural top; otherwise take the top count-1 plus the seed. The count never changes.",
+   "validation_finalists": 4
+  },
+  "racing": {
+   "elimination_rule": "eliminate only when optimistic_J < threshold pessimistic_J, STRICT; a candidate able to tie the threshold survives",
+   "evaluated_only_on_complete_balanced_batches": true,
+   "optimistic_unseen_failure": false,
+   "optimistic_unseen_utility": 1.0,
+   "pessimistic_unseen_failure": true,
+   "pessimistic_unseen_utility": 0.0,
+   "phase_b_threshold_rank": 10,
+   "phase_c_threshold_rank": 4,
+   "seed_never_eliminated": true
+  },
+  "rank_diagnostics": {
+   "may_influence": [],
+   "must_never_influence": [
+    "objective",
+    "racing",
+    "promotion",
+    "baseline_selection"
+   ],
+   "permitted": [
+    "within_set_win_rate",
+    "top_k_frequency",
+    "median_candidate_rank"
+   ],
+   "policy": "DIAGNOSTIC_ONLY"
+  },
+  "schema_version": "l2f2-baseline-search-protocol-v1",
+  "test_lock": {
+   "forbidden": [
+    "registration",
+    "path_resolution",
+    "hashing",
+    "execution",
+    "evaluation",
+    "ranking"
+   ],
+   "l2f2_usage": "ZERO",
+   "member_count": 15,
+   "sealed_until": "L2-I"
+  },
+  "tie_break": [
+   "higher_objective",
+   "lower_mean_gatk_runtime_ms",
+   "lower_candidate_index_in_frozen_phase_design",
+   "lexicographically_smaller_config_hash"
+  ],
+  "timeouts_seconds": {
+   "gatk": 3600,
+   "happy": 3600
+  },
+  "train_schedule": {
+   "batch_count": 10,
+   "batch_rule": "batch j takes the j-th TRAIN member of each chromosome in committed manifest order; every batch holds exactly one member per chromosome",
+   "batch_size": 5,
+   "chromosomes": [
+    "chr18",
+    "chr19",
+    "chr20",
+    "chr21",
+    "chr22"
+   ],
+   "phase_a_batches": 1,
+   "phase_b_batches": 2,
+   "phase_c_batches": 10,
+   "split_manifest": "manifests/layer2_dataset_split_v2_epoch1.json",
+   "split_manifest_sha256": "ffdd31955a24147430156aff003248f8acb51c68514ca95c6fdbe75525328773",
+   "train_count": 50,
+   "train_per_chromosome": 10
+  },
+  "validation": {
+   "evaluations": 40,
+   "forbidden_before": [
+    "canary",
+    "phase_a",
+    "phase_b",
+    "phase_c"
+   ],
+   "isolation": "a SEPARATE validation closure/workspace/database; the TRAIN baseline store stays permanently TRAIN-only for this search",
+   "member_count": 10,
+   "precondition": "Phase C complete, TRAIN ranking final, four finalist config hashes frozen, protocol hash already frozen",
+   "racing": "NONE_EVERY_FINALIST_RECEIVES_EVERY_MEMBER",
+   "stage": "L2-F2-F"
+  }
+ },
+ "protocol_hash": "c548e190571f5e964560cf30021a520ea8aad6674569fa3202af880d7dff77d1",
+ "protocol_version": "l2f2-baseline-search-protocol-v1",
+ "schema_version": "l2f2-baseline-search-protocol-v1"
+}
