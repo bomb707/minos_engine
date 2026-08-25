@@ -17,11 +17,24 @@ Trust boundaries:
   publisher, resolves upstream, publishes, and writes — all on that same verified connection.
 * ``_persist_experiment_plan_with_trust`` is a PRIVATE explicit-trust boundary for scratch /
   non-75 tests only (no operational-identity check); it is not exported.
+* ``_persist_l2f2_phase_a_plan_with_trust`` is a PRIVATE dedicated boundary for the frozen L2-F2
+  Phase-A plan — the one authorized SUBSET of the accepted TRAIN closure. It takes no plan,
+  candidate set or member selection, recomputes the frozen Phase-A plan from committed authority
+  and refuses any other plan_hash, so no arbitrary subset is persistable through any API. It
+  still proves the COMPLETE accepted upstream closure before projecting its five members.
 
 Every upstream UUID is resolved by complete immutable identity (exactly one row, else a typed
 ``UpstreamIdentityError``) before any artifact publication — including the ``bam_profile`` the
 snapshot member points to (its ``profile_id`` / ``content_hash`` / ``feature_values_hash`` /
-``dataset_registry_id`` / COMPLETE status) and the matrix member's ``vector_hash``. Persistence
+``dataset_registry_id`` / COMPLETE status) and the matrix member's ``vector_hash``. Two index
+namespaces are kept strictly distinct throughout: the PLAN-LOCAL ``member_index`` (stored on the
+plan member; part of ``plan_hash`` and ``job_key``) and the SOURCE ``feature_matrix_members``
+ordinal. They coincide for a full-inventory plan and deliberately differ for a Phase-A
+projection. From ``0012_l2f_plan_member_source_idx`` the source ordinal has its own column,
+``source_matrix_member_index``, which is what the composite matrix-lineage FK binds; read-back
+verifies both namespaces separately. A pre-0012 database stores one ordinal for both and can
+therefore represent full-inventory plans only — persisting a subset plan there is refused with a
+typed :class:`PlanRevisionError` rather than an opaque foreign-key violation. Persistence
 is idempotent under a plan_hash-scoped transaction advisory lock: every immutable table is
 insert-or-verify against **every** immutable column and **every** unique constraint; a differing
 existing row is a typed conflict, never a silently swallowed uniqueness violation.
@@ -208,6 +221,54 @@ def _sqlstate(exc: IntegrityError) -> str | None:
 def _constraint_name(exc: IntegrityError) -> str | None:
     diag = getattr(getattr(exc, "orig", None), "diag", None)
     return getattr(diag, "constraint_name", None)
+
+
+#: the column ``0012_l2f_plan_member_source_idx`` adds to carry the SOURCE feature-matrix
+#: ordinal. Before ``0012`` a single column carried both namespaces and the composite lineage FK
+#: forced them equal, so a pre-0012 schema can represent full-inventory plans only.
+SOURCE_INDEX_COLUMN = "source_matrix_member_index"
+
+
+def _schema_stores_source_member_index(conn: Connection) -> bool:
+    """Does the live ``l2f_experiment_plan_members`` table carry the SOURCE ordinal separately?
+
+    True from ``0012`` onward. This is a question about what the schema can REPRESENT, not a
+    behavioral switch: at a pre-0012 revision the database itself still binds the plan-local
+    ordinal into the matrix lineage FK, and :func:`_require_representable_member_indices` holds
+    persistence to exactly that, refusing a subset plan explicitly instead of letting it fail as
+    an opaque foreign-key violation.
+    """
+    return bool(
+        conn.execute(
+            text(
+                "SELECT count(*) FROM information_schema.columns "
+                " WHERE table_schema = 'experiments' "
+                "   AND table_name = 'l2f_experiment_plan_members' "
+                "   AND column_name = :col"
+            ),
+            {"col": SOURCE_INDEX_COLUMN},
+        ).scalar_one()
+    )
+
+
+def _require_representable_member_indices(
+    resolved_members: list[dict[str, Any]], *, stores_source_index: bool
+) -> None:
+    """A pre-0012 schema can store only plans whose two index namespaces coincide."""
+    if stores_source_index:
+        return
+    split = [
+        (m["dataset_id"], m["member_index"], m[SOURCE_INDEX_COLUMN])
+        for m in resolved_members
+        if int(m["member_index"]) != int(m[SOURCE_INDEX_COLUMN])
+    ]
+    if split:
+        raise PlanRevisionError(
+            f"this database predates 0012_l2f_plan_member_source_idx and stores ONE ordinal "
+            f"for both the plan-local and the source feature-matrix namespace, so it cannot "
+            f"represent {len(split)} member(s) whose namespaces differ (e.g. {split[0]}). "
+            "Upgrade to 0012 before persisting a subset plan."
+        )
 
 
 def _resolve_one(conn: Connection, sql: str, params: dict[str, Any], what: str) -> dict[str, Any]:
@@ -435,12 +496,19 @@ def _resolve_plan_upstream(conn: Connection, plan: ExperimentPlan) -> dict[str, 
         )
         resolved_members.append(
             {
+                "dataset_id": m.dataset_id,
                 "dataset_registry_id": dsr["id"],
                 "profile_snapshot_member_id": sm["id"],
                 "bam_profile_id": bam["id"],
                 "feature_matrix_member_id": fmm["id"],
                 "feature_values_hash": m.feature_values_hash,
+                # two DISTINCT index namespaces (they coincide only for a full-inventory plan):
+                #   member_index              -> the plan-local ordinal, stored on the plan member
+                #   source_matrix_member_index -> the ordinal of the row in the source feature
+                #                                 matrix, used only to prove which upstream row
+                #                                 was resolved. It is never stored as a plan index.
                 "member_index": m.member_index,
+                "source_matrix_member_index": m.member_index,
             }
         )
     # each expected member is now proven present; additionally prove there is NO extra live
@@ -584,6 +652,138 @@ def _verify_upstream_train_set_equality(
             )
 
 
+#: internal upstream-resolution strategy. The historical/default strategy is the full-closure
+#: resolver; the ONLY other strategy that exists is the dedicated frozen-Phase-A projection
+#: below. This is deliberately not reachable through any public production API.
+_UpstreamResolver = Callable[[Connection, "ExperimentPlan"], "dict[str, Any]"]
+
+#: header hashes that DEFINE which upstream snapshot / matrix / feature set a plan resolves to.
+#: An authorized projection must agree with its source plan on every one of them, otherwise the
+#: closure proven against the source plan says nothing about the projection.
+_UPSTREAM_HEADER_FIELDS: tuple[str, ...] = (
+    "schema_version",
+    "epoch",
+    "partition",
+    "snapshot_hash",
+    "split_manifest_hash",
+    "registry_snapshot_hash",
+    "train_matrix_hash",
+    "train_feature_view_hash",
+    "feature_set_hash",
+    "feature_registry_hash",
+    "gatk_registry_hash",
+)
+
+
+def _member_scientific_identity(m: Any) -> tuple[Any, ...]:
+    """A train member's complete immutable scientific identity, WITHOUT either index namespace.
+
+    Both indices are deliberately excluded: a projection renumbers the plan-local index while
+    keeping this identity byte-identical, so this — and only this — is the key on which a
+    Phase-A member may be matched to its accepted full-plan source.
+    """
+    return (
+        m.dataset_id,
+        m.profile_id,
+        m.content_hash,
+        m.feature_values_hash,
+        m.vector_hash,
+    )
+
+
+def _resolve_phase_a_upstream(conn: Connection, plan: ExperimentPlan) -> dict[str, Any]:
+    """Resolve upstream for the frozen L2-F2 Phase-A plan as a PROJECTION of the full closure.
+
+    Phase A is five TRAIN members, but the live upstream inventory it is drawn from is the
+    complete accepted 50-member TRAIN closure, whose matrix rows sit at indices 0/10/20/30/40 —
+    not 0..4. Two properties therefore have to hold simultaneously, and this resolver establishes
+    them in that order:
+
+    1. the COMPLETE accepted 50-member upstream closure is proven exactly as the historical path
+       proves it — same resolver, same per-row complete-identity resolution, same full
+       snapshot/matrix set-equality. A defect in ANY of the 45 unselected TRAIN members still
+       blocks Phase-A persistence; upstream validation is never reduced to "the five selected
+       rows exist";
+    2. the plan being persisted is proven to be the frozen Phase-A plan and an exact projection
+       of that accepted plan, matched member-for-member on complete scientific identity.
+
+    Only then are the five ALREADY-VERIFIED upstream UUID bundles selected, in Phase-A local
+    order, carrying both index namespaces distinctly. There is no search-until-something-matches
+    fallback, no fuzzy lookup, and no caller-supplied member set: the mapping is derived solely
+    from committed repository authority.
+    """
+    from minos_engine.baseline.phase_a import build_phase_a_plan
+
+    frozen = build_phase_a_plan()
+    if plan.plan_hash != frozen.plan_hash:
+        raise UpstreamIdentityError(
+            "the Phase-A persistence boundary accepts ONLY the frozen Phase-A plan; "
+            f"got plan_hash {plan.plan_hash}, expected {frozen.plan_hash}"
+        )
+
+    accepted = _build_accepted_plan()
+    for field in _UPSTREAM_HEADER_FIELDS:
+        got, want = getattr(plan, field), getattr(accepted, field)
+        if got != want:
+            raise UpstreamIdentityError(
+                f"Phase-A plan {field} {got!r} != accepted plan {field} {want!r}; the projection "
+                "does not resolve against the accepted plan's upstream"
+            )
+    if not 0 < plan.train_member_count <= accepted.train_member_count:
+        raise UpstreamIdentityError(
+            f"Phase-A member count {plan.train_member_count} is not a projection of the accepted "
+            f"member count {accepted.train_member_count}"
+        )
+
+    # ---- (1) prove the COMPLETE accepted upstream closure, unchanged ----
+    full = _resolve_plan_upstream(conn, accepted)
+
+    by_identity: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for source, resolved in zip(accepted.members, full["members"], strict=True):
+        key = _member_scientific_identity(source)
+        if key in by_identity:
+            raise UpstreamIdentityError(
+                f"accepted plan contains duplicate member identity for {source.dataset_id}"
+            )
+        by_identity[key] = resolved
+
+    # ---- (2) project the frozen five, preserving BOTH index namespaces ----
+    members: list[dict[str, Any]] = []
+    seen_source: set[int] = set()
+    for local_index, member in enumerate(plan.members):
+        if member.member_index != local_index:
+            raise UpstreamIdentityError(
+                f"Phase-A plan-local member_index sequence broken at position {local_index}"
+            )
+        resolved = by_identity.get(_member_scientific_identity(member))
+        if resolved is None:
+            raise UpstreamIdentityError(
+                f"phase_a_member[{member.dataset_id}]: no accepted full-plan member matches its "
+                "complete scientific identity (dataset/profile/content/feature_values/vector)"
+            )
+        source_index = int(resolved["source_matrix_member_index"])
+        if source_index in seen_source:
+            raise UpstreamIdentityError(
+                f"phase_a_member[{member.dataset_id}]: source matrix index {source_index} is "
+                "claimed by more than one Phase-A member"
+            )
+        seen_source.add(source_index)
+        # the ONLY value overridden is the plan-local ordinal; every upstream UUID, the source
+        # matrix ordinal and every hash come verbatim from the verified full closure.
+        members.append({**resolved, "member_index": local_index})
+
+    if len(members) != plan.train_member_count:
+        raise UpstreamIdentityError(
+            f"projected {len(members)} Phase-A members, expected {plan.train_member_count}"
+        )
+    return {
+        "feature_set_id": full["feature_set_id"],
+        "profile_snapshot_id": full["profile_snapshot_id"],
+        "train_feature_matrix_id": full["train_feature_matrix_id"],
+        "members": members,
+    }
+
+
 def _publish_config_payloads(
     conn: Connection,
     plan: ExperimentPlan,
@@ -641,6 +841,7 @@ def _verify_persisted_graph(
     upstream: dict[str, Any],
     *,
     require_zero_jobs: bool = True,
+    stores_source_index: bool | None = None,
 ) -> dict[str, int]:
     """Independently re-read and validate the ENTIRE persisted graph (non-mutating).
 
@@ -652,10 +853,20 @@ def _verify_persisted_graph(
     same whole-graph verification as its pre-enqueue integrity gate with ``require_zero_jobs=False``
     (jobs already exist on an enqueue replay); every F3-C1 call keeps the default, so the F3-C1
     persistence behavior is unchanged.
+
+    ``stores_source_index`` says whether the live schema is at ``0012`` or later and therefore
+    carries the SOURCE feature-matrix ordinal in its own column; it is probed from ``conn`` when
+    not supplied. From ``0012`` the two index namespaces are verified SEPARATELY — the plan-local
+    ordinal against the plan, and the stored source ordinal against both the resolver's value and
+    the live ``profiling.feature_matrix_members.member_index``. The live matrix ordinal is never
+    compared to the plan-local ordinal again.
     """
 
     def _fail(msg: str) -> None:
         raise PlanVerificationError(f"persisted-graph verification failed: {msg}")
+
+    if stores_source_index is None:
+        stores_source_index = _schema_stores_source_member_index(conn)
 
     # ---- exact plan row ----
     prow = (
@@ -712,7 +923,13 @@ def _verify_persisted_graph(
                 "pm.bam_profile_id AS bam_profile_id, pm.dataset_registry_id AS dataset_registry_id, "
                 "pm.partition AS partition, pm.feature_values_hash AS feature_values_hash, "
                 "dr.dataset_id AS dataset_id, bp.profile_id AS profile_id, bp.content_hash AS content_hash, "
-                "fmm.vector_hash AS vector_hash "
+                "fmm.vector_hash AS vector_hash, "
+                + (
+                    f"pm.{SOURCE_INDEX_COLUMN} AS stored_source_member_index, "
+                    if stores_source_index
+                    else ""
+                )
+                + "fmm.member_index AS live_source_matrix_member_index "
                 "FROM experiments.l2f_experiment_plan_members pm "
                 "JOIN catalog.dataset_registry dr ON dr.id = pm.dataset_registry_id "
                 "JOIN profiling.bam_profiles bp ON bp.id = pm.bam_profile_id "
@@ -728,8 +945,29 @@ def _verify_persisted_graph(
         _fail(f"member count {len(members)} != {plan.train_member_count}")
     resolved = upstream["members"]
     for i, (row, exp, rm) in enumerate(zip(members, plan.members, resolved, strict=True)):
-        if int(row["member_index"]) != i or exp.member_index != i:
+        # NAMESPACE 1 — the PLAN-LOCAL ordinal: contiguous, and the plan's own identity.
+        if int(row["member_index"]) != i or exp.member_index != i or int(rm["member_index"]) != i:
             _fail(f"member_index sequence broken at position {i}")
+        # NAMESPACE 2 — the SOURCE ordinal: which matrix row this member references. For a
+        # full-inventory plan the two coincide; for an authorized subset projection they do not,
+        # and conflating them is exactly the defect this read-back exists to catch. They are
+        # therefore proven separately, and the live matrix ordinal is never compared to the
+        # plan-local one.
+        live_source = int(row["live_source_matrix_member_index"])
+        want_source = int(rm[SOURCE_INDEX_COLUMN])
+        if stores_source_index:
+            stored_source = int(row["stored_source_member_index"])
+            if stored_source != want_source:
+                _fail(f"member {i} stored {SOURCE_INDEX_COLUMN} {stored_source} != {want_source}")
+            if stored_source != live_source:
+                _fail(
+                    f"member {i} stored {SOURCE_INDEX_COLUMN} {stored_source} does not match the "
+                    f"referenced feature_matrix_members.member_index {live_source}"
+                )
+        elif live_source != want_source or live_source != i:
+            # pre-0012: one column carries both namespaces, so the schema itself requires them
+            # equal and the read-back holds the row to exactly that.
+            _fail(f"member {i} referenced matrix member_index {live_source} != {want_source}")
         if row["partition"] != _TRAIN:
             _fail(f"member {i} partition != train")
         if _norm(row["profile_snapshot_id"]) != _norm(upstream["profile_snapshot_id"]) or _norm(
@@ -864,6 +1102,7 @@ def _persist_plan_with_trust(
     *,
     publisher: ConfigPayloadPublisher,
     created_files: list[PublishedConfigArtifact],
+    upstream_resolver: _UpstreamResolver = _resolve_plan_upstream,
 ) -> PlanPersistResult:
     """Core persistence given an open connection in a transaction (no identity check).
 
@@ -889,7 +1128,17 @@ def _persist_plan_with_trust(
             raise L2FPersistenceError("plan config parameter_space_hash mismatch")
 
     # ---- resolve upstream identities (exactly one row each) BEFORE any publication ----
-    upstream = _resolve_plan_upstream(conn, plan)
+    # ``upstream_resolver`` is an INTERNAL strategy, never a public argument: it is the full
+    # closure resolver for every historical path, and only the dedicated frozen-Phase-A
+    # projection substitutes it. It is not a subset bypass — the projection proves the same
+    # complete closure first.
+    upstream = upstream_resolver(conn, plan)
+    # what this schema can represent: from 0012 the two index namespaces are stored separately;
+    # before it, one column carried both and the lineage FK forced them equal.
+    stores_source_index = _schema_stores_source_member_index(conn)
+    _require_representable_member_indices(
+        upstream["members"], stores_source_index=stores_source_index
+    )
     snapshot_id = upstream["profile_snapshot_id"]
     matrix_id = upstream["train_feature_matrix_id"]
     feature_set_id = upstream["feature_set_id"]
@@ -930,21 +1179,28 @@ def _persist_plan_with_trust(
 
     # ---- insert the complete member inventory ----
     for rm in resolved_members:
+        row = {
+            "plan_id": plan_id,
+            "profile_snapshot_id": snapshot_id,
+            "feature_matrix_id": matrix_id,
+            "profile_snapshot_member_id": rm["profile_snapshot_member_id"],
+            "feature_matrix_member_id": rm["feature_matrix_member_id"],
+            "bam_profile_id": rm["bam_profile_id"],
+            "dataset_registry_id": rm["dataset_registry_id"],
+            "partition": _TRAIN,
+            "feature_values_hash": rm["feature_values_hash"],
+            # the PLAN-LOCAL ordinal: contiguous 0..N-1, unique per plan, part of plan identity.
+            "member_index": rm["member_index"],
+        }
+        if stores_source_index:
+            # the SOURCE ordinal: the position of the matrix row this member references. From
+            # 0012 the lineage FK binds THIS column — never the plan-local one — to
+            # profiling.feature_matrix_members.member_index.
+            row[SOURCE_INDEX_COLUMN] = rm[SOURCE_INDEX_COLUMN]
         _insert_or_verify(
             conn,
             table="l2f_experiment_plan_members",
-            row={
-                "plan_id": plan_id,
-                "profile_snapshot_id": snapshot_id,
-                "feature_matrix_id": matrix_id,
-                "profile_snapshot_member_id": rm["profile_snapshot_member_id"],
-                "feature_matrix_member_id": rm["feature_matrix_member_id"],
-                "bam_profile_id": rm["bam_profile_id"],
-                "dataset_registry_id": rm["dataset_registry_id"],
-                "partition": _TRAIN,
-                "feature_values_hash": rm["feature_values_hash"],
-                "member_index": rm["member_index"],
-            },
+            row=row,
             unique_keys=_MEMBER_UNIQUE_KEYS,
         )
 
@@ -964,7 +1220,9 @@ def _persist_plan_with_trust(
         )
 
     # ---- independent transaction-local read-back verification (non-mutating) ----
-    counts = _verify_persisted_graph(conn, plan, candidate_set, plan_id, upstream)
+    counts = _verify_persisted_graph(
+        conn, plan, candidate_set, plan_id, upstream, stores_source_index=stores_source_index
+    )
 
     return PlanPersistResult(
         plan_id=plan_id,
@@ -1031,6 +1289,7 @@ def _execute_persistence_txn(
     *,
     verify_identity: bool,
     build_inputs: _BuildInputs,
+    upstream_resolver: _UpstreamResolver = _resolve_plan_upstream,
 ) -> PlanPersistResult:
     """Open one transaction, optionally verify the exact-connection identity + revision FIRST,
     then build the accepted inputs and persist — all on the same verified connection.
@@ -1052,7 +1311,12 @@ def _execute_persistence_txn(
             _require_live_revision(conn)
         plan, candidate_set, publisher = build_inputs(conn)
         result = _persist_plan_with_trust(
-            conn, plan, candidate_set, publisher=publisher, created_files=created_files
+            conn,
+            plan,
+            candidate_set,
+            publisher=publisher,
+            created_files=created_files,
+            upstream_resolver=upstream_resolver,
         )
         _commit_or_ambiguous(trans)
         committed = True
@@ -1113,4 +1377,33 @@ def _persist_experiment_plan_with_trust(
         engine,
         verify_identity=False,
         build_inputs=lambda _conn: (plan, candidate_set, publisher),
+    )
+
+
+def _persist_l2f2_phase_a_plan_with_trust(
+    engine: Engine,
+    *,
+    publisher: ConfigPayloadPublisher,
+) -> PlanPersistResult:
+    """PRIVATE dedicated persistence boundary for the frozen L2-F2 Phase-A plan.
+
+    It accepts no plan, no candidate set and no member selection: both are recomputed from
+    committed repository authority here, and the resolver additionally re-derives the frozen
+    Phase-A plan itself and refuses anything whose ``plan_hash`` differs. There is consequently
+    no production API — public or private — through which a caller could persist an arbitrary
+    five-member subset, and no ``allow_subset`` / ``skip_full_equality`` style flag exists on any
+    of these functions.
+
+    The complete accepted 50-member upstream TRAIN closure is still proven in full before the
+    five Phase-A members are projected out of it (see :func:`_resolve_phase_a_upstream`).
+    """
+    from minos_engine.baseline.phase_a import build_phase_a_plan
+
+    plan = build_phase_a_plan()
+    candidate_set = _build_accepted_candidate_set()
+    return _execute_persistence_txn(
+        engine,
+        verify_identity=False,
+        build_inputs=lambda _conn: (plan, candidate_set, publisher),
+        upstream_resolver=_resolve_phase_a_upstream,
     )

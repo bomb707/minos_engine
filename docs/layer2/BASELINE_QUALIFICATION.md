@@ -26,7 +26,7 @@ the historical pre-implementation evidence lives in
 | Evaluator service principal | **PROVISIONED** — `minos_evaluator_svc`, `LOGIN`, member of `minos_evaluator` only |
 | Baseline workspace and database | **ENVIRONMENT_READY** — `/home/hr/bittensor/minos_l2f2_baseline`, database at `0010_l2f2_evaluation_corrective` |
 | Database connection isolation | **CLOSED** — `PUBLIC` `CONNECT` revoked on both databases; the evaluator credential cannot reach `minos_engine_db` |
-| Real-GATK canary boundary | **SOURCE_READY_PENDING_ENVIRONMENT** — migration `0011` and `execute_next_l2f2_phase_a_job` implement a least-privilege real-GATK boundary for the baseline database. The environment is not yet provisioned and the canary has not run |
+| Real-GATK canary boundary | **PHASE-A-PERSISTENCE-SOURCE-READY, PENDING ENVIRONMENT PREPARATION REPLAY** — the source execution boundary (migration `0011` + `execute_next_l2f2_phase_a_job`) remains accepted and unchanged. The canary environment is provisioned at `0011`. Control-plane preparation then exposed, and migration `0012_l2f_plan_member_source_idx` corrected, the subset-persistence assumption: the plan member's ordinal was serving as both the plan-local index and the source feature-matrix index, which a 5-of-50 subset plan cannot satisfy. The runner now requires exactly `0012`. **The canary has still NOT run** |
 
 ---
 

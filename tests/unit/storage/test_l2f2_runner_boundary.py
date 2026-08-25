@@ -116,8 +116,14 @@ def test_the_private_test_seam_is_not_exported_and_says_so() -> None:
 
 
 def test_the_boundary_requires_the_baseline_database_and_revision() -> None:
+    """The required revision is EXACT, and it is the repository head — never a floor, never a
+    stale pin. 0012 separated the plan-local member ordinal from the source feature-matrix
+    ordinal, so a baseline still at 0011 cannot represent the Phase-A plan the runner executes."""
+    from minos_engine.qualification.l2f_accepted_identities import recompute_alembic_head
+
     assert l2f2_runner.BASELINE_DATABASE_NAME == "minos_l2f2_baseline"
-    assert l2f2_runner.BASELINE_REVISION == "0011_l2f2_runner_boundary"
+    assert l2f2_runner.BASELINE_REVISION == "0012_l2f_plan_member_source_idx"
+    assert recompute_alembic_head() == l2f2_runner.BASELINE_REVISION
     source = inspect.getsource(l2f2_runner.authorize_baseline_runner_connection)
     assert "current_database()" in source
     assert "alembic_version" in source

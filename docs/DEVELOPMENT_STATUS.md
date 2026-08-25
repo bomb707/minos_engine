@@ -27,9 +27,11 @@ does not restate or override them.
 | HARNESS historical Alembic head | `0008_l2f_execution_results` (stage-scoped; the repository head advances independently) |
 | Operational DB revision | `0005_l2e_feature_view` |
 | Next gate | **BASELINE-QUALIFIED** (designed in `docs/layer2/BASELINE_QUALIFICATION.md`, not implemented) |
-| Current task | **L2-F2-C — least-privilege GATK execution boundary: SOURCE_READY_PENDING_ENVIRONMENT** |
+| Current task | **L2-F2-C — PHASE-A-PERSISTENCE-SOURCE-READY, PENDING ENVIRONMENT PREPARATION REPLAY** |
 | Previous task | L2-F2-B — baseline search protocol — **CLOSED** at PROTOCOL_FROZEN |
-| Source Alembic head | `0011_l2f2_runner_boundary` (migrations `0001`–`0011`) |
+| Source Alembic head | `0012_l2f_plan_member_source_idx` (migrations `0001`–`0012`) |
+| Baseline DB revision required by the runner | `0012_l2f_plan_member_source_idx` (exact; `0011` is refused) |
+| Real baseline DB revision | `0011_l2f2_runner_boundary` — migration to `0012` is the next environment task |
 
 `select_config` remains deliberately blocked by `StageNotReadyError` and stays
 blocked until L2-H.
@@ -249,7 +251,8 @@ on `alembic_version`, and **no table privilege anywhere**.
 
 **The public entry** `execute_next_l2f2_phase_a_job(*, worker_id)` takes nothing else — no
 runner, engine, plan, hash, path or trust flag — and constructs the real `SubprocessGatkRunner`
-itself. Every connection it opens verifies the baseline database, revision `0011`, and that the
+itself. Every connection it opens verifies the baseline database, the exact required revision (now
+`0012_l2f_plan_member_source_idx`; see the correction below), and that the
 `session_user` is a LOGIN principal with no elevated attributes whose only MINOS membership is
 `minos_runner`. It never issues `SET ROLE`, never writes a table directly, and returns the
 durable `execution_result_id` the evaluator needs. Input and CONFIG bytes are re-hashed and
@@ -260,8 +263,9 @@ drift into trusting metadata.
 any revision other than `0008`. No bypass flag was added anywhere.
 
 **Not done, and not claimed:** `minos_runner_svc` is not provisioned, no credential file exists,
-the real baseline database is still at `0010`, no Phase-A plan is persisted, no job is enqueued,
-and no GATK, hap.py, score or evaluation has been produced.
+the real baseline database was still at `0010` at that point, no Phase-A plan is persisted, no job
+is enqueued, and no GATK, hap.py, score or evaluation has been produced. (`minos_runner_svc` has
+since been provisioned and the baseline database migrated to `0011`; see the correction below.)
 
 #### L2-F2-C canary execution — NOT RUN
 
@@ -277,9 +281,56 @@ in source; for the record, the surfaces that could not be used were:
   refuses any revision other than `0008` and it is bound to the accepted 1950-job F7 plan.
 
 That boundary is now implemented as `minos_engine.storage.l2f2_runner`, with control-plane
-preparation in `minos_engine.storage.l2f2_canary_prepare`. Running the canary requires the next
-environment task: migrate the baseline database to `0011`, provision `minos_runner_svc`, grant it
-`CONNECT`, prepare the Phase-A plan and enqueue the single canary job.
+preparation in `minos_engine.storage.l2f2_canary_prepare`.
+
+#### L2-F2-C control-plane persistence defect — FOUND AND CORRECTED
+
+Provisioning the baseline environment and attempting the first Phase-A preparation surfaced a
+real defect in the control plane, one revision deep in the schema rather than in the calling
+code. `experiments.l2f_experiment_plan_members.member_index` was carrying **two incompatible
+index namespaces at once**:
+
+* the **plan-local ordinal** — contiguous `0..N-1` in plan order, unique per plan, and part of
+  what `plan_hash` and `job_key` are computed over; and
+* the **source feature-matrix ordinal** — because `0006`'s composite `fk_l2f_pm_matrix_member`
+  bound that same column to `profiling.feature_matrix_members.member_index`.
+
+For a plan covering the complete live TRAIN inventory the two are necessarily equal, so the
+conflation was invisible. Phase A is not such a plan: it is five members of the accepted fifty,
+at local indices `0..4` referencing matrix rows **`0/10/20/30/40`** — one per chromosome batch.
+Preparation failed on member 1 (`minos-chr19-…`, source ordinal 10) because the resolver looked
+for matrix ordinal 1; member 0 succeeded only because `0 == 0`. Had it resolved, the historical
+full-inventory set-equality proof would have rejected the plan next, for covering 5 of 50 live
+TRAIN members.
+
+**Migration `0012_l2f_plan_member_source_idx`** separates the two namespaces additively. It adds
+`source_matrix_member_index`, backfills it from `member_index` (a restatement, not a guess — the
+`0011` FK forced them equal for every row it ever accepted), and re-points the composite lineage
+FK at the new column. `UNIQUE(plan_id, member_index)`, the non-negative CHECK on the plan-local
+ordinal, every hash formula, every role privilege, the `0011` execution functions, the job state
+machine and the evaluation tables are all untouched. The **downgrade fails closed**: `0011` has
+no representation for a row whose two ordinals differ, so a database holding a subset plan
+refuses to go back rather than corrupting either namespace.
+
+`source_matrix_member_index` is persistence lineage metadata only. It is deliberately **not** part
+of `ExperimentPlan`, `plan_hash`, `job_key` or the Phase-A authority manifest, and the frozen
+Phase-A identities are byte-for-byte unchanged.
+
+On the source side, `_resolve_phase_a_upstream` proves the **complete accepted 50-member upstream
+closure** with the unchanged historical resolver and set-equality check, and only then projects
+the frozen five out of it — so a defect in any of the 45 *unselected* TRAIN members still blocks
+Phase-A persistence. There is no `allow_subset`-style flag anywhere; the dedicated persistence and
+enqueue boundaries take no plan, candidate set, member set, job key, start or count, recompute the
+frozen Phase-A plan from committed authority, and refuse any other `plan_hash`.
+
+**The runner now requires exactly `0012`.** `BASELINE_REVISION` is an exact match, never a floor
+and never `head`: `0011` is refused like any other wrong revision. `0012` grants no privilege to
+any role.
+
+Running the canary requires the next environment task: migrate the real baseline database from
+`0011` to `0012`, then replay preparation. `minos_runner_svc` is already provisioned with
+`CONNECT`; the real store still holds 0 plans, 0 authorities, 0 jobs, 0 execution results and
+0 evaluation results, and no GATK, hap.py or score has been produced.
 
 **Not yet done, and not claimed:**
 

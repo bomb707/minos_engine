@@ -39,6 +39,7 @@ from minos_engine.storage.l2f_plan_store import (
     _insert_or_verify,
     _require_live_revision,
     _resolve_plan_upstream,
+    _UpstreamResolver,
     _verify_persisted_graph,
 )
 from minos_engine.storage.roles import SCHEMA_OWNER
@@ -165,6 +166,7 @@ def _enqueue_slice(
     *,
     start: int,
     count: int,
+    upstream_resolver: _UpstreamResolver = _resolve_plan_upstream,
 ) -> JobEnqueueResult:
     """Insert the selected bounded slice idempotently (given an open, verified transaction).
 
@@ -177,7 +179,11 @@ def _enqueue_slice(
     # require the complete accepted F3-C1 graph to exist and verify it (jobs-tolerant) BEFORE
     # enqueueing; never persist or repair a missing/invalid graph.
     plan_id = _resolve_plan_id(conn, plan)
-    upstream = _resolve_plan_upstream(conn, plan)
+    # the same INTERNAL strategy the persistence boundary uses: the full-closure resolver for
+    # every historical path, and only the dedicated frozen-Phase-A projection substitutes it. The
+    # pre-enqueue gate must resolve the plan the same way it was persisted, or it would re-derive
+    # the very index conflation the projection exists to avoid.
+    upstream = upstream_resolver(conn, plan)
     _verify_persisted_graph(conn, plan, candidate_set, plan_id, upstream, require_zero_jobs=False)
 
     # serialize concurrent enqueues on the plan via a deterministic plan_hash advisory lock.
@@ -259,6 +265,7 @@ def _enqueue_in_new_transaction(
     count: int,
     verify_identity: bool,
     build_plan: _BuildPlan,
+    upstream_resolver: _UpstreamResolver = _resolve_plan_upstream,
 ) -> JobEnqueueResult:
     conn = engine.connect()
     trans = conn.begin()
@@ -271,7 +278,14 @@ def _enqueue_in_new_transaction(
             _require_live_revision(conn)
         plan, candidate_set = build_plan(conn)
         _validate_range_against_plan(start, count, plan)
-        result = _enqueue_slice(conn, plan, candidate_set, start=start, count=count)
+        result = _enqueue_slice(
+            conn,
+            plan,
+            candidate_set,
+            start=start,
+            count=count,
+            upstream_resolver=upstream_resolver,
+        )
         trans.commit()
         committed = True
         return result
@@ -325,4 +339,28 @@ def _enqueue_experiment_jobs_with_trust(
         count=count,
         verify_identity=False,
         build_plan=lambda _conn: (plan, candidate_set),
+    )
+
+
+def _enqueue_l2f2_phase_a_canary_with_trust(engine: Engine) -> JobEnqueueResult:
+    """PRIVATE dedicated enqueue of EXACTLY the frozen L2-F2 Phase-A canary — logical job 0.
+
+    The counterpart of the dedicated Phase-A persistence boundary, and for the same reason: the
+    pre-enqueue integrity gate re-resolves upstream, and the historical full-inventory resolver
+    would look for the Phase-A members at matrix ordinals 0..4 instead of 0/10/20/30/40. It takes
+    no plan, candidate set, job key, start or count — every one of those is recomputed here from
+    committed authority, so no caller can enqueue a different job or a different number of them.
+    """
+    from minos_engine.baseline.phase_a import build_phase_a_plan
+    from minos_engine.storage.l2f_plan_store import _resolve_phase_a_upstream
+
+    plan = build_phase_a_plan()
+    candidate_set = _build_accepted_candidate_set()
+    return _enqueue_in_new_transaction(
+        engine,
+        start=0,
+        count=1,
+        verify_identity=False,
+        build_plan=lambda _conn: (plan, candidate_set),
+        upstream_resolver=_resolve_phase_a_upstream,
     )

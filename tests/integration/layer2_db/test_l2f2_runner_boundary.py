@@ -1,4 +1,4 @@
-"""The L2-F2 least-privilege runner against a REAL PostgreSQL database at 0011.
+"""The L2-F2 least-privilege runner against a REAL PostgreSQL database at its exact revision.
 
 Everything here runs through an ephemeral ``minos_runner_ci_svc`` LOGIN whose only MINOS
 membership is ``minos_runner`` — the exact authority shape the future external service principal
@@ -49,6 +49,10 @@ from tests.integration.layer2_db.test_l2f_plan_store import (
 
 _L2F = "0006_l2f_experiment_plan"
 _RUNNER_BOUNDARY = "0011_l2f2_runner_boundary"
+#: the EXACT revision the runner boundary requires. 0011 introduced this boundary's own functions
+#: and grants; 0012 added no privilege at all, but a database still at 0011 cannot represent the
+#: Phase-A plan's two index namespaces, so the runner fails closed on it like any other revision.
+_REQUIRED = "0012_l2f_plan_member_source_idx"
 _BASELINE_DB = "minos_l2f2_baseline"
 _CI_ROLE = "minos_runner_ci_svc"
 _AUTHORITIES = "experiments.l2f2_execution_authorities"
@@ -68,7 +72,7 @@ _DENIED_STATEMENTS = [
 
 
 class _Env:
-    """A baseline store at 0011 holding a synthetic plan, its authority and enqueued jobs."""
+    """A baseline store at the required revision holding a plan, its authority and jobs."""
 
     def __init__(
         self,
@@ -117,7 +121,7 @@ def l2f2(isolated_pg_base_url: str, tmp_path: Path) -> Any:
             )
             _enqueue_experiment_jobs_with_trust(engine, plan, _CS, start=0, count=2)
             engine.dispose()
-            alembic_upgrade(url, _RUNNER_BOUNDARY)
+            alembic_upgrade(url, _REQUIRED)
             engine = _engine(url)
 
             first = next(iter_logical_jobs(plan))
@@ -246,7 +250,7 @@ def test_the_boundary_refuses_a_database_that_is_not_the_baseline_store(
     isolated_pg_base_url: str,
 ) -> None:
     with scratch_database(isolated_pg_base_url, "minos_not_the_baseline") as url:
-        alembic_upgrade(url, _RUNNER_BOUNDARY)
+        alembic_upgrade(url, _REQUIRED)
         engine = _engine(url)
         try:
             with (
@@ -258,11 +262,14 @@ def test_the_boundary_refuses_a_database_that_is_not_the_baseline_store(
             engine.dispose()
 
 
+@pytest.mark.parametrize("revision", ["0010_l2f2_evaluation_corrective", _RUNNER_BOUNDARY])
 def test_the_boundary_refuses_a_database_at_the_wrong_revision(
     isolated_pg_base_url: str,
+    revision: str,
 ) -> None:
+    """EXACT revision, both directions of "close enough" — 0011 is refused like 0010 is."""
     with scratch_database(isolated_pg_base_url, _BASELINE_DB) as url:
-        alembic_upgrade(url, "0010_l2f2_evaluation_corrective")
+        alembic_upgrade(url, revision)
         engine = _engine(url)
         try:
             with (

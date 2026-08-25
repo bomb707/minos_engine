@@ -27,7 +27,6 @@ from sqlalchemy import Engine, text
 
 from minos_engine.baseline.phase_a import PhaseAAuthority, build_phase_a_authority
 from minos_engine.common.errors import MinosEngineError
-from minos_engine.experiments.candidates import generate_accepted_candidate_set
 from minos_engine.experiments.plan import iter_logical_jobs
 from minos_engine.storage.l2f2_runner import BASELINE_REVISION
 
@@ -122,14 +121,18 @@ def prepare_l2f2_phase_a_canary(
 
     Accepts no plan, candidate set, job key, start or count: everything is derived from committed
     authorities. Idempotent, and fail-closed on any state it did not create.
+
+    Both boundaries it calls are the DEDICATED Phase-A ones, and neither takes a plan, a member
+    selection or a candidate set — each recomputes the frozen Phase-A plan and independently
+    regenerates and verifies the accepted candidate set itself, so there is nothing to hand them
+    and nothing a caller could substitute.
     """
     from minos_engine.storage.l2f_config_publisher import ConfigPayloadPublisher
-    from minos_engine.storage.l2f_job_enqueue import _enqueue_experiment_jobs_with_trust
-    from minos_engine.storage.l2f_plan_store import _persist_experiment_plan_with_trust
+    from minos_engine.storage.l2f_job_enqueue import _enqueue_l2f2_phase_a_canary_with_trust
+    from minos_engine.storage.l2f_plan_store import _persist_l2f2_phase_a_plan_with_trust
 
     authority = build_phase_a_authority()
     plan = authority.plan
-    candidate_set = generate_accepted_candidate_set()
     _require_clean_or_matching(engine, authority)
 
     with engine.connect() as conn:
@@ -140,10 +143,12 @@ def prepare_l2f2_phase_a_canary(
 
     plan_created = existing_plan is None
     if plan_created:
-        _persist_experiment_plan_with_trust(
+        # the DEDICATED Phase-A boundary: Phase A is five members of a fifty-member accepted TRAIN
+        # closure, so its plan-local indices 0..4 are NOT the indices of the matrix rows it points
+        # at. That boundary proves the complete accepted closure first, then projects exactly
+        # those five. It recomputes the frozen plan itself and takes no member selection here.
+        _persist_l2f2_phase_a_plan_with_trust(
             engine,
-            plan,
-            candidate_set,
             publisher=ConfigPayloadPublisher(config_artifact_root),
         )
 
@@ -244,7 +249,10 @@ def prepare_l2f2_phase_a_canary(
         ).scalar_one()
     job_created = enqueued == 0
     if job_created:
-        _enqueue_experiment_jobs_with_trust(engine, plan, candidate_set, start=0, count=1)
+        # the dedicated Phase-A enqueue boundary, for the same reason as the persistence one: its
+        # pre-enqueue integrity gate must re-resolve upstream as a subset projection, not as a
+        # full-inventory plan. It takes no job key, start or count.
+        _enqueue_l2f2_phase_a_canary_with_trust(engine)
 
     with engine.connect() as conn:
         total_jobs = conn.execute(

@@ -93,8 +93,12 @@ __all__ = [
 
 #: the dedicated baseline store. The operational database is NEVER a valid target here.
 BASELINE_DATABASE_NAME = "minos_l2f2_baseline"
-#: the exact revision this boundary requires on EVERY connection it opens.
-BASELINE_REVISION = "0011_l2f2_runner_boundary"
+#: the exact revision this boundary requires on EVERY connection it opens. It is EXACT, never a
+#: floor and never ``head``: the runner fails closed on any other revision. ``0011`` introduced
+#: this boundary's own SECURITY DEFINER functions and grants, and ``0012`` — which adds no
+#: privilege whatsoever — separated the plan-local member ordinal from the source feature-matrix
+#: ordinal, so a database still at ``0011`` cannot represent the Phase-A plan the runner executes.
+BASELINE_REVISION = "0012_l2f_plan_member_source_idx"
 
 #: the ONLY MINOS group role the runner service may hold.
 _REQUIRED_MEMBERSHIP = "minos_runner"

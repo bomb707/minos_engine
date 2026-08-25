@@ -74,6 +74,8 @@ from tests.integration.layer2_db.l2f_plan_seed import (
 from tests.integration.layer2_db.l2f_seed import H, U, _bam_row, _dataset_row, _insert
 
 _HEAD = "0006_l2f_experiment_plan"
+#: repository head — the first revision that stores the two index namespaces separately.
+_SOURCE_INDEX_HEAD = "0012_l2f_plan_member_source_idx"
 _PREV = "0005_l2e_feature_view"
 _OP_DB = "minos_engine_db"
 
@@ -946,6 +948,91 @@ def test_non75_synthetic_plan_persists_derived_counts(
             assert counts["l2f_experiment_plan_members"] == expected_train
             assert counts["l2f_config_payloads"] == len(_CS.configs)
             assert counts["l2f_experiment_jobs"] == 0
+        finally:
+            engine.dispose()
+
+
+@pytest.mark.parametrize("revision", [_HEAD, _SOURCE_INDEX_HEAD])
+def test_full_plan_persists_with_both_index_namespaces_equal(
+    isolated_pg_base_url: str, tmp_path: Path, revision: str
+) -> None:
+    """The historical full-inventory contract, at 0006 and at repository head alike.
+
+    For a plan that covers the COMPLETE live TRAIN inventory the plan-local ordinal and the source
+    ``feature_matrix_members.member_index`` are the same ``0..N-1`` sequence — which is why the
+    original resolver could bind them to one another, and exactly what stops being true for an
+    authorized subset projection. From ``0012`` the stored ``source_matrix_member_index`` is
+    checked as a third, independent value; before it, the single column carries both.
+    """
+    stores_source = revision == _SOURCE_INDEX_HEAD
+    with scratch_database(isolated_pg_base_url, "minos_l2f_full") as url:
+        alembic_upgrade(url, revision)
+        engine = _engine(url)
+        try:
+            with engine.connect() as conn, conn.begin():
+                seed_upstream_for_plan(conn, _ACCEPTED_PLAN)
+            root = _provisioned_root(tmp_path)
+            result = _persist_experiment_plan_with_trust(
+                engine, _ACCEPTED_PLAN, _CS, publisher=_publisher(root)
+            )
+            assert result.member_count == _ACCEPTED_PLAN.train_member_count == 50
+            stored = (
+                "pm.source_matrix_member_index AS stored_index"
+                if stores_source
+                else "pm.member_index AS stored_index"
+            )
+            with engine.connect() as conn:
+                rows = [
+                    (int(r.local_index), int(r.stored_index), int(r.live_index))
+                    for r in conn.execute(
+                        text(
+                            "SELECT pm.member_index AS local_index, "
+                            f"       {stored}, "
+                            "       fmm.member_index AS live_index "
+                            "  FROM experiments.l2f_experiment_plan_members pm "
+                            "  JOIN profiling.feature_matrix_members fmm "
+                            "    ON fmm.id = pm.feature_matrix_member_id "
+                            " ORDER BY pm.member_index"
+                        )
+                    )
+                ]
+            assert rows == [(i, i, i) for i in range(50)]
+            # replay is idempotent and changes nothing.
+            replay = _persist_experiment_plan_with_trust(
+                engine, _ACCEPTED_PLAN, _CS, publisher=_publisher(root)
+            )
+            assert replay.replay is True
+            assert _graph_counts(engine)["l2f_experiment_plan_members"] == 50
+        finally:
+            engine.dispose()
+
+
+def test_a_subset_plan_is_refused_before_0012(isolated_pg_base_url: str, tmp_path: Path) -> None:
+    """A pre-0012 schema stores ONE ordinal for both namespaces, so it says so explicitly.
+
+    The frozen Phase-A plan is a genuine subset of the accepted TRAIN closure; at 0006 the
+    persistence layer refuses it with a typed revision error rather than letting it surface as an
+    opaque foreign-key violation deep inside the insert.
+    """
+    from minos_engine.baseline.phase_a import build_phase_a_plan
+
+    plan = build_phase_a_plan()
+    with scratch_database(isolated_pg_base_url, "minos_l2f_full") as url:
+        alembic_upgrade(url, _HEAD)
+        engine = _engine(url)
+        try:
+            with engine.connect() as conn, conn.begin():
+                seed_upstream_for_plan(conn, _ACCEPTED_PLAN)
+            root = _provisioned_root(tmp_path)
+            with pytest.raises(PlanRevisionError, match="predates 0012"):
+                PS._execute_persistence_txn(
+                    engine,
+                    verify_identity=False,
+                    build_inputs=lambda _conn: (plan, _CS, _publisher(root)),
+                    upstream_resolver=PS._resolve_phase_a_upstream,
+                )
+            assert _artifact_files(root) == []
+            assert _graph_counts(engine)["l2f_experiment_plans"] == 0
         finally:
             engine.dispose()
 

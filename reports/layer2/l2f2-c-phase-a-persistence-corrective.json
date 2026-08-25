@@ -1,0 +1,212 @@
+{
+ "accepted_full_plan_member_count": 50,
+ "baseline_protocol_hash": "c548e190571f5e964560cf30021a520ea8aad6674569fa3202af880d7dff77d1",
+ "canary_config_hash": "4251cb85e5cd58b7eabfe530b9df23ea7d1d14fd882114b488d67cbd81b751b8",
+ "canary_job_key": "b25fabaffbbd51a0f1ec219898fcb77452133ca4ab9a578b7f12b0ad2fe14754",
+ "candidate_set_hash": "50d5f36918758de204e4b34cdd3fc8560a14debfcdb25869f713690c6085057d",
+ "ci_workflow_changed": false,
+ "defect": {
+  "historical_full_inventory_assumption_applied_to_phase_a_subset": true,
+  "old_composite_fk": "fk_l2f_pm_matrix_member bound experiments.l2f_experiment_plan_members.member_index to profiling.feature_matrix_members.member_index",
+  "plan_local_index_conflated_with_source_matrix_index": true,
+  "summary": "plan_member_index_had_two_namespaces",
+  "why_migration_free_correction_was_impossible": "one column served both namespaces and the 0006 composite FK enforced their equality, so local index 1 could not reference matrix row 10"
+ },
+ "downgrade_guard": "requires_all_source_indices_equal_local_indices",
+ "downgrade_with_subset_refused": true,
+ "frozen_identities_changed": false,
+ "full_upstream_closure_verified": true,
+ "harness_alembic_head": "0008_l2f_execution_results",
+ "harness_check": {
+  "evidence_bytes_changed": false,
+  "gate_file_sha256": "c0dff7f2b4331af505c089b365f52d804844997e1cd7e047c04f26f92478df25",
+  "gate_hash": "0e8411ebffa9b6a27ec47cd896efd234bd60cdb30edf6f8f998ff8f06419fcc3",
+  "gate_require_pass": "PASS",
+  "harness_alembic_head_unchanged": "0008_l2f_execution_results",
+  "mandatory_checks": 40,
+  "qualification_file_sha256": "9b127d0385fcd2271a5f5312a9d9ddd0a607bbfc2da03ac5658b8626870ce688"
+ },
+ "historical_full_closure_verified": true,
+ "historical_full_plan_regression": {
+  "accepted_member_count": 50,
+  "full_upstream_set_equality_enforced": true,
+  "idempotent_replay": "PASS",
+  "namespaces_equal": true,
+  "per_identity_field_negatives": "PASS",
+  "plan_local_indices": "0..49",
+  "set_level_negatives": "PASS",
+  "source_matrix_indices": "0..49",
+  "subset_plan_refused_before_0012": "PASS",
+  "verified_at_revisions": [
+   "0006_l2f_experiment_plan",
+   "0012_l2f_plan_member_source_idx"
+  ]
+ },
+ "idempotency": {
+  "config_artifacts": 39,
+  "final_counts": {
+   "authorities": 1,
+   "configs": 39,
+   "execution_failures": 0,
+   "execution_results": 0,
+   "jobs": 1,
+   "members": 5,
+   "payloads": 39,
+   "pending_jobs": 1,
+   "plans": 1
+  },
+  "first_preparation": {
+   "authority_created": true,
+   "job_created": true,
+   "plan_created": true
+  },
+  "second_preparation": {
+   "authority_created": false,
+   "job_created": false,
+   "plan_created": false
+  }
+ },
+ "idempotency_verified": true,
+ "l2f2b_protocol_modified": false,
+ "legacy_backfill": "source_matrix_member_index=member_index",
+ "migration_changed": true,
+ "migration_down_revision": "0011_l2f2_runner_boundary",
+ "migration_lifecycle": {
+  "append_only_trigger_restored_after_backfill": true,
+  "ci_equivalent_sequencing": "PASS (head -> 0010 -> 0009 -> 0010 -> head -> 0008 -> head)",
+  "downgrade_with_subset_refused": "PASS (revision stays 0012, rows and FK unchanged)",
+  "empty": "0011 -> 0012 -> 0011 -> 0012 PASS (inventory-exact; column attnum is the only artifact)",
+  "generic_upgrade_head": "0012_l2f_plan_member_source_idx",
+  "legacy_backfill": "plan member_index 0..7 backfilled to source_matrix_member_index 0..7; downgrade to 0011 PASS",
+  "new_fk_admits_differing_namespaces": "PASS (local 99 -> source 33)",
+  "new_fk_rejects_wrong_source_ordinal": "PASS (claimed 1 against matrix row 33)",
+  "only_plan_member_lineage_changed": true
+ },
+ "migration_revision": "0012_l2f_plan_member_source_idx",
+ "migration_revision_naming_note": "the identifier is abbreviated to '_idx' because alembic_version.version_num is varchar(32); '0012_l2f_plan_member_source_index' is 33 characters",
+ "migrations_0001_to_0011_unchanged": true,
+ "parameter_space_hash": "b2d401918084d64023305d9262baf5011a89fe517bee4e0bd33af79fb14aee2e",
+ "phase_a_authority_hash": "9ad0ba48c80e7b305505fea201e93185deb15ae735338086d05b38afcf4deb3f",
+ "phase_a_authority_manifest": "manifests/l2f2_phase_a_execution_authority_v1.json",
+ "phase_a_authority_manifest_changed": false,
+ "phase_a_authority_manifest_sha256": "6c5a728bbf7d93cfc62e388395dee953b60a3f04fcdbd0ad72a2c422e3db0d7e",
+ "phase_a_candidate_count": 39,
+ "phase_a_local_indices": [
+  0,
+  1,
+  2,
+  3,
+  4
+ ],
+ "phase_a_logical_job_count": 195,
+ "phase_a_member_count": 5,
+ "phase_a_member_dataset_ids": [
+  "minos-chr18-028662fb934529d7",
+  "minos-chr19-0de906231aa96ade",
+  "minos-chr20-42bdea88e6242d37",
+  "minos-chr21-0279a3b8042f848b",
+  "minos-chr22-19a4002faeaacbdf"
+ ],
+ "phase_a_plan_hash": "97ba598778a5fc634345ded0901e4975af9c6b875c5b70fc7e76f2ae482e1b9a",
+ "phase_a_source_indices": [
+  0,
+  10,
+  20,
+  30,
+  40
+ ],
+ "plan_local_index_field": "member_index",
+ "real_baseline_modified": false,
+ "real_baseline_revision": "0011_l2f2_runner_boundary",
+ "real_gatk_run": false,
+ "real_happy_run": false,
+ "real_job_enqueued": false,
+ "real_plan_persisted": false,
+ "real_shaped_phase_a_persistence_verified": true,
+ "real_shaped_phase_a_regression": {
+  "dataset_association": {
+   "0": "minos-chr18-028662fb934529d7",
+   "10": "minos-chr19-0de906231aa96ade",
+   "20": "minos-chr20-42bdea88e6242d37",
+   "30": "minos-chr21-0279a3b8042f848b",
+   "40": "minos-chr22-19a4002faeaacbdf"
+  },
+  "enqueued_via": "minos_engine.storage.l2f_job_enqueue._enqueue_l2f2_phase_a_canary_with_trust",
+  "least_privilege_runner_resolution": {
+   "authorize_baseline_runner_connection": "PASS at 0012",
+   "gatk_executed": false,
+   "l2f2_resolve_claimed_execution_member_index": 0,
+   "principal": "minos_runner_ci_svc (membership: minos_runner only)",
+   "resolved_chromosome": "chr18",
+   "resolved_dataset_id": "minos-chr18-028662fb934529d7"
+  },
+  "negative_controls": {
+   "arbitrary_caller_subset": "no production API permits it",
+   "extra_train_matrix_member": "REJECT",
+   "extra_train_snapshot_member": "REJECT",
+   "missing_unselected_member": "REJECT",
+   "non_contiguous_phase_a_local_indices": "ExperimentPlan validation error",
+   "plan_local_written_as_source": "foreign-key violation (fk_l2f_pm_matrix_member)",
+   "selected_content_hash": "REJECT",
+   "selected_feature_values_hash": "REJECT",
+   "selected_profile_id": "REJECT",
+   "selected_source_matrix_index": "REJECT",
+   "selected_vector_hash": "REJECT",
+   "source_written_as_plan_local": "PlanVerificationError on read-back",
+   "unselected_profile_lineage": "REJECT",
+   "unselected_vector_hash": "REJECT"
+  },
+  "persisted_via": "minos_engine.storage.l2f_plan_store._persist_l2f2_phase_a_plan_with_trust",
+  "phase_a_local_indices": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "phase_a_source_indices": [
+   0,
+   10,
+   20,
+   30,
+   40
+  ],
+  "read_back_verification": "PASS",
+  "unselected_member_defect_still_blocks": true,
+  "upstream_shape": "50 accepted TRAIN matrix members at source indices 0..49"
+ },
+ "repository_alembic_head": "0012_l2f_plan_member_source_idx",
+ "role_authority_changed": false,
+ "rollback": {
+  "inode_safe_cleanup_semantics": "unchanged",
+  "post_publication_pre_commit_failure": "39 published CONFIG artifacts removed, 0 rows survive",
+  "pre_publication_failure": "0 plan rows, 0 members, 0 configs, 0 payloads, 0 authorities, 0 jobs, 0 artifact files"
+ },
+ "runner_rejects_0011": true,
+ "runner_required_revision": "0012_l2f_plan_member_source_idx",
+ "schema_version": "l2f2-c-phase-a-persistence-corrective-v1",
+ "score_observed": false,
+ "scoring_contract_modified": false,
+ "select_config_blocked": true,
+ "source_matrix_index_field": "source_matrix_member_index",
+ "source_parent": "fcf55bb93540efc865124c8081456c68c99812aa",
+ "source_parent_ci_run": "32825238866",
+ "source_parent_tree": "d54d8d1d9341a7de885d49a42e5e0188538829cd",
+ "status": "PHASE-A-PERSISTENCE-SOURCE-READY",
+ "test_truth_accessed": false,
+ "validation": {
+  "ci_workflow_replayed_locally": "PASS (no CI change required)",
+  "coverage_missed": 1665,
+  "coverage_percent": 90,
+  "coverage_statements": 17513,
+  "full_serial_regression": "2932 tests collected, exit code 0, 0 failures, 0 errors",
+  "git_diff_check": "PASS",
+  "mypy_src": "PASS (212 files)",
+  "real_gatk": false,
+  "real_happy": false,
+  "ruff_check": "PASS",
+  "ruff_format_check": "PASS",
+  "tier2_layer2_db_suite": "693 passed, 1 skipped, 0 failed"
+ },
+ "validation_truth_accessed": false
+}
