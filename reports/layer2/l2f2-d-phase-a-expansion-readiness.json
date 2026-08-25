@@ -1,0 +1,178 @@
+{
+ "analysis_wrapper": {
+  "completeness_rule": "all 195 decided observations are required before any dimension, anchor or Phase-B design is produced",
+  "entry_point": "minos_engine.baseline.phase_a_analysis.analyze_completed_phase_a",
+  "frozen_functions_reused": [
+   "aggregate_candidate",
+   "build_phase_b_design",
+   "parameter_impacts",
+   "select_anchors",
+   "select_influential_dimensions"
+  ],
+  "outputs": {
+   "aggregates": 39,
+   "anchors": 6,
+   "influential_dimensions": 6,
+   "phase_b_candidates": 48
+  },
+  "protocol_decisions_changed": [],
+  "reaches_test_partition": false,
+  "reaches_validation_partition": false,
+  "reimplements_frozen_algorithms": false,
+  "selects_baseline": false,
+  "source_sha256": "4f07e22056e0a24eeab6585629556345977f02c6b9a903ef938ea99bf3a1611e"
+ },
+ "checks": {
+  "git_diff_check": "clean",
+  "harness_gate": {
+   "gate_file_sha256": "c0dff7f2b4331af505c089b365f52d804844997e1cd7e047c04f26f92478df25",
+   "gate_hash": "0e8411ebffa9b6a27ec47cd896efd234bd60cdb30edf6f8f998ff8f06419fcc3",
+   "mandatory_checks": 40,
+   "qualification_file_sha256": "9b127d0385fcd2271a5f5312a9d9ddd0a607bbfc2da03ac5658b8626870ce688",
+   "status": "PASS",
+   "unchanged_since_l2f2_c": true
+  },
+  "mypy": "Success: no issues found in 218 source files",
+  "ruff_check": "All checks passed",
+  "ruff_format_check": "All checks passed"
+ },
+ "containment": {
+  "config_selected_or_ranked": false,
+  "d1_d8_changed": false,
+  "gatk_executions_run": 0,
+  "immutable_canary_report_modified": false,
+  "minos_subnet_modified": false,
+  "minos_subnet_scoring_runs": 0,
+  "new_scores_observed": 0,
+  "operational_database_modified": false,
+  "phase_a_jobs_1_to_194_enqueued": false,
+  "phase_a_jobs_1_to_194_executed": false,
+  "real_baseline_database_modified": false
+ },
+ "disposition": "L2-F2-D-PHASE-A-EXPANSION-READY",
+ "entry_gate": {
+  "ci_conclusion": "success",
+  "ci_run_id": 32884834433,
+  "head_sha": "9634ce12c579ea8b831a301487f95e9d0ca37749",
+  "tree_sha": "ac6e1363fffcaeb85bb8c3eba0f206a72143f4cc",
+  "worktree_clean_at_entry": true
+ },
+ "expansion_boundary": {
+  "canary_logical_index": 0,
+  "enqueue_all_api_exists": false,
+  "entry_point": "minos_engine.storage.l2f2_phase_a_control.expand_l2f2_phase_a_jobs",
+  "gate": {
+   "conditions": [
+    "canary job status SUCCEEDED",
+    "exactly 1 execution result and 0 execution failures",
+    "exactly 1 terminal evaluation under scoring contract b24a07e208ce8e2fff6672102ae4e61aed93c6f352a5af46ba81c4789adb76d6",
+    "0 evaluation failures"
+   ],
+   "kind": "pipeline readiness",
+   "score_conditional": false
+  },
+  "idempotent": true,
+  "logical_job_count": 195,
+  "max_count_per_call": 64,
+  "min_start": 1,
+  "scientific_arguments_accepted": [],
+  "slices_covering_1_to_194": [
+   [
+    1,
+    64
+   ],
+   [
+    65,
+    64
+   ],
+   [
+    129,
+    64
+   ],
+   [
+    193,
+    2
+   ]
+  ],
+  "source_sha256": "86742733528c00ea2e5f947dd7ada9c7f20993be6ef17cea79cc68b4ae264efc"
+ },
+ "migration": {
+  "check_constraint": "ck_l2f_exec_failures_runtime_nonneg",
+  "column": "experiments.l2f_execution_failures.runtime_ms",
+  "defects_found_and_fixed_before_commit": [
+   "the widened SECURITY DEFINER writer was created by the migration login instead of minos_admin, which would have executed it with superuser authority",
+   "standard SQLSTATEs were used where 0008 defines the stable MN0xx codes the Python boundary maps to typed errors"
+  ],
+  "deviation": {
+   "reason": "PostgreSQL alembic_version.version_num is varchar(32); the specified id is 35 characters",
+   "specified_revision_id": "0014_l2f2_execution_failure_runtime",
+   "used_revision_id": "0014_l2f2_exec_failure_runtime"
+  },
+  "down_revision": "0013_l2f2_upstream_score_oracle",
+  "grants_changed": false,
+  "nullable": false,
+  "refuses_upgrade_with_existing_failure_rows": true,
+  "revision": "0014_l2f2_exec_failure_runtime",
+  "roles_changed": false,
+  "runner_gains_table_dml": false,
+  "source_sha256": "092dd1b34e851f8a2f86d5d17b7b10a8261645692020eedf60ea58ac5339cd66",
+  "writer_signature_after": "experiments.minos_l2f_fail_job(text, uuid, text, text, integer, text, bigint)",
+  "writer_signature_before": "experiments.minos_l2f_fail_job(text, uuid, text, text, integer, text)"
+ },
+ "observation_reader": {
+  "absence_semantics": "PENDING, CLAIMED, RUNNING and executed-but-unscored jobs produce NO observation; absence is never represented as a score of zero",
+  "entry_point": "minos_engine.baseline.phase_a_observations.load_phase_a_observations",
+  "mappings": {
+   "admitted_evaluation": "exact persisted minos_score, admitted=true",
+   "evaluation_failure": "bounded evaluation code, minos_score=null, runtime of the successful GATK execution",
+   "execution_failure": "bounded execution code, minos_score=null, measured attempt runtime",
+   "refused_admission": "admitted=false, minos_score=null, failure_code=null"
+  },
+  "scoring_contract_required": "b24a07e208ce8e2fff6672102ae4e61aed93c6f352a5af46ba81c4789adb76d6",
+  "source_sha256": "833fb297598bcacb6e9a239ac1ebcd36a2d6a890efc67632b3810ae126f0ecfe"
+ },
+ "real_baseline_store": {
+  "alembic_revision": "0013_l2f2_upstream_score_oracle",
+  "evaluation_failures": 0,
+  "evaluation_results": 1,
+  "execution_failures": 0,
+  "execution_results": 1,
+  "failures_runtime_column_present": false,
+  "job_statuses": "SUCCEEDED",
+  "jobs": 1,
+  "migration_required_before_further_execution": "0013 -> 0014, a separate environment task",
+  "plan_configs": 39,
+  "plan_members": 5,
+  "plans": 1,
+  "read_only_transaction": true
+ },
+ "regression": {
+  "coverage_floor_percent": 90,
+  "coverage_percent": 90.14,
+  "errors": 0,
+  "exit_code": 0,
+  "failures": 0,
+  "mode": "one full serial run (-p no:randomly), whole tests/ tree",
+  "note": "an earlier attempt was invalidated by an in-flight edit to src/minos_engine/storage/l2f2_runner.py, which shifted the line offsets two inspect.getsource assertions read; this run is the authoritative one, made on the stable tree",
+  "skipped": 2,
+  "tests": 3129
+ },
+ "report_schema": "l2f2-d-phase-a-expansion-readiness-v1",
+ "runner_measurement": {
+  "clock": "time.monotonic_ns",
+  "negative_or_null_runtime_refused_in_writer": true,
+  "negative_runtime_refused_in_runner": true,
+  "post_success_persistence_failure_runtime": "the GATK execution's own runtime",
+  "preparation_failure_behaviour": "the job returns to PENDING and no failure row is written, so no runtime is invented",
+  "required_baseline_revision": "0014_l2f2_exec_failure_runtime"
+ },
+ "tests_added": {
+  "tests/integration/layer2_db/l2f2_phase_a_env.py": "shared real Phase-A store helper (frozen plan, canary, runner principal, evaluation seams)",
+  "tests/integration/layer2_db/test_l2f2_execution_failure_runtime.py": 12,
+  "tests/integration/layer2_db/test_l2f2_phase_a_expansion.py": 20,
+  "tests/integration/layer2_db/test_l2f2_phase_a_observations.py": 8,
+  "tests/unit/baseline/test_phase_a_analysis.py": 10,
+  "tests/unit/baseline/test_phase_a_observation_mapping.py": 8,
+  "tests/unit/storage/test_l2f2_phase_a_control_unit.py": 15
+ }
+}

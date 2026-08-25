@@ -27,13 +27,13 @@ does not restate or override them.
 | HARNESS historical Alembic head | `0008_l2f_execution_results` (stage-scoped; the repository head advances independently) |
 | Operational DB revision | `0005_l2e_feature_view` |
 | Next gate | **BASELINE-QUALIFIED** (designed in `docs/layer2/BASELINE_QUALIFICATION.md`, not implemented) |
-| Current task | **L2-F2-C — REAL CANARY: PASS.** One GATK execution, one exact MINOS_SUBNET score, independently verified. Phase-A jobs 1..194 NOT enqueued |
-| Previous task | L2-F2-B — baseline search protocol — **CLOSED** at PROTOCOL_FROZEN |
-| Source Alembic head | `0013_l2f2_upstream_score_oracle` (migrations `0001`–`0013`) |
-| Baseline DB revision required by the runner | `0013_l2f2_upstream_score_oracle` (exact; every other revision is refused) |
+| Current task | **L2-F2-D — PHASE-A EXPANSION READINESS: SOURCE READY.** The bounded expansion boundary, the failure-runtime measurement, the ledger→observation reader and the complete-only analysis wrapper exist and are tested. **Phase-A jobs 1..194 are still NOT enqueued and NOT executed**, and no new score has been observed |
+| Previous task | L2-F2-C — REAL CANARY — **PASS** (one GATK execution, one exact MINOS_SUBNET score, independently verified) |
+| Source Alembic head | `0014_l2f2_exec_failure_runtime` (migrations `0001`–`0014`) |
+| Baseline DB revision required by the runner | `0014_l2f2_exec_failure_runtime` (exact; every other revision is refused) |
 | Production score authority | pinned `minos-protocol/minos_subnet` @ `649bb92c…` — executed, not reimplemented |
 | Scoring contract | `l2f2-minos-scoring-v2` (`b24a07e2…`); v1 `d6f29e11…` superseded, still recomputable |
-| Real baseline DB revision | `0013_l2f2_upstream_score_oracle` |
+| Real baseline DB revision | `0013_l2f2_upstream_score_oracle` — **one revision behind the source requirement.** The runner fails closed on any revision but `0014`, so the real store must be migrated `0013`→`0014` by a separate environment task before any further execution |
 
 `select_config` remains deliberately blocked by `StageNotReadyError` and stays
 blocked until L2-H.
@@ -527,16 +527,81 @@ worktree; see `docs/layer2/EVALUATOR_SERVICE_PROVISIONING.md`. **That worktree m
 while an evaluation is running** — an edit mid-score is now detected and refused rather than
 silently mis-attributed.
 
-Running the canary requires the next environment task: migrate the real baseline database from
-`0011` to `0012`, then replay preparation. `minos_runner_svc` is already provisioned with
-`CONNECT`; the real store still holds 0 plans, 0 authorities, 0 jobs, 0 execution results and
-0 evaluation results, and no GATK, hap.py or score has been produced.
+The evaluator service needs `MINOS_L2F_MINOS_SUBNET_ROOT` pointing at the detached pinned
+worktree, which is provisioned. *(Historical: the paragraph that stood here described the
+environment work that preceded the canary — the `0011`→`0012` migration and preparation replay.
+Both were completed, and the canary below then ran.)*
 
 **Not yet done, and not claimed:**
 
-* the L2-F2-C canary has **not** run; no real hap.py or GATK evaluation has been performed;
-* no baseline search plan, candidate set or job exists;
-* `BASELINE-QUALIFIED` is **not** issued and the objective (D1–D8) is **not** frozen.
+* Phase-A logical jobs **1..194 are not enqueued and not executed**; exactly one job exists;
+* **no Phase-A result has been aggregated**, no influential dimension selected and no Phase-B
+  design produced — the analysis wrapper refuses anything short of all 195 decided observations;
+* `BASELINE-QUALIFIED` is **not** issued. The objective (D1–D8) **is** frozen, and nothing in
+  this stage may alter it.
+
+### L2-F2-D status — SOURCE READY (the screen has NOT been expanded)
+
+Phase A is 195 logical jobs: 5 chromosome-balanced TRAIN members × the 39 accepted OAT
+candidates. Job 0 is the canary and is done. This substage builds the control plane for the
+remaining 194 — and deliberately does not use it.
+
+**A bounded expansion boundary, not an enqueue-all.** `expand_l2f2_phase_a_jobs(engine, start=,
+count=)` inserts ONE contiguous slice of the frozen logical order. `start` is at least 1, so the
+completed canary cannot be re-enqueued by arithmetic accident; `count` is bounded by the same
+`MAX_ENQUEUE_BATCH = 64` the historical path uses; and the slice must lie inside the frozen 195.
+Four explicit operator acts — `(1,64)`, `(65,64)`, `(129,64)`, `(193,2)` — tile jobs 1..194 exactly
+once. Nothing scientific is a caller argument: plan, members, candidates, job keys and order are
+all recomputed from committed authority, so an operator chooses *when*, never *what*. A replay
+inserts nothing and resets nothing — status, `claimed_by` and any terminal outcome are untouched.
+
+The readiness gate before expansion is a **pipeline** gate, never a quality gate: the canary must
+be `SUCCEEDED` with exactly one execution result, no execution failure, and exactly one terminal
+evaluation under contract `b24a07e2…` with no evaluation failure. **The score itself is not
+consulted.** A near-zero score and a refused admission both still permit expansion, because
+conditioning the screen on the canary's own number *after seeing it* would be a protocol change
+made from a single observation — exactly what freezing D1–D8 exists to prevent.
+
+**Migration `0014_l2f2_exec_failure_runtime` — a failed execution now carries its own runtime.**
+`BaselineObservation` requires `gatk_runtime_ms` for every decided outcome and `aggregate_candidate`
+uses mean GATK runtime as the frozen tie-break (D4). A success always carried its runtime; a
+failure carried none, so a failed Phase-A job could not become a faithful observation without
+inventing a duration — a zero, a timeout constant or the successful candidates' average — and each
+of those would flow straight into candidate ranking. The column is `NOT NULL`, non-negative, and
+supplied by the runner's own **monotonic** clock through the narrow `SECURITY DEFINER` writer,
+whose signature widens by one argument; the runner gains no table DML. The upgrade **refuses** if
+any pre-existing failure row is present: such a row predates the measurement and stamping one on
+would be the fabrication this exists to prevent. The real store holds zero failure rows.
+
+*(Two defects were found by the structural migration control and fixed before commit: the widened
+writer was initially created by the migration login rather than `minos_admin` — a `SECURITY
+DEFINER` function executes as its OWNER, so that would have silently widened the failure writer to
+superuser authority — and it used standard SQLSTATEs where `0008` defines stable `MN0xx` codes the
+Python boundary maps to typed errors.)*
+
+**The ledger → observation reader.** `load_phase_a_observations` derives every DECIDED outcome from
+the immutable ledgers and nothing else. Each case means something different to the objective and is
+kept distinct: an admitted evaluation yields the exact persisted `minos_score`; a refused admission
+yields `admitted=False`, `minos_score=None` and **no** failure code — it is emphatically not a
+score of zero; a GATK failure yields its bounded code with the measured attempt runtime; an
+evaluation failure yields its bounded code with the runtime of the GATK execution that did succeed;
+and a job that is `PENDING`, `CLAIMED`, `RUNNING` or executed-but-unscored yields **no observation
+at all**, because absence is what keeps "failed" and "not yet run" from collapsing into each other.
+A state the ledger's own invariants forbid — a `SUCCEEDED` job with no result, both outcomes at
+once, an evaluation under another scoring contract — is refused rather than interpreted.
+
+**The analysis wrapper is complete-only.** `analyze_completed_phase_a(snapshot)` reuses the frozen
+`aggregate_candidate`, `parameter_impacts`, `select_influential_dimensions`, `select_anchors` and
+`build_phase_b_design` unchanged and adds no rule of its own. It requires **all 195** decided
+observations: an impact is a mean over members and the K=6 cut is a comparison *between*
+dimensions, so analysing a partial screen would let job completion order decide what Phase B
+explores. It selects no baseline, reaches no validation or test data, and changes no D1–D8
+decision.
+
+**Containment.** Exactly 1 job exists in the real store and 1 has been executed. **Phase-A jobs
+1..194 remain NOT ENQUEUED and NOT EXECUTED**, no GATK ran, no MINOS_SUBNET scoring ran, no new
+score was observed, and the real database was not modified. The real store is at `0013` while the
+source now requires `0014`; migrating it is a separate environment task.
 
 #### Terminology — D1–D8 are protocol decisions
 

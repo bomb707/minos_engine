@@ -53,7 +53,7 @@ _RUNNER_BOUNDARY = "0011_l2f2_runner_boundary"
 #: introduced this boundary's own functions and grants, 0012 separated the plan's two index
 #: namespaces, and 0013 let evaluation store what the pinned upstream scorer exposes. None of
 #: them grants the runner anything, and it fails closed on every revision but the current one.
-_REQUIRED = "0013_l2f2_upstream_score_oracle"
+_REQUIRED = "0014_l2f2_exec_failure_runtime"
 _BASELINE_DB = "minos_l2f2_baseline"
 _CI_ROLE = "minos_runner_ci_svc"
 _AUTHORITIES = "experiments.l2f2_execution_authorities"
@@ -265,7 +265,12 @@ def test_the_boundary_refuses_a_database_that_is_not_the_baseline_store(
 
 @pytest.mark.parametrize(
     "revision",
-    ["0010_l2f2_evaluation_corrective", _RUNNER_BOUNDARY, "0012_l2f_plan_member_source_idx"],
+    [
+        "0010_l2f2_evaluation_corrective",
+        _RUNNER_BOUNDARY,
+        "0012_l2f_plan_member_source_idx",
+        "0013_l2f2_upstream_score_oracle",
+    ],
 )
 def test_the_boundary_refuses_a_database_at_the_wrong_revision(
     isolated_pg_base_url: str,

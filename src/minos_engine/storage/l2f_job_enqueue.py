@@ -342,25 +342,39 @@ def _enqueue_experiment_jobs_with_trust(
     )
 
 
-def _enqueue_l2f2_phase_a_canary_with_trust(engine: Engine) -> JobEnqueueResult:
-    """PRIVATE dedicated enqueue of EXACTLY the frozen L2-F2 Phase-A canary — logical job 0.
+def _enqueue_l2f2_phase_a_slice_with_trust(
+    engine: Engine, *, start: int, count: int
+) -> JobEnqueueResult:
+    """PRIVATE dedicated enqueue of a BOUNDED slice of the frozen L2-F2 Phase-A logical jobs.
 
     The counterpart of the dedicated Phase-A persistence boundary, and for the same reason: the
     pre-enqueue integrity gate re-resolves upstream, and the historical full-inventory resolver
-    would look for the Phase-A members at matrix ordinals 0..4 instead of 0/10/20/30/40. It takes
-    no plan, candidate set, job key, start or count — every one of those is recomputed here from
-    committed authority, so no caller can enqueue a different job or a different number of them.
+    would look for the Phase-A members at matrix ordinals 0..4 instead of 0/10/20/30/40.
+
+    It takes no plan, candidate set, member, config or job key — every one is recomputed here
+    from committed authority, so the ONLY thing a caller chooses is which contiguous slice of the
+    frozen 195-job order to insert. There is deliberately still no enqueue-all: ``count`` is
+    bounded by :data:`MAX_ENQUEUE_BATCH` exactly as the historical path is.
     """
     from minos_engine.baseline.phase_a import build_phase_a_plan
     from minos_engine.storage.l2f_plan_store import _resolve_phase_a_upstream
 
+    _validate_range_prearg(start, count)
     plan = build_phase_a_plan()
     candidate_set = _build_accepted_candidate_set()
     return _enqueue_in_new_transaction(
         engine,
-        start=0,
-        count=1,
+        start=start,
+        count=count,
         verify_identity=False,
         build_plan=lambda _conn: (plan, candidate_set),
         upstream_resolver=_resolve_phase_a_upstream,
     )
+
+
+def _enqueue_l2f2_phase_a_canary_with_trust(engine: Engine) -> JobEnqueueResult:
+    """PRIVATE dedicated enqueue of EXACTLY the frozen L2-F2 Phase-A canary — logical job 0.
+
+    A fixed slice of the boundary above: no start, no count, nothing a caller could widen.
+    """
+    return _enqueue_l2f2_phase_a_slice_with_trust(engine, start=0, count=1)

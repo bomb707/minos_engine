@@ -93,7 +93,7 @@ Granted by `0011` through `minos_runner`, on top of the existing `0007`/`0008` g
 
 The runner authority **functions and grants originate in `0011`** and are unchanged since. The
 revision the boundary requires on every connection is nevertheless
-**`0013_l2f2_upstream_score_oracle`**, exactly — never a floor, never `head`.
+**`0014_l2f2_exec_failure_runtime`**, exactly — never a floor, never `head`.
 
 The reason it tracks a later revision than its own functions is that the runner and the evaluator
 **share one database**. Neither later migration grants the runner anything:
@@ -104,8 +104,14 @@ The reason it tracks a later revision than its own functions is that the runner 
   the Phase-A plan at all (local `0..4` over source `0/10/20/30/40`).
 * `0013` makes the four AdvancedScorer component columns nullable, because the pinned upstream
   scorer exposes only the combined score. It touches no table the runner reads.
+* `0014` adds `experiments.l2f_execution_failures.runtime_ms` and widens the failure writer
+  `experiments.minos_l2f_fail_job` by one argument, so a failed execution records how long the
+  attempt actually took. The runner **executes** that function, as it always did, and still holds
+  no DML on the failure ledger. This is the one later migration the runner's own code depends on:
+  the narrower six-argument signature is dropped, so a runner at `0014` cannot record a failure
+  against an older database, which is precisely why the revision check is exact.
 
-The service principal's authority is identical under all three revisions; only the revision the
+The service principal's authority is identical under all four revisions; only the revision the
 boundary will accept moves.
 * the existing `0007`/`0008` claim, start, release, complete-success and fail functions
 

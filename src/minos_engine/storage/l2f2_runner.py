@@ -32,6 +32,7 @@ which remains bound to the operational database at ``0008``.
 from __future__ import annotations
 
 import hashlib
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -101,10 +102,14 @@ BASELINE_DATABASE_NAME = "minos_l2f2_baseline"
 #: boundary's own SECURITY DEFINER functions and grants; ``0012`` separated the plan-local member
 #: ordinal from the source feature-matrix ordinal, without which the Phase-A plan is
 #: unrepresentable; ``0013`` made the AdvancedScorer component columns nullable so evaluation can
-#: store exactly what the pinned upstream scorer exposes. Neither ``0012`` nor ``0013`` grants the
-#: runner anything, and ``0013`` touches no table the runner reads — but a database the evaluator
-#: has advanced is still a database this boundary must recognise.
-BASELINE_REVISION = "0013_l2f2_upstream_score_oracle"
+#: store exactly what the pinned upstream scorer exposes. Neither grants the runner anything, and
+#: ``0013`` touches no table the runner reads — but a database the evaluator has advanced is still
+#: a database this boundary must recognise.
+#:
+#: ``0014`` is the one this boundary's OWN code depends on: it gives a failed execution an
+#: authoritative elapsed runtime and drops the narrower six-argument failure writer, so a runner
+#: at ``0014`` genuinely cannot record a failure against an older database.
+BASELINE_REVISION = "0014_l2f2_exec_failure_runtime"
 
 #: the ONLY MINOS group role the runner service may hold.
 _REQUIRED_MEMBERSHIP = "minos_runner"
@@ -457,11 +462,22 @@ def _fail(
     failure_code: str,
     exit_code: int | None,
     stderr_sha256: str | None,
+    runtime_ms: int,
 ) -> L2F2DispatchResult:
+    """Record ONE durable failure, including how long the attempt actually took.
+
+    ``runtime_ms`` is a measurement, never a placeholder: the frozen objective uses mean GATK
+    runtime as a tie-break, so a fabricated duration would flow straight into candidate ranking.
+    It is elapsed monotonic time for the attempt, and 0 means exactly "no GATK attempt elapsed",
+    never "unknown". The runner still holds no direct DML on the failure ledger; the narrow
+    SECURITY DEFINER writer is the only path.
+    """
+    if runtime_ms < 0:
+        raise L2F2ExecutionError(f"elapsed runtime {runtime_ms} is not a measurement")
     with engine.connect() as conn, conn.begin():
         authorize_baseline_runner_connection(conn)
         conn.execute(
-            text("SELECT * FROM experiments.minos_l2f_fail_job(:h, :j, :w, :c, :e, :s)"),
+            text("SELECT * FROM experiments.minos_l2f_fail_job(:h, :j, :w, :c, :e, :s, :rt)"),
             {
                 "h": plan_hash,
                 "j": job_id,
@@ -469,6 +485,7 @@ def _fail(
                 "c": failure_code,
                 "e": exit_code,
                 "s": stderr_sha256,
+                "rt": runtime_ms,
             },
         )
     return L2F2DispatchResult(
@@ -513,6 +530,13 @@ def _run_and_finalize(
     plan_hash = authority.plan_hash
     job_id, job_key = prepared.job_id, prepared.job_key
     workspace: AttemptWorkspace | None = None
+    # a MONOTONIC clock, never wall time: the elapsed attempt duration is a measurement the
+    # frozen objective uses as a tie-break, and a clock step must not be able to move it.
+    attempt_started = time.monotonic_ns()
+
+    def _elapsed_ms() -> int:
+        return max(0, (time.monotonic_ns() - attempt_started) // 1_000_000)
+
     try:
         try:
             workspace = create_attempt_workspace(
@@ -562,6 +586,9 @@ def _run_and_finalize(
                 failure_code=code,
                 exit_code=exit_code,
                 stderr_sha256=stderr,
+                # the attempt genuinely elapsed, whether GATK exited non-zero, timed out or
+                # produced unusable output; that duration is what is recorded.
+                runtime_ms=_elapsed_ms(),
             )
             if code in ("GATK_TIMEOUT", "GATK_NONZERO_EXIT", "GATK_OUTPUT_INVALID"):
                 return recorded
@@ -592,6 +619,9 @@ def _run_and_finalize(
                 failure_code="EXECUTION_ERROR",
                 exit_code=None,
                 stderr_sha256=None,
+                # GATK itself finished; the runtime that elapsed is the one it actually took,
+                # and persistence failing afterwards does not change that measurement.
+                runtime_ms=outcome.runtime_ms,
             )
             raise ExecutionRecordedFailureError(
                 f"job {job_id} could not persist its success and was durably recorded as FAILED",

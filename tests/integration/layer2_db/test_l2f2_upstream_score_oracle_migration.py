@@ -170,16 +170,30 @@ def test_0013_changes_only_the_component_columns(isolated_pg_base_url: str) -> N
     assert all(row.get("table") == "l2f_evaluation_results" for row in constraint_delta)
 
 
-def test_generic_upgrade_head_reaches_0013(isolated_pg_base_url: str) -> None:
+def test_generic_upgrade_reaches_0013_and_then_the_repository_head(
+    isolated_pg_base_url: str,
+) -> None:
+    """0013 is reachable by name, and a later revision may sit above it.
+
+    The baseline store keeps advancing, so this asserts what 0013 owns — that upgrading to it
+    lands exactly on it — rather than pinning it as the repository head.
+    """
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
-    assert list(ScriptDirectory.from_config(Config("alembic.ini")).get_heads()) == [_HEAD]
+    heads = tuple(ScriptDirectory.from_config(Config("alembic.ini")).get_heads())
+    assert len(heads) == 1, heads
     with scratch_database(isolated_pg_base_url, _DB) as url:
-        alembic_upgrade(url, "head")
+        alembic_upgrade(url, _HEAD)
         engine = _engine(url)
         try:
             assert _revision(engine) == _HEAD
+        finally:
+            engine.dispose()
+        alembic_upgrade(url, "head")
+        engine = _engine(url)
+        try:
+            assert _revision(engine) == heads[0]
         finally:
             engine.dispose()
 

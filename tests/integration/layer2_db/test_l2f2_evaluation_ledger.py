@@ -49,7 +49,7 @@ _F2A = "0009_l2f_evaluation_results"
 _F2A_CORRECTIVE = "0010_l2f2_evaluation_corrective"
 #: 0013 makes the four AdvancedScorer components nullable, because the pinned upstream scorer
 #: does not expose them. Evaluation persistence therefore requires it.
-_SCORE_ORACLE = "0013_l2f2_upstream_score_oracle"
+_SCORE_ORACLE = "0014_l2f2_exec_failure_runtime"
 _METRICS = {
     "f1_snp": 0.95,
     "f1_indel": 0.9,

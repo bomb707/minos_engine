@@ -12,9 +12,14 @@ Sections that present *alternatives and recommendations* are retained as the des
 led to the frozen choice. Where an option was considered and rejected it is marked as such; the
 frozen answer is always the one stated in §16 and in the committed manifest.
 
-**Not yet done:** no Phase-A/B/C execution, no observed score, no validation access, and
-`BASELINE-QUALIFIED` is not issued. Current stage state lives in `docs/DEVELOPMENT_STATUS.md`;
-the historical pre-implementation evidence lives in
+**Where the search actually is:** the L2-F2-C canary has **passed** — one GATK execution and one
+exact MINOS_SUBNET score, independently re-verified. **L2-F2-D is at PHASE-A EXPANSION READINESS:**
+the bounded expansion boundary, the failure-runtime measurement (`0014`), the ledger→observation
+reader and the complete-only analysis wrapper exist and are tested, and **Phase-A jobs 1..194 have
+not been enqueued or executed.** No Phase-A result has been aggregated, no influential dimension
+selected and no Phase-B design produced; there is no validation or test access; and
+`BASELINE-QUALIFIED` is not issued. Current stage state lives in `docs/DEVELOPMENT_STATUS.md`; the
+historical pre-implementation evidence lives in
 `reports/LAYER2_BASELINE_PREIMPLEMENTATION_AUDIT.md`.
 
 ## L2-F2-A prerequisites — CLOSED
@@ -278,7 +283,13 @@ recomputation** from the published metrics artifact.
 
 It must prove the whole chain: execution result → evaluator → metrics → final
 score → immutable evaluation record. Phase A may not begin until it passes.
-The canary is L2-F2-C and is **not** run during the audit stage.
+The canary is L2-F2-C and **passed** on 2026-08-25.
+
+The Phase-A expansion boundary enforces exactly this requirement in code, and enforces it as a
+**pipeline** condition: the canary must be `SUCCEEDED` with one execution result, no execution
+failure, one terminal evaluation under the production scoring contract and no evaluation failure.
+The canary's own score is deliberately **not** consulted. A gate that expanded only on a good score
+would be a rule chosen after seeing one observation, which §16 exists to forbid.
 
 ## 11. Persistence and evidence model
 
@@ -368,7 +379,7 @@ evidence commit.
 | **L2-F2-A** | HARNESS-READY | evaluation contract + additive migration; evaluator login role; truth identity ingestion (TRAIN); isolated truth-aware evaluator | Tier 1 + Tier 2 (**positive** happy-path SQL tests mandatory) | evaluator persists a fixture evaluation; runner still truth-free |
 | **L2-F2-B** | A complete | candidate design v1; frozen objective + protocol hash; racing engine | Tier 1 | protocol/objective/design hashes frozen and committed |
 | **L2-F2-C** | B complete | one real TRAIN canary | Tier 3 (single run) | end-to-end chain proven with independent score recomputation |
-| **L2-F2-D** | C passed | Phase A + Phase B TRAIN search | Tier 3 | influential dimensions identified by the pre-registered rule; survivors chosen |
+| **L2-F2-D** | C passed | Phase A + Phase B TRAIN search. **Current state: expansion readiness — the bounded 1..194 boundary, the failure-runtime measurement, the ledger→observation reader and the complete-only analysis wrapper are implemented and tested; the screen has not been expanded** | Tier 3 | influential dimensions identified by the pre-registered rule; survivors chosen |
 | **L2-F2-E** | D complete | Phase C full-TRAIN confirmation | Tier 3 | finalists ranked on all 50 TRAIN BAMs |
 | **L2-F2-F** | E complete, everything frozen | Phase D validation confirmation | Tier 3 (small) | baseline selected |
 | **L2-F2-G** | F complete | BASELINE-QUALIFIED gate + evidence | Tier 1 + Tier 2 offline verification | gate issued, two-commit pattern |

@@ -32,7 +32,7 @@ _CORRECTIVE = "0010_l2f2_evaluation_corrective"
 #: the revision Phase-A preparation and the production runner now require EXACTLY. 0011 cannot
 #: represent a subset plan's two index namespaces; 0013 is where the shared baseline store now
 #: sits, because the evaluator needs it.
-_SOURCE_INDEX = "0013_l2f2_upstream_score_oracle"
+_SOURCE_INDEX = "0014_l2f2_exec_failure_runtime"
 _AUTHORITIES = "experiments.l2f2_execution_authorities"
 
 
@@ -180,7 +180,13 @@ def baseline(isolated_pg_base_url: str) -> Any:
 
 
 @pytest.mark.parametrize(
-    "revision", [_CORRECTIVE, _RUNNER_BOUNDARY, "0012_l2f_plan_member_source_idx"]
+    "revision",
+    [
+        _CORRECTIVE,
+        _RUNNER_BOUNDARY,
+        "0012_l2f_plan_member_source_idx",
+        "0013_l2f2_upstream_score_oracle",
+    ],
 )
 def test_preparation_refuses_a_database_at_the_wrong_revision(
     isolated_pg_base_url: str, tmp_path: Path, revision: str
