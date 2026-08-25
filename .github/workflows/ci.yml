@@ -172,7 +172,15 @@ jobs:
           python - <<'PY'
           # Explicit 0010 appears ONLY here, where the corrective boundary is the subject. The
           # generic current-head check above stays dynamic so later migrations do not break it.
+          #
+          # This seam ENTERS 0010 deliberately instead of assuming the database is already there.
+          # The repository head advances with every additive migration (0011 today), so an entry
+          # assertion pinned to 0010 would break on each new one; stepping down to the revision
+          # under test keeps the 0009 <-> 0010 boundary provable in isolation, forever.
           import subprocess
+
+          from alembic.config import Config
+          from alembic.script import ScriptDirectory
 
           from sqlalchemy import create_engine, text
 
@@ -214,7 +222,13 @@ jobs:
                   )),
               }
 
+          # STEP A — enter the revision this seam is about, from whatever the current head is.
+          subprocess.run(
+              ["alembic", "downgrade", "0010_l2f2_evaluation_corrective"], check=True
+          )
           assert revision() == "0010_l2f2_evaluation_corrective", revision()
+
+          # STEP B — the reference 0010 inventory.
           at_head = inventory()
           assert at_head == {
               "registrar": 1,
@@ -239,10 +253,22 @@ jobs:
               "exclusive_lock_is_for_update": False,
           }, at_0009
 
-          subprocess.run(["alembic", "upgrade", "head"], check=True)
+          # STEP D — restore 0010 EXPLICITLY. Using "head" here would prove the newest head's
+          # inventory, not the 0010 boundary this check exists to verify.
+          subprocess.run(
+              ["alembic", "upgrade", "0010_l2f2_evaluation_corrective"], check=True
+          )
           assert revision() == "0010_l2f2_evaluation_corrective", revision()
           assert inventory() == at_head, "re-upgrade did not restore the 0010 inventory"
           print("L2-F2-A corrective boundary verified: 0010 -> 0009 -> 0010")
+
+          # STEP E — hand the database back at the repository head, resolved DYNAMICALLY so a
+          # future migration cannot break this seam again.
+          subprocess.run(["alembic", "upgrade", "head"], check=True)
+          heads = tuple(ScriptDirectory.from_config(Config("alembic.ini")).get_heads())
+          assert len(heads) == 1, f"expected exactly one Alembic head, found {heads}"
+          assert revision() == heads[0], (revision(), heads[0])
+          print(f"repository head restored: {heads[0]}")
           PY
 
       - name: L2-F2 stage boundary — 0009 down to 0008 and back
