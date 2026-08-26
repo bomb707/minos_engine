@@ -245,8 +245,25 @@ per chromosome, chosen by lowest `sort_order` within each chromosome.
 * **Phase B — compact interaction search.** A pre-registered deterministic rule
   selects the influential dimensions from Phase A; a compact design (Sobol / LHS
   / fractional-factorial — **D8**) covers only those, evaluated on 10 TRAIN BAMs
-  (two per chromosome).
+  (two per chromosome). **Frozen and materializable; not executed.** The design is
+  48 candidates × 10 members — seed `4251cb85…`, candidate set
+  `63b0244935edb46c799583cae9715733e52b25fba85f581a33ebe6949c09de0e`, plan
+  `e80594043580334ddf2504577e2fa030dff0c1217ac334804d9304a0ec72596b` — derived from
+  the completed Phase-A ledger and re-derivable from it deterministically. Two of the
+  six anchors are total-failure Phase-A configurations: impact measures *sensitivity*,
+  and a dimension whose alternatives all failed is precisely one Phase B must explore.
+  Execution is blocked at the database boundary: migration `0011` admits only
+  `PHASE_A` execution authorities, so a Phase-B job cannot be claimed until a later
+  migration widens the runner boundary.
 * **Phase C — survivor confirmation.** Survivors run across all 50 TRAIN BAMs.
+
+**Racing note (measured, not theoretical).** With five of ten members observed, the
+frozen `-1.0 · failure_rate` term shifts both bounds by exactly 0.5, so the worst
+reachable optimistic bound and the best reachable pessimistic bound coincide.
+Elimination needs a **strict** inequality, so the batch-0 race can never eliminate a
+candidate: Phase B spends its full 480-job ceiling. The rule is frozen and errs in the
+safe direction (it can never eliminate a candidate that could still win), so this is
+recorded rather than adjusted.
 * **Phase D — frozen validation.** Freeze candidate set, objective, ranking and
   tie-breaks, *then* read the 10 validation scores for a very small finalist set.
   **No TEST.**
@@ -392,7 +409,7 @@ evidence commit.
 | **L2-F2-A** | HARNESS-READY | evaluation contract + additive migration; evaluator login role; truth identity ingestion (TRAIN); isolated truth-aware evaluator | Tier 1 + Tier 2 (**positive** happy-path SQL tests mandatory) | evaluator persists a fixture evaluation; runner still truth-free |
 | **L2-F2-B** | A complete | candidate design v1; frozen objective + protocol hash; racing engine | Tier 1 | protocol/objective/design hashes frozen and committed |
 | **L2-F2-C** | B complete | one real TRAIN canary | Tier 3 (single run) | end-to-end chain proven with independent score recomputation |
-| **L2-F2-D** | C passed | Phase A + Phase B TRAIN search. **Current state: the first Phase-A execution attempt was lost to a runtime defect (GATK launcher interpreter unresolvable), its five observations are tainted and its store is quarantined; the runtime is now pinned and bound into every outcome by `0015`, and a clean campaign must be rebuilt before Phase A resumes** | Tier 3 | influential dimensions identified by the pre-registered rule; survivors chosen |
+| **L2-F2-D** | C passed | Phase A + Phase B TRAIN search. **Current state: Phase A is COMPLETE on the clean store — 195/195 decided, 0 infrastructure incidents, one execution environment — and the Phase-B design is frozen from it. Phase B is materializable but NOT executable (see §9)** | Tier 3 | influential dimensions identified by the pre-registered rule; survivors chosen |
 | **L2-F2-E** | D complete | Phase C full-TRAIN confirmation | Tier 3 | finalists ranked on all 50 TRAIN BAMs |
 | **L2-F2-F** | E complete, everything frozen | Phase D validation confirmation | Tier 3 (small) | baseline selected |
 | **L2-F2-G** | F complete | BASELINE-QUALIFIED gate + evidence | Tier 1 + Tier 2 offline verification | gate issued, two-commit pattern |

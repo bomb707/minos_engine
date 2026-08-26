@@ -714,10 +714,37 @@ def _resolve_phase_a_upstream(conn: Connection, plan: ExperimentPlan) -> dict[st
     """
     from minos_engine.baseline.phase_a import build_phase_a_plan
 
-    frozen = build_phase_a_plan()
+    return _resolve_projected_upstream(conn, plan, frozen=build_phase_a_plan(), label="Phase-A")
+
+
+def _resolve_phase_b_upstream(conn: Connection, plan: ExperimentPlan) -> dict[str, Any]:
+    """Resolve upstream for the derived L2-F2 Phase-B plan, by the SAME projection rules.
+
+    Phase B is ten TRAIN members drawn from the same accepted 50-member closure, so it needs
+    exactly what Phase A needed: the complete closure proven first, then its own members projected
+    out of it by complete scientific identity, preserving both index namespaces. The frozen plan it
+    must equal is derived from the completed Phase-A ledger, not supplied.
+    """
+    from minos_engine.baseline.phase_b import build_l2f2_phase_b_authority
+
+    engine = conn.engine
+    return _resolve_projected_upstream(
+        conn, plan, frozen=build_l2f2_phase_b_authority(engine).plan, label="Phase-B"
+    )
+
+
+def _resolve_projected_upstream(
+    conn: Connection, plan: ExperimentPlan, *, frozen: ExperimentPlan, label: str
+) -> dict[str, Any]:
+    """The shared projection: prove the COMPLETE closure, then project this plan's members.
+
+    One implementation serves both baseline phases because the rule is identical — a phase plan is
+    only ever a projection of the accepted TRAIN closure, and a defect in ANY unselected member
+    still blocks persistence.
+    """
     if plan.plan_hash != frozen.plan_hash:
         raise UpstreamIdentityError(
-            "the Phase-A persistence boundary accepts ONLY the frozen Phase-A plan; "
+            f"the {label} persistence boundary accepts ONLY the frozen {label} plan; "
             f"got plan_hash {plan.plan_hash}, expected {frozen.plan_hash}"
         )
 
@@ -726,12 +753,12 @@ def _resolve_phase_a_upstream(conn: Connection, plan: ExperimentPlan) -> dict[st
         got, want = getattr(plan, field), getattr(accepted, field)
         if got != want:
             raise UpstreamIdentityError(
-                f"Phase-A plan {field} {got!r} != accepted plan {field} {want!r}; the projection "
+                f"{label} plan {field} {got!r} != accepted plan {field} {want!r}; the projection "
                 "does not resolve against the accepted plan's upstream"
             )
     if not 0 < plan.train_member_count <= accepted.train_member_count:
         raise UpstreamIdentityError(
-            f"Phase-A member count {plan.train_member_count} is not a projection of the accepted "
+            f"{label} member count {plan.train_member_count} is not a projection of the accepted "
             f"member count {accepted.train_member_count}"
         )
 
@@ -753,18 +780,18 @@ def _resolve_phase_a_upstream(conn: Connection, plan: ExperimentPlan) -> dict[st
     for local_index, member in enumerate(plan.members):
         if member.member_index != local_index:
             raise UpstreamIdentityError(
-                f"Phase-A plan-local member_index sequence broken at position {local_index}"
+                f"{label} plan-local member_index sequence broken at position {local_index}"
             )
         resolved = by_identity.get(_member_scientific_identity(member))
         if resolved is None:
             raise UpstreamIdentityError(
-                f"phase_a_member[{member.dataset_id}]: no accepted full-plan member matches its "
+                f"{label} member[{member.dataset_id}]: no accepted full-plan member matches its "
                 "complete scientific identity (dataset/profile/content/feature_values/vector)"
             )
         source_index = int(resolved["source_matrix_member_index"])
         if source_index in seen_source:
             raise UpstreamIdentityError(
-                f"phase_a_member[{member.dataset_id}]: source matrix index {source_index} is "
+                f"{label} member[{member.dataset_id}]: source matrix index {source_index} is "
                 "claimed by more than one Phase-A member"
             )
         seen_source.add(source_index)
@@ -774,7 +801,7 @@ def _resolve_phase_a_upstream(conn: Connection, plan: ExperimentPlan) -> dict[st
 
     if len(members) != plan.train_member_count:
         raise UpstreamIdentityError(
-            f"projected {len(members)} Phase-A members, expected {plan.train_member_count}"
+            f"projected {len(members)} {label} members, expected {plan.train_member_count}"
         )
     return {
         "feature_set_id": full["feature_set_id"],
@@ -782,6 +809,48 @@ def _resolve_phase_a_upstream(conn: Connection, plan: ExperimentPlan) -> dict[st
         "train_feature_matrix_id": full["train_feature_matrix_id"],
         "members": members,
     }
+
+
+def _persist_l2f2_phase_b_plan_with_trust(
+    engine: Engine,
+    *,
+    publisher: ConfigPayloadPublisher,
+) -> PlanPersistResult:
+    """PRIVATE dedicated persistence boundary for the derived L2-F2 Phase-B plan.
+
+    Like its Phase-A counterpart it accepts no plan, no candidate set and no member selection: the
+    authority is derived from the completed Phase-A ledger here, and the resolver re-derives it
+    independently and refuses anything whose ``plan_hash`` differs. The generic immutable
+    persistence core does the writing, so Phase B inherits the same append-only guarantees, the
+    same content-addressed CONFIG payload publication (the seed and six anchors are Phase-A
+    configurations and resolve to their EXISTING artifacts by content identity, so only the 41
+    novel LHS payloads are new files) and the same idempotent replay.
+    """
+    from minos_engine.baseline.phase_b import build_l2f2_phase_b_authority
+
+    authority = build_l2f2_phase_b_authority(engine)
+    candidate_set = _phase_b_candidate_set_for(authority)
+    return _execute_persistence_txn(
+        engine,
+        verify_identity=False,
+        build_inputs=lambda _conn: (authority.plan, candidate_set, publisher),
+        upstream_resolver=_resolve_phase_b_upstream,
+    )
+
+
+def _phase_b_candidate_set_for(authority: Any) -> CandidateSet:
+    """The Phase-B candidate set object the persistence core writes payloads from."""
+    from dataclasses import replace
+
+    accepted = _build_accepted_candidate_set()
+    return replace(
+        accepted,
+        configs=tuple(authority.configs),
+        ordered_config_hashes=tuple(c.config_hash for c in authority.configs),
+        candidate_count=len(authority.configs),
+        candidate_set_hash=authority.phase_b_candidate_set_hash,
+        skipped=(),
+    )
 
 
 def _publish_config_payloads(

@@ -36,12 +36,12 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from sqlalchemy import Connection, Engine, text
 from sqlalchemy.exc import DBAPIError
 
-from minos_engine.baseline.phase_a import PhaseAAuthority, build_phase_a_authority
+from minos_engine.baseline.phase_a import build_phase_a_authority
 from minos_engine.common.errors import MinosEngineError
 from minos_engine.experiments.execution_contract import (
     EXECUTION_RESULT_SCHEMA_V2,
@@ -91,6 +91,7 @@ __all__ = [
     "L2F2DispatchResult",
     "L2F2ExecutionError",
     "execute_next_l2f2_phase_a_job",
+    "execute_next_l2f2_phase_b_job",
 ]
 
 #: the dedicated baseline store. The operational database is NEVER a valid target here.
@@ -335,6 +336,66 @@ def _manifest(
     )
 
 
+class _PlanAuthority(Protocol):
+    """What the execution core actually needs from an authority: the plan it may claim within.
+
+    Phase A and Phase B are different scientific questions but the SAME least-privilege execution
+    sequence, so the core is typed by the one property it uses rather than duplicated per phase.
+    """
+
+    @property
+    def plan_hash(self) -> str: ...
+
+
+def execute_next_l2f2_phase_b_job(*, worker_id: str) -> L2F2DispatchResult | None:
+    """THE accepted L2-F2 Phase-B execution entry. Same core, different derived authority.
+
+    The Phase-B authority is derived from the completed Phase-A ledger inside this call — no
+    caller supplies a plan hash, a config, a member or a job id — and the runtime is preflighted
+    BEFORE the claim, exactly as Phase A does. One extra requirement is Phase B's own: the
+    worker's execution environment must be the SAME one the completed Phase-A campaign ran under,
+    because the design Phase B is exploring was chosen from numbers that runtime produced.
+
+    NOT YET REACHABLE. Migration 0011 admits exactly one execution phase — "the ONLY phase 0011
+    admits. A later phase is a later migration, never a looser CHECK" — so
+    ``ck_l2f2_authority_phase`` refuses to record a Phase-B execution authority and
+    ``experiments.l2f2_resolve_claimed_execution`` looks one up with a hardcoded
+    ``phase = 'PHASE_A'``. Calling this today raises that database error at claim time, by design;
+    widening the runner boundary is a privileged migration of its own.
+    """
+    from minos_engine.baseline.phase_b import build_l2f2_phase_b_authority
+    from minos_engine.experiments.execution_contract import GatkRuntimeIdentityError
+    from minos_engine.storage.database import create_db_engine
+    from minos_engine.storage.l2f_gatk_runner import SubprocessGatkRunner, work_root_from_env
+    from minos_engine.storage.l2f_job_claim import validate_worker_id
+
+    validate_worker_id(worker_id)
+    runner = SubprocessGatkRunner.from_env()
+    environment = runner.preflight()
+    engine = create_db_engine()
+    try:
+        authority = build_l2f2_phase_b_authority(engine)
+        observed = environment.environment_hash()
+        if observed != authority.execution_environment_hash:
+            raise GatkRuntimeIdentityError(
+                f"this worker's execution environment is {observed}, but the baseline search's "
+                f"completed Phase A ran under {authority.execution_environment_hash}; Phase B "
+                "explores a design chosen from that runtime's numbers and must not mix runtimes"
+            )
+        return _execute_l2f2_job(
+            engine,
+            authority,
+            worker_id=worker_id,
+            runner=runner,
+            dataset_root=dataset_root_from_env(),
+            publisher=ResultArtifactPublisher(result_artifact_root_from_env()),
+            work_root=work_root_from_env(),
+            execution_environment=environment,
+        )
+    finally:
+        engine.dispose()
+
+
 def execute_next_l2f2_phase_a_job(*, worker_id: str) -> L2F2DispatchResult | None:
     """THE accepted L2-F2 baseline execution entry — no caller-provided trust, paths or runner.
 
@@ -374,7 +435,7 @@ def execute_next_l2f2_phase_a_job(*, worker_id: str) -> L2F2DispatchResult | Non
 
 def _execute_l2f2_job(
     engine: Engine,
-    authority: PhaseAAuthority,
+    authority: _PlanAuthority,
     *,
     worker_id: str,
     runner: GatkRunner,
@@ -558,7 +619,7 @@ def _failure_code(exc: BaseException) -> tuple[str, int | None, str | None]:
 
 def _run_and_finalize(
     engine: Engine,
-    authority: PhaseAAuthority,
+    authority: _PlanAuthority,
     prepared: _Prepared,
     *,
     worker_id: str,
@@ -681,7 +742,7 @@ def _run_and_finalize(
 
 def _complete_success(
     engine: Engine,
-    authority: PhaseAAuthority,
+    authority: _PlanAuthority,
     prepared: _Prepared,
     outcome: GatkExecutionOutcome,
     *,

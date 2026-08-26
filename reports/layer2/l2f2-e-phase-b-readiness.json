@@ -1,0 +1,243 @@
+{
+ "boundaries": {
+  "caller_supplied_survivor_list_accepted": false,
+  "enqueue_all_api_exists": false,
+  "execution_entry": "minos_engine.storage.l2f2_runner.execute_next_l2f2_phase_b_job",
+  "materialization": "minos_engine.storage.l2f2_phase_b_control.expand_l2f2_phase_b_batch",
+  "max_enqueue_batch": 64,
+  "phase_a_analysis": "minos_engine.baseline.phase_a_analysis.derive_completed_phase_a_analysis",
+  "phase_b_authority": "minos_engine.baseline.phase_b.build_l2f2_phase_b_authority",
+  "phase_b_observations": "minos_engine.baseline.phase_b_observations.load_phase_b_observations",
+  "plan_observations": "minos_engine.baseline.plan_observations.load_plan_observations",
+  "progress": "minos_engine.storage.l2f2_phase_b_control.read_l2f2_phase_b_progress",
+  "promotion": "minos_engine.storage.l2f2_phase_b_control.select_l2f2_phase_c_candidates",
+  "racing": "minos_engine.storage.l2f2_phase_b_control.race_l2f2_phase_b_batch0",
+  "racing_refuses_on_infrastructure_incident": true,
+  "racing_requires_complete_balanced_batch": true
+ },
+ "checks": {
+  "coverage_note": "l2f2_phase_b_control.py sits at 84%: the racing and promotion bodies past the batch-0 completeness gate cannot be reached, because finding L2F2E-F1 prevents any Phase-B job from being executed. Their rules are covered at unit level in tests/unit/baseline/test_racing.py; their refusal paths are covered against real PostgreSQL.",
+  "full_serial_regression": {
+   "command": "pytest --cov=src/minos_engine --cov-report=term-missing",
+   "coverage_total_percent": 90,
+   "duration_seconds": 2346.2,
+   "errors": 0,
+   "failed": 0,
+   "passed": 3223,
+   "postgresql_multi_plan_coexistence_covered": true,
+   "skipped": 2
+  },
+  "git_diff_check": "clean",
+  "mypy": "Success: no issues found in 223 source files",
+  "ruff_check": "All checks passed",
+  "ruff_format_check": "580 files already formatted"
+ },
+ "containment": {
+  "config_selected_or_ranked": false,
+  "d1_d8_changed": false,
+  "frozen_algorithms_reimplemented": false,
+  "immutable_reports_modified": false,
+  "minos_subnet_modified": false,
+  "new_migration_added": false,
+  "operational_database_modified": false,
+  "phase_b_gatk_executions_run": 0,
+  "phase_b_minos_subnet_scoring_runs": 0,
+  "phase_b_new_scores_observed": 0,
+  "reaches_test_partition": false,
+  "reaches_validation_partition": false,
+  "real_baseline_database_modified": false
+ },
+ "disposition": "L2-F2-E-PHASE-B-HOLD",
+ "disposition_reason": "every source, test and documentation deliverable is complete, but Phase-B jobs cannot be executed: migration 0011 admits only PHASE_A execution authorities. Crossing that boundary needs a privileged migration plus an administrative preparation path, neither of which is authorized under this task.",
+ "entry_gate": {
+  "ci_conclusion": "success",
+  "ci_event": "push",
+  "ci_run_id": 32923652891,
+  "ci_workflow": "CI",
+  "head_sha": "29a36882272ccd6e77bb69a30eb5f730a93e129e",
+  "parent_commit": "29a36882272ccd6e77bb69a30eb5f730a93e129e"
+ },
+ "findings": [
+  {
+   "asserted_by": "tests/integration/layer2_db/test_l2f2_phase_b_control.py::test_a_phase_b_job_cannot_be_claimed_until_the_runner_boundary_admits_phase_b",
+   "consequence": "Phase B is materializable but not executable.",
+   "detail": "ck_l2f2_authority_phase permits only 'PHASE_A', so a Phase-B execution authority row cannot be recorded, and experiments.l2f2_resolve_claimed_execution resolves with a hardcoded a.phase = 'PHASE_A'. A materialized Phase-B job fails at claim time with \"plan ... has no PHASE_A L2-F2 execution authority\". 0011 states the intent explicitly: 'the ONLY phase 0011 admits. A later phase is a later migration, never a looser CHECK.'",
+   "id": "L2F2E-F1",
+   "remedy_requires_authorization": "a migration widening the runner boundary plus an administrative Phase-B authority preparation path",
+   "severity": "BLOCKING",
+   "title": "migration 0011 admits only PHASE_A execution authorities"
+  },
+  {
+   "action_taken": "recorded, not adjusted \u2014 the rule is frozen and errs in the safe direction",
+   "asserted_by": "tests/unit/baseline/test_racing.py::test_a_balanced_half_screen_cannot_eliminate_anybody_at_all",
+   "consequence": "Phase B spends its full 480-job ceiling; racing yields no budget saving at this batch count.",
+   "detail": "with 5 of 10 members observed the frozen -1.0 * failure_rate term moves both bounds by exactly 0.5, so the worst reachable optimistic bound and the best reachable pessimistic bound are both -0.25. Elimination requires a strict inequality, so no candidate can be eliminated after one balanced batch.",
+   "id": "L2F2E-F2",
+   "severity": "MATERIAL",
+   "title": "the batch-0 race can never eliminate a candidate"
+  },
+  {
+   "detail": "the observation reader and the expansion boundary selected every job in the database and refused the first unrecognised row. Correct while Phase A was the only plan; wrong the instant Phase B is persisted, because Phase-B executions would have entered Phase-A statistics.",
+   "fix": "one shared plan-scoped reading core (minos_engine.baseline.plan_observations) scoped by plan_hash. Narrows what is read; relaxes nothing about what a row must prove \u2014 a forged job claiming a plan hash still fails closed.",
+   "id": "L2F2E-F3",
+   "severity": "FIXED",
+   "title": "Phase-A readers counted rows globally"
+  }
+ ],
+ "harness_gate": {
+  "gate_file_sha256": "c0dff7f2b4331af505c089b365f52d804844997e1cd7e047c04f26f92478df25",
+  "gate_hash": "0e8411ebffa9b6a27ec47cd896efd234bd60cdb30edf6f8f998ff8f06419fcc3",
+  "mandatory_checks": 40,
+  "qualification_file_sha256": "9b127d0385fcd2271a5f5312a9d9ddd0a607bbfc2da03ac5658b8626870ce688",
+  "status": "PASS",
+  "unchanged_since_l2f2_c": true,
+  "verified_by": "minos-engine layer2 harness gate require-pass"
+ },
+ "notes": [
+  "No secrets. No credentials. No DSNs.",
+  "The real store was read READ ONLY; nothing was written to it.",
+  "A Phase-B promotion-identity module was written and then removed: it cannot be reached or positively tested until a complete Phase B exists, and the promotion decision itself is delivered by select_l2f2_phase_c_candidates. It belongs to the stage that can execute Phase B."
+ ],
+ "phase_a_source_of_truth": {
+  "admitted": 179,
+  "analysis_hash": "25794987e49ca2a17776bf355326e8ff396366a6e3340fe7f9d2e24a855c80ae",
+  "candidate_failure_count": 16,
+  "complete": true,
+  "decided": 195,
+  "enqueued": 195,
+  "evaluation_failure_count": 0,
+  "evaluation_result_count": 190,
+  "execution_environment_hash": "71e14a49833ac77bb9dc576345fb89c4dd68f4a3ad3673eb098d38593c1ef4d3",
+  "execution_failure_count": 5,
+  "execution_result_count": 190,
+  "infrastructure_incident_count": 0
+ },
+ "phase_b_design": {
+  "anchor_config_hashes": [
+   "2e4af9ad80db4cc48c1564dce148bce217a1cc23de1c38ffb3359f13c218a012",
+   "fa045bda0b651aa8f2ea035ec6aea78ac860faf805d332229b071e96a977d325",
+   "2a14c59f715dfc2c91f14210527749b84fec48503cd4f3f7c76373e53dd9bd95",
+   "5be8906c9ae219bc94855705161541212b0908fb0d826f3443853e1214f5468c",
+   "b58c3915f05ceaaac0025b0131a479ac1e03d870ea69920592fd3cbaa7a7071b",
+   "858988eeb117915305a2f334355df6c15c6c5b2aec7b47c2279e0566ddb3930b"
+  ],
+  "anchor_semantics_note": "two anchors are total-failure Phase-A configurations; impact measures sensitivity, so a dimension whose every alternative failed is exactly one Phase B must explore. Carried as produced, no override applied.",
+  "candidate_count": 48,
+  "candidate_set_hash": "63b0244935edb46c799583cae9715733e52b25fba85f581a33ebe6949c09de0e",
+  "chromosomes": [
+   "chr18",
+   "chr19",
+   "chr20",
+   "chr21",
+   "chr22",
+   "chr18",
+   "chr19",
+   "chr20",
+   "chr21",
+   "chr22"
+  ],
+  "derivation_is_deterministic": true,
+  "influential_dimensions": [
+   {
+    "impact": 0.5322887825157822,
+    "name": "min_base_quality_score"
+   },
+   {
+    "impact": 0.5322887825157822,
+    "name": "base_quality_score_threshold"
+   },
+   {
+    "impact": 0.40219289303488237,
+    "name": "active_probability_threshold"
+   },
+   {
+    "impact": 0.1655345561240777,
+    "name": "min_pruning"
+   },
+   {
+    "impact": 0.054137689692810895,
+    "name": "phred_scaled_global_read_mismapping_rate"
+   },
+   {
+    "impact": 0.048753608533527594,
+    "name": "contamination_fraction_to_filter"
+   }
+  ],
+  "logical_job_count": 480,
+  "member_count": 10,
+  "plan_hash": "e80594043580334ddf2504577e2fa030dff0c1217ac334804d9304a0ec72596b",
+  "seed_config_hash": "4251cb85e5cd58b7eabfe530b9df23ea7d1d14fd882114b488d67cbd81b751b8",
+  "source_member_ordinals": [
+   0,
+   10,
+   20,
+   30,
+   40,
+   1,
+   11,
+   21,
+   31,
+   41
+  ]
+ },
+ "real_database_crosscheck": {
+  "alembic_revision": "0015_l2f2_exec_environment",
+  "artifact": "phase_a_full_run_20260826.json",
+  "artifact_crosscheck": {
+   "anchors_match": true,
+   "artifact_says_phase_b_not_executed": true,
+   "artifact_source_sha": "29a36882272ccd6e77bb69a30eb5f730a93e129e",
+   "artifact_status": "PHASE_A_COMPLETE",
+   "candidate_count_matches": true,
+   "decided_matches": true,
+   "dimensions_match": true,
+   "environment_matches": true,
+   "ordered_config_hashes_match": true,
+   "seed_matches": true
+  },
+  "connection": "local passwordless maintenance connection; no credential, no DSN recorded",
+  "evaluation_result_count": 190,
+  "execution_authority_phases": "PHASE_A",
+  "execution_result_count": 190,
+  "job_count": 195,
+  "phase_b_execution_results_in_database": 0,
+  "phase_b_observations_in_database": 0,
+  "phase_b_plan_rows": 0,
+  "plan_count": 1,
+  "read_only": true
+ },
+ "schema_version": "l2f2-e-phase-b-readiness-v1",
+ "source_digests": {
+  "src/minos_engine/baseline/design.py": "fb626f0c058bbb1671c4797f7c1a23749549654ed5b6bf77a00ed2c7466bf6c2",
+  "src/minos_engine/baseline/phase_a_analysis.py": "935d30432ba6117c3d6ec8908c52b5d828fbfb6664aea78dd9bfa3cd18dfa28e",
+  "src/minos_engine/baseline/phase_a_observations.py": "1a4e98c586edf7fd5210d3907be0e374175ac8c1db4aaff5156e6aebd15e6d48",
+  "src/minos_engine/baseline/phase_b.py": "fb91e48196b1b01c439893b581985230a81c01434749cd53cc4c02b6db74a902",
+  "src/minos_engine/baseline/phase_b_observations.py": "b7f0cf22eb21bdfe0ee1fbbf568411d2d89af65d0f3cbc94832546463f0681ef",
+  "src/minos_engine/baseline/plan_observations.py": "1cb2904c77b810f0bf0f6b015fb2deaa7118ea8ab97da323ab647a8e871a4bb8",
+  "src/minos_engine/storage/l2f2_phase_a_control.py": "e6634137d626454e942ad6de52e2376cab5668e2a82ab5a52b33333a4c29e24c",
+  "src/minos_engine/storage/l2f2_phase_b_control.py": "bb423be6308b77263e682d68ff417313c746d0292d3e386b0c8497418bb23105",
+  "src/minos_engine/storage/l2f2_runner.py": "66fbd9efa96ede33c0648d24944995d069bbac7f71781992beff3fee7316903a",
+  "src/minos_engine/storage/l2f_job_enqueue.py": "fc8d20b595fce1e187480a6dcabf6c53fd75a6e25e084626086d8f77ee7061b7",
+  "src/minos_engine/storage/l2f_plan_store.py": "9425199bfdfc27c674e8145d3af1c77fcbc59bbc36227e527daa995f83377fc8"
+ },
+ "task": "L2-F2-E PHASE-B CONTROL PLANE + RACING READINESS",
+ "tests": {
+  "integration_tests": 24,
+  "new_integration_module": "tests/integration/layer2_db/test_l2f2_phase_b_control.py",
+  "new_unit_module": "tests/unit/baseline/test_phase_b_design.py",
+  "scoping_matrix_covered": [
+   "Phase-A readers ignore Phase-B rows",
+   "Phase-B readers ignore Phase-A rows",
+   "a config hash present in both plans does not cross-contaminate",
+   "a dataset present in both plans does not cross-contaminate",
+   "execution and evaluation totals are plan-scoped",
+   "a third foreign plan's jobs enter neither observation set",
+   "the Phase-A runner claims nothing once only Phase-B jobs are PENDING",
+   "a forged job claiming a plan hash still fails closed (Phase-A suite)"
+  ],
+  "scoping_matrix_not_covered": [
+   "a Phase-B runner claiming a Phase-A job cannot be demonstrated directly: finding L2F2E-F1 stops the Phase-B runner at the claim resolver, and a completed Phase A leaves no PENDING Phase-A job to claim. The converse direction is asserted, and Phase-A totals are shown unchanged throughout."
+  ],
+  "unit_tests": 19
+ }
+}

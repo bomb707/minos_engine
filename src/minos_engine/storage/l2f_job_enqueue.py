@@ -372,6 +372,39 @@ def _enqueue_l2f2_phase_a_slice_with_trust(
     )
 
 
+def _enqueue_l2f2_phase_b_slice_with_trust(
+    engine: Engine, *, start: int, count: int
+) -> JobEnqueueResult:
+    """PRIVATE dedicated enqueue of a BOUNDED slice of the derived L2-F2 Phase-B logical jobs.
+
+    The Phase-B counterpart of the Phase-A seam, and for the same reason: the pre-enqueue
+    integrity gate re-resolves upstream, and Phase-B members are a projection of the accepted
+    closure at source ordinals 0/10/20/30/40/1/11/21/31/41 rather than 0..9.
+
+    It takes no plan, candidate set, member, config or job key: the authority is derived from the
+    completed Phase-A ledger here, so the ONLY caller choice is which contiguous slice of the
+    frozen logical order to insert, bounded by :data:`MAX_ENQUEUE_BATCH` exactly as every other
+    enqueue path is.
+    """
+    from minos_engine.baseline.phase_b import build_l2f2_phase_b_authority
+    from minos_engine.storage.l2f_plan_store import (
+        _phase_b_candidate_set_for,
+        _resolve_phase_b_upstream,
+    )
+
+    _validate_range_prearg(start, count)
+    authority = build_l2f2_phase_b_authority(engine)
+    candidate_set = _phase_b_candidate_set_for(authority)
+    return _enqueue_in_new_transaction(
+        engine,
+        start=start,
+        count=count,
+        verify_identity=False,
+        build_plan=lambda _conn: (authority.plan, candidate_set),
+        upstream_resolver=_resolve_phase_b_upstream,
+    )
+
+
 def _enqueue_l2f2_phase_a_canary_with_trust(engine: Engine) -> JobEnqueueResult:
     """PRIVATE dedicated enqueue of EXACTLY the frozen L2-F2 Phase-A canary — logical job 0.
 

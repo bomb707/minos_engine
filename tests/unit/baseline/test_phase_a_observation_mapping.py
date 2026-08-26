@@ -1,5 +1,8 @@
 """The per-row observation mapping, in isolation — no database.
 
+The mapper now lives in the shared plan-scoped reader, because Phase A and Phase B must interpret
+a row identically; these controls therefore pin the shared implementation Phase A delegates to.
+
 The integration suite proves these mappings against real ledger rows. This one exercises the same
 mapper directly, because the distinctions it makes are the ones the frozen objective is most
 sensitive to: a refused admission is not a zero, an evaluation failure keeps the runtime of the
@@ -18,8 +21,8 @@ from minos_engine.baseline.objective import BaselineObjectiveError
 from minos_engine.baseline.phase_a_observations import (
     PHASE_A_SCORING_CONTRACT,
     PhaseAObservationError,
-    _observation_for_success,
 )
+from minos_engine.baseline.plan_observations import _observation_for_success
 
 _CONFIG = "a" * 64
 _DATASET = "minos-chr18-028662fb934529d7"

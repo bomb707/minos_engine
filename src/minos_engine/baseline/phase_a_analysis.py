@@ -26,17 +26,28 @@ from minos_engine.baseline.objective import (
     CandidateAggregate,
     aggregate_candidate,
 )
+from minos_engine.common.canonical_json import canonical_json_bytes
 from minos_engine.common.errors import MinosEngineError
+from minos_engine.common.hashing import sha256_hex
 
 if TYPE_CHECKING:
     from minos_engine.baseline.design import InfluentialDimension, PhaseBDesign
     from minos_engine.baseline.phase_a_observations import PhaseAObservationSnapshot
 
 __all__ = [
+    "PHASE_A_ANALYSIS_DOMAIN",
+    "PHASE_A_ANALYSIS_SCHEMA",
     "PhaseAAnalysis",
     "PhaseAAnalysisError",
     "analyze_completed_phase_a",
+    "compute_phase_a_analysis_hash",
+    "derive_completed_phase_a_analysis",
 ]
+
+PHASE_A_ANALYSIS_SCHEMA = "l2f2-phase-a-analysis-v1"
+#: domain-separated identity of the INPUTS that can move dimensions, anchors or the Phase-B
+#: design. Everything Phase B inherits from Phase A is reproducible from this hash.
+PHASE_A_ANALYSIS_DOMAIN = "minos:l2f2-phase-a-analysis:v1\n"
 
 
 class PhaseAAnalysisError(MinosEngineError):
@@ -56,6 +67,97 @@ class PhaseAAnalysis:
     @property
     def seed_config_hash(self) -> str:
         return self.design.seed_config_hash
+
+
+def compute_phase_a_analysis_hash(
+    snapshot: PhaseAObservationSnapshot,
+    *,
+    plan_hash: str,
+    protocol_hash: str,
+    scoring_contract_hash: str,
+    execution_environment_hash: str,
+) -> str:
+    """The deterministic identity of everything that can move the Phase-B design.
+
+    Binds the frozen plan, the protocol, the scoring contract, the runtime the campaign ran under,
+    and the ORDERED observations themselves. ``gatk_runtime_ms`` is included deliberately: anchor
+    selection breaks ties on mean GATK runtime, so a screen with identical scores but different
+    runtimes can yield different anchors and must therefore be a different identity.
+
+    Database UUIDs, timestamps, filesystem paths, hostnames and worker ids are excluded, so the
+    same immutable ledgers re-derive the same hash on any host, at any time.
+    """
+    content = {
+        "schema_version": PHASE_A_ANALYSIS_SCHEMA,
+        "plan_hash": plan_hash,
+        "baseline_protocol_hash": protocol_hash,
+        "scoring_contract_hash": scoring_contract_hash,
+        "execution_environment_hash": execution_environment_hash,
+        "observation_count": len(snapshot.observations),
+        "observations": [
+            {
+                "config_hash": o.config_hash,
+                "dataset_id": o.dataset_id,
+                "chromosome": o.chromosome,
+                "outcome": o.outcome,
+                "admitted": o.admitted,
+                "minos_score": o.minos_score,
+                "failure_code": o.failure_code,
+                "gatk_runtime_ms": o.gatk_runtime_ms,
+            }
+            # the ledger's own member-major order is the identity's order.
+            for o in snapshot.observations
+        ],
+    }
+    return sha256_hex(PHASE_A_ANALYSIS_DOMAIN.encode("utf-8") + canonical_json_bytes(content))
+
+
+def derive_completed_phase_a_analysis(engine: Any) -> tuple[PhaseAAnalysis, str]:
+    """THE production Phase-A result boundary: analysis + its identity, from the ledger alone.
+
+    A caller supplies an engine and nothing else — no dimensions, no anchors, no scores, no
+    candidate hashes, no plan override, no member list. Everything scientific is recomputed from
+    committed authority and the immutable rows, so what Phase B inherits cannot be nominated.
+
+    Refuses an incomplete screen, a screen holding any infrastructure incident (those are our
+    failures, and a design chosen over them would be inheriting our own defect), and a screen
+    assembled from more than one runtime.
+    """
+    from minos_engine.baseline.phase_a import build_phase_a_authority
+    from minos_engine.baseline.phase_a_observations import (
+        PHASE_A_SCORING_CONTRACT,
+        load_phase_a_observations,
+    )
+    from minos_engine.baseline.protocol import build_baseline_protocol
+
+    authority = build_phase_a_authority()
+    snapshot = load_phase_a_observations(engine)
+    required = authority.plan.logical_job_count
+    if len(snapshot.observations) != required:
+        raise PhaseAAnalysisError(
+            f"Phase-A is not complete: {len(snapshot.observations)} of {required} decided "
+            "observations. The Phase-B design is never derived from a partial screen."
+        )
+    if snapshot.infrastructure_incident_count:
+        raise PhaseAAnalysisError(
+            f"Phase A holds {snapshot.infrastructure_incident_count} infrastructure incident(s); "
+            "those are our failures, not the candidates', and a Phase-B design derived over them "
+            "would inherit a defect of ours as a scientific conclusion"
+        )
+    if snapshot.execution_environment_hash is None:
+        raise PhaseAAnalysisError("the completed Phase-A screen carries no runtime identity")
+
+    analysis = analyze_completed_phase_a(snapshot)
+    analysis_hash = compute_phase_a_analysis_hash(
+        snapshot,
+        plan_hash=authority.plan_hash,
+        protocol_hash=authority.baseline_protocol_hash,
+        scoring_contract_hash=PHASE_A_SCORING_CONTRACT,
+        execution_environment_hash=snapshot.execution_environment_hash,
+    )
+    if authority.baseline_protocol_hash != build_baseline_protocol().protocol_hash:
+        raise PhaseAAnalysisError("the Phase-A authority is not bound to the frozen protocol")
+    return analysis, analysis_hash
 
 
 def analyze_completed_phase_a(snapshot: PhaseAObservationSnapshot) -> PhaseAAnalysis:

@@ -51,7 +51,9 @@ __all__ = [
     "parameter_impacts",
     "select_anchors",
     "select_influential_dimensions",
+    "build_phase_b_configs",
     "build_phase_b_design",
+    "phase_b_candidate_configs",
 ]
 
 #: D8 — exactly six dimensions vary in Phase B; everything else stays at seed.
@@ -259,6 +261,48 @@ def _map_coordinate(parameter: LiveParameter, coordinate: float) -> Any:
     raise DesignError(f"unsupported live parameter type {parameter.type!r}")
 
 
+def _lhs_sequence(
+    *,
+    dimensions: Sequence[InfluentialDimension],
+    seed: CanonicalConfig,
+    excluded: Sequence[str],
+) -> tuple[CanonicalConfig, ...]:
+    """THE deterministic LHS sequence. One implementation, two callers.
+
+    ``build_phase_b_design`` needs the hashes and ``phase_b_candidate_configs`` needs the payloads;
+    if each generated its own sequence the two could silently disagree — for instance whenever a
+    proposal collides with an anchor, which one caller skips and the other would keep. They share
+    this generator so the design and the configurations it names are the same objects by
+    construction.
+
+    ``excluded`` is the set of hashes already spoken for (the anchors); the seed is always
+    excluded. Invalid proposals are skipped deterministically, never repaired.
+    """
+    space = live_gatk_parameter_space()
+    names = [d.name for d in dimensions]
+    permutations = {name: _permutation(name, LHS_PROPOSAL_CEILING) for name in names}
+
+    seen: set[str] = {seed.config_hash, *excluded}
+    configs: list[CanonicalConfig] = []
+    for stratum in range(LHS_PROPOSAL_CEILING):
+        if len(configs) == PHASE_B_LHS_COUNT:
+            break
+        requested = dict(seed.effective_config)
+        for name in names:
+            # centred Latin hypercube: one sample per stratum per dimension, midpoint valued.
+            coordinate = (permutations[name][stratum] + 0.5) / LHS_PROPOSAL_CEILING
+            requested[name] = _map_coordinate(space.get(name), coordinate)
+        try:
+            config = canonicalize_live_gatk_config(requested)
+        except Exception:  # noqa: BLE001 - an invalid proposal is skipped deterministically
+            continue
+        if config.config_hash in seen:
+            continue
+        seen.add(config.config_hash)
+        configs.append(config)
+    return tuple(configs)
+
+
 def build_phase_b_design(
     *,
     dimensions: Sequence[InfluentialDimension],
@@ -274,28 +318,10 @@ def build_phase_b_design(
     if len(anchor_config_hashes) != PHASE_B_ANCHOR_COUNT:
         raise DesignError(f"Phase B takes exactly {PHASE_B_ANCHOR_COUNT} anchors")
 
-    space = live_gatk_parameter_space()
-    names = [d.name for d in dimensions]
-    permutations = {name: _permutation(name, LHS_PROPOSAL_CEILING) for name in names}
-
-    seen: set[str] = {seed.config_hash, *anchor_config_hashes}
-    lhs: list[str] = []
-    for stratum in range(LHS_PROPOSAL_CEILING):
-        if len(lhs) == PHASE_B_LHS_COUNT:
-            break
-        requested = dict(seed.effective_config)
-        for name in names:
-            # centred Latin hypercube: one sample per stratum per dimension, midpoint valued.
-            coordinate = (permutations[name][stratum] + 0.5) / LHS_PROPOSAL_CEILING
-            requested[name] = _map_coordinate(space.get(name), coordinate)
-        try:
-            config = canonicalize_live_gatk_config(requested)
-        except Exception:  # noqa: BLE001 - an invalid proposal is skipped deterministically
-            continue
-        if config.config_hash in seen:
-            continue
-        seen.add(config.config_hash)
-        lhs.append(config.config_hash)
+    lhs_configs = _lhs_sequence(
+        dimensions=dimensions, seed=seed, excluded=tuple(anchor_config_hashes)
+    )
+    lhs = [c.config_hash for c in lhs_configs]
 
     if len(lhs) != PHASE_B_LHS_COUNT:
         raise DesignError(
@@ -320,29 +346,52 @@ def build_phase_b_configs(
     *,
     dimensions: Sequence[InfluentialDimension],
     seed: CanonicalConfig,
+    anchor_config_hashes: Sequence[str] = (),
 ) -> tuple[CanonicalConfig, ...]:
     """The LHS configurations themselves, in design order (seed and anchors excluded)."""
-    space = live_gatk_parameter_space()
-    names = [d.name for d in dimensions]
-    permutations = {name: _permutation(name, LHS_PROPOSAL_CEILING) for name in names}
-    seen: set[str] = {seed.config_hash}
-    configs: list[CanonicalConfig] = []
-    for stratum in range(LHS_PROPOSAL_CEILING):
-        if len(configs) == PHASE_B_LHS_COUNT:
-            break
-        requested = dict(seed.effective_config)
-        for name in names:
-            coordinate = (permutations[name][stratum] + 0.5) / LHS_PROPOSAL_CEILING
-            requested[name] = _map_coordinate(space.get(name), coordinate)
-        try:
-            config = canonicalize_live_gatk_config(requested)
-        except Exception:  # noqa: BLE001 - deterministic skip
-            continue
-        if config.config_hash in seen:
-            continue
-        seen.add(config.config_hash)
-        configs.append(config)
-    return tuple(configs)
+    return _lhs_sequence(dimensions=dimensions, seed=seed, excluded=tuple(anchor_config_hashes))
+
+
+def phase_b_candidate_configs(
+    *,
+    design: PhaseBDesign,
+    seed: CanonicalConfig,
+    anchors: Mapping[str, CanonicalConfig],
+) -> tuple[CanonicalConfig, ...]:
+    """The 48 Phase-B configurations themselves, in EXACT design order.
+
+    Position 0 is the seed, 1..6 are the six anchors in selected-dimension order, and 7..47 are
+    the 41 LHS configurations. The returned hashes must equal ``design.ordered_config_hashes``
+    element for element — that equality is asserted here rather than assumed, because a design
+    naming configurations nobody can reconstruct would be unexecutable.
+
+    Anchors are supplied by the caller because they are Phase-A candidates, already canonical and
+    already persisted; they are never regenerated or substituted. A failed anchor is passed
+    through unchanged: impact measures SENSITIVITY, not desirability, and dropping an anchor
+    because Phase A scored it badly would be choosing the design after seeing the data.
+    """
+    ordered: list[CanonicalConfig] = [seed]
+    for anchor_hash in design.anchor_config_hashes:
+        config = anchors.get(anchor_hash)
+        if config is None:
+            raise DesignError(f"anchor {anchor_hash} has no canonical configuration")
+        if config.config_hash != anchor_hash:
+            raise DesignError(f"anchor payload {config.config_hash} is not {anchor_hash}")
+        ordered.append(config)
+    ordered.extend(
+        _lhs_sequence(
+            dimensions=design.dimensions,
+            seed=seed,
+            excluded=tuple(design.anchor_config_hashes),
+        )
+    )
+    hashes = tuple(c.config_hash for c in ordered)
+    if hashes != design.ordered_config_hashes:
+        raise DesignError(
+            "the reconstructed Phase-B configurations do not reproduce the design's own ordered "
+            "hashes; the design and its payloads must be the same sequence"
+        )
+    return tuple(ordered)
 
 
 _ = BaselineObjectiveError  # the failure type callers see when aggregation refuses an input

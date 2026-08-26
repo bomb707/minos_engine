@@ -153,11 +153,13 @@ def _validate_expansion_range(start: int, count: int) -> None:
 
 
 def _verify_existing_jobs(conn: Any, keys: list[str]) -> dict[str, dict[str, Any]]:
-    """Prove every job already in the store is one of the frozen 195, then return them by key.
+    """Prove every Phase-A job in the store is one of the frozen 195, then return them by key.
 
-    A job belonging to another plan, carrying an unrecognised key, or duplicating a logical
-    identity means the store is not the one this screen was frozen against — expansion refuses
-    rather than adding beside it.
+    The read is SCOPED to the Phase-A plan hash. Another plan legitimately coexists in this store
+    once Phase B is persisted, and its jobs are simply not this screen's business; what must never
+    be tolerated is a job that CLAIMS the Phase-A plan and does not match a frozen identity, so
+    everything inside the scope is verified exactly as strictly as before — unrecognised key,
+    wrong member/config binding or duplicate logical identity all still refuse.
     """
     from sqlalchemy import text
 
@@ -170,8 +172,10 @@ def _verify_existing_jobs(conn: Any, keys: list[str]) -> dict[str, dict[str, Any
                 "  FROM experiments.l2f_experiment_jobs j "
                 "  JOIN experiments.l2f_experiment_plans p ON p.id = j.plan_id "
                 "  JOIN experiments.l2f_experiment_plan_members pm ON pm.id = j.plan_member_id "
-                "  JOIN experiments.l2f_experiment_plan_configs pc ON pc.id = j.plan_config_id"
-            )
+                "  JOIN experiments.l2f_experiment_plan_configs pc ON pc.id = j.plan_config_id "
+                " WHERE p.plan_hash = :plan_hash"
+            ),
+            {"plan_hash": authority.plan_hash},
         )
         .mappings()
         .all()
@@ -180,7 +184,7 @@ def _verify_existing_jobs(conn: Any, keys: list[str]) -> dict[str, dict[str, Any
     seen: dict[str, dict[str, Any]] = {}
     for row in rows:
         key = str(row["job_key"])
-        if str(row["plan_hash"]) != authority.plan_hash:
+        if str(row["plan_hash"]) != authority.plan_hash:  # pragma: no cover - query-scoped
             raise PhaseAExpansionError(
                 f"job {key} belongs to plan {row['plan_hash']}, not the frozen Phase-A plan"
             )
@@ -223,9 +227,11 @@ def _require_canary_closure(conn: Any) -> None:
     row = (
         conn.execute(
             text(
-                "SELECT j.id, j.status FROM experiments.l2f_experiment_jobs j  WHERE j.job_key = :k"
+                "SELECT j.id, j.status FROM experiments.l2f_experiment_jobs j "
+                "  JOIN experiments.l2f_experiment_plans p ON p.id = j.plan_id "
+                " WHERE j.job_key = :k AND p.plan_hash = :plan_hash"
             ),
-            {"k": canary},
+            {"k": canary, "plan_hash": authority.plan_hash},
         )
         .mappings()
         .one_or_none()

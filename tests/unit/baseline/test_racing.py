@@ -96,6 +96,55 @@ def test_bound_computation_refuses_duplicates_and_strangers() -> None:
 # --------------------------------------------------------------------------- #
 # elimination is STRICT
 # --------------------------------------------------------------------------- #
+def test_a_balanced_half_screen_cannot_eliminate_anybody_at_all() -> None:
+    """A structural consequence of the frozen bounds that Phase B runs straight into.
+
+    With five of ten members observed, the ``-1.0 * failure_rate`` term moves BOTH bounds by
+    exactly 0.5: the worst reachable optimistic bound (every seen member a candidate failure,
+    every unseen one perfect) and the best reachable pessimistic bound (every seen member
+    perfect, every unseen one a failure) are the same number. Elimination needs a STRICT
+    inequality, so a single balanced batch can never eliminate anyone, however the field is
+    scored — the budget saving racing exists for cannot be realised after batch 0 alone.
+
+    This is recorded, not adjusted: the rule is frozen, and a rule that eliminates nobody is
+    conservative in the safe direction.
+    """
+    perfect = _hash(1)
+    hopeless = _hash(2)
+    best = racing_bounds(
+        config_hash=perfect,
+        observations=[_admitted(perfect, d, c, 1.0) for d, c in _FIVE],
+        required_members=_TEN,
+    )
+    worst = racing_bounds(
+        config_hash=hopeless,
+        observations=[
+            BaselineObservation(
+                config_hash=hopeless,
+                dataset_id=d,
+                chromosome=c,
+                admitted=False,
+                failure_code="GATK_NONZERO_EXIT",
+                gatk_runtime_ms=1000,
+            )
+            for d, c in _FIVE
+        ],
+        required_members=_TEN,
+    )
+    assert worst.optimistic == pytest.approx(best.pessimistic)
+
+    field = [best, worst] + [
+        racing_bounds(
+            config_hash=_hash(i),
+            observations=[_admitted(_hash(i), d, c, 0.9) for d, c in _FIVE],
+            required_members=_TEN,
+        )
+        for i in range(3, 49)
+    ]
+    assert len(field) == 48
+    assert eliminate(field, seed_config_hash=perfect, keep=PHASE_B_SURVIVOR_COUNT) == ()
+
+
 def test_a_candidate_that_can_merely_tie_the_threshold_survives() -> None:
     """THE strictness property: equality is not elimination."""
     seed = _hash(0)

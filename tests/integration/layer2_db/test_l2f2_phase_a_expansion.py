@@ -241,11 +241,19 @@ def test_the_gate_is_about_the_pipeline_not_the_score(
 # --------------------------------------------------------------------------- #
 # state the screen was not frozen against
 # --------------------------------------------------------------------------- #
-def test_expansion_refuses_a_store_holding_a_job_of_another_plan(
-    closed: Any, tmp_path: Path
-) -> None:
-    """A job outside the frozen 195 means this is not the store the screen was frozen against."""
+# coexistence with another plan, and forgery inside our own
+# --------------------------------------------------------------------------- #
+def test_a_second_legitimate_plan_does_not_disturb_phase_a(closed: Any, tmp_path: Path) -> None:
+    """Phase B will live in this same store. Its rows are simply not Phase-A's business.
+
+    The reader used to select every job in the database and refuse the moment it saw one it did
+    not recognise. That was correct while Phase A was the only plan and becomes wrong the instant
+    a second legitimate plan is persisted, so the scope narrowed to the Phase-A plan hash — which
+    tightens nothing and relaxes nothing about what Phase-A rows must prove.
+    """
+    from minos_engine.baseline.phase_a_observations import load_phase_a_observations
     from minos_engine.experiments.accepted_plan import build_accepted_experiment_plan
+    from minos_engine.storage.l2f2_phase_a_control import read_l2f2_phase_a_progress
     from minos_engine.storage.l2f_job_enqueue import _enqueue_experiment_jobs_with_trust
     from minos_engine.storage.l2f_plan_store import _persist_experiment_plan_with_trust
     from tests.integration.layer2_db.l2f_plan_seed import (
@@ -259,10 +267,11 @@ def test_expansion_refuses_a_store_holding_a_job_of_another_plan(
         _synthetic_plan,
     )
 
+    before_progress = read_l2f2_phase_a_progress(closed.engine)
+    before_observations = load_phase_a_observations(closed.engine)
+
     other = _synthetic_plan(_SNAPSHOT_A)
-    # the same provisioned CONFIG artifact root: a payload both plans share must resolve to the
-    # one already-registered artifact, not to a second copy at a different URI.
-    root = closed.config_root
+    assert other.plan_hash != closed.plan.plan_hash
     with closed.engine.connect() as conn, conn.begin():
         seed_upstream_for_plan(
             conn,
@@ -270,17 +279,46 @@ def test_expansion_refuses_a_store_holding_a_job_of_another_plan(
             variant=1,
             parent_split_snapshot_id=split_snapshot_id_for(build_accepted_experiment_plan()),
         )
-    _persist_experiment_plan_with_trust(closed.engine, other, _CS, publisher=_publisher(root))
-    _enqueue_experiment_jobs_with_trust(closed.engine, other, _CS, start=0, count=1)
-
-    with pytest.raises(PhaseAExpansionError, match="not the frozen Phase-A plan"):
-        expand_l2f2_phase_a_jobs(closed.engine, start=1, count=1)
-    # nothing was enqueued beside it.
-    assert (
-        closed.count(
-            "SELECT count(*) FROM experiments.l2f_experiment_jobs j "
-            "  JOIN experiments.l2f_experiment_plans p ON p.id = j.plan_id "
-            " WHERE p.plan_hash = :h".replace(":h", f"'{closed.plan.plan_hash}'")
-        )
-        == 1
+    _persist_experiment_plan_with_trust(
+        closed.engine, other, _CS, publisher=_publisher(closed.config_root)
     )
+    _enqueue_experiment_jobs_with_trust(closed.engine, other, _CS, start=0, count=2)
+
+    # Phase A is untouched by the newcomer, and can still be expanded.
+    assert read_l2f2_phase_a_progress(closed.engine) == before_progress
+    assert load_phase_a_observations(closed.engine) == before_observations
+    result = expand_l2f2_phase_a_jobs(closed.engine, start=1, count=4)
+    assert (result.created, result.existing) == (4, 0)
+    assert result.jobs_total_after == 5, "the foreign plan's jobs are not counted as Phase-A jobs"
+
+    after = read_l2f2_phase_a_progress(closed.engine)
+    assert after.enqueued_count == 5
+    assert after.decided_observation_count == before_progress.decided_observation_count
+    assert after.execution_result_count == before_progress.execution_result_count
+
+
+def test_a_forged_job_claiming_the_phase_a_plan_still_fails_closed(closed: Any) -> None:
+    """Scoping narrowed WHAT is read, not what a Phase-A row must prove.
+
+    A row inside the Phase-A plan whose key is not one of the frozen 195 is corruption, and it
+    refuses exactly as it always did.
+    """
+    with closed.engine.connect() as conn, conn.begin():
+        conn.execute(text("SET LOCAL ROLE minos_admin"))
+        # a logical identity that has no job yet, so the forgery is refused by Phase-A identity
+        # verification rather than by the schema's own uniqueness rule.
+        conn.execute(
+            text(
+                "INSERT INTO experiments.l2f_experiment_jobs "
+                "  (plan_id, plan_member_id, plan_config_id, job_key, status) "
+                "SELECT p.id, pm.id, pc.id, :forged, 'PENDING' "
+                "  FROM experiments.l2f_experiment_plans p "
+                "  JOIN experiments.l2f_experiment_plan_members pm ON pm.plan_id = p.id "
+                "  JOIN experiments.l2f_experiment_plan_configs pc ON pc.plan_id = p.id "
+                " WHERE p.plan_hash = :plan_hash AND pm.member_index = 4 AND pc.config_index = 38"
+            ),
+            {"forged": "d" * 64, "plan_hash": closed.plan.plan_hash},
+        )
+
+    with pytest.raises(PhaseAExpansionError, match="not one of the frozen"):
+        expand_l2f2_phase_a_jobs(closed.engine, start=1, count=1)

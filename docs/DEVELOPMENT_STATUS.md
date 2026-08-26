@@ -27,13 +27,14 @@ does not restate or override them.
 | HARNESS historical Alembic head | `0008_l2f_execution_results` (stage-scoped; the repository head advances independently) |
 | Operational DB revision | `0005_l2e_feature_view` |
 | Next gate | **BASELINE-QUALIFIED** (designed in `docs/layer2/BASELINE_QUALIFICATION.md`, not implemented) |
-| Current task | **L2-F2-D — GATK EXECUTION-ENVIRONMENT CORRECTIVE: SOURCE READY.** The Phase-A checkpoint was diagnosed as a `RUNTIME_ENVIRONMENT_DEFECT`; the runtime is now pinned, verified before a job is claimed, and bound into every durable outcome. **Phase A is NOT complete and no Phase-B work is authorized** |
-| Previous task | L2-F2-D — Phase-A expansion + first execution checkpoint — the five new observations it produced are **TAINTED** (see below) |
+| Current task | **L2-F2-E — PHASE-B CONTROL PLANE: SOURCE READY, EXECUTION HELD.** The 48-candidate Phase-B design is derived from the COMPLETE Phase-A ledger, its plan persists beside Phase A, and materialization, racing and promotion are implemented and tested. Phase-B jobs **cannot be executed**: migration `0011` admits only `PHASE_A` execution authorities (see below). No Phase-B GATK has run and no Phase-B score exists |
+| Previous task | L2-F2-D — full clean Phase-A screen — **COMPLETE**: 195/195 decided, 0 infrastructure incidents |
 | Source Alembic head | `0015_l2f2_exec_environment` (migrations `0001`–`0015`) |
 | Baseline DB revision required by the runner | `0015_l2f2_exec_environment` (exact; every other revision is refused) |
 | Production score authority | pinned `minos-protocol/minos_subnet` @ `649bb92c…` — executed, not reimplemented |
 | Scoring contract | `l2f2-minos-scoring-v2` (`b24a07e2…`); v1 `d6f29e11…` superseded, still recomputable |
-| Real baseline DB revision | `0014_l2f2_exec_failure_runtime` — **QUARANTINED, DO NOT EXECUTE.** It holds 195 jobs, 1 SUCCEEDED, 5 FAILED, 1 execution result, 5 execution failures, 1 evaluation, 6 decided observations, five of which are scientifically tainted. `0015` deliberately REFUSES to upgrade it. The next environment task archives it under a forensic name and builds a fresh campaign |
+| Real baseline DB revision | `0015_l2f2_exec_environment` — the CLEAN campaign. 1 plan, 195 jobs, 190 execution results, 5 execution failures, 190 evaluations, 0 evaluation failures, **195/195 decided**, 179 admitted, 16 candidate failures, **0 infrastructure incidents**, one execution environment `71e14a49…`. No Phase-B plan and no Phase-B job exist in it |
+| Quarantined forensic DB | `minos_l2f2_baseline_tainted_20260826` at `0014_l2f2_exec_failure_runtime` — **DO NOT EXECUTE.** Retained as immutable evidence of the runtime defect |
 
 `select_config` remains deliberately blocked by `StageNotReadyError` and stays
 blocked until L2-H.
@@ -713,6 +714,76 @@ them. The decisions themselves are unchanged:
 Once L2-F2-B freezes them into `l2f2-baseline-search-protocol-v1`, their authority comes
 from the committed protocol, its canonical manifest, its protocol hash, its tests and its
 evidence — never from an "owner" concept.
+
+
+### L2-F2-E status — PHASE-B CONTROL PLANE READY, PHASE-B EXECUTION HELD
+
+**Phase A is COMPLETE.** The clean campaign asked all 195 frozen questions under one verified
+execution environment `71e14a49833ac77bb9dc576345fb89c4dd68f4a3ad3673eb098d38593c1ef4d3`:
+195/195 decided, 190 execution results, 5 execution failures, 190 evaluations, 0 evaluation
+failures, 179 admitted, 16 candidate failures, and **0 infrastructure incidents** — nothing in the
+screen was decided by a defect of ours.
+
+**The Phase-B design is derived, never chosen.** `derive_completed_phase_a_analysis` refuses
+anything less than a complete, incident-free, single-runtime Phase A and returns the analysis plus
+its identity; the design is then the frozen recipe — seed + one anchor per influential dimension +
+41 LHS points — over the six dimensions Phase A actually moved:
+
+| | |
+|---|---|
+| Phase-A analysis hash | `25794987e49ca2a17776bf355326e8ff396366a6e3340fe7f9d2e24a855c80ae` |
+| Phase-B candidate-set hash | `63b0244935edb46c799583cae9715733e52b25fba85f581a33ebe6949c09de0e` |
+| Phase-B plan hash | `e80594043580334ddf2504577e2fa030dff0c1217ac334804d9304a0ec72596b` |
+| Shape | 48 candidates × 10 TRAIN members = 480 logical jobs (a budget CEILING, not a quota) |
+| Members | TRAIN batches 0 and 1 — source ordinals `0, 10, 20, 30, 40, 1, 11, 21, 31, 41`, chromosomes `chr18…chr22` twice |
+| Influential dimensions | `min_base_quality_score`, `base_quality_score_threshold`, `active_probability_threshold`, `min_pruning`, `phred_scaled_global_read_mismapping_rate`, `contamination_fraction_to_filter` |
+
+The design derived live from the database is **identical** to the design recorded in the completed
+Phase-A run artifact — ordered config hashes, seed, anchors, dimensions and candidate count all
+match — and re-derivation from the immutable ledger is deterministic.
+
+**Two anchors are total-failure configurations, and that is not a defect.** The frozen selector
+picks the best Phase-A alternative in each selected dimension; in two dimensions every alternative
+failed. Impact measures *sensitivity*, so a dimension that breaks the caller is exactly the kind of
+dimension Phase B must explore. They are carried as produced; no override was applied.
+
+**Multi-plan scoping was a prerequisite, not a side effect.** The Phase-A readers selected every
+job in the database and refused the first row they did not recognise — correct while Phase A was
+the only plan, and wrong the instant a second is persisted. Reading is now scoped to a
+`plan_hash` through one shared plan-scoped core, which narrows *what is read* and relaxes nothing
+about what a row must prove: a forged job claiming a plan's hash still fails closed. Both plans now
+coexist in one store under test, with the scoping pinned in both directions.
+
+**What is ready:** the derived authority, plan persistence beside Phase A (no migration needed —
+the generic plan schema already represents a second plan), bounded batch materialization,
+plan-scoped progress, the frozen racing decision, and seed-controlled promotion to exactly ten.
+
+#### FINDING — Phase-B jobs cannot be claimed. Migration 0011 admits only `PHASE_A`.
+
+`0011_l2f2_runner_boundary` states the constraint in its own words — *"the ONLY phase 0011 admits.
+A later phase is a later migration, never a looser CHECK."* Concretely,
+`ck_l2f2_authority_phase` permits only `PHASE_A`, so a Phase-B execution authority row cannot be
+recorded, and `experiments.l2f2_resolve_claimed_execution` looks the authority up with a hardcoded
+`a.phase = 'PHASE_A'`, so even a recorded one would not be found. A materialized Phase-B job
+therefore fails at claim time with *"plan … has no PHASE_A L2-F2 execution authority"*.
+
+This is asserted as a regression rather than worked around. Crossing it needs a migration that
+widens the runner boundary **and** an administrative preparation path that records the Phase-B
+authority — a privileged-boundary change, deliberately not made under this task.
+
+#### FINDING — racing cannot eliminate anyone after batch 0.
+
+At five of ten members the frozen `-1.0 · failure_rate` term moves both bounds by exactly 0.5: the
+worst reachable optimistic bound (every seen member failed, every unseen one perfect) and the best
+reachable pessimistic bound (every seen member perfect, every unseen one failed) are the same
+number. Elimination requires a **strict** inequality, so a single balanced batch can never
+eliminate anybody, whatever the field scores — Phase B will spend all 480 jobs, not fewer. The rule
+is frozen and errs in the safe direction, so this is recorded, not adjusted; it means the budget
+saving racing exists for is only reachable at a larger batch count.
+
+**Status: `L2-F2-E-PHASE-B-HOLD`.** Phase A is complete, the Phase-B design and control plane are
+ready, and **no Phase-B GATK execution and no Phase-B score exist**. BASELINE-QUALIFIED is not
+issued.
 
 ---
 
