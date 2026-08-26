@@ -101,6 +101,11 @@ class PhaseAAuthority(BaseModel):
     def plan_hash(self) -> str:
         return self.plan.plan_hash
 
+    @property
+    def phase(self) -> str:
+        """Which execution phase this authority IS. Carried so no caller ever names a phase."""
+        return PHASE_A_PHASE
+
     def content(self) -> dict[str, Any]:
         """Canonical, score-free authority content. No truth, no path, no timestamp, no UUID."""
         return {

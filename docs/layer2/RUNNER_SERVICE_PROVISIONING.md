@@ -84,6 +84,10 @@ Granted by `0011` through `minos_runner`, on top of the existing `0007`/`0008` g
 * `EXECUTE` on `experiments.l2f2_resolve_claimed_execution` — the truth-free scientific identity
   of a job this worker already owns. Truth digests, mutation digests and evaluation rows are
   structurally absent from its result type, and a non-TRAIN member cannot be resolved at all
+* `EXECUTE` on `experiments.l2f2_resolve_claimed_phase_b_execution` — the same truth-free
+  resolution for Phase B, with its own fixed `phase = 'PHASE_B'` predicate. Which function is
+  called is decided by the authority being executed, never by an argument, and neither resolver
+  falls back to the other phase's authorities
 * `EXECUTE` on `experiments.l2f2_register_execution_artifact` — the ONLY path into
   `catalog.artifacts`. It accepts `vcf` or `result_manifest` and fixes media type and provenance
   itself, so it cannot register any other kind of artifact
@@ -91,9 +95,9 @@ Granted by `0011` through `minos_runner`, on top of the existing `0007`/`0008` g
 
 ### Required baseline schema revision
 
-The runner authority **functions and grants originate in `0011`** and are unchanged since. The
-revision the boundary requires on every connection is nevertheless
-**`0015_l2f2_exec_environment`**, exactly — never a floor, never `head`.
+The runner authority **functions and grants originate in `0011`**, and `0016` adds exactly one
+more: the Phase-B resolver. The revision the boundary requires on every connection is
+**`0016_l2f2_phase_b_execution`**, exactly — never a floor, never `head`.
 
 The reason it tracks a later revision than its own functions is that the runner and the evaluator
 **share one database**. Neither later migration grants the runner anything:
@@ -110,13 +114,18 @@ The reason it tracks a later revision than its own functions is that the runner 
   no DML on the failure ledger.
 * `0015` adds `execution_environment_hash` to BOTH outcome ledgers and widens both writers by one
   argument, so every durable outcome records which runtime produced it. It grants nothing.
+* `0016` admits `PHASE_B` to `experiments.l2f2_execution_authorities`, makes `canary_job_key`
+  nullable under a phase-semantic rule (Phase A must carry a canary, Phase B must not), and adds
+  `experiments.l2f2_resolve_claimed_phase_b_execution`. The runner gains `EXECUTE` on that one
+  function and nothing else — no table privilege anywhere, and the Phase-A resolver is untouched.
 
-The last two are migrations the runner's own code depends on: the narrower signatures are dropped,
-so a runner at `0015` cannot record an outcome against an older database — which is precisely why
-the revision check is exact.
+The last three are migrations the runner's own code depends on: `0014` and `0015` drop the
+narrower writer signatures, so a runner at `0015` cannot record an outcome against an older
+database, and without `0016` a claimed Phase-B job cannot be resolved at all. That is precisely
+why the revision check is exact.
 
-The service principal's authority is identical under all four revisions; only the revision the
-boundary will accept moves.
+The service principal's authority grows by exactly one `EXECUTE` at `0016` and is otherwise
+identical under all five revisions.
 * the existing `0007`/`0008` claim, start, release, complete-success and fail functions
 
 Deliberately **not** granted:

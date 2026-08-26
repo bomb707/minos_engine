@@ -252,9 +252,15 @@ per chromosome, chosen by lowest `sort_order` within each chromosome.
   the completed Phase-A ledger and re-derivable from it deterministically. Two of the
   six anchors are total-failure Phase-A configurations: impact measures *sensitivity*,
   and a dimension whose alternatives all failed is precisely one Phase B must explore.
-  Execution is blocked at the database boundary: migration `0011` admits only
-  `PHASE_A` execution authorities, so a Phase-B job cannot be claimed until a later
-  migration widens the runner boundary.
+  Execution was blocked at the database boundary — migration `0011` admitted only
+  `PHASE_A` execution authorities — and `0016_l2f2_phase_b_execution` corrects that:
+  the authority table admits `PHASE_A` or `PHASE_B` (Phase C remains a later
+  migration), `canary_job_key` is nullable under a phase-semantic rule that forbids a
+  Phase-B canary, and a dedicated `PHASE_B` resolver joins the untouched Phase-A one.
+  Running Phase B additionally requires the store to be at `0016` and a prepared
+  `PHASE_B` execution authority for the exact derived plan. **The active baseline is
+  still at `0015` and holds no Phase-B row: no Phase-B GATK has run and no Phase-B
+  score exists.**
 * **Phase C — survivor confirmation.** Survivors run across all 50 TRAIN BAMs.
 
 **Racing note (measured, not theoretical).** With five of ten members observed, the
@@ -409,7 +415,7 @@ evidence commit.
 | **L2-F2-A** | HARNESS-READY | evaluation contract + additive migration; evaluator login role; truth identity ingestion (TRAIN); isolated truth-aware evaluator | Tier 1 + Tier 2 (**positive** happy-path SQL tests mandatory) | evaluator persists a fixture evaluation; runner still truth-free |
 | **L2-F2-B** | A complete | candidate design v1; frozen objective + protocol hash; racing engine | Tier 1 | protocol/objective/design hashes frozen and committed |
 | **L2-F2-C** | B complete | one real TRAIN canary | Tier 3 (single run) | end-to-end chain proven with independent score recomputation |
-| **L2-F2-D** | C passed | Phase A + Phase B TRAIN search. **Current state: Phase A is COMPLETE on the clean store — 195/195 decided, 0 infrastructure incidents, one execution environment — and the Phase-B design is frozen from it. Phase B is materializable but NOT executable (see §9)** | Tier 3 | influential dimensions identified by the pre-registered rule; survivors chosen |
+| **L2-F2-D** | C passed | Phase A + Phase B TRAIN search. **Current state: Phase A is COMPLETE on the clean store — 195/195 decided, 0 infrastructure incidents, one execution environment — the Phase-B design is frozen from it, and `0016` opens the execution boundary in source. Phase B has NOT been executed: the active baseline is still at `0015` (see §9)** | Tier 3 | influential dimensions identified by the pre-registered rule; survivors chosen |
 | **L2-F2-E** | D complete | Phase C full-TRAIN confirmation | Tier 3 | finalists ranked on all 50 TRAIN BAMs |
 | **L2-F2-F** | E complete, everything frozen | Phase D validation confirmation | Tier 3 (small) | baseline selected |
 | **L2-F2-G** | F complete | BASELINE-QUALIFIED gate + evidence | Tier 1 + Tier 2 offline verification | gate issued, two-commit pattern |

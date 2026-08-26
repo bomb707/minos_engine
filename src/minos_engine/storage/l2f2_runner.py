@@ -112,14 +112,23 @@ BASELINE_DATABASE_NAME = "minos_l2f2_baseline"
 #: six-argument failure writer. ``0015`` binds the EXECUTION ENVIRONMENT identity into every
 #: durable outcome and drops both narrower writers, so a runner at ``0015`` genuinely cannot
 #: record an outcome against an older database — which is deliberate: an outcome that cannot say
-#: which runtime produced it is what made the first Phase-A campaign unusable.
-BASELINE_REVISION = "0015_l2f2_exec_environment"
+#: which runtime produced it is what made the first Phase-A campaign unusable. ``0016`` then adds
+#: the Phase-B execution authority and its resolver, without which no Phase-B job can be run at
+#: all: a runner that accepted ``0015`` would claim a Phase-B job and then fail to resolve it.
+BASELINE_REVISION = "0016_l2f2_phase_b_execution"
 
 #: the ONLY MINOS group role the runner service may hold.
 _REQUIRED_MEMBERSHIP = "minos_runner"
 _FORBIDDEN_MEMBERSHIPS = ("minos_admin", "minos_evaluator", "minos_trainer", "minos_live")
 
-_RESOLVE_SQL = "SELECT * FROM experiments.l2f2_resolve_claimed_execution(:h, :j, :w)"
+#: one narrow resolver per phase, each with its OWN fixed phase predicate inside the database.
+#: Nothing here is selected by a caller: the mapping is keyed by the authority's own phase, so a
+#: Phase-A authority cannot reach the Phase-B resolver even by mistake, and neither function falls
+#: back to the other phase's authorities.
+_RESOLVE_SQL_BY_PHASE: dict[str, str] = {
+    "PHASE_A": "SELECT * FROM experiments.l2f2_resolve_claimed_execution(:h, :j, :w)",
+    "PHASE_B": "SELECT * FROM experiments.l2f2_resolve_claimed_phase_b_execution(:h, :j, :w)",
+}
 _REGISTER_SQL = (
     "SELECT artifact_id, created FROM experiments.l2f2_register_execution_artifact("
     ":kind, :sha, :uri, :size)"
@@ -230,6 +239,7 @@ def authorize_baseline_runner_connection(conn: Connection) -> None:
 def _resolve_prepared(
     conn: Connection,
     *,
+    phase: str,
     plan_hash: str,
     job_id: str,
     job_key: str,
@@ -239,9 +249,17 @@ def _resolve_prepared(
     gatk_runtime_bundle_sha256: str,
     gatk_version: str,
 ) -> _Prepared:
-    """Resolve and BYTE-VERIFY the execution identity through the narrow interface only."""
+    """Resolve and BYTE-VERIFY the execution identity through the narrow interface only.
+
+    ``phase`` selects WHICH narrow resolver, and comes from the authority itself. Each database
+    function then requires an authority of its own phase, so the phase is enforced twice: once by
+    which function is called and once inside it.
+    """
+    resolve_sql = _RESOLVE_SQL_BY_PHASE.get(phase)
+    if resolve_sql is None:
+        raise L2F2ExecutionError(f"no L2-F2 execution resolver is accepted for phase {phase!r}")
     row = (
-        conn.execute(text(_RESOLVE_SQL), {"h": plan_hash, "j": job_id, "w": worker_id})
+        conn.execute(text(resolve_sql), {"h": plan_hash, "j": job_id, "w": worker_id})
         .mappings()
         .one_or_none()
     )
@@ -337,14 +355,21 @@ def _manifest(
 
 
 class _PlanAuthority(Protocol):
-    """What the execution core actually needs from an authority: the plan it may claim within.
+    """What the execution core actually needs from an authority: which plan, and which phase.
 
     Phase A and Phase B are different scientific questions but the SAME least-privilege execution
-    sequence, so the core is typed by the one property it uses rather than duplicated per phase.
+    sequence, so the core is typed by the two properties it uses rather than duplicated per phase.
+
+    ``phase`` is read from the authority rather than passed in beside it. That is the whole point:
+    an authority is a phase, so pairing the wrong resolver with a plan is not a mistake a caller
+    can make — there is no argument in which to make it.
     """
 
     @property
     def plan_hash(self) -> str: ...
+
+    @property
+    def phase(self) -> str: ...
 
 
 def execute_next_l2f2_phase_b_job(*, worker_id: str) -> L2F2DispatchResult | None:
@@ -356,12 +381,10 @@ def execute_next_l2f2_phase_b_job(*, worker_id: str) -> L2F2DispatchResult | Non
     worker's execution environment must be the SAME one the completed Phase-A campaign ran under,
     because the design Phase B is exploring was chosen from numbers that runtime produced.
 
-    NOT YET REACHABLE. Migration 0011 admits exactly one execution phase — "the ONLY phase 0011
-    admits. A later phase is a later migration, never a looser CHECK" — so
-    ``ck_l2f2_authority_phase`` refuses to record a Phase-B execution authority and
-    ``experiments.l2f2_resolve_claimed_execution`` looks one up with a hardcoded
-    ``phase = 'PHASE_A'``. Calling this today raises that database error at claim time, by design;
-    widening the runner boundary is a privileged migration of its own.
+    Four things must be true before this can run, and each fails closed on its own: the store is
+    at ``0016`` (the revision that admits Phase B at all), the derived Phase-B plan is persisted,
+    its Phase-B execution authority is prepared, and this worker's runtime is the one the
+    completed Phase-A campaign ran under.
     """
     from minos_engine.baseline.phase_b import build_l2f2_phase_b_authority
     from minos_engine.experiments.execution_contract import GatkRuntimeIdentityError
@@ -480,6 +503,7 @@ def _execute_l2f2_job(
             authorize_baseline_runner_connection(conn)
             prepared = _resolve_prepared(
                 conn,
+                phase=authority.phase,
                 plan_hash=plan_hash,
                 job_id=job_id,
                 job_key=job_key,

@@ -15,9 +15,9 @@ scores are recorded upstream results, exactly as the Phase-A suites do.
 The module is stateful by design — a complete Phase A, then Phase B's plan and its first batch —
 so the fixtures, not the test order, own every state transition.
 
-It also pins where Phase B currently STOPS: migration 0011 admits only ``PHASE_A`` execution
-authorities, so a materialized Phase-B job cannot be claimed. That gate is asserted, not worked
-around.
+It also pins the two gates between a materialized Phase-B job and an executed one: the store must
+be at ``0016``, and a ``PHASE_B`` execution authority must have been prepared for this exact plan.
+Neither is a side effect of filling a queue.
 """
 
 from __future__ import annotations
@@ -185,6 +185,17 @@ def test_the_analysis_identity_binds_runtime_as_well_as_score(campaign: Any) -> 
     assert compute_phase_a_analysis_hash(perturbed, **kwargs) != base
 
 
+def test_an_authority_over_an_unpersisted_plan_authorizes_nothing(campaign: Any) -> None:
+    """Preparation never persists a plan as a side effect of authorizing one."""
+    from minos_engine.storage.l2f2_phase_b_prepare import (
+        PhaseBAuthorityPreparationError,
+        prepare_l2f2_phase_b_execution_authority,
+    )
+
+    with pytest.raises(PhaseBAuthorityPreparationError, match="not persisted"):
+        prepare_l2f2_phase_b_execution_authority(campaign.engine)
+
+
 # --------------------------------------------------------------------------- #
 # persistence — and the proof that 0015 already represents Phase B
 # --------------------------------------------------------------------------- #
@@ -207,7 +218,7 @@ def test_phase_b_persists_beside_phase_a_without_a_new_migration(
                 )
             ).mappings()
         }
-    assert revision == "0015_l2f2_exec_environment"
+    assert revision == "0016_l2f2_phase_b_execution"
     assert len(plans) == 2, "Phase A and Phase B now coexist"
     row = plans[authority.plan_hash]
     assert int(row["train_member_count"]) == PHASE_B_MEMBER_COUNT == 10
@@ -426,34 +437,25 @@ def test_materialization_is_idempotent_and_plan_scoped(persisted: Any) -> None:
 # --------------------------------------------------------------------------- #
 # the runner boundary: where Phase B actually stops today
 # --------------------------------------------------------------------------- #
-def test_a_phase_b_job_cannot_be_claimed_until_the_runner_boundary_admits_phase_b(
+def test_a_phase_b_job_cannot_be_resolved_before_its_authority_is_prepared(
     persisted: Any, authority: Any
 ) -> None:
-    """Phase B is materialized, correct, and NOT executable. This is a database-level gate.
+    """Materializing a job is not authorizing it — 0016 admits Phase B, it does not assume it.
 
-    Migration 0011 states it in terms of its own: ``_PHASES = ("PHASE_A",)`` — "the ONLY phase
-    0011 admits. A later phase is a later migration, never a looser CHECK." Two things follow, and
-    both are load-bearing rather than incidental:
-
-    * ``ck_l2f2_authority_phase`` permits only ``PHASE_A``, so a Phase-B execution authority row
-      cannot be recorded at all; and
-    * ``experiments.l2f2_resolve_claimed_execution`` looks the authority up with a hardcoded
-      ``a.phase = 'PHASE_A'``, so even a recorded one would not be found.
-
-    Everything up to this line is ready. Crossing it needs a migration that widens the runner
-    boundary and an administrative preparation path that records the Phase-B authority — a
-    privileged-boundary change, deliberately not made here.
+    The queue is filled by the control plane; the right to execute from it comes from a separate
+    administrative act. Until that act happens the runner claims a job and then cannot resolve it,
+    which is exactly the failure a missing authority should produce.
     """
     env, _result = persisted
     before = read_l2f2_phase_b_progress(env.engine)
+    expand_l2f2_phase_b_batch(env.engine, batch_index=0, start=0, count=8)
 
-    with pytest.raises(DatabaseError, match="has no PHASE_A L2-F2 execution authority"):
-        _run(env, authority, worker_id="ci-phase-b-blocked")
+    with pytest.raises(DatabaseError, match="has no PHASE_B L2-F2 execution authority"):
+        _run(env, authority, worker_id="ci-phase-b-unauthorized")
 
     after = read_l2f2_phase_b_progress(env.engine)
     assert after.execution_result_count == before.execution_result_count == 0
     assert after.decided_observation_count == 0
-    assert after.enqueued_count == before.enqueued_count
     assert read_l2f2_phase_a_progress(env.engine).decided_observation_count == 195
 
 
@@ -473,3 +475,324 @@ def test_the_full_batch_0_materializes_and_stays_pending(persisted: Any, authori
     assert progress.batch0_complete is False
     assert progress.complete is False
     assert read_l2f2_phase_a_progress(env.engine).enqueued_count == 195
+
+
+# --------------------------------------------------------------------------- #
+# the administrative act that authorizes execution
+# --------------------------------------------------------------------------- #
+@pytest.fixture(scope="module")
+def authorized(persisted: Any, authority: Any) -> Any:
+    """The Phase-B execution authority, recorded through the production control-plane boundary."""
+    from minos_engine.storage.l2f2_phase_b_prepare import (
+        prepare_l2f2_phase_b_execution_authority,
+    )
+
+    env, _result = persisted
+    return env, prepare_l2f2_phase_b_execution_authority(env.engine)
+
+
+def test_the_authority_is_derived_and_carries_no_canary(authorized: Any, authority: Any) -> None:
+    """Every value comes from the ledger; the one Phase-A concept it must NOT invent is absent."""
+    env, result = authorized
+
+    assert result.created is True
+    assert result.phase == "PHASE_B"
+    assert result.plan_hash == authority.plan_hash
+    assert result.candidate_set_hash == authority.phase_b_candidate_set_hash
+    assert (result.member_count, result.candidate_count) == (10, 48)
+    assert result.logical_job_count == PHASE_B_LOGICAL_JOB_COUNT
+    assert result.canary_job_key is None
+
+    with env.engine.connect() as conn:
+        conn.execute(text("SET TRANSACTION READ ONLY"))
+        rows = [
+            dict(r)
+            for r in conn.execute(
+                text(
+                    "SELECT phase, plan_hash, candidate_set_hash, member_count, candidate_count, "
+                    "       logical_job_count, canary_job_key, baseline_protocol_hash "
+                    "  FROM experiments.l2f2_execution_authorities ORDER BY phase"
+                )
+            ).mappings()
+        ]
+    assert [r["phase"] for r in rows] == ["PHASE_A", "PHASE_B"]
+    phase_a, phase_b = rows
+    assert phase_a["canary_job_key"] is not None, "Phase A keeps its canary"
+    assert phase_b["canary_job_key"] is None
+    assert phase_b["plan_hash"] == authority.plan_hash
+    assert phase_b["candidate_set_hash"] == authority.phase_b_candidate_set_hash
+    assert phase_b["baseline_protocol_hash"] == phase_a["baseline_protocol_hash"]
+    assert (phase_b["member_count"], phase_b["candidate_count"]) == (10, 48)
+
+
+def test_preparing_the_authority_again_creates_nothing(authorized: Any) -> None:
+    from minos_engine.storage.l2f2_phase_b_prepare import (
+        prepare_l2f2_phase_b_execution_authority,
+    )
+
+    env, first = authorized
+    replay = prepare_l2f2_phase_b_execution_authority(env.engine)
+
+    assert replay.created is False
+    assert replay.authority_id == first.authority_id
+    assert env.count("SELECT count(*) FROM experiments.l2f2_execution_authorities") == 2
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("baseline_protocol_hash", "f" * 64),
+        ("train_schedule_sha256", "e" * 64),
+        ("candidate_set_hash", "d" * 64),
+        ("parameter_space_hash", "c" * 64),
+        ("member_count", 9),
+        ("candidate_count", 47),
+        ("logical_job_count", 479),
+        ("canary_job_key", "a" * 64),
+    ],
+)
+def test_a_disagreeing_authority_is_a_conflict_never_a_repair(
+    authorized: Any, authority: Any, field: str, value: Any
+) -> None:
+    """Append-only lineage: a row that disagrees is raised on, never updated into agreement."""
+    from minos_engine.storage.l2f2_phase_b_prepare import (
+        PhaseBAuthorityConflictError,
+        _verify_existing,
+    )
+
+    env, _result = authorized
+    with env.engine.connect() as conn:
+        conn.execute(text("SET TRANSACTION READ ONLY"))
+        row = dict(
+            conn.execute(
+                text("SELECT * FROM experiments.l2f2_execution_authorities WHERE phase = 'PHASE_B'")
+            )
+            .mappings()
+            .one()
+        )
+    _verify_existing(row, authority)  # the real row agrees
+
+    row[field] = value
+    with pytest.raises(PhaseBAuthorityConflictError, match=field):
+        _verify_existing(row, authority)
+
+
+# --------------------------------------------------------------------------- #
+# one resolver per phase, each fixed to its own
+# --------------------------------------------------------------------------- #
+def _claim(env: Any, plan_hash: str, worker: str) -> Any:
+    """Claim through the EXISTING plan-scoped 0007 function — no new claim path exists."""
+    with env.service.connect() as conn, conn.begin():
+        return (
+            conn.execute(
+                text("SELECT job_id, job_key FROM experiments.minos_l2f_claim_next_job(:h, :w)"),
+                {"h": plan_hash, "w": worker},
+            )
+            .mappings()
+            .one_or_none()
+        )
+
+
+def _resolve(env: Any, function: str, *, plan_hash: str, job_id: str, worker: str) -> Any:
+    with env.service.connect() as conn:
+        return (
+            conn.execute(
+                text(f"SELECT job_key FROM experiments.{function}(:h, :j, :w)"),
+                {"h": plan_hash, "j": job_id, "w": worker},
+            )
+            .mappings()
+            .one_or_none()
+        )
+
+
+@pytest.fixture(scope="module")
+def claimed_phase_b(authorized: Any, authority: Any) -> Any:
+    """One Phase-B job, claimed by a known worker through the shared 0007 claim function."""
+    env, _result = authorized
+    claimed = _claim(env, authority.plan_hash, "ci-phase-b-resolver")
+    assert claimed is not None
+    return env, str(claimed["job_id"]), str(claimed["job_key"])
+
+
+def test_the_phase_b_resolver_resolves_its_own_owned_train_job(
+    claimed_phase_b: Any, authority: Any
+) -> None:
+    env, job_id, job_key = claimed_phase_b
+    row = _resolve(
+        env,
+        "l2f2_resolve_claimed_phase_b_execution",
+        plan_hash=authority.plan_hash,
+        job_id=job_id,
+        worker="ci-phase-b-resolver",
+    )
+    assert row is not None and str(row["job_key"]) == job_key
+
+
+def test_neither_resolver_answers_for_the_other_phases_plan(
+    claimed_phase_b: Any, authority: Any
+) -> None:
+    """The privileged Phase-A interface stays Phase-A-only, and Phase B's stays Phase-B-only."""
+    env, job_id, _job_key = claimed_phase_b
+
+    with pytest.raises(DatabaseError, match="has no PHASE_A L2-F2 execution authority"):
+        _resolve(
+            env,
+            "l2f2_resolve_claimed_execution",
+            plan_hash=authority.plan_hash,
+            job_id=job_id,
+            worker="ci-phase-b-resolver",
+        )
+    with pytest.raises(DatabaseError, match="has no PHASE_B L2-F2 execution authority"):
+        _resolve(
+            env,
+            "l2f2_resolve_claimed_phase_b_execution",
+            plan_hash=env.plan.plan_hash,
+            job_id=job_id,
+            worker="ci-phase-b-resolver",
+        )
+
+
+def test_the_phase_b_resolver_refuses_a_job_that_is_not_this_workers_own(
+    claimed_phase_b: Any, authority: Any
+) -> None:
+    env, job_id, _job_key = claimed_phase_b
+
+    # someone else's claim
+    with pytest.raises(DatabaseError, match="is not an owned TRAIN job"):
+        _resolve(
+            env,
+            "l2f2_resolve_claimed_phase_b_execution",
+            plan_hash=authority.plan_hash,
+            job_id=job_id,
+            worker="ci-somebody-else",
+        )
+
+    # a PENDING job nobody has claimed
+    with env.engine.connect() as conn:
+        pending = str(
+            conn.execute(
+                text(
+                    "SELECT j.id FROM experiments.l2f_experiment_jobs j "
+                    "  JOIN experiments.l2f_experiment_plans p ON p.id = j.plan_id "
+                    " WHERE p.plan_hash = :h AND j.status = 'PENDING' LIMIT 1"
+                ),
+                {"h": authority.plan_hash},
+            ).scalar_one()
+        )
+    with pytest.raises(DatabaseError, match="is not an owned TRAIN job"):
+        _resolve(
+            env,
+            "l2f2_resolve_claimed_phase_b_execution",
+            plan_hash=authority.plan_hash,
+            job_id=pending,
+            worker="ci-phase-b-resolver",
+        )
+
+    # a job of the Phase-A plan, offered under the Phase-B plan's authority
+    with env.engine.connect() as conn:
+        phase_a_job = str(
+            conn.execute(
+                text(
+                    "SELECT j.id FROM experiments.l2f_experiment_jobs j "
+                    "  JOIN experiments.l2f_experiment_plans p ON p.id = j.plan_id "
+                    " WHERE p.plan_hash = :h LIMIT 1"
+                ),
+                {"h": env.plan.plan_hash},
+            ).scalar_one()
+        )
+    with pytest.raises(DatabaseError, match="is not an owned TRAIN job"):
+        _resolve(
+            env,
+            "l2f2_resolve_claimed_phase_b_execution",
+            plan_hash=authority.plan_hash,
+            job_id=phase_a_job,
+            worker="ci-phase-b-resolver",
+        )
+
+
+def test_claiming_is_plan_scoped_with_three_plans_holding_pending_jobs(
+    claimed_phase_b: Any, authority: Any
+) -> None:
+    """Nothing about claiming changed for Phase B: 0007's function is already plan-scoped.
+
+    All three plans in this store hold PENDING jobs at once — Phase B's materialized batch and the
+    foreign plan's two — except Phase A, which is complete and therefore has none to give.
+    """
+    env, _job_id, _job_key = claimed_phase_b
+    with env.engine.connect() as conn:
+        foreign_plan = str(
+            conn.execute(
+                text(
+                    "SELECT p.plan_hash FROM experiments.l2f_experiment_plans p "
+                    " WHERE p.plan_hash NOT IN (:a, :b) LIMIT 1"
+                ),
+                {"a": env.plan.plan_hash, "b": authority.plan_hash},
+            ).scalar_one()
+        )
+
+    by_plan = {
+        plan_hash: _claim(env, plan_hash, f"ci-scope-{index}")
+        for index, plan_hash in enumerate((env.plan.plan_hash, authority.plan_hash, foreign_plan))
+    }
+    assert by_plan[env.plan.plan_hash] is None, "a complete Phase A has nothing to claim"
+    assert by_plan[authority.plan_hash] is not None
+    assert by_plan[foreign_plan] is not None
+
+    with env.engine.connect() as conn:
+        for plan_hash, claimed in by_plan.items():
+            if claimed is None:
+                continue
+            owner = str(
+                conn.execute(
+                    text(
+                        "SELECT p.plan_hash FROM experiments.l2f_experiment_jobs j "
+                        "  JOIN experiments.l2f_experiment_plans p ON p.id = j.plan_id "
+                        " WHERE j.id = :i"
+                    ),
+                    {"i": claimed["job_id"]},
+                ).scalar_one()
+            )
+            assert owner == plan_hash, "a claim crossed a plan boundary"
+
+
+# --------------------------------------------------------------------------- #
+# the whole least-privilege path, end to end
+# --------------------------------------------------------------------------- #
+def test_a_phase_b_job_executes_through_the_least_privilege_runner(
+    authorized: Any, authority: Any
+) -> None:
+    """Claim, PHASE-B resolve, CLAIMED -> RUNNING, durable outcome — under minos_runner only.
+
+    The principal here holds ``minos_runner`` and nothing else, so every step goes through the
+    narrow SECURITY DEFINER interfaces. Only the resolver differs from Phase A; the execution
+    core, the byte verification, the artifact registration and the outcome writers are shared.
+    """
+    env, _result = authorized
+    before_phase_a = read_l2f2_phase_a_progress(env.engine)
+
+    dispatched = _run(env, authority, worker_id="ci-phase-b-exec")
+    assert dispatched is not None
+    assert dispatched.status == "SUCCEEDED"
+
+    index_map = _index_map(authority.plan)
+    member_index, config_index = index_map[dispatched.job_key]
+    assert member_index in (0, 1, 2, 3, 4), "batch 0 only"
+    env.evaluate(dispatched, minos_score=_score_for(config_index, member_index))
+
+    snapshot = load_phase_b_observations(env.engine, authority=authority)
+    assert len(snapshot.observations) == 1
+    observation = snapshot.observations[0]
+    assert observation.config_hash in authority.design.ordered_config_hashes
+    assert observation.admitted is True
+    assert snapshot.execution_result_count == 1
+    assert snapshot.infrastructure_incident_count == 0
+
+    progress = read_l2f2_phase_b_progress(env.engine)
+    assert progress.succeeded_count == 1
+    assert progress.decided_observation_count == 1
+    assert progress.batch0_complete is False, "one observation is not a balanced batch"
+
+    # Phase A did not move, and racing still refuses on a partial batch.
+    assert read_l2f2_phase_a_progress(env.engine) == before_phase_a
+    with pytest.raises(PhaseBExpansionError, match="batch 0 is not complete"):
+        race_l2f2_phase_b_batch0(env.engine)

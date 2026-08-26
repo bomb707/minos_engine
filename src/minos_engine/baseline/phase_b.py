@@ -103,6 +103,11 @@ class PhaseBAuthority(BaseModel):
         return str(self.plan.plan_hash)
 
     @property
+    def phase(self) -> str:
+        """Which execution phase this authority IS. Carried so no caller ever names a phase."""
+        return PHASE_B_PHASE
+
+    @property
     def anchor_config_hashes(self) -> tuple[str, ...]:
         return tuple(self.design.anchor_config_hashes)
 

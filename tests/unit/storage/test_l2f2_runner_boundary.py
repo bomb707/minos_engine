@@ -125,7 +125,7 @@ def test_the_boundary_requires_the_baseline_database_and_revision() -> None:
     from minos_engine.qualification.l2f_accepted_identities import recompute_alembic_head
 
     assert l2f2_runner.BASELINE_DATABASE_NAME == "minos_l2f2_baseline"
-    assert l2f2_runner.BASELINE_REVISION == "0015_l2f2_exec_environment"
+    assert l2f2_runner.BASELINE_REVISION == "0016_l2f2_phase_b_execution"
     assert recompute_alembic_head() == l2f2_runner.BASELINE_REVISION
     source = inspect.getsource(l2f2_runner.authorize_baseline_runner_connection)
     assert "current_database()" in source

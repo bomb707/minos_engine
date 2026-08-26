@@ -27,13 +27,13 @@ does not restate or override them.
 | HARNESS historical Alembic head | `0008_l2f_execution_results` (stage-scoped; the repository head advances independently) |
 | Operational DB revision | `0005_l2e_feature_view` |
 | Next gate | **BASELINE-QUALIFIED** (designed in `docs/layer2/BASELINE_QUALIFICATION.md`, not implemented) |
-| Current task | **L2-F2-E — PHASE-B CONTROL PLANE: SOURCE READY, EXECUTION HELD.** The 48-candidate Phase-B design is derived from the COMPLETE Phase-A ledger, its plan persists beside Phase A, and materialization, racing and promotion are implemented and tested. Phase-B jobs **cannot be executed**: migration `0011` admits only `PHASE_A` execution authorities (see below). No Phase-B GATK has run and no Phase-B score exists |
-| Previous task | L2-F2-D — full clean Phase-A screen — **COMPLETE**: 195/195 decided, 0 infrastructure incidents |
-| Source Alembic head | `0015_l2f2_exec_environment` (migrations `0001`–`0015`) |
-| Baseline DB revision required by the runner | `0015_l2f2_exec_environment` (exact; every other revision is refused) |
+| Current task | **L2-F2-E — PHASE-B EXECUTION AUTHORITY: SOURCE READY.** `0016` admits `PHASE_B` to the runner boundary and adds its own resolver; the Phase-B execution authority has a production control-plane boundary; the runner selects a resolver from the authority, never from a caller. Proven end-to-end on ephemeral PostgreSQL under a `minos_runner`-only principal. **No real Phase-B execution**: the active baseline is still at `0015` until a separate privileged environment migration |
+| Previous task | L2-F2-E — Phase-B control plane — design, persistence, materialization, racing and promotion, held at the `0011` `PHASE_A`-only boundary now corrected |
+| Source Alembic head | `0016_l2f2_phase_b_execution` (migrations `0001`–`0016`) |
+| Baseline DB revision required by the runner | `0016_l2f2_phase_b_execution` (exact; every other revision is refused, including `0015`) |
 | Production score authority | pinned `minos-protocol/minos_subnet` @ `649bb92c…` — executed, not reimplemented |
 | Scoring contract | `l2f2-minos-scoring-v2` (`b24a07e2…`); v1 `d6f29e11…` superseded, still recomputable |
-| Real baseline DB revision | `0015_l2f2_exec_environment` — the CLEAN campaign. 1 plan, 195 jobs, 190 execution results, 5 execution failures, 190 evaluations, 0 evaluation failures, **195/195 decided**, 179 admitted, 16 candidate failures, **0 infrastructure incidents**, one execution environment `71e14a49…`. No Phase-B plan and no Phase-B job exist in it |
+| Real baseline DB revision | `0015_l2f2_exec_environment` — **not yet migrated to `0016`**; that is a separate privileged environment task. The CLEAN campaign: 1 plan, 195 jobs, 190 execution results, 5 execution failures, 190 evaluations, 0 evaluation failures, **195/195 decided**, 179 admitted, 16 candidate failures, **0 infrastructure incidents**, one execution environment `71e14a49…`. No Phase-B plan and no Phase-B job exist in it |
 | Quarantined forensic DB | `minos_l2f2_baseline_tainted_20260826` at `0014_l2f2_exec_failure_runtime` — **DO NOT EXECUTE.** Retained as immutable evidence of the runtime defect |
 
 `select_config` remains deliberately blocked by `StageNotReadyError` and stays
@@ -758,7 +758,7 @@ coexist in one store under test, with the scoping pinned in both directions.
 the generic plan schema already represents a second plan), bounded batch materialization,
 plan-scoped progress, the frozen racing decision, and seed-controlled promotion to exactly ten.
 
-#### FINDING — Phase-B jobs cannot be claimed. Migration 0011 admits only `PHASE_A`.
+#### FINDING (CORRECTED by `0016`) — Phase-B jobs could not be claimed.
 
 `0011_l2f2_runner_boundary` states the constraint in its own words — *"the ONLY phase 0011 admits.
 A later phase is a later migration, never a looser CHECK."* Concretely,
@@ -767,9 +767,9 @@ recorded, and `experiments.l2f2_resolve_claimed_execution` looks the authority u
 `a.phase = 'PHASE_A'`, so even a recorded one would not be found. A materialized Phase-B job
 therefore fails at claim time with *"plan … has no PHASE_A L2-F2 execution authority"*.
 
-This is asserted as a regression rather than worked around. Crossing it needs a migration that
-widens the runner boundary **and** an administrative preparation path that records the Phase-B
-authority — a privileged-boundary change, deliberately not made under this task.
+Both were corrected by `0016` and its administrative preparation path, described below. The
+finding is kept because the boundary it describes was deliberate, and the correction preserves it:
+the Phase-A interface is still Phase-A-only, and Phase C is still a later migration.
 
 #### FINDING — racing cannot eliminate anyone after batch 0.
 
@@ -781,9 +781,40 @@ eliminate anybody, whatever the field scores — Phase B will spend all 480 jobs
 is frozen and errs in the safe direction, so this is recorded, not adjusted; it means the budget
 saving racing exists for is only reachable at a larger batch count.
 
-**Status: `L2-F2-E-PHASE-B-HOLD`.** Phase A is complete, the Phase-B design and control plane are
-ready, and **no Phase-B GATK execution and no Phase-B score exist**. BASELINE-QUALIFIED is not
-issued.
+**The blocker below is now corrected by `0016`.** Phase A is complete, the Phase-B design and
+control plane are ready, the execution boundary is open in source, and **no Phase-B GATK execution
+and no Phase-B score exist**. BASELINE-QUALIFIED is not issued.
+
+### L2-F2-E status — PHASE-B EXECUTION AUTHORITY (migration `0016`)
+
+`0011` was explicit that a second phase would be a later migration, never a looser CHECK.
+`0016_l2f2_phase_b_execution` is that migration and stays exactly as narrow:
+
+| | |
+|---|---|
+| Phase vocabulary | `ck_l2f2_authority_phase` becomes `PHASE_A` or `PHASE_B`. Phase C remains a later migration |
+| Canary | `canary_job_key` becomes nullable under `ck_l2f2_authority_canary_phase`: Phase A must carry one, Phase B must not. No canary is invented for Phase B |
+| Phase-A resolver | **untouched** — same signature, same body, same `phase = 'PHASE_A'` predicate. The privileged Phase-A interface remains Phase-A-only |
+| Phase-B resolver | new `experiments.l2f2_resolve_claimed_phase_b_execution(text, uuid, text)`, owned by `minos_admin`, `SECURITY DEFINER`, fixed `phase = 'PHASE_B'`. Same truth-free result shape; no `p_phase` argument exists |
+| Grants | `EXECUTE` to `minos_runner` and `minos_admin` only. No role gains any table privilege; `PUBLIC`, `minos_live`, `minos_trainer` and `minos_evaluator` are denied |
+| Claiming | **unchanged.** `minos_l2f_claim_next_job(plan_hash, worker_id)` from `0007` was already plan-scoped, and each authority supplies its own plan hash — the queue never needed to know phases exist |
+| Populated stores | `0016` upgrades a store that already holds execution evidence, unlike `0015`. The real baseline is exactly such a store and nothing here reinterprets a row of it |
+| Downgrade | REFUSES while any `PHASE_B` authority exists, before any schema mutation. Squeezing that row back into a Phase-A-only CHECK would mean deleting or relabelling append-only lineage |
+
+**The authority is prepared, not assumed.** `prepare_l2f2_phase_b_execution_authority` derives
+every value from the completed Phase-A ledger — plan, candidate set, schedule, parameter space and
+counts — and accepts no override for any of them. It requires the derived plan to be persisted
+first, is idempotent, and raises a typed conflict rather than repairing a row that disagrees.
+
+**The runner never names a phase.** Each authority carries its own `phase`, and the execution core
+selects the resolver from it. `execute_next_l2f2_phase_a_job` and `execute_next_l2f2_phase_b_job`
+share one execution core, one claim function, one byte-verification path, one artifact registrar
+and one pair of outcome writers; only the resolution boundary differs.
+
+**Proven end-to-end, on ephemeral PostgreSQL only.** A complete Phase-A ledger, a persisted
+Phase-B plan, a prepared authority, a claim, a Phase-B resolve, `CLAIMED → RUNNING`, and a durable
+decided observation — all under a principal whose only membership is `minos_runner`. **The active
+baseline was not migrated and holds no Phase-B row of any kind.**
 
 ---
 

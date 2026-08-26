@@ -22,11 +22,10 @@ permits.
 contains one would let a defect of ours eliminate a candidate, which is exactly the mistake the
 first Phase-A campaign made at a smaller scale.
 
-One boundary is deliberately NOT crossed here: materialized Phase-B jobs cannot yet be executed.
-Migration 0011 admits only ``PHASE_A`` execution authorities, so the claim resolver refuses a
-Phase-B plan. Everything in this module — materialization, progress, racing and promotion — is
-therefore ready and exercised, while the screen itself stays at zero observations until that
-runner boundary is widened by a migration.
+Materializing a job is not authorizing it. Executing one additionally requires the store to be at
+``0016`` and a prepared ``PHASE_B`` execution authority for this exact plan
+(:mod:`~minos_engine.storage.l2f2_phase_b_prepare`) — an administrative act this module never
+performs as a side effect of filling a queue.
 """
 
 from __future__ import annotations
