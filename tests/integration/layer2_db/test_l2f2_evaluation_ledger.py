@@ -49,6 +49,12 @@ _F2A = "0009_l2f_evaluation_results"
 _F2A_CORRECTIVE = "0010_l2f2_evaluation_corrective"
 #: 0013 makes the four AdvancedScorer components nullable, because the pinned upstream scorer
 #: does not expose them. Evaluation persistence therefore requires it.
+#:
+#: This suite stops at 0014 deliberately. Its execution row is produced by the HISTORICAL L2-F1
+#: path, which cannot persist against 0015's widened writer, and 0015 refuses to upgrade a store
+#: that already holds one — by design, since such a row has no runtime identity. Evaluation
+#: persistence itself is untouched by 0015, and the L2-F2 Phase-A suites exercise the evaluator
+#: against a 0015 store end to end.
 _SCORE_ORACLE = "0014_l2f2_exec_failure_runtime"
 _METRICS = {
     "f1_snp": 0.95,

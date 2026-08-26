@@ -117,8 +117,32 @@ FAILURE_CLASSIFICATION: tuple[FailureClassificationEntry, ...] = (
     ),
     FailureClassificationEntry(
         case="gatk_nonzero_exit",
-        exception_type="GatkExecutionError",
+        exception_type="GatkNonzeroExitError",
         failure_code="GATK_NONZERO_EXIT",
+        state_before_failure=_RUNNING,
+        required_final_state=_FAILED,
+        outcome_row_exists=True,
+        artifacts_retained=False,
+        commit_outcome="known",
+    ),
+    FailureClassificationEntry(
+        # the process could not be executed at all: no exit code exists and nothing has been
+        # demonstrated about the candidate, so this is OUR failure, not a candidate failure.
+        case="gatk_dispatch_failed",
+        exception_type="GatkExecutionError",
+        failure_code="EXECUTION_ERROR",
+        state_before_failure=_RUNNING,
+        required_final_state=_FAILED,
+        outcome_row_exists=True,
+        artifacts_retained=False,
+        commit_outcome="known",
+    ),
+    FailureClassificationEntry(
+        # the runtime could not be established, or moved underneath the job. Infrastructure by
+        # construction: a candidate whose interpreter never started has demonstrated nothing.
+        case="gatk_runtime_identity_failed",
+        exception_type="GatkRuntimeIdentityError",
+        failure_code="EXECUTION_ERROR",
         state_before_failure=_RUNNING,
         required_final_state=_FAILED,
         outcome_row_exists=True,

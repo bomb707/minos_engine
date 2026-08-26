@@ -31,6 +31,7 @@ from tests.integration.layer2_db.conftest import (
     alembic_upgrade,
     scratch_database,
 )
+from tests.integration.layer2_db.l2f2_phase_a_env import TEST_EXECUTION_ENVIRONMENT
 from tests.integration.layer2_db.l2f_introspect import full_structural_state
 from tests.integration.layer2_db.test_l2f2_runner_boundary import (
     l2f2 as _l2f2_fixture,
@@ -253,9 +254,7 @@ def test_the_upgrade_refuses_a_store_that_already_holds_a_failure(
         dataset_root=l2f2.dataset_root,
         publisher=l2f2.publisher,
         work_root=l2f2.work_root,
-        gatk_executable_sha256="0" * 64,
-        gatk_runtime_bundle_sha256="1" * 64,
-        gatk_version="fake-gatk-4.5.0.0",
+        execution_environment=TEST_EXECUTION_ENVIRONMENT,
     )
     assert dispatched is not None and dispatched.status == "FAILED"
     l2f2.engine.dispose()
@@ -295,9 +294,7 @@ def _run(service: Any, l2f2: Any, runner: FakeGatkRunner, *, worker: str) -> tup
         dataset_root=l2f2.dataset_root,
         publisher=l2f2.publisher,
         work_root=l2f2.work_root,
-        gatk_executable_sha256="0" * 64,
-        gatk_runtime_bundle_sha256="1" * 64,
-        gatk_version="fake-gatk-4.5.0.0",
+        execution_environment=TEST_EXECUTION_ENVIRONMENT,
     )
     return dispatched, (time.monotonic_ns() - started) // 1_000_000
 
@@ -366,9 +363,7 @@ def test_a_preparation_failure_records_no_runtime_because_no_attempt_elapsed(
             dataset_root=DatasetRoot.from_path(empty),
             publisher=l2f2.publisher,
             work_root=l2f2.work_root,
-            gatk_executable_sha256="0" * 64,
-            gatk_runtime_bundle_sha256="1" * 64,
-            gatk_version="fake-gatk-4.5.0.0",
+            execution_environment=TEST_EXECUTION_ENVIRONMENT,
         )
 
     assert _failure_rows(l2f2.engine) == []
@@ -396,6 +391,7 @@ def test_a_negative_runtime_is_refused_before_it_reaches_the_database(
             exit_code=None,
             stderr_sha256=None,
             runtime_ms=-1,
+            execution_environment_hash=TEST_EXECUTION_ENVIRONMENT.environment_hash(),
         )
     assert _failure_rows(l2f2.engine) == []
 
@@ -409,7 +405,8 @@ def test_the_writer_itself_refuses_a_negative_or_missing_runtime(service: Any, l
         with pytest.raises(DatabaseError) as excinfo, service.connect() as conn, conn.begin():
             conn.execute(
                 text(
-                    "SELECT * FROM experiments.minos_l2f_fail_job(:h, :j, :w, :c, NULL, NULL, :rt)"
+                    "SELECT * FROM experiments.minos_l2f_fail_job("
+                    ":h, :j, :w, :c, NULL, NULL, :rt, :ee)"
                 ),
                 {
                     "h": l2f2.authority.plan_hash,
@@ -417,6 +414,7 @@ def test_the_writer_itself_refuses_a_negative_or_missing_runtime(service: Any, l
                     "w": "ci-writer",
                     "c": "EXECUTION_ERROR",
                     "rt": runtime,
+                    "ee": TEST_EXECUTION_ENVIRONMENT.environment_hash(),
                 },
             )
         assert "non-negative elapsed measurement" in str(excinfo.value)

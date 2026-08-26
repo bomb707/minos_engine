@@ -93,7 +93,7 @@ Granted by `0011` through `minos_runner`, on top of the existing `0007`/`0008` g
 
 The runner authority **functions and grants originate in `0011`** and are unchanged since. The
 revision the boundary requires on every connection is nevertheless
-**`0014_l2f2_exec_failure_runtime`**, exactly — never a floor, never `head`.
+**`0015_l2f2_exec_environment`**, exactly — never a floor, never `head`.
 
 The reason it tracks a later revision than its own functions is that the runner and the evaluator
 **share one database**. Neither later migration grants the runner anything:
@@ -107,9 +107,13 @@ The reason it tracks a later revision than its own functions is that the runner 
 * `0014` adds `experiments.l2f_execution_failures.runtime_ms` and widens the failure writer
   `experiments.minos_l2f_fail_job` by one argument, so a failed execution records how long the
   attempt actually took. The runner **executes** that function, as it always did, and still holds
-  no DML on the failure ledger. This is the one later migration the runner's own code depends on:
-  the narrower six-argument signature is dropped, so a runner at `0014` cannot record a failure
-  against an older database, which is precisely why the revision check is exact.
+  no DML on the failure ledger.
+* `0015` adds `execution_environment_hash` to BOTH outcome ledgers and widens both writers by one
+  argument, so every durable outcome records which runtime produced it. It grants nothing.
+
+The last two are migrations the runner's own code depends on: the narrower signatures are dropped,
+so a runner at `0015` cannot record an outcome against an older database — which is precisely why
+the revision check is exact.
 
 The service principal's authority is identical under all four revisions; only the revision the
 boundary will accept moves.
@@ -122,6 +126,35 @@ Deliberately **not** granted:
 * any direct `SELECT`/`INSERT`/`UPDATE`/`DELETE` on the L2-F plan, job, result or failure tables
 * generic `INSERT` on `catalog.artifacts`
 * anything in the `evaluation` schema — the runner is truth-free by construction
+
+## GATK runtime provisioning (mandatory)
+
+The GATK 4.5.0.0 launcher is a `#!/usr/bin/env python` script. Under the original policy a worker
+started GATK only if its ambient `PATH` happened to contain a command named `python` — and when
+one did not, `env` exited **127** before a single argument was parsed and five Phase-A jobs were
+recorded as candidate failures for configurations GATK never saw. Production therefore no longer
+relies on the shebang, and every executable it starts is named explicitly and pinned by content:
+
+| Variable | Meaning |
+|---|---|
+| `MINOS_L2F_GATK_EXECUTABLE` | absolute path to the pinned GATK launcher (unchanged) |
+| `MINOS_L2F_GATK_EXECUTABLE_SHA256` | its content digest (unchanged) |
+| `MINOS_L2F_GATK_VERSION` | the pinned version, `4.5.0.0` (unchanged) |
+| **`MINOS_L2F_GATK_PYTHON`** | absolute path to the interpreter that EXECUTES the launcher. Must be a regular, non-symlinked, executable file — a symlink can be re-pointed between the check and the run |
+| **`MINOS_L2F_GATK_PYTHON_SHA256`** | that interpreter's content digest, re-verified before every process |
+| **`JAVA_HOME`** | absolute path to the provisioned JDK. `JAVA_HOME/bin/java` must exist and be executable; the JVM is never located through `PATH` |
+
+`SubprocessGatkRunner.from_env()` refuses to build unless all of them are provisioned. The child
+process is started as `[MINOS_L2F_GATK_PYTHON, MINOS_L2F_GATK_EXECUTABLE, *argv]` with
+`shell=False`, so the launcher's own shebang is inert and a `PATH` with no `python` is harmless.
+
+**Runtime preflight happens before a job is claimed.** `execute_next_l2f2_phase_a_job` verifies the
+launcher, the local JAR bundle, the interpreter and the JVM by content, then runs the real
+`gatk --version` through that interpreter and requires `4.5.0.0` — all before any database call. A
+worker that cannot pass leaves the queue untouched: a broken runtime must never consume a candidate
+observation. The same identity is re-verified immediately before and immediately after
+HaplotypeCaller, and a runtime that moved is recorded as `EXECUTION_ERROR`, never as a candidate
+failure.
 
 ## Credential handling
 

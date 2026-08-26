@@ -28,6 +28,7 @@ from typing import Any
 
 from sqlalchemy import create_engine, text
 
+from minos_engine.experiments.execution_environment import GatkExecutionEnvironment
 from minos_engine.storage.l2f_execution_inputs import DatasetRoot
 from minos_engine.storage.l2f_gatk_runner import FakeGatkRunner
 from minos_engine.storage.l2f_result_publisher import ResultArtifactPublisher
@@ -35,7 +36,7 @@ from tests.integration.layer2_db.conftest import alembic_upgrade, scratch_databa
 from tests.integration.layer2_db.test_l2f_plan_store import _engine
 
 BASELINE_DB = "minos_l2f2_baseline"
-REQUIRED_REVISION = "0014_l2f2_exec_failure_runtime"
+REQUIRED_REVISION = "0015_l2f2_exec_environment"
 _CI_ROLE = "minos_phase_a_ci_svc"
 
 #: the pinned GATK identity the runner records. No GATK runs; these are the fixed test values
@@ -43,6 +44,20 @@ _CI_ROLE = "minos_phase_a_ci_svc"
 GATK_EXECUTABLE_SHA256 = "0" * 64
 GATK_RUNTIME_BUNDLE_SHA256 = "1" * 64
 GATK_VERSION = "fake-gatk-4.5.0.0"
+
+
+#: the runtime identity the deterministic test runner stands in for. It is a real, fully-formed
+#: GatkExecutionEnvironment — FakeGatkRunner starts no interpreter and no JVM, so these are fixed
+#: test values rather than measurements, and they are never presented as production provenance.
+TEST_EXECUTION_ENVIRONMENT = GatkExecutionEnvironment(
+    gatk_launcher_sha256="0" * 64,
+    gatk_runtime_bundle_sha256="1" * 64,
+    gatk_version=GATK_VERSION,
+    launcher_python_sha256="2" * 64,
+    launcher_python_version="3.12.3",
+    java_sha256="3" * 64,
+    java_version="17.0.11",
+)
 
 
 def _sha(path: Path) -> str:
@@ -137,8 +152,12 @@ class PhaseAEnv:
             )
 
     # -- the production execution path ---------------------------------------------------- #
-    def run(self, *, worker_id: str, runner: Any = None) -> Any:
-        """Execute the next PENDING job through the least-privilege runner."""
+    def run(self, *, worker_id: str, runner: Any = None, environment: Any = None) -> Any:
+        """Execute the next PENDING job through the least-privilege runner.
+
+        ``environment`` exists so a test can deliberately produce a screen whose outcomes came
+        from two different runtimes — the state the observation reader must refuse.
+        """
         from minos_engine.storage.l2f2_runner import _execute_l2f2_job
 
         return _execute_l2f2_job(
@@ -149,9 +168,7 @@ class PhaseAEnv:
             dataset_root=self.dataset_root,
             publisher=self.publisher,
             work_root=self.work_root,
-            gatk_executable_sha256=GATK_EXECUTABLE_SHA256,
-            gatk_runtime_bundle_sha256=GATK_RUNTIME_BUNDLE_SHA256,
-            gatk_version=GATK_VERSION,
+            execution_environment=environment or TEST_EXECUTION_ENVIRONMENT,
         )
 
     # -- the production evaluation path ---------------------------------------------------- #

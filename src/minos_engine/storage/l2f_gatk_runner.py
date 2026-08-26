@@ -14,6 +14,14 @@ Two runners exist:
   per-job work directory and a wall-clock timeout that terminates the whole process group. It
   never retries.
 
+The production launcher is a ``#!/usr/bin/env python`` script, so under the original policy GATK
+started only if the worker's ambient ``PATH`` happened to contain a command named ``python``. It
+did not on one worker, and five Phase-A jobs were recorded as candidate failures for configs GATK
+never parsed. The corrected policy (``l2f-gatk-child-env-v2``) therefore invokes the launcher
+through an EXPLICITLY provisioned, content-verified interpreter — ``[python, launcher, *argv]`` —
+so the shebang and the ambient ``PATH`` are irrelevant to whether a scientific job can run, and
+pins ``JAVA_HOME`` the same way.
+
 **No memory limit is claimed**: this runner does not install an enforced RSS/cgroup cap, so it
 deliberately does not pretend to have one.
 """
@@ -42,17 +50,26 @@ from minos_engine.experiments.execution_contract import (
     GatkExecutionError,
     GatkExecutionOutcome,
     GatkInvocationError,
+    GatkNonzeroExitError,
     GatkOutputError,
+    GatkRuntimeIdentityError,
     GatkTimeoutError,
     LogicalGatkInvocation,
+)
+from minos_engine.experiments.execution_environment import (
+    CHILD_ENVIRONMENT_POLICY_VERSION,
+    GatkExecutionEnvironment,
 )
 
 __all__ = [
     "CHILD_ENV_ALLOWLIST",
     "ENV_GATK_EXECUTABLE",
     "ENV_GATK_EXECUTABLE_SHA256",
+    "ENV_GATK_PYTHON",
+    "ENV_GATK_PYTHON_SHA256",
     "ENV_GATK_VERSION",
     "ENV_GATK_TIMEOUT_SECONDS",
+    "ENV_JAVA_HOME",
     "ENV_WORK_ROOT",
     "GATK_JAR_OVERRIDE_VARIABLES",
     "MAX_CAPTURED_STREAM_BYTES",
@@ -72,7 +89,12 @@ __all__ = [
 
 ENV_GATK_EXECUTABLE = "MINOS_L2F_GATK_EXECUTABLE"
 ENV_GATK_EXECUTABLE_SHA256 = "MINOS_L2F_GATK_EXECUTABLE_SHA256"
+#: the interpreter the launcher is executed BY. Provisioned explicitly and verified by content,
+#: never discovered through PATH, ``which``, ``/usr/bin/env`` or ``sys.executable``.
+ENV_GATK_PYTHON = "MINOS_L2F_GATK_PYTHON"
+ENV_GATK_PYTHON_SHA256 = "MINOS_L2F_GATK_PYTHON_SHA256"
 ENV_GATK_VERSION = "MINOS_L2F_GATK_VERSION"
+ENV_JAVA_HOME = "JAVA_HOME"
 ENV_GATK_TIMEOUT_SECONDS = "MINOS_L2F_GATK_TIMEOUT_SECONDS"
 ENV_WORK_ROOT = "MINOS_L2F_WORK_ROOT"
 
@@ -343,6 +365,7 @@ class GatkRunner(Protocol):
         vcf_path: Path,
         inputs: ExecutionInput,
         expected_runtime_bundle_sha256: str,
+        expected_execution_environment_hash: str = "",
     ) -> GatkExecutionOutcome: ...
 
 
@@ -357,6 +380,9 @@ class FakeGatkRunner:
     override_bytes: bytes | None = None
     write_output: bool = True
     raise_timeout: bool = False
+    #: the stream digest a real nonzero exit would carry. None means "this fake produced no
+    #: stderr", which is the truthful default: it starts no process.
+    stderr_sha256: str | None = None
 
     def _deterministic_vcf(self, inputs: ExecutionInput) -> bytes:
         return (
@@ -378,11 +404,21 @@ class FakeGatkRunner:
         #: bundle, so it deliberately does not verify it — pretending to would be a false claim.
         #: It can never satisfy ``official_gatk_runner_used``; it is test-only.
         expected_runtime_bundle_sha256: str = "",
+        #: likewise: this runner executes no interpreter and no JVM, so it establishes no runtime
+        #: identity and does not pretend to check one.
+        expected_execution_environment_hash: str = "",
     ) -> GatkExecutionOutcome:
         if self.raise_timeout:
             raise GatkTimeoutError("fake runner simulated a GATK timeout")
         if self.exit_code != 0:
-            raise GatkExecutionError(f"fake runner simulated exit code {self.exit_code}")
+            # the SAME structured exception the production runner raises, so the classification
+            # and the evidence that reach persistence are the ones production would produce.
+            raise GatkNonzeroExitError(
+                f"fake runner simulated exit code {self.exit_code}",
+                exit_code=self.exit_code,
+                stderr_sha256=self.stderr_sha256,
+                runtime_ms=self.runtime_ms,
+            )
         if self.write_output:
             payload = (
                 self.override_bytes
@@ -509,6 +545,14 @@ class SubprocessGatkRunner:
     executable: Path
     expected_sha256: str
     expected_version: str
+    #: the interpreter the launcher is executed BY. The launcher is a ``#!/usr/bin/env python``
+    #: script, so under the old policy it started only if the ambient PATH happened to provide a
+    #: ``python``; here it is an explicit, content-verified absolute executable and the shebang is
+    #: never consulted.
+    launcher_python: Path
+    expected_python_sha256: str
+    #: the provisioned JDK. ``java_home/bin/java`` is resolved without any PATH lookup.
+    java_home: Path
     timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS
     #: the scientific payload the official launcher will run. Resolved fail-closed from the
     #: launcher's own directory; never nominated by a caller.
@@ -518,7 +562,14 @@ class SubprocessGatkRunner:
 
     @staticmethod
     def from_env() -> SubprocessGatkRunner:
-        """Build from the PROVISIONED environment (no caller-provided executable or version)."""
+        """Build from the PROVISIONED environment (no discovery of ANY executable).
+
+        Every executable this runner will start — the launcher, the interpreter that runs it and
+        the JVM the launcher starts — must be named explicitly and pinned by content. Nothing is
+        located through ``PATH``, ``shutil.which``, ``/usr/bin/env`` or ``sys.executable``: an
+        interpreter chosen by the worker's shell is exactly how a runtime defect became five
+        candidate-failure observations.
+        """
         raw = os.environ.get(ENV_GATK_EXECUTABLE, "").strip()
         sha = os.environ.get(ENV_GATK_EXECUTABLE_SHA256, "").strip()
         version = os.environ.get(ENV_GATK_VERSION, "").strip()
@@ -527,12 +578,28 @@ class SubprocessGatkRunner:
                 f"{ENV_GATK_EXECUTABLE}, {ENV_GATK_EXECUTABLE_SHA256} and {ENV_GATK_VERSION} must "
                 "all be provisioned (no PATH-based executable discovery is performed)"
             )
+        python_raw = os.environ.get(ENV_GATK_PYTHON, "").strip()
+        python_sha = os.environ.get(ENV_GATK_PYTHON_SHA256, "").strip()
+        if not python_raw or not python_sha:
+            raise GatkExecutionError(
+                f"{ENV_GATK_PYTHON} and {ENV_GATK_PYTHON_SHA256} must be provisioned: the GATK "
+                "launcher is a '#!/usr/bin/env python' script and production must never let the "
+                "ambient PATH decide which interpreter runs it"
+            )
+        java_home_raw = os.environ.get(ENV_JAVA_HOME, "").strip()
+        if not java_home_raw:
+            raise GatkExecutionError(
+                f"{ENV_JAVA_HOME} must be provisioned; the JVM is never located through PATH"
+            )
         timeout = int(os.environ.get(ENV_GATK_TIMEOUT_SECONDS, _DEFAULT_TIMEOUT_SECONDS))
         launcher = Path(raw)
         return SubprocessGatkRunner(
             executable=launcher,
             expected_sha256=sha,
             expected_version=version,
+            launcher_python=Path(python_raw),
+            expected_python_sha256=python_sha,
+            java_home=Path(java_home_raw),
             timeout_seconds=timeout,
             local_jar=resolve_official_local_jar(launcher, gatk_version=version)
             if launcher.is_absolute() and launcher.parent.is_dir()
@@ -560,16 +627,70 @@ class SubprocessGatkRunner:
             gatk_version=self.expected_version,
         )
 
+    def _child_env(self) -> dict[str, str]:
+        """The allowlisted child environment. Nothing outside the allowlist ever reaches GATK."""
+        return {k: os.environ[k] for k in CHILD_ENV_ALLOWLIST if k in os.environ}
+
+    def _launch_argv(self, *tokens: str) -> list[str]:
+        """``[interpreter, launcher, *tokens]`` — the launcher's shebang is never consulted."""
+        return [str(self.launcher_python), str(self.executable), *tokens]
+
+    @property
+    def java_binary(self) -> Path:
+        """``JAVA_HOME/bin/java``, resolved WITHOUT any PATH lookup."""
+        return self.java_home / "bin" / "java"
+
+    def observe_python_version(self) -> str:
+        """Bounded probe of the EXPLICIT interpreter's own version. Starts no GATK."""
+        self._verify_python()
+        proc = subprocess.run(  # noqa: S603 - pinned interpreter, fixed argv, shell=False
+            [str(self.launcher_python), "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=self._child_env(),
+            timeout=min(self.timeout_seconds, 300),
+        )
+        blob = f"{proc.stdout}\n{proc.stderr}".strip()
+        match = re.search(r"Python\s+([0-9][0-9A-Za-z.\-]*)", blob)
+        if not match:
+            raise GatkRuntimeIdentityError(
+                f"the provisioned launcher interpreter did not report a version: {blob[:200]!r}"
+            )
+        return match.group(1)
+
+    def observe_java_version(self) -> str:
+        """Bounded probe of the provisioned JVM. Starts no GATK."""
+        self._verify_java()
+        proc = subprocess.run(  # noqa: S603 - pinned java binary, fixed argv, shell=False
+            [str(self.java_binary), "-version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=self._child_env(),
+            timeout=min(self.timeout_seconds, 300),
+        )
+        # every JDK prints its version banner on stderr.
+        blob = f"{proc.stdout}\n{proc.stderr}".strip()
+        match = re.search(r'version\s+"?([0-9][0-9A-Za-z._\-+]*)"?', blob)
+        if not match:
+            raise GatkRuntimeIdentityError(
+                f"the provisioned JVM did not report a version: {blob[:200]!r}"
+            )
+        return match.group(1)
+
     def observe_version(self) -> str:
         """Bounded, offline ``gatk --version`` probe under the SAME restricted child environment.
 
-        HaplotypeCaller is never executed here. Used to prove the provisioned version metadata
-        equals what the real bundle reports.
+        HaplotypeCaller is never executed here, and the launcher is started through the EXPLICIT
+        interpreter, so this probe answers "can this worker run GATK at all" without depending on
+        whether some ``python`` happens to be on PATH.
         """
         self._verify_executable()
-        env = {k: os.environ[k] for k in CHILD_ENV_ALLOWLIST if k in os.environ}
+        self._verify_python()
+        env = self._child_env()
         proc = subprocess.run(  # noqa: S603 - pinned executable, fixed argv, shell=False
-            [str(self.executable), "--version"],
+            self._launch_argv("--version"),
             capture_output=True,
             text=True,
             check=False,
@@ -577,6 +698,14 @@ class SubprocessGatkRunner:
             timeout=min(self.timeout_seconds, 600),
         )
         blob = f"{proc.stdout}\n{proc.stderr}"
+        if proc.returncode != 0:
+            # a process that FAILED reported nothing. Without this the version could be scraped
+            # out of an error message that merely quotes it — an interpreter's SyntaxError echoing
+            # the banner line would "confirm" a launcher that cannot run at all.
+            raise GatkRuntimeIdentityError(
+                f"the GATK bundle exited {proc.returncode} instead of reporting its version: "
+                f"{blob.strip()[:200]!r}"
+            )
         match = re.search(r"\(GATK\)\s+v([0-9][0-9A-Za-z.\-]*)", blob)
         if not match:
             raise GatkExecutionError(
@@ -605,6 +734,88 @@ class SubprocessGatkRunner:
                 "by that bundle"
             )
 
+    def _verify_python(self) -> None:
+        """The launcher interpreter must be the EXACT provisioned bytes, checked every time."""
+        path = self.launcher_python
+        if not path.is_absolute():
+            raise GatkRuntimeIdentityError(f"launcher interpreter {path} must be an absolute path")
+        if path.is_symlink():
+            raise GatkRuntimeIdentityError(
+                f"launcher interpreter {path} is a symlink; a symlink can be re-pointed between "
+                "the check and the run, so the interpreter must be named directly"
+            )
+        if not path.is_file():
+            raise GatkRuntimeIdentityError(f"launcher interpreter {path} is not a regular file")
+        if not os.access(path, os.X_OK):
+            raise GatkRuntimeIdentityError(f"launcher interpreter {path} is not executable")
+        actual = _sha256_file(path)
+        if actual != self.expected_python_sha256:
+            raise GatkRuntimeIdentityError(
+                f"launcher interpreter {path} sha256 {actual} != expected "
+                f"{self.expected_python_sha256}"
+            )
+
+    def _verify_java(self) -> None:
+        """The JVM must be the provisioned one, resolved from JAVA_HOME and never from PATH."""
+        home = self.java_home
+        if not home.is_absolute():
+            raise GatkRuntimeIdentityError(f"JAVA_HOME {home} must be an absolute path")
+        if not home.is_dir():
+            raise GatkRuntimeIdentityError(f"JAVA_HOME {home} is not an existing directory")
+        java = self.java_binary
+        if not java.is_file():
+            raise GatkRuntimeIdentityError(f"{java} does not exist")
+        if not os.access(java, os.X_OK):
+            raise GatkRuntimeIdentityError(f"{java} is not executable")
+
+    def java_sha256(self) -> str:
+        """The content identity of the provisioned ``java`` binary."""
+        self._verify_java()
+        return _stable_sha256(self.java_binary)
+
+    def launcher_python_sha256(self) -> str:
+        """The content identity of the provisioned launcher interpreter."""
+        self._verify_python()
+        return _stable_sha256(self.launcher_python)
+
+    def execution_environment(self) -> GatkExecutionEnvironment:
+        """Derive the CURRENT runtime identity, verifying every component's bytes as it goes.
+
+        This is a measurement, never a declaration: each field is re-derived from the files as
+        they are right now, so a runtime that moved between two calls produces two different
+        hashes rather than one comfortable constant.
+        """
+        return GatkExecutionEnvironment(
+            gatk_launcher_sha256=_stable_sha256(self.executable),
+            gatk_runtime_bundle_sha256=self.runtime_bundle_sha256(),
+            gatk_version=self.expected_version,
+            launcher_python_sha256=self.launcher_python_sha256(),
+            launcher_python_version=self.observe_python_version(),
+            java_sha256=self.java_sha256(),
+            java_version=self.observe_java_version(),
+            child_environment_policy_version=CHILD_ENVIRONMENT_POLICY_VERSION,
+        )
+
+    def preflight(self) -> GatkExecutionEnvironment:
+        """Prove this worker can run GATK AT ALL, before any scientific job is at stake.
+
+        Verifies the launcher, the scientific payload bundle, the explicit interpreter and the
+        provisioned JVM by content, then runs the real ``gatk --version`` through that exact
+        interpreter and requires the pinned version. A worker that cannot pass this must never
+        consume a candidate observation, so the caller runs it BEFORE claiming a job.
+        """
+        self._verify_executable()
+        self._verify_python()
+        self._verify_java()
+        environment = self.execution_environment()
+        observed = self.observe_version()
+        if observed != self.expected_version:
+            raise GatkRuntimeIdentityError(
+                f"the GATK bundle reports version {observed!r}, but this worker is provisioned "
+                f"for {self.expected_version!r}"
+            )
+        return environment
+
     def _verify_executable(self) -> None:
         path = self.executable
         if not path.is_absolute():
@@ -619,6 +830,23 @@ class SubprocessGatkRunner:
                 f"GATK executable {path} sha256 {actual} != expected {self.expected_sha256}"
             )
 
+    def _require_execution_environment(self, expected: str, *, when: str) -> None:
+        """Fail closed unless the CURRENT runtime identity is the one this run is bound to.
+
+        A runtime that changes across a job — a re-provisioned interpreter, a swapped JDK, a
+        different bundle — invalidates the result's provenance. That is OUR failure, so it raises
+        a runtime-identity error and never a GATK execution error, which is what keeps it from
+        being charged to the candidate.
+        """
+        if not expected:
+            return  # the caller did not bind an environment identity to this run
+        actual = self.execution_environment().environment_hash()
+        if actual != expected:
+            raise GatkRuntimeIdentityError(
+                f"the execution environment {when} is {actual}, but this execution is identified "
+                f"by {expected}; the runtime moved and its output cannot be attributed"
+            )
+
     def run(
         self,
         *,
@@ -627,20 +855,29 @@ class SubprocessGatkRunner:
         vcf_path: Path,
         inputs: ExecutionInput,
         expected_runtime_bundle_sha256: str,
+        expected_execution_environment_hash: str = "",
     ) -> GatkExecutionOutcome:
         self._verify_executable()
+        self._verify_python()
+        self._verify_java()
         # THE check/use boundary. The bundle observed at qualification time is minutes old by now;
         # re-derive it from the launcher and JAR bytes as they are RIGHT NOW and refuse to start
         # HaplotypeCaller unless it still equals the identity already frozen into result_hash.
         self._require_runtime_bundle(expected_runtime_bundle_sha256, when="before execution")
-        env = {k: os.environ[k] for k in CHILD_ENV_ALLOWLIST if k in os.environ}
+        self._require_execution_environment(
+            expected_execution_environment_hash, when="before execution"
+        )
+        env = self._child_env()
         stdout_path = work_dir / "gatk.stdout"
         stderr_path = work_dir / "gatk.stderr"
         limit = self.max_captured_stream_bytes
         started = time.monotonic()
         with open(os.devnull, "rb") as devnull:
             proc = subprocess.Popen(  # noqa: S603 - fixed argv, shell=False, pinned executable
-                [str(self.executable), *argv],
+                # the EXPLICIT interpreter, then the launcher: the launcher's own
+                # '#!/usr/bin/env python' shebang is never consulted, so a worker whose PATH has
+                # no 'python' still runs the identical scientific process.
+                self._launch_argv(*argv),
                 cwd=str(work_dir),
                 env=env,
                 stdin=devnull,
@@ -674,11 +911,23 @@ class SubprocessGatkRunner:
                     drain.join(_DRAIN_JOIN_SECONDS)
         runtime_ms = int((time.monotonic() - started) * 1000)
         stderr_sha = drains[1].digest
+        stdout_sha = drains[0].digest
         if exit_code != 0:
-            raise GatkExecutionError(f"GATK exited with code {exit_code}")
+            # the evidence travels WITH the exception. A caller that has to re-run the job to
+            # learn the exit code cannot diagnose anything from the durable ledger.
+            raise GatkNonzeroExitError(
+                f"GATK exited with code {exit_code}",
+                exit_code=exit_code,
+                stderr_sha256=stderr_sha,
+                stdout_sha256=stdout_sha,
+                runtime_ms=runtime_ms,
+            )
         # the bundle must ALSO be unchanged now, before any produced VCF is accepted: a run whose
         # payload moved underneath it is not scientifically identified by the frozen bundle.
         self._require_runtime_bundle(expected_runtime_bundle_sha256, when="after execution")
+        self._require_execution_environment(
+            expected_execution_environment_hash, when="after execution"
+        )
         if not vcf_path.exists():
             raise GatkOutputError("GATK produced no output VCF")
         sha, size = validate_vcf_bytes(vcf_path, work_dir=work_dir, inputs=inputs)

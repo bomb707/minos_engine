@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from minos_engine.common.errors import MinosEngineError
+from minos_engine.experiments.execution_contract import L2FExecutionError
 from minos_engine.qualification.l2f_accepted_identities import (
     recompute_accepted_identities,
     repository_root,
@@ -304,7 +305,7 @@ def verify_official_gatk_binary(runner: Any) -> GatkBinaryIdentity:
             "provisioned; the provisioned metadata must equal the observed runtime version"
         )
 
-    python_sha, java_sha = _runtime_provenance()
+    python_sha, java_sha = _runtime_provenance(runner)
     return GatkBinaryIdentity(
         executable_sha256=actual,
         local_jar_sha256=jar_sha,
@@ -341,30 +342,23 @@ def _stream_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _runtime_provenance() -> tuple[str, str]:
-    """Resolve and hash the Python and Java executables the CHILD would actually use.
+def _runtime_provenance(runner: Any) -> tuple[str, str]:
+    """Hash the Python and Java executables the child ACTUALLY uses — the provisioned ones.
 
-    Resolution follows the exact PATH/JAVA_HOME the restricted child inherits, and a symlink is
-    followed to its final target so the hashed bytes are unambiguous. These digests are runtime
-    provenance and are deliberately NOT part of the host-independent scientific bundle.
+    Historical note: this used to resolve ``python`` through the child's ``PATH``, which made
+    qualification agree with an execution boundary that also trusted ``PATH``. Both were wrong in
+    the same way, and a worker whose ``PATH`` lacked a ``python`` produced five candidate failures
+    for configurations GATK never parsed. The runner now names both executables explicitly and
+    verifies their bytes, so provenance is taken from it rather than re-derived from the
+    environment. These digests remain runtime provenance and are deliberately NOT part of the
+    host-independent scientific bundle.
     """
-    import shutil
-
-    python = shutil.which("python", path=os.environ.get("PATH", ""))
-    if not python:
+    try:
+        return runner.launcher_python_sha256(), runner.java_sha256()
+    except L2FExecutionError as exc:
         raise QualificationEnvironmentError(
-            "the official GATK launcher resolves '#!/usr/bin/env python', but no 'python' is "
-            "resolvable on the child PATH"
-        )
-    java_home = os.environ.get("JAVA_HOME", "")
-    java = (
-        str(Path(java_home) / "bin" / "java")
-        if java_home and (Path(java_home) / "bin" / "java").exists()
-        else shutil.which("java", path=os.environ.get("PATH", ""))
-    )
-    if not java:
-        raise QualificationEnvironmentError("no 'java' is resolvable on the child PATH/JAVA_HOME")
-    return _stream_sha256(Path(python).resolve()), _stream_sha256(Path(java).resolve())
+            f"the provisioned GATK runtime cannot be identified: {exc}"
+        ) from exc
 
 
 # --------------------------------------------------------------------------- #

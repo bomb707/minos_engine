@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.gatk_runtime import runtime_kwargs
 
 from minos_engine.experiments.execution_contract import (
     ARGV_BAM_PLACEHOLDER,
@@ -126,13 +127,15 @@ def _script(tmp_path: Path, name: str, body: str, *, jar: bytes = b"fixture-jar"
 
 
 def _runner_for(script: Path, **over: Any) -> SubprocessGatkRunner:
-    return SubprocessGatkRunner(
-        executable=script,
-        expected_sha256=hashlib.sha256(script.read_bytes()).hexdigest(),
-        expected_version=_FIXTURE_VERSION,
-        local_jar=script.parent / f"gatk-package-{_FIXTURE_VERSION}-local.jar",
-        **over,
-    )
+    kwargs: dict[str, Any] = {
+        "executable": script,
+        "expected_sha256": hashlib.sha256(script.read_bytes()).hexdigest(),
+        "expected_version": _FIXTURE_VERSION,
+        "local_jar": script.parent / f"gatk-package-{_FIXTURE_VERSION}-local.jar",
+        **runtime_kwargs(script.parent),
+    }
+    kwargs.update(over)
+    return SubprocessGatkRunner(**kwargs)
 
 
 def _run(runner: SubprocessGatkRunner, **kwargs: Any) -> Any:
@@ -287,8 +290,11 @@ def test_injection_payloads_in_host_paths_stay_inert_argv_tokens(payload: str) -
 # --------------------------------------------------------------------------- #
 # E1/E7 — shell=False and the child environment allowlist
 # --------------------------------------------------------------------------- #
-_ECHO_ENV = "#!/bin/sh\nenv\nexit 5\n"
-_ECHO_ARGS = '#!/bin/sh\nprintf "%s\\n" "$@"\nexit 5\n'
+# the real GATK launcher is a Python script executed through the EXPLICIT interpreter, so the
+# fixtures are Python too: a shell fixture would exercise an invocation shape production no
+# longer uses.
+_ECHO_ENV = "import os, sys\nfor k, v in os.environ.items():\n    print(f'{k}={v}')\nsys.exit(5)\n"
+_ECHO_ARGS = "import sys\nfor a in sys.argv[1:]:\n    print(a)\nsys.exit(5)\n"
 
 
 @pytest.mark.skipif(not Path("/bin/sh").exists(), reason="POSIX shell required")
@@ -341,7 +347,10 @@ def test_argv_payloads_never_reach_a_shell(tmp_path: Path, payload: str) -> None
 def test_a_relative_executable_is_refused(tmp_path: Path) -> None:
     work = _work(tmp_path)
     runner = SubprocessGatkRunner(
-        executable=Path("gatk"), expected_sha256=_H["0"], expected_version="v"
+        executable=Path("gatk"),
+        expected_sha256=_H["0"],
+        expected_version="v",
+        **runtime_kwargs(tmp_path),
     )
     with pytest.raises(GatkExecutionError, match="absolute"):
         _run(runner, argv=(), work_dir=work, vcf_path=work / "o.vcf", inputs=_inputs())
@@ -356,6 +365,7 @@ def test_a_symlinked_executable_is_refused(tmp_path: Path) -> None:
         executable=link,
         expected_sha256=hashlib.sha256(real.read_bytes()).hexdigest(),
         expected_version="v",
+        **runtime_kwargs(tmp_path),
     )
     with pytest.raises(GatkExecutionError, match="symlink"):
         _run(runner, argv=(), work_dir=work, vcf_path=work / "o.vcf", inputs=_inputs())
@@ -389,20 +399,17 @@ def test_the_execution_run_never_issues_a_version_probe(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 # E8/E9 — bounded streams and process-group timeout
 # --------------------------------------------------------------------------- #
-_NOISY = """#!/bin/sh
-i=0
-while [ $i -lt 400 ]; do
-  printf '%s\\n' "PAYLOAD"
-  printf '%s\\n' "PAYLOAD" >&2
-  i=$((i+1))
-done
-exit 5
+_NOISY = """import sys
+for _ in range(400):
+    print("PAYLOAD", flush=True)
+    print("PAYLOAD", file=sys.stderr, flush=True)
+sys.exit(5)
 """
 
-_FORKING_SLEEPER = """#!/bin/sh
-sleep 300 &
-echo $! > child.pid
-sleep 300
+_FORKING_SLEEPER = """import pathlib, subprocess, sys, time
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
+pathlib.Path("child.pid").write_text(str(child.pid))
+time.sleep(300)
 """
 
 
@@ -640,13 +647,12 @@ def _jar(script: Path) -> Path:
 
 #: a fixture launcher that writes a REAL, structurally valid single-sample VCF and exits 0.
 #: It writes ``o.vcf`` in its working directory, which is the attempt work dir the runner sets.
-_VCF_WRITER = """#!/bin/sh
-{
-  printf '##fileformat=VCFv4.2\n'
-  printf '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE\n'
-  printf 'chr18\t150\t.\tA\tG\t50.0\tPASS\t.\tGT\t0/1\n'
-} > o.vcf
-exit 0
+_VCF_WRITER = """import pathlib
+pathlib.Path("o.vcf").write_text(
+    "##fileformat=VCFv4.2\\n"
+    "#CHROM\\tPOS\\tID\\tREF\\tALT\\tQUAL\\tFILTER\\tINFO\\tFORMAT\\tSAMPLE\\n"
+    "chr18\\t150\\t.\\tA\\tG\\t50.0\\tPASS\\t.\\tGT\\t0/1\\n"
+)
 """
 
 

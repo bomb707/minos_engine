@@ -32,7 +32,9 @@ from minos_engine.common.hashing import sha256_hex
 
 __all__ = [
     "EXECUTION_RESULT_SCHEMA",
+    "EXECUTION_RESULT_SCHEMA_V2",
     "RESULT_HASH_DOMAIN",
+    "RESULT_HASH_DOMAIN_V2",
     "INPUT_IDENTITY_DOMAIN",
     "LOGICAL_ARGV_DOMAIN",
     "GATK_RUNTIME_BUNDLE_DOMAIN",
@@ -45,6 +47,8 @@ __all__ = [
     "ConfigArtifactError",
     "GatkInvocationError",
     "GatkExecutionError",
+    "GatkNonzeroExitError",
+    "GatkRuntimeIdentityError",
     "GatkTimeoutError",
     "GatkOutputError",
     "ExecutionInput",
@@ -52,7 +56,9 @@ __all__ = [
     "LogicalGatkInvocation",
     "GatkExecutionOutcome",
     "ExecutionResultManifest",
+    "ExecutionResultManifestV2",
     "ExecutionFailure",
+    "compute_result_hash_v2",
     "execution_input_from_manifest",
     "compute_input_identity_hash",
     "compute_logical_argv_hash",
@@ -62,8 +68,13 @@ __all__ = [
 ]
 
 EXECUTION_RESULT_SCHEMA = "l2f-gatk-execution-result-v1"
+#: v2 binds the EXECUTION ENVIRONMENT identity into the result preimage. It is a new version
+#: rather than a widened v1 because v1 rows and manifests truthfully mean "identified without an
+#: environment"; silently changing what that hash covers would rewrite the meaning of history.
+EXECUTION_RESULT_SCHEMA_V2 = "l2f-gatk-execution-result-v2"
 #: domain-separation prefixes prepended (as bytes) before the canonical-JSON preimage.
 RESULT_HASH_DOMAIN = "minos:l2f-gatk-execution-result:v1\n"
+RESULT_HASH_DOMAIN_V2 = "minos:l2f-gatk-execution-result:v2\n"
 INPUT_IDENTITY_DOMAIN = "minos:l2f-execution-input:v1\n"
 LOGICAL_ARGV_DOMAIN = "minos:l2f-logical-argv:v1\n"
 #: domain for the GATK *execution bundle* identity: the launcher alone is a ~21 KB dispatcher, so
@@ -115,6 +126,39 @@ class GatkInvocationError(L2FExecutionError):
 
 class GatkExecutionError(L2FExecutionError):
     """GATK exited nonzero, or the runner could not execute it."""
+
+
+class GatkNonzeroExitError(GatkExecutionError):
+    """GATK ran and exited nonzero, carrying the evidence that identifies WHY.
+
+    The exit code and stream digests are attributes, never something a caller recovers by parsing
+    the message: a runner that discards them forces every failure to be re-run to be diagnosed,
+    which is exactly how five Phase-A jobs came to be recorded with a NULL exit code that would
+    have said 127 — "the interpreter is missing" — at a glance.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        exit_code: int,
+        stderr_sha256: str | None = None,
+        stdout_sha256: str | None = None,
+        runtime_ms: int = 0,
+    ) -> None:
+        super().__init__(message)
+        self.exit_code = exit_code
+        self.stderr_sha256 = stderr_sha256
+        self.stdout_sha256 = stdout_sha256
+        self.runtime_ms = runtime_ms
+
+
+class GatkRuntimeIdentityError(L2FExecutionError):
+    """The runtime that ran (or was about to run) is not the one the execution is identified by.
+
+    Deliberately NOT a :class:`GatkExecutionError`: this is our provisioning failing, never the
+    candidate's configuration, and the two must not collapse into one failure code.
+    """
 
 
 class GatkTimeoutError(L2FExecutionError):
@@ -229,6 +273,53 @@ class ExecutionResultManifest(BaseModel):
     gatk_executable_sha256: Hex64
     gatk_runtime_bundle_sha256: Hex64
     gatk_version: str = Field(min_length=1)
+    vcf_sha256: Hex64
+    vcf_size_bytes: int = Field(gt=0)
+    result_hash: Hex64
+    runtime_ms: int = Field(ge=0)
+    worker_id: str = Field(min_length=1)
+    generated_at: str = Field(min_length=1)
+
+
+class ExecutionResultManifestV2(BaseModel):
+    """The v2 canonical execution-result manifest: v1's fields plus the runtime identity.
+
+    Everything v1 carried is carried identically, so an independent verifier can still rebuild the
+    strict :class:`ExecutionInput` and recompute the input identity from the manifest bytes alone.
+    The added ``execution_environment_hash`` is what makes "which runtime produced this" a
+    reproducible part of the record instead of an assumption.
+    """
+
+    model_config = _STRICT
+
+    schema_version: Literal["l2f-gatk-execution-result-v2"]
+    plan_hash: Hex64
+    job_id: str = Field(min_length=1)
+    job_key: Hex64
+    dataset_id: str = Field(min_length=1)
+    round_id: str = Field(min_length=1)
+    profile_id: str = Field(min_length=1)
+    content_hash: Hex64
+    feature_values_hash: Hex64
+    config_hash: Hex64
+    parameter_space_hash: Hex64
+    input_identity_hash: Hex64
+    bam_sha256: Hex64
+    bai_sha256: Hex64
+    reference_sha256: Hex64
+    fai_sha256: Hex64
+    dictionary_sha256: Hex64
+    bam_size_bytes: int = Field(ge=0)
+    region_hash: Hex64
+    region_start0: int = Field(ge=0)
+    region_end0_exclusive: int = Field(ge=0)
+    chromosome: str = Field(min_length=1)
+    logical_argv_hash: Hex64
+    gatk_executable_sha256: Hex64
+    gatk_runtime_bundle_sha256: Hex64
+    gatk_version: str = Field(min_length=1)
+    #: the runtime identity this execution is bound to. See ``execution_environment``.
+    execution_environment_hash: Hex64
     vcf_sha256: Hex64
     vcf_size_bytes: int = Field(gt=0)
     result_hash: Hex64
@@ -366,6 +457,53 @@ def compute_result_hash(
     return sha256_hex(RESULT_HASH_DOMAIN.encode("utf-8") + canonical_json_bytes(content))
 
 
-def build_result_manifest_bytes(manifest: ExecutionResultManifest) -> bytes:
-    """The exact canonical result-manifest artifact bytes."""
+def compute_result_hash_v2(
+    *,
+    plan_hash: str,
+    job_key: str,
+    inputs: ExecutionInput,
+    config: ExecutionConfig,
+    invocation: LogicalGatkInvocation,
+    outcome: GatkExecutionOutcome,
+    execution_environment_hash: str,
+) -> str:
+    """THE v2 execution-result identity: v1's science PLUS the runtime that produced it.
+
+    Host paths, UUIDs, timestamps, runtime duration and worker identity remain excluded, so the
+    same job run by a different worker on a different host STILL reproduces this hash — provided
+    it ran under the same execution environment, which is now part of what "the same" means.
+    """
+    content = {
+        "schema_version": EXECUTION_RESULT_SCHEMA_V2,
+        "plan_hash": plan_hash,
+        "job_key": job_key,
+        "dataset_id": inputs.dataset_id,
+        "profile_id": inputs.profile_id,
+        "content_hash": inputs.content_hash,
+        "feature_values_hash": inputs.feature_values_hash,
+        "config_hash": config.config_hash,
+        "parameter_space_hash": config.parameter_space_hash,
+        "bam_sha256": inputs.bam_sha256,
+        "bai_sha256": inputs.bai_sha256,
+        "reference_sha256": inputs.reference_sha256,
+        "fai_sha256": inputs.fai_sha256,
+        "region_hash": inputs.region_hash,
+        "region_start0": inputs.region_start0,
+        "region_end0_exclusive": inputs.region_end0_exclusive,
+        "chromosome": inputs.chromosome,
+        "logical_argv_hash": invocation.argv_hash(),
+        "gatk_executable_sha256": invocation.gatk_executable_sha256,
+        "gatk_runtime_bundle_sha256": invocation.gatk_runtime_bundle_sha256,
+        "gatk_version": invocation.gatk_version,
+        "execution_environment_hash": execution_environment_hash,
+        "vcf_sha256": outcome.vcf_sha256,
+        "vcf_size_bytes": outcome.vcf_size_bytes,
+    }
+    return sha256_hex(RESULT_HASH_DOMAIN_V2.encode("utf-8") + canonical_json_bytes(content))
+
+
+def build_result_manifest_bytes(
+    manifest: ExecutionResultManifest | ExecutionResultManifestV2,
+) -> bytes:
+    """The exact canonical result-manifest artifact bytes, for either manifest version."""
     return canonical_json_bytes(manifest.model_dump(mode="json"))

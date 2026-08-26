@@ -44,16 +44,17 @@ from sqlalchemy.exc import DBAPIError
 from minos_engine.baseline.phase_a import PhaseAAuthority, build_phase_a_authority
 from minos_engine.common.errors import MinosEngineError
 from minos_engine.experiments.execution_contract import (
-    EXECUTION_RESULT_SCHEMA,
+    EXECUTION_RESULT_SCHEMA_V2,
     ExecutionConfig,
     ExecutionInput,
-    ExecutionResultManifest,
+    ExecutionResultManifestV2,
     GatkExecutionOutcome,
     GatkOutputError,
     LogicalGatkInvocation,
     build_result_manifest_bytes,
-    compute_result_hash,
+    compute_result_hash_v2,
 )
+from minos_engine.experiments.execution_environment import GatkExecutionEnvironment
 from minos_engine.storage.attempt_workspace import (
     AttemptWorkspace,
     create_attempt_workspace,
@@ -106,10 +107,12 @@ BASELINE_DATABASE_NAME = "minos_l2f2_baseline"
 #: ``0013`` touches no table the runner reads — but a database the evaluator has advanced is still
 #: a database this boundary must recognise.
 #:
-#: ``0014`` is the one this boundary's OWN code depends on: it gives a failed execution an
-#: authoritative elapsed runtime and drops the narrower six-argument failure writer, so a runner
-#: at ``0014`` genuinely cannot record a failure against an older database.
-BASELINE_REVISION = "0014_l2f2_exec_failure_runtime"
+#: ``0014`` gave a failed execution an authoritative elapsed runtime and dropped the narrower
+#: six-argument failure writer. ``0015`` binds the EXECUTION ENVIRONMENT identity into every
+#: durable outcome and drops both narrower writers, so a runner at ``0015`` genuinely cannot
+#: record an outcome against an older database — which is deliberate: an outcome that cannot say
+#: which runtime produced it is what made the first Phase-A campaign unusable.
+BASELINE_REVISION = "0015_l2f2_exec_environment"
 
 #: the ONLY MINOS group role the runner service may hold.
 _REQUIRED_MEMBERSHIP = "minos_runner"
@@ -292,10 +295,11 @@ def _manifest(
     outcome: GatkExecutionOutcome,
     worker_id: str,
     result_hash: str,
-) -> ExecutionResultManifest:
+    execution_environment_hash: str,
+) -> ExecutionResultManifestV2:
     inputs = prepared.inputs
-    return ExecutionResultManifest(
-        schema_version=EXECUTION_RESULT_SCHEMA,
+    return ExecutionResultManifestV2(
+        schema_version=EXECUTION_RESULT_SCHEMA_V2,
         plan_hash=plan_hash,
         job_id=prepared.job_id,
         job_key=prepared.job_key,
@@ -321,6 +325,7 @@ def _manifest(
         gatk_executable_sha256=prepared.invocation.gatk_executable_sha256,
         gatk_runtime_bundle_sha256=prepared.invocation.gatk_runtime_bundle_sha256,
         gatk_version=prepared.invocation.gatk_version,
+        execution_environment_hash=execution_environment_hash,
         vcf_sha256=outcome.vcf_sha256,
         vcf_size_bytes=outcome.vcf_size_bytes,
         result_hash=result_hash,
@@ -343,9 +348,16 @@ def execute_next_l2f2_phase_a_job(*, worker_id: str) -> L2F2DispatchResult | Non
 
     validate_worker_id(worker_id)
     authority = build_phase_a_authority()
+    runner = SubprocessGatkRunner.from_env()
+    # THE pre-claim runtime gate, deliberately before any database call. It proves this worker can
+    # actually run GATK — pinned launcher, pinned scientific payload, explicit content-verified
+    # interpreter, provisioned JVM, and the real bundle reporting the pinned version — and raises
+    # without touching a single row if it cannot. A worker whose runtime is broken must never
+    # consume a candidate observation: that is precisely how a missing interpreter turned into
+    # five candidate failures for configurations GATK never parsed.
+    environment = runner.preflight()
     engine = create_db_engine()
     try:
-        runner = SubprocessGatkRunner.from_env()
         return _execute_l2f2_job(
             engine,
             authority,
@@ -354,9 +366,7 @@ def execute_next_l2f2_phase_a_job(*, worker_id: str) -> L2F2DispatchResult | Non
             dataset_root=dataset_root_from_env(),
             publisher=ResultArtifactPublisher(result_artifact_root_from_env()),
             work_root=work_root_from_env(),
-            gatk_executable_sha256=runner.expected_sha256,
-            gatk_runtime_bundle_sha256=runner.runtime_bundle_sha256(),
-            gatk_version=runner.expected_version,
+            execution_environment=environment,
         )
     finally:
         engine.dispose()
@@ -371,15 +381,18 @@ def _execute_l2f2_job(
     dataset_root: DatasetRoot,
     publisher: ResultArtifactPublisher,
     work_root: Path,
-    gatk_executable_sha256: str,
-    gatk_runtime_bundle_sha256: str,
-    gatk_version: str,
+    execution_environment: GatkExecutionEnvironment,
 ) -> L2F2DispatchResult | None:
     """PRIVATE least-privilege orchestration core. TEST-ONLY as a direct entry point.
 
     The accepted production boundary is :func:`execute_next_l2f2_phase_a_job`, which accepts no
-    runner and constructs the real one itself. This helper exists so tests can drive the identical
-    least-privilege sequence with a deterministic runner; it is never exported.
+    runner, constructs the real one itself and PREFLIGHTS it before claiming anything. This helper
+    exists so tests can drive the identical least-privilege sequence with a deterministic runner;
+    it is never exported.
+
+    The GATK identity is taken from ``execution_environment`` rather than from three loose
+    strings, so the identity a result is recorded under and the runtime that produced it cannot
+    disagree.
     """
     from minos_engine.storage.l2f_job_claim import validate_worker_id
 
@@ -411,9 +424,9 @@ def _execute_l2f2_job(
                 job_key=job_key,
                 worker_id=worker_id,
                 dataset_root=dataset_root,
-                gatk_executable_sha256=gatk_executable_sha256,
-                gatk_runtime_bundle_sha256=gatk_runtime_bundle_sha256,
-                gatk_version=gatk_version,
+                gatk_executable_sha256=execution_environment.gatk_launcher_sha256,
+                gatk_runtime_bundle_sha256=execution_environment.gatk_runtime_bundle_sha256,
+                gatk_version=execution_environment.gatk_version,
             )
     except BaseException:
         _release(engine, plan_hash=plan_hash, job_id=job_id, worker_id=worker_id)
@@ -439,6 +452,7 @@ def _execute_l2f2_job(
         runner=runner,
         publisher=publisher,
         work_root=work_root,
+        execution_environment=execution_environment,
     )
 
 
@@ -463,21 +477,27 @@ def _fail(
     exit_code: int | None,
     stderr_sha256: str | None,
     runtime_ms: int,
+    execution_environment_hash: str,
 ) -> L2F2DispatchResult:
-    """Record ONE durable failure, including how long the attempt actually took.
+    """Record ONE durable failure with the evidence that identifies it.
 
     ``runtime_ms`` is a measurement, never a placeholder: the frozen objective uses mean GATK
     runtime as a tie-break, so a fabricated duration would flow straight into candidate ranking.
     It is elapsed monotonic time for the attempt, and 0 means exactly "no GATK attempt elapsed",
     never "unknown". The runner still holds no direct DML on the failure ledger; the narrow
     SECURITY DEFINER writer is the only path.
+
+    ``exit_code`` and ``stderr_sha256`` arrive from the STRUCTURED exception, never from parsing a
+    message, and ``execution_environment_hash`` records which runtime the attempt was made under.
+    Together they are what makes a failure diagnosable from the ledger alone: a stored 127 would
+    have identified a missing interpreter without re-running anything.
     """
     if runtime_ms < 0:
         raise L2F2ExecutionError(f"elapsed runtime {runtime_ms} is not a measurement")
     with engine.connect() as conn, conn.begin():
         authorize_baseline_runner_connection(conn)
         conn.execute(
-            text("SELECT * FROM experiments.minos_l2f_fail_job(:h, :j, :w, :c, :e, :s, :rt)"),
+            text("SELECT * FROM experiments.minos_l2f_fail_job(:h, :j, :w, :c, :e, :s, :rt, :ee)"),
             {
                 "h": plan_hash,
                 "j": job_id,
@@ -486,6 +506,7 @@ def _fail(
                 "e": exit_code,
                 "s": stderr_sha256,
                 "rt": runtime_ms,
+                "ee": execution_environment_hash,
             },
         )
     return L2F2DispatchResult(
@@ -499,8 +520,18 @@ def _fail(
 
 
 def _failure_code(exc: BaseException) -> tuple[str, int | None, str | None]:
+    """Classify ONE failed attempt by execution STAGE, never by reading stderr text.
+
+    The distinction that matters is whose fault it is. A HaplotypeCaller process that started
+    under a verified runtime and exited nonzero is the candidate's configuration failing; a
+    runtime that could not be established, or that moved underneath the job, is ours. Both used to
+    arrive here as a bare ``GatkExecutionError`` and both were recorded as GATK_NONZERO_EXIT —
+    which is how a missing interpreter came to be charged to five candidates.
+    """
     from minos_engine.experiments.execution_contract import (
         GatkExecutionError,
+        GatkNonzeroExitError,
+        GatkRuntimeIdentityError,
         GatkTimeoutError,
     )
     from minos_engine.experiments.execution_contract import (
@@ -509,8 +540,17 @@ def _failure_code(exc: BaseException) -> tuple[str, int | None, str | None]:
 
     if isinstance(exc, GatkTimeoutError):
         return "GATK_TIMEOUT", None, None
+    # OURS, and checked before the GATK families below: the runtime could not be established, or
+    # did not stay the one this execution is identified by.
+    if isinstance(exc, GatkRuntimeIdentityError):
+        return "EXECUTION_ERROR", None, None
+    if isinstance(exc, GatkNonzeroExitError):
+        # the structured evidence, carried BY the exception. Never parsed out of a message.
+        return "GATK_NONZERO_EXIT", exc.exit_code, exc.stderr_sha256
     if isinstance(exc, GatkExecutionError):
-        return "GATK_NONZERO_EXIT", getattr(exc, "exit_code", None), None
+        # the process could not be executed at all: no exit code exists, and nothing whatever has
+        # been demonstrated about the candidate.
+        return "EXECUTION_ERROR", None, None
     if isinstance(exc, _OutputError):
         return "GATK_OUTPUT_INVALID", None, None
     return "EXECUTION_ERROR", None, None
@@ -525,10 +565,12 @@ def _run_and_finalize(
     runner: GatkRunner,
     publisher: ResultArtifactPublisher,
     work_root: Path,
+    execution_environment: GatkExecutionEnvironment,
 ) -> L2F2DispatchResult:
     """Run GATK for a RUNNING job and drive it to exactly one durable terminal outcome."""
     plan_hash = authority.plan_hash
     job_id, job_key = prepared.job_id, prepared.job_key
+    environment_hash = execution_environment.environment_hash()
     workspace: AttemptWorkspace | None = None
     # a MONOTONIC clock, never wall time: the elapsed attempt duration is a measurement the
     # frozen objective uses as a tie-break, and a clock step must not be able to move it.
@@ -560,6 +602,9 @@ def _run_and_finalize(
                 vcf_path=vcf_path,
                 inputs=prepared.inputs,
                 expected_runtime_bundle_sha256=prepared.invocation.gatk_runtime_bundle_sha256,
+                # the SAME runtime identity the outcome will be recorded under, re-verified by the
+                # runner immediately before and immediately after HaplotypeCaller.
+                expected_execution_environment_hash=environment_hash,
             )
             acquired = acquire_produced_output(workspace, prepared.inputs)
             if (
@@ -586,6 +631,7 @@ def _run_and_finalize(
                 failure_code=code,
                 exit_code=exit_code,
                 stderr_sha256=stderr,
+                execution_environment_hash=environment_hash,
                 # the attempt genuinely elapsed, whether GATK exited non-zero, timed out or
                 # produced unusable output; that duration is what is recorded.
                 runtime_ms=_elapsed_ms(),
@@ -606,6 +652,7 @@ def _run_and_finalize(
                 worker_id=worker_id,
                 publisher=publisher,
                 vcf_bytes=vcf_bytes,
+                execution_environment_hash=environment_hash,
             )
         except AmbiguousExecutionCommitError:
             raise
@@ -619,6 +666,7 @@ def _run_and_finalize(
                 failure_code="EXECUTION_ERROR",
                 exit_code=None,
                 stderr_sha256=None,
+                execution_environment_hash=environment_hash,
                 # GATK itself finished; the runtime that elapsed is the one it actually took,
                 # and persistence failing afterwards does not change that measurement.
                 runtime_ms=outcome.runtime_ms,
@@ -640,16 +688,18 @@ def _complete_success(
     worker_id: str,
     publisher: ResultArtifactPublisher,
     vcf_bytes: bytes,
+    execution_environment_hash: str,
 ) -> L2F2DispatchResult:
     """Publish both artifacts, register them narrowly, then transition — no admin role."""
     plan_hash = authority.plan_hash
-    result_hash = compute_result_hash(
+    result_hash = compute_result_hash_v2(
         plan_hash=plan_hash,
         job_key=prepared.job_key,
         inputs=prepared.inputs,
         config=prepared.config,
         invocation=prepared.invocation,
         outcome=outcome,
+        execution_environment_hash=execution_environment_hash,
     )
     manifest = _manifest(
         plan_hash=plan_hash,
@@ -657,6 +707,7 @@ def _complete_success(
         outcome=outcome,
         worker_id=worker_id,
         result_hash=result_hash,
+        execution_environment_hash=execution_environment_hash,
     )
     manifest_bytes = build_result_manifest_bytes(manifest)
     manifest_sha = hashlib.sha256(manifest_bytes).hexdigest()
@@ -683,7 +734,8 @@ def _complete_success(
             row = conn.execute(
                 text(
                     "SELECT result_id, created FROM experiments.minos_l2f_complete_job_success("
-                    ":h, :j, :w, :k, :ch, :ps, :ii, :la, :ex, :gv, :va, :vs, :ma, :ms, :rh, :rt)"
+                    ":h, :j, :w, :k, :ch, :ps, :ii, :la, :ex, :gv, :va, :vs, :ma, :ms, :rh, :rt, "
+                    ":ee)"
                 ),
                 {
                     "h": plan_hash,
@@ -702,6 +754,7 @@ def _complete_success(
                     "ms": manifest_sha,
                     "rh": result_hash,
                     "rt": outcome.runtime_ms,
+                    "ee": execution_environment_hash,
                 },
             ).one()
         except DBAPIError as exc:

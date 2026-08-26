@@ -23,6 +23,13 @@ The mapping is deliberately narrow, because each case means something different 
 Whether a failure is the candidate's fault or ours is decided by the existing
 :func:`classify_failure_code`; this module does not re-classify anything.
 
+One campaign, one runtime. Every decided outcome must carry the SAME
+``execution_environment_hash``, because a screen assembled from two runtimes is not one
+experiment: the first Phase-A attempt recorded five candidate failures that were really a worker
+without a Python interpreter, and the only thing that would have made that visible in the ledger
+is the runtime identity now required here. Mixed environments therefore fail closed rather than
+being averaged over.
+
 Nothing here is best-effort. A state that cannot exist under the ledger's own invariants — a
 SUCCEEDED job with no result, a job carrying both outcomes, an evaluation under a different
 scoring contract, a config or dataset that disagrees with the frozen plan — is refused, because
@@ -67,6 +74,9 @@ class PhaseAObservationSnapshot:
     execution_failure_count: int
     evaluation_result_count: int
     evaluation_failure_count: int
+    #: the ONE runtime identity every decided outcome in this campaign was produced under, or
+    #: None when nothing has been decided yet. Never a set: a mixed screen is refused, not summarised.
+    execution_environment_hash: str | None = None
 
     @property
     def candidate_failure_count(self) -> int:
@@ -105,8 +115,10 @@ def load_phase_a_observations(engine: Engine) -> PhaseAObservationSnapshot:
                     "       dr.dataset_id, dr.chromosome, pc.config_hash, pc.config_index, "
                     "       pm.member_index, "
                     "       r.id AS execution_result_id, r.runtime_ms AS success_runtime_ms, "
+                    "       r.execution_environment_hash AS success_environment_hash, "
                     "       f.failure_code AS execution_failure_code, "
                     "       f.runtime_ms AS failure_runtime_ms, "
+                    "       f.execution_environment_hash AS failure_environment_hash, "
                     "       e.id AS evaluation_id, e.minos_score, e.admitted, "
                     "       e.admission_code, e.scoring_contract_hash, "
                     "       ef.failure_code AS evaluation_failure_code "
@@ -143,6 +155,7 @@ def load_phase_a_observations(engine: Engine) -> PhaseAObservationSnapshot:
     observations: list[BaselineObservation] = []
     seen_keys: set[str] = set()
     seen_evaluations: set[str] = set()
+    environments: set[str] = set()
 
     for row in rows:
         key = str(row["job_key"])
@@ -187,6 +200,7 @@ def load_phase_a_observations(engine: Engine) -> PhaseAObservationSnapshot:
         if status == "SUCCEEDED":
             if success_id is None:
                 _fail(f"job {key} is SUCCEEDED with no execution result")
+            environments.add(str(row["success_environment_hash"]))
             observation = _observation_for_success(row, job)
             if observation is None:
                 continue  # executed but not yet evaluated: still undecided.
@@ -207,6 +221,7 @@ def load_phase_a_observations(engine: Engine) -> PhaseAObservationSnapshot:
                     f"job {key} failed without a recorded elapsed runtime; the frozen objective "
                     "uses mean GATK runtime as a tie-break and will not accept an invented one"
                 )
+            environments.add(str(row["failure_environment_hash"]))
             code = str(execution_failure)
             classify_failure_code(code)  # refuses an unknown bounded code
             observations.append(
@@ -224,12 +239,21 @@ def load_phase_a_observations(engine: Engine) -> PhaseAObservationSnapshot:
 
         _fail(f"job {key} has unknown status {status!r}")
 
+    if len(environments) > 1:
+        _fail(
+            "this screen mixes "
+            f"{len(environments)} execution environments ({', '.join(sorted(environments))}); one "
+            "campaign is one runtime, and outcomes produced by different runtimes are not "
+            "comparable observations of the same experiment"
+        )
+
     return PhaseAObservationSnapshot(
         observations=tuple(observations),
         execution_result_count=int(counts["successes"]),
         execution_failure_count=int(counts["failures"]),
         evaluation_result_count=int(counts["evaluations"]),
         evaluation_failure_count=int(counts["eval_failures"]),
+        execution_environment_hash=next(iter(environments)) if environments else None,
     )
 
 

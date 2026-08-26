@@ -33,6 +33,7 @@ from minos_engine.storage.l2f_job_enqueue import _enqueue_experiment_jobs_with_t
 from minos_engine.storage.l2f_plan_store import _persist_experiment_plan_with_trust
 from minos_engine.storage.l2f_result_publisher import ResultArtifactPublisher
 from tests.integration.layer2_db.conftest import alembic_upgrade, scratch_database
+from tests.integration.layer2_db.l2f2_phase_a_env import TEST_EXECUTION_ENVIRONMENT
 from tests.integration.layer2_db.l2f_plan_seed import seed_upstream_for_plan
 from tests.integration.layer2_db.test_l2f_execution import (
     _prepare_env,
@@ -53,7 +54,7 @@ _RUNNER_BOUNDARY = "0011_l2f2_runner_boundary"
 #: introduced this boundary's own functions and grants, 0012 separated the plan's two index
 #: namespaces, and 0013 let evaluation store what the pinned upstream scorer exposes. None of
 #: them grants the runner anything, and it fails closed on every revision but the current one.
-_REQUIRED = "0014_l2f2_exec_failure_runtime"
+_REQUIRED = "0015_l2f2_exec_environment"
 _BASELINE_DB = "minos_l2f2_baseline"
 _CI_ROLE = "minos_runner_ci_svc"
 _AUTHORITIES = "experiments.l2f2_execution_authorities"
@@ -270,6 +271,7 @@ def test_the_boundary_refuses_a_database_that_is_not_the_baseline_store(
         _RUNNER_BOUNDARY,
         "0012_l2f_plan_member_source_idx",
         "0013_l2f2_upstream_score_oracle",
+        "0014_l2f2_exec_failure_runtime",
     ],
 )
 def test_the_boundary_refuses_a_database_at_the_wrong_revision(
@@ -359,9 +361,7 @@ def test_a_complete_execution_runs_entirely_under_the_runner_principal(
         dataset_root=l2f2.dataset_root,
         publisher=l2f2.publisher,
         work_root=l2f2.work_root,
-        gatk_executable_sha256="0" * 64,
-        gatk_runtime_bundle_sha256="1" * 64,
-        gatk_version="fake-gatk-4.5.0.0",
+        execution_environment=TEST_EXECUTION_ENVIRONMENT,
     )
 
     assert dispatched is not None
@@ -409,9 +409,7 @@ def test_a_failing_execution_records_exactly_one_bounded_failure(service: Any, l
         dataset_root=l2f2.dataset_root,
         publisher=l2f2.publisher,
         work_root=l2f2.work_root,
-        gatk_executable_sha256="0" * 64,
-        gatk_runtime_bundle_sha256="1" * 64,
-        gatk_version="fake-gatk-4.5.0.0",
+        execution_environment=TEST_EXECUTION_ENVIRONMENT,
     )
 
     assert dispatched is not None
@@ -433,9 +431,7 @@ def test_no_job_is_left_stranded_after_both_outcomes(service: Any, l2f2: Any) ->
             dataset_root=l2f2.dataset_root,
             publisher=l2f2.publisher,
             work_root=l2f2.work_root,
-            gatk_executable_sha256="0" * 64,
-            gatk_runtime_bundle_sha256="1" * 64,
-            gatk_version="fake-gatk-4.5.0.0",
+            execution_environment=TEST_EXECUTION_ENVIRONMENT,
         )
     assert (
         l2f2.count(
@@ -458,9 +454,7 @@ def test_an_empty_queue_returns_none(service: Any, l2f2: Any) -> None:
             dataset_root=l2f2.dataset_root,
             publisher=l2f2.publisher,
             work_root=l2f2.work_root,
-            gatk_executable_sha256="0" * 64,
-            gatk_runtime_bundle_sha256="1" * 64,
-            gatk_version="fake-gatk-4.5.0.0",
+            execution_environment=TEST_EXECUTION_ENVIRONMENT,
         )
     assert (
         _execute_l2f2_job(
@@ -471,9 +465,7 @@ def test_an_empty_queue_returns_none(service: Any, l2f2: Any) -> None:
             dataset_root=l2f2.dataset_root,
             publisher=l2f2.publisher,
             work_root=l2f2.work_root,
-            gatk_executable_sha256="0" * 64,
-            gatk_runtime_bundle_sha256="1" * 64,
-            gatk_version="fake-gatk-4.5.0.0",
+            execution_environment=TEST_EXECUTION_ENVIRONMENT,
         )
         is None
     )
@@ -497,9 +489,7 @@ def test_a_plan_without_an_execution_authority_cannot_be_run(service: Any, l2f2:
             dataset_root=l2f2.dataset_root,
             publisher=l2f2.publisher,
             work_root=l2f2.work_root,
-            gatk_executable_sha256="0" * 64,
-            gatk_runtime_bundle_sha256="1" * 64,
-            gatk_version="fake-gatk-4.5.0.0",
+            execution_environment=TEST_EXECUTION_ENVIRONMENT,
         )
 
 

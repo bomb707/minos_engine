@@ -12,13 +12,21 @@ Sections that present *alternatives and recommendations* are retained as the des
 led to the frozen choice. Where an option was considered and rejected it is marked as such; the
 frozen answer is always the one stated in §16 and in the committed manifest.
 
-**Where the search actually is:** the L2-F2-C canary has **passed** — one GATK execution and one
-exact MINOS_SUBNET score, independently re-verified. **L2-F2-D is at PHASE-A EXPANSION READINESS:**
-the bounded expansion boundary, the failure-runtime measurement (`0014`), the ledger→observation
-reader and the complete-only analysis wrapper exist and are tested, and **Phase-A jobs 1..194 have
-not been enqueued or executed.** No Phase-A result has been aggregated, no influential dimension
-selected and no Phase-B design produced; there is no validation or test access; and
-`BASELINE-QUALIFIED` is not issued. Current stage state lives in `docs/DEVELOPMENT_STATUS.md`; the
+**Where the search actually is:** the L2-F2-C canary passed — one GATK execution and one exact
+MINOS_SUBNET score, independently re-verified. Phase A was then enqueued in full (195 jobs) and a
+five-job execution checkpoint was run. **That checkpoint was diagnosed as a
+`RUNTIME_ENVIRONMENT_DEFECT`:** the pinned GATK launcher is a `#!/usr/bin/env python` script, the
+worker's `PATH` had no `python`, and `env` exited 127 before any argument was parsed. The five
+resulting `GATK_NONZERO_EXIT` rows are therefore **scientifically TAINTED** — they charge to
+candidates a failure that was ours — and the store holding them is **QUARANTINED / DO-NOT-EXECUTE**.
+They were not rewritten; they stand as immutable historical evidence.
+
+The corrective (`0015`) pins the execution runtime, verifies it before a job is claimed, binds an
+`execution_environment_hash` into every durable outcome, and refuses to upgrade any store that
+already holds one. **Phase A is NOT complete**, no Phase-A result has been aggregated, no
+influential dimension selected and no Phase-B design produced; there is no validation or test
+access; and `BASELINE-QUALIFIED` is not issued. The next step is a CLEAN CAMPAIGN REBUILD on a
+fresh store, asking the same frozen 195 questions. Current stage state lives in `docs/DEVELOPMENT_STATUS.md`; the
 historical pre-implementation evidence lives in
 `reports/LAYER2_BASELINE_PREIMPLEMENTATION_AUDIT.md`.
 
@@ -285,7 +293,12 @@ It must prove the whole chain: execution result → evaluator → metrics → fi
 score → immutable evaluation record. Phase A may not begin until it passes.
 The canary is L2-F2-C and **passed** on 2026-08-25.
 
-The Phase-A expansion boundary enforces exactly this requirement in code, and enforces it as a
+A canary proves the pipeline was reachable ONCE. It is not evidence that every worker can run it:
+the first Phase-A execution attempt failed on a worker whose `PATH` could not resolve the GATK
+launcher's interpreter, so the runtime is now preflighted before every claim and bound into every
+outcome.
+
+The Phase-A expansion boundary enforces the canary requirement in code, and enforces it as a
 **pipeline** condition: the canary must be `SUCCEEDED` with one execution result, no execution
 failure, one terminal evaluation under the production scoring contract and no evaluation failure.
 The canary's own score is deliberately **not** consulted. A gate that expanded only on a good score
@@ -379,7 +392,7 @@ evidence commit.
 | **L2-F2-A** | HARNESS-READY | evaluation contract + additive migration; evaluator login role; truth identity ingestion (TRAIN); isolated truth-aware evaluator | Tier 1 + Tier 2 (**positive** happy-path SQL tests mandatory) | evaluator persists a fixture evaluation; runner still truth-free |
 | **L2-F2-B** | A complete | candidate design v1; frozen objective + protocol hash; racing engine | Tier 1 | protocol/objective/design hashes frozen and committed |
 | **L2-F2-C** | B complete | one real TRAIN canary | Tier 3 (single run) | end-to-end chain proven with independent score recomputation |
-| **L2-F2-D** | C passed | Phase A + Phase B TRAIN search. **Current state: expansion readiness — the bounded 1..194 boundary, the failure-runtime measurement, the ledger→observation reader and the complete-only analysis wrapper are implemented and tested; the screen has not been expanded** | Tier 3 | influential dimensions identified by the pre-registered rule; survivors chosen |
+| **L2-F2-D** | C passed | Phase A + Phase B TRAIN search. **Current state: the first Phase-A execution attempt was lost to a runtime defect (GATK launcher interpreter unresolvable), its five observations are tainted and its store is quarantined; the runtime is now pinned and bound into every outcome by `0015`, and a clean campaign must be rebuilt before Phase A resumes** | Tier 3 | influential dimensions identified by the pre-registered rule; survivors chosen |
 | **L2-F2-E** | D complete | Phase C full-TRAIN confirmation | Tier 3 | finalists ranked on all 50 TRAIN BAMs |
 | **L2-F2-F** | E complete, everything frozen | Phase D validation confirmation | Tier 3 (small) | baseline selected |
 | **L2-F2-G** | F complete | BASELINE-QUALIFIED gate + evidence | Tier 1 + Tier 2 offline verification | gate issued, two-commit pattern |

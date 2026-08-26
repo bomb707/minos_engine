@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.gatk_runtime import runtime_kwargs
 
 from minos_engine.experiments.execution_contract import (
     ARGV_BAM_PLACEHOLDER,
@@ -291,7 +292,10 @@ def test_subprocess_runner_rejects_relative_symlink_and_wrong_hash(tmp_path: Pat
     # relative path -> rejected (no PATH-based discovery is ever attempted)
     with pytest.raises(GatkExecutionError):
         SubprocessGatkRunner(
-            executable=Path("gatk"), expected_sha256=real_sha, expected_version="4.5.0.0"
+            executable=Path("gatk"),
+            expected_sha256=real_sha,
+            expected_version="4.5.0.0",
+            **runtime_kwargs(tmp_path),
         )._verify_executable()
 
     # symlink -> rejected
@@ -299,18 +303,27 @@ def test_subprocess_runner_rejects_relative_symlink_and_wrong_hash(tmp_path: Pat
     link.symlink_to(exe)
     with pytest.raises(GatkExecutionError):
         SubprocessGatkRunner(
-            executable=link, expected_sha256=real_sha, expected_version="4.5.0.0"
+            executable=link,
+            expected_sha256=real_sha,
+            expected_version="4.5.0.0",
+            **runtime_kwargs(tmp_path),
         )._verify_executable()
 
     # wrong pinned hash -> rejected
     with pytest.raises(GatkExecutionError):
         SubprocessGatkRunner(
-            executable=exe, expected_sha256="0" * 64, expected_version="4.5.0.0"
+            executable=exe,
+            expected_sha256="0" * 64,
+            expected_version="4.5.0.0",
+            **runtime_kwargs(tmp_path),
         )._verify_executable()
 
     # the correctly pinned executable verifies
     SubprocessGatkRunner(
-        executable=exe, expected_sha256=real_sha, expected_version="4.5.0.0"
+        executable=exe,
+        expected_sha256=real_sha,
+        expected_version="4.5.0.0",
+        **runtime_kwargs(tmp_path),
     )._verify_executable()
 
 

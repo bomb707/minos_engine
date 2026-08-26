@@ -29,7 +29,11 @@ from minos_engine.storage.l2f2_phase_a_control import (
     read_l2f2_phase_a_progress,
 )
 from minos_engine.storage.l2f_gatk_runner import FakeGatkRunner
-from tests.integration.layer2_db.l2f2_phase_a_env import close_the_canary, phase_a_store
+from tests.integration.layer2_db.l2f2_phase_a_env import (
+    TEST_EXECUTION_ENVIRONMENT,
+    close_the_canary,
+    phase_a_store,
+)
 
 
 class _BrokenHarnessRunner:
@@ -275,12 +279,15 @@ def test_the_ledger_itself_makes_a_dual_outcome_and_an_unknown_code_unreachable(
     ):
         authorize_baseline_runner_connection(conn)
         conn.execute(
-            text("SELECT * FROM experiments.minos_l2f_fail_job(:h, :j, :w, :c, NULL, NULL, 1)"),
+            text(
+                "SELECT * FROM experiments.minos_l2f_fail_job(:h, :j, :w, :c, NULL, NULL, 1, :ee)"
+            ),
             {
                 "h": screen.plan.plan_hash,
                 "j": screen.job_id(dispatched.job_key),
                 "w": "ci-dual",
                 "c": "GATK_TIMEOUT",
+                "ee": TEST_EXECUTION_ENVIRONMENT.environment_hash(),
             },
         )
     # a SUCCEEDED job is not failable at all, so the second outcome never reaches the ledger.
@@ -309,3 +316,36 @@ def test_the_ledger_itself_makes_a_dual_outcome_and_an_unknown_code_unreachable(
     # the screen is still readable, and the failure it does carry is a bounded one.
     snapshot = load_phase_a_observations(screen.engine)
     assert {o.failure_code for o in snapshot.observations} == {None, "GATK_NONZERO_EXIT"}
+
+
+def test_a_screen_that_mixes_two_runtimes_is_refused(screen: Any) -> None:
+    """One campaign is one runtime.
+
+    The contaminated campaign is exactly this shape: outcomes that look comparable but were
+    produced under runtimes that were not the same. Averaging over them would present a
+    provisioning difference as a scientific one, so the reader fails closed instead.
+    """
+    other = TEST_EXECUTION_ENVIRONMENT.model_copy(update={"java_version": "21.0.1"})
+    assert other.environment_hash() != TEST_EXECUTION_ENVIRONMENT.environment_hash()
+
+    first = screen.run(worker_id="ci-env-a")
+    assert first is not None and first.status == "SUCCEEDED"
+    baseline = load_phase_a_observations(screen.engine)
+    assert baseline.execution_environment_hash == TEST_EXECUTION_ENVIRONMENT.environment_hash()
+
+    second = screen.run(worker_id="ci-env-b", runner=FakeGatkRunner(exit_code=3), environment=other)
+    assert second is not None and second.status == "FAILED"
+
+    with pytest.raises(PhaseAObservationError, match="mixes 2 execution environments"):
+        load_phase_a_observations(screen.engine)
+
+
+def test_one_runtime_across_every_decided_outcome_is_accepted(screen: Any) -> None:
+    """The positive control: a single-runtime screen reports that runtime once."""
+    assert screen.run(worker_id="ci-one-runtime") is not None
+    assert screen.run(worker_id="ci-one-runtime-2", runner=FakeGatkRunner(exit_code=4)) is not None
+
+    snapshot = load_phase_a_observations(screen.engine)
+
+    assert snapshot.execution_environment_hash == TEST_EXECUTION_ENVIRONMENT.environment_hash()
+    assert len(snapshot.observations) >= 2

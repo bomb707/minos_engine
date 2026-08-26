@@ -1258,7 +1258,7 @@ def _fixture_binary(
     ``--version`` probe the way the official launcher does.
     """
     path = tmp_path / "gatk"
-    path.write_text(body or f'#!/bin/sh\necho "{_BANNER}"\nexit 0\n', encoding="utf-8")
+    path.write_text(body or f'import sys\nprint("{_BANNER}")\nsys.exit(0)\n', encoding="utf-8")
     path.chmod(0o700)
     jar = tmp_path / (jar_name or f"gatk-package-{version}-local.jar")
     if jar_symlink:
@@ -1272,7 +1272,12 @@ def _fixture_binary(
 
 @pytest.fixture
 def _child_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Put a resolvable ``python`` and ``java`` on the PATH the CHILD would inherit."""
+    """Put a resolvable ``python`` and ``java`` on the PATH the CHILD would inherit.
+
+    Historical: production no longer resolves either through PATH — the interpreter and JVM are
+    provisioned explicitly and verified by content. The fixture is retained because these tests
+    exercise the qualifier's own probes, and it keeps them independent of the host's PATH.
+    """
     bindir = tmp_path / "runtime-bin"
     bindir.mkdir()
     for name in ("python", "java"):
@@ -1288,11 +1293,13 @@ def _runner(path: Path, *, digest: str | None = None, version: str = "4.5.0.0") 
     import hashlib as _h
 
     from minos_engine.storage.l2f_gatk_runner import SubprocessGatkRunner
+    from tests.gatk_runtime import runtime_kwargs
 
     return SubprocessGatkRunner(
         executable=path,
         expected_sha256=digest or _h.sha256(path.read_bytes()).hexdigest(),
         expected_version=version,
+        **runtime_kwargs(path.parent),
     )
 
 
@@ -1333,7 +1340,7 @@ def test_a_swapped_executable_after_pinning_fails(tmp_path: Path, _child_runtime
 
     path = _fixture_binary(tmp_path)
     runner = _runner(path)
-    path.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")  # swapped after pinning
+    path.write_text("import sys\nsys.exit(1)\n", encoding="utf-8")  # swapped after pinning
     with pytest.raises(Q.QualificationEnvironmentError, match="sha256"):
         Q.verify_official_gatk_binary(runner)
 
@@ -1351,9 +1358,13 @@ def test_a_symlinked_executable_fails(tmp_path: Path, _child_runtime: Path) -> N
 def test_a_relative_executable_fails(tmp_path: Path) -> None:
     from minos_engine.qualification import l2f_harness_ready_qualifier as Q
     from minos_engine.storage.l2f_gatk_runner import SubprocessGatkRunner
+    from tests.gatk_runtime import runtime_kwargs
 
     runner = SubprocessGatkRunner(
-        executable=Path("gatk"), expected_sha256=_H["0"], expected_version="v"
+        executable=Path("gatk"),
+        expected_sha256=_H["0"],
+        expected_version="v",
+        **runtime_kwargs(tmp_path),
     )
     with pytest.raises(Q.QualificationEnvironmentError, match="absolute"):
         Q.verify_official_gatk_binary(runner)
@@ -2143,7 +2154,7 @@ def test_a_disagreeing_observed_version_fails_closed(tmp_path: Path, _child_runt
     """Provisioned metadata may not disagree with what the REAL bundle reports."""
     from minos_engine.qualification import l2f_harness_ready_qualifier as Q
 
-    body = '#!/bin/sh\necho "The Genome Analysis Toolkit (GATK) v4.4.0.0"\nexit 0\n'
+    body = 'import sys\nprint("The Genome Analysis Toolkit (GATK) v4.4.0.0")\nsys.exit(0)\n'
     path = _fixture_binary(tmp_path, body)
     with pytest.raises(Q.QualificationEnvironmentError, match="reports version"):
         Q.verify_official_gatk_binary(_runner(path))

@@ -27,13 +27,13 @@ does not restate or override them.
 | HARNESS historical Alembic head | `0008_l2f_execution_results` (stage-scoped; the repository head advances independently) |
 | Operational DB revision | `0005_l2e_feature_view` |
 | Next gate | **BASELINE-QUALIFIED** (designed in `docs/layer2/BASELINE_QUALIFICATION.md`, not implemented) |
-| Current task | **L2-F2-D — PHASE-A EXPANSION READINESS: SOURCE READY.** The bounded expansion boundary, the failure-runtime measurement, the ledger→observation reader and the complete-only analysis wrapper exist and are tested. **Phase-A jobs 1..194 are still NOT enqueued and NOT executed**, and no new score has been observed |
-| Previous task | L2-F2-C — REAL CANARY — **PASS** (one GATK execution, one exact MINOS_SUBNET score, independently verified) |
-| Source Alembic head | `0014_l2f2_exec_failure_runtime` (migrations `0001`–`0014`) |
-| Baseline DB revision required by the runner | `0014_l2f2_exec_failure_runtime` (exact; every other revision is refused) |
+| Current task | **L2-F2-D — GATK EXECUTION-ENVIRONMENT CORRECTIVE: SOURCE READY.** The Phase-A checkpoint was diagnosed as a `RUNTIME_ENVIRONMENT_DEFECT`; the runtime is now pinned, verified before a job is claimed, and bound into every durable outcome. **Phase A is NOT complete and no Phase-B work is authorized** |
+| Previous task | L2-F2-D — Phase-A expansion + first execution checkpoint — the five new observations it produced are **TAINTED** (see below) |
+| Source Alembic head | `0015_l2f2_exec_environment` (migrations `0001`–`0015`) |
+| Baseline DB revision required by the runner | `0015_l2f2_exec_environment` (exact; every other revision is refused) |
 | Production score authority | pinned `minos-protocol/minos_subnet` @ `649bb92c…` — executed, not reimplemented |
 | Scoring contract | `l2f2-minos-scoring-v2` (`b24a07e2…`); v1 `d6f29e11…` superseded, still recomputable |
-| Real baseline DB revision | `0013_l2f2_upstream_score_oracle` — **one revision behind the source requirement.** The runner fails closed on any revision but `0014`, so the real store must be migrated `0013`→`0014` by a separate environment task before any further execution |
+| Real baseline DB revision | `0014_l2f2_exec_failure_runtime` — **QUARANTINED, DO NOT EXECUTE.** It holds 195 jobs, 1 SUCCEEDED, 5 FAILED, 1 execution result, 5 execution failures, 1 evaluation, 6 decided observations, five of which are scientifically tainted. `0015` deliberately REFUSES to upgrade it. The next environment task archives it under a forensic name and builds a fresh campaign |
 
 `select_config` remains deliberately blocked by `StageNotReadyError` and stays
 blocked until L2-H.
@@ -602,6 +602,90 @@ decision.
 1..194 remain NOT ENQUEUED and NOT EXECUTED**, no GATK ran, no MINOS_SUBNET scoring ran, no new
 score was observed, and the real database was not modified. The real store is at `0013` while the
 source now requires `0014`; migrating it is a separate environment task.
+
+### L2-F2-D — the Phase-A campaign was lost to a RUNTIME, and what closed it
+
+**What happened.** The bounded queue expansion succeeded: all 195 frozen jobs were enqueued, the
+canary untouched. The first five-job execution checkpoint then produced five durable
+`GATK_NONZERO_EXIT` failures in 730–761 ms each, which the frozen objective reads as
+CANDIDATE_FAILURE — five candidates apparently failing on ordinary parameter values while the seed
+had run 71 962 ms to a valid VCF a day earlier.
+
+**What it actually was.** A diagnostic re-ran each failed job's exact invocation outside the job
+state machine and captured what production discards. All five, plus a seed control on the very
+configuration that produced the ADMITTED canary score, exited **127** with one byte-identical
+54-byte stderr:
+
+```
+/usr/bin/env: ‘python’: No such file or directory
+```
+
+The GATK 4.5.0.0 launcher is a `#!/usr/bin/env python` script. The worker's allowlisted child
+`PATH` provided `/usr/bin/python3` and `java` but **no `python`**, so `env` aborted before a single
+argument was parsed. A control proved the mechanism exactly: same launcher, same allowlist, only
+`PATH` differing — with no `python`, exit 127; with one, `The Genome Analysis Toolkit (GATK)
+v4.5.0.0`, exit 0. Classification `RUNTIME_ENVIRONMENT_DEFECT`; the candidates are exonerated.
+
+**The five observations are TAINTED and were NOT rewritten.** They truthfully record what the
+ledger was told; what they mean scientifically is wrong. They remain immutable historical evidence,
+and the corrective is an append-only rebuild rather than a rewrite of history.
+
+**Why an in-place retry was rejected.** `l2f_experiment_jobs` enforces `UNIQUE(job_key)` and
+`UNIQUE(plan_id, plan_member_id, plan_config_id)`: one canonical row per scientific identity per
+plan. Retrying in place would need a mutable status reset, an attempt counter or a supersession
+concept — every one of which weakens the guarantee that a member × CONFIG has exactly one outcome.
+The current database therefore becomes a **quarantined forensic campaign** and the same frozen
+195-question plan is asked again on a fresh store.
+
+**The runtime is now an identity, not an assumption.**
+`minos_engine.experiments.execution_environment` binds the launcher digest, the scientific payload
+bundle, the explicit interpreter (content + version), the JVM (content + version) and the
+child-environment policy version `l2f-gatk-child-env-v2` into one domain-separated
+`execution_environment_hash`. Host paths, hostname, PID, worker id, timestamps and the literal
+`PATH` are excluded, so two hosts with the same runtime agree and the same host with a different
+interpreter does not.
+
+**Production no longer trusts the shebang.** `MINOS_L2F_GATK_PYTHON` and
+`MINOS_L2F_GATK_PYTHON_SHA256` are mandatory, the child is started as `[python, launcher, *argv]`,
+and `JAVA_HOME/bin/java` is resolved without any `PATH` lookup. Nothing is located through `PATH`,
+`which`, `/usr/bin/env` or `sys.executable`. A regression pins the exact defect: with a child
+`PATH` containing no `python` at all, `gatk --version` still succeeds.
+
+**A broken worker now consumes nothing.** `execute_next_l2f2_phase_a_job` preflights the whole
+runtime — launcher, bundle, interpreter, JVM, and the real `gatk --version` equalling the pinned
+`4.5.0.0` — **before** claiming a job, and raises without touching a row if it cannot. The same
+identity is re-verified immediately before and after HaplotypeCaller; a runtime that moved is
+`EXECUTION_ERROR`, classified INFRASTRUCTURE_INCIDENT, never a candidate failure.
+
+**A failure can now be diagnosed from the ledger.** `SubprocessGatkRunner` computed the exit code
+and the stderr digest and then raised `GatkExecutionError("GATK exited with code 127")` carrying
+neither, so the ledger stored NULL for both — 127 alone would have identified this cause without
+any re-run. `GatkNonzeroExitError` now carries `exit_code`, `stderr_sha256`, `stdout_sha256` and
+`runtime_ms` as attributes, and persistence takes them structurally, never by parsing a message.
+
+**Migration `0015_l2f2_exec_environment`** adds `execution_environment_hash` (NOT NULL, lowercase
+hex) to both outcome ledgers and widens both `SECURITY DEFINER` writers by one argument, dropping
+the narrower signatures. It **REFUSES to upgrade any database that already holds an execution
+result or failure**: those rows predate the identity, a default would be a lie and a backfill a
+guess, and relabelling them would present the contaminated campaign as a corrected one. That
+refusal is what protects the quarantined store.
+
+**Result identity v2.** `l2f-gatk-execution-result-v2` / `minos:l2f-gatk-execution-result:v2` binds
+the environment hash into the reproducible result preimage. v1 is untouched and still recomputable:
+v1 rows truthfully mean "identified without a runtime", and silently widening what that hash covers
+would rewrite the meaning of history.
+
+**The scientific plan is unchanged.** Protocol `c548e190…`, Phase-A plan `97ba5987…`, authority
+`9ad0ba48…`, candidate set `50d5f369…`, parameter space `b2d40191…` and scoring contract
+`b24a07e2…` all still recompute. No parameter range moved, no candidate was removed or
+reclassified, and D1–D8 are untouched — the new campaign asks the same 195 questions under one
+verified runtime.
+
+**Next step after green CI: CLEAN CAMPAIGN REBUILD** (a separate environment task) — archive the
+contaminated database under a forensic name such as `minos_l2f2_baseline_tainted_20260826`, create
+a fresh `minos_l2f2_baseline`, migrate base → `0015`, materialize the same frozen Phase-A plan,
+provision the corrected runner environment, run a fresh canary, then expand and re-run Phase A.
+**Phase A is not complete, no Phase-B work is authorized, and BASELINE-QUALIFIED is not issued.**
 
 #### Terminology — D1–D8 are protocol decisions
 

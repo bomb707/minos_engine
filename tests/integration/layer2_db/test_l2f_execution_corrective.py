@@ -55,6 +55,7 @@ from minos_engine.storage.l2f_plan_store import (
     _persist_experiment_plan_with_trust,
 )
 from minos_engine.storage.roles import SCHEMA_OWNER
+from tests.gatk_runtime import runtime_kwargs
 from tests.integration.layer2_db.conftest import alembic_upgrade, scratch_database
 from tests.integration.layer2_db.l2f_plan_seed import seed_upstream_for_plan
 from tests.integration.layer2_db.test_l2f_execution import Env, _prepare_env
@@ -753,6 +754,7 @@ def test_a_noisy_subprocess_keeps_captured_streams_bounded(tmp_path: Path) -> No
         timeout_seconds=120,
         max_captured_stream_bytes=limit,
         local_jar=_fixture_jar(script.parent),
+        **runtime_kwargs(script.parent),
     )
     inputs = _manifest_inputs()
     with pytest.raises(GatkExecutionError):
@@ -804,8 +806,12 @@ def _manifest_inputs() -> Any:
 def test_the_production_runner_never_uses_a_shell(tmp_path: Path) -> None:
     """A value containing shell metacharacters stays inert data (argv, never a command)."""
     marker = tmp_path / "pwned"
-    script = tmp_path / "echoargs.sh"
-    script.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\nexit 5\n', encoding="utf-8")
+    # a PYTHON fixture launcher, because production now executes the launcher through its
+    # explicitly provisioned interpreter — exactly as the real GATK launcher is executed.
+    script = tmp_path / "echoargs.py"
+    script.write_text(
+        "import sys\nfor a in sys.argv[1:]:\n    print(a)\nsys.exit(5)\n", encoding="utf-8"
+    )
     script.chmod(0o700)
     work = tmp_path / "work"
     work.mkdir()
@@ -815,6 +821,7 @@ def test_the_production_runner_never_uses_a_shell(tmp_path: Path) -> None:
         expected_version="test",
         timeout_seconds=60,
         local_jar=_fixture_jar(script.parent),
+        **runtime_kwargs(script.parent),
     )
     with pytest.raises(GatkExecutionError):
         runner.run(
