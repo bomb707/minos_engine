@@ -218,7 +218,7 @@ def test_phase_b_persists_beside_phase_a_without_a_new_migration(
                 )
             ).mappings()
         }
-    assert revision == "0016_l2f2_phase_b_execution"
+    assert revision == "0017_l2f2_owner_corrective"
     assert len(plans) == 2, "Phase A and Phase B now coexist"
     row = plans[authority.plan_hash]
     assert int(row["train_member_count"]) == PHASE_B_MEMBER_COUNT == 10

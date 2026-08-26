@@ -27,10 +27,11 @@ does not restate or override them.
 | HARNESS historical Alembic head | `0008_l2f_execution_results` (stage-scoped; the repository head advances independently) |
 | Operational DB revision | `0005_l2e_feature_view` |
 | Next gate | **BASELINE-QUALIFIED** (designed in `docs/layer2/BASELINE_QUALIFICATION.md`, not implemented) |
-| Current task | **L2-F2-E — PHASE-B EXECUTION AUTHORITY: SOURCE READY.** `0016` admits `PHASE_B` to the runner boundary and adds its own resolver; the Phase-B execution authority has a production control-plane boundary; the runner selects a resolver from the authority, never from a caller. Proven end-to-end on ephemeral PostgreSQL under a `minos_runner`-only principal. **No real Phase-B execution**: the active baseline is still at `0015` until a separate privileged environment migration |
+| Current task | **L2-F2-E — PRIVILEGED-OWNER CORRECTIVE: SOURCE READY.** `0017` takes SUPERUSER authority away from the two `0011` `SECURITY DEFINER` functions the runner calls on every execution. Ownership metadata only — same OIDs, same bodies, same grants. **The active baseline is still at `0015`** |
+| Previous task | **L2-F2-E — PHASE-B EXECUTION AUTHORITY: SOURCE READY.** `0016` admits `PHASE_B` to the runner boundary and adds its own resolver; the Phase-B execution authority has a production control-plane boundary; the runner selects a resolver from the authority, never from a caller. Proven end-to-end on ephemeral PostgreSQL under a `minos_runner`-only principal. **No real Phase-B execution**: the active baseline is still at `0015` until a separate privileged environment migration |
 | Previous task | L2-F2-E — Phase-B control plane — design, persistence, materialization, racing and promotion, held at the `0011` `PHASE_A`-only boundary now corrected |
-| Source Alembic head | `0016_l2f2_phase_b_execution` (migrations `0001`–`0016`) |
-| Baseline DB revision required by the runner | `0016_l2f2_phase_b_execution` (exact; every other revision is refused, including `0015`) |
+| Source Alembic head | `0017_l2f2_owner_corrective` (migrations `0001`–`0017`) |
+| Baseline DB revision required by the runner | `0017_l2f2_owner_corrective` (exact; every other revision is refused, including `0016`) |
 | Production score authority | pinned `minos-protocol/minos_subnet` @ `649bb92c…` — executed, not reimplemented |
 | Scoring contract | `l2f2-minos-scoring-v2` (`b24a07e2…`); v1 `d6f29e11…` superseded, still recomputable |
 | Real baseline DB revision | `0015_l2f2_exec_environment` — **not yet migrated to `0016`**; that is a separate privileged environment task. The CLEAN campaign: 1 plan, 195 jobs, 190 execution results, 5 execution failures, 190 evaluations, 0 evaluation failures, **195/195 decided**, 179 admitted, 16 candidate failures, **0 infrastructure incidents**, one execution environment `71e14a49…`. No Phase-B plan and no Phase-B job exist in it |
@@ -815,6 +816,46 @@ and one pair of outcome writers; only the resolution boundary differs.
 Phase-B plan, a prepared authority, a claim, a Phase-B resolve, `CLAIMED → RUNNING`, and a durable
 decided observation — all under a principal whose only membership is `minos_runner`. **The active
 baseline was not migrated and holds no Phase-B row of any kind.**
+
+### L2-F2-E status — PRIVILEGED-OWNER CORRECTIVE (migration `0017`)
+
+A `SECURITY DEFINER` function executes with its OWNER's authority, so **who owns one is its
+privilege boundary**. `0008` creates its writers under `SET ROLE minos_admin` for exactly that
+reason and `0016` created the Phase-B resolver the same way. `0011` did not: it created
+
+* `experiments.l2f2_resolve_claimed_execution(text, uuid, text)` and
+* `experiments.l2f2_register_execution_artifact(text, char, text, integer)`
+
+as whatever principal ran the migration — a SUPERUSER on the real store. The runner calls both on
+every execution, so the boundary whose entire purpose is to need no administrative authority has
+been making two of its calls with more authority than the control plane itself holds. The runner's
+grants were never wrong; the definer was. **No scientific result is invalidated** — the function
+bodies are narrow and unchanged, and nothing about what they returned depended on the owner — but
+real Phase-B activation was held until it was corrected.
+
+`0017_l2f2_owner_corrective` changes ownership metadata and nothing else. Both functions are
+`ALTER FUNCTION ... OWNER TO minos_admin` — never recreated — so their OIDs, signatures, bodies,
+`SECURITY DEFINER` flag and `search_path` are identical afterwards, proven field by field.
+
+| | |
+|---|---|
+| Corrected | the two `0011` definers above, owner → `minos_admin` (`rolsuper` false, `NOLOGIN`) |
+| Not corrected | `experiments.l2f2_execution_authorities` keeps its owner. Owning it would implicitly give the control plane `UPDATE`, `DELETE`, `TRUNCATE`, `ALTER` and `DROP` over append-only lineage — what `0011` deliberately withheld — and nothing needs it: a table has no definer semantics, and the re-owned resolver reads it through the `SELECT` grant it already has |
+| ACL | PostgreSQL rewrites the ACL's **grantor** when ownership moves; it cannot do otherwise. Every MINOS role's effective `EXECUTE` is unchanged, and the superuser stops being the grantor |
+| Downgrade | returns both to the migration principal (who created them in `0011`) **and re-issues `0011`'s two `EXECUTE` grants** — while `minos_admin` owns a function its explicit grant is absorbed into the owner entry, so handing ownership back would otherwise strip the control plane's own access silently |
+| Runtime | ownership is a privilege context, not decoration, so it is proven by execution: the re-owned resolver and registrar both work for a principal whose only membership is `minos_runner`, and a whole Phase-A execution runs end to end |
+| Hard regression | every `SECURITY DEFINER` function reachable from `execute_next_l2f2_phase_a_job` or `execute_next_l2f2_phase_b_job` is checked against `pg_roles.rolsuper`, not against an owner name. After `0017` the count of superuser-owned ones is **0** |
+
+#### FINDING — four `evaluation` definers have the same defect
+
+`0009`/`0010` created `evaluation.l2f_record_evaluation_result`,
+`evaluation.l2f_record_evaluation_failure`, `evaluation.l2f_register_metrics_artifact` and
+`evaluation.l2f_register_train_truth_identity` the same way: `SECURITY DEFINER`, owned by the
+migration superuser. So are the tables `evaluation.l2f_evaluation_results` and
+`evaluation.l2f_evaluation_failures`. These are **evaluator-facing, not runner-facing**, so they
+are outside the boundary `0017` was authorized to touch and are reported rather than folded in —
+widening a privileged corrective past its authorization is how privileged changes go wrong. They
+need their own migration.
 
 ---
 

@@ -115,7 +115,10 @@ BASELINE_DATABASE_NAME = "minos_l2f2_baseline"
 #: which runtime produced it is what made the first Phase-A campaign unusable. ``0016`` then adds
 #: the Phase-B execution authority and its resolver, without which no Phase-B job can be run at
 #: all: a runner that accepted ``0015`` would claim a Phase-B job and then fail to resolve it.
-BASELINE_REVISION = "0016_l2f2_phase_b_execution"
+#: ``0017`` takes SUPERUSER authority away from the two ``0011`` definers this boundary calls, so
+#: a runner at ``0016`` is one whose privileged calls still execute with more authority than the
+#: control plane has.
+BASELINE_REVISION = "0017_l2f2_owner_corrective"
 
 #: the ONLY MINOS group role the runner service may hold.
 _REQUIRED_MEMBERSHIP = "minos_runner"
