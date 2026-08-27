@@ -13,6 +13,7 @@ seam with ``FakeGatkRunner``.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -77,6 +78,10 @@ def _provision(monkeypatch: pytest.MonkeyPatch, l2f2: Any, tmp_path: Path, **bro
     launcher = _bundle(root)
     url = make_url(str(l2f2.url))
     service_url = url.set(username="minos_runner_ci_svc", password="")
+    # provisioning the JVM means provisioning both halves: the pinned identity AND the PATH entry
+    # the upstream launcher's bare `java` resolves. A deployment with only the first does not run.
+    pinned_java_home = java_home(tmp_path)
+    monkeypatch.setenv("PATH", f"{pinned_java_home / 'bin'}:{os.environ.get('PATH', '')}")
 
     values = {
         "MINOS_DATABASE_URL": service_url.render_as_string(hide_password=False),
@@ -85,7 +90,7 @@ def _provision(monkeypatch: pytest.MonkeyPatch, l2f2: Any, tmp_path: Path, **bro
         ENV_GATK_VERSION: "4.5.0.0",
         ENV_GATK_PYTHON: str(PYTHON_INTERPRETER),
         ENV_GATK_PYTHON_SHA256: hashlib.sha256(PYTHON_INTERPRETER.read_bytes()).hexdigest(),
-        ENV_JAVA_HOME: str(java_home(tmp_path)),
+        ENV_JAVA_HOME: str(pinned_java_home),
         ENV_WORK_ROOT: str(l2f2.work_root),
         "MINOS_L2F_DATASET_ROOT": str(l2f2.dataset_root.root),
         "MINOS_L2F_RESULT_ARTIFACT_ROOT": str(l2f2.tmp_path / "resultroot"),
@@ -279,3 +284,77 @@ def test_a_runtime_identity_failure_is_recorded_as_infrastructure_not_candidate(
     assert row["execution_environment_hash"] == TEST_EXECUTION_ENVIRONMENT.environment_hash()
     # and the frozen classifier reads it as OURS.
     assert classify_failure_code(str(row["failure_code"])) == "INFRASTRUCTURE_INCIDENT"
+
+
+# --------------------------------------------------------------------------- #
+# the JVM the launcher would actually start, proven BEFORE the claim
+# --------------------------------------------------------------------------- #
+def _shadow_java(tmp_path: Path) -> Path:
+    """A directory whose ``java`` is executable, reports the right version, and is NOT the pinned
+    JVM. Behaviourally indistinguishable; byte-wise not the same binary."""
+    directory = tmp_path / "shadow-java-bin"
+    directory.mkdir(exist_ok=True)
+    java = directory / "java"
+    java.write_text("#!/bin/sh\necho 'openjdk version \"17.0.11\"' 1>&2\n# impostor\n", "utf-8")
+    java.chmod(0o755)
+    return directory
+
+
+def test_a_shadowed_jvm_stops_the_phase_a_entry_before_any_job_is_claimed(
+    l2f2: Any, service: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GATK's launcher starts a BARE ``java``; a PATH that answers it wrongly consumes nothing."""
+    from minos_engine.storage.l2f2_runner import execute_next_l2f2_phase_a_job
+
+    _provision(monkeypatch, l2f2, tmp_path)
+    before = _job_state(l2f2.engine)
+    assert before and all(row["status"] == "PENDING" for row in before)
+    # PREPENDED to the otherwise correct PATH: order alone must not be able to pick the JVM.
+    monkeypatch.setenv("PATH", f"{_shadow_java(tmp_path)}:{os.environ['PATH']}")
+
+    with pytest.raises(GatkRuntimeIdentityError, match="would resolve to"):
+        execute_next_l2f2_phase_a_job(worker_id="ci-dispatch")
+
+    assert _job_state(l2f2.engine) == before, "a shadowed JVM mutated the queue"
+    assert l2f2.count(f"SELECT count(*) FROM {_RESULTS}") == 0  # noqa: S608
+    assert l2f2.count(f"SELECT count(*) FROM {_FAILURES}") == 0, (  # noqa: S608
+        "a runtime that would start the wrong JVM must never write a candidate failure"
+    )
+
+
+def test_a_shadowed_jvm_stops_the_phase_b_entry_before_it_reaches_the_database(
+    l2f2: Any, service: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Phase-B entry preflights before it derives an authority, let alone claims a job.
+
+    Phase B is the campaign this gate now guards: 480 pairs whose provenance is only as good as
+    the JVM that produced them.
+    """
+    from minos_engine.storage.l2f2_runner import execute_next_l2f2_phase_b_job
+
+    _provision(monkeypatch, l2f2, tmp_path)
+    before = _job_state(l2f2.engine)
+    # PREPENDED to the otherwise correct PATH: order alone must not be able to pick the JVM.
+    monkeypatch.setenv("PATH", f"{_shadow_java(tmp_path)}:{os.environ['PATH']}")
+
+    with pytest.raises(GatkRuntimeIdentityError, match="would resolve to"):
+        execute_next_l2f2_phase_b_job(worker_id="ci-dispatch-b")
+
+    assert _job_state(l2f2.engine) == before, "the queue moved"
+    assert l2f2.count(f"SELECT count(*) FROM {_RESULTS}") == 0  # noqa: S608
+    assert l2f2.count(f"SELECT count(*) FROM {_FAILURES}") == 0  # noqa: S608
+
+
+def test_a_correctly_provisioned_dispatch_still_passes_the_gate(
+    l2f2: Any, service: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The positive control: the pinned JVM on PATH preflights exactly as before."""
+    from minos_engine.storage.l2f_gatk_runner import SubprocessGatkRunner
+
+    _provision(monkeypatch, l2f2, tmp_path)
+    runner = SubprocessGatkRunner.from_env()
+    resolved = runner._verify_java_dispatch(runner._child_env())
+
+    assert resolved.resolve() == runner.java_binary.resolve()
+    assert runner.preflight().gatk_version == "4.5.0.0"
+    assert _job_state(l2f2.engine), "a preflight never touches the queue"

@@ -1,0 +1,141 @@
+{
+ "baseline_revision_unchanged": "0018_l2f2_eval_owner_fix",
+ "checks": {
+  "full_serial_regression": {
+   "coverage_total_percent": 90,
+   "duration_seconds": 2440.49,
+   "errors": 0,
+   "failed": 0,
+   "l2f_gatk_runner_coverage_percent": 93,
+   "passed": 3294,
+   "skipped": 2
+  },
+  "git_diff_check": "clean",
+  "mypy": "Success: no issues found in 224 source files",
+  "ruff_check": "All checks passed",
+  "ruff_format_check": "586 files already formatted"
+ },
+ "corrective": {
+  "invariants": [
+   "PATH present and non-empty",
+   "bare 'java' resolves to an executable regular file",
+   "resolved canonical realpath == JAVA_HOME/bin/java realpath",
+   "resolved content sha256 == pinned content sha256"
+  ],
+  "path_rewritten_by_runner": false,
+  "resolution": "shutil.which('java', path=child_env['PATH']) \u2014 prediction, never discovery",
+  "shell_used": false,
+  "verifier": "minos_engine.storage.l2f_gatk_runner.SubprocessGatkRunner._verify_java_dispatch",
+  "version_string_alone_accepted": false
+ },
+ "empty_path_negative": "PASS",
+ "execution_environment_hash": "71e14a49833ac77bb9dc576345fb89c4dd68f4a3ad3673eb098d38593c1ef4d3",
+ "execution_environment_hash_changed": false,
+ "execution_environment_policy": "l2f-gatk-child-env-v2",
+ "execution_environment_policy_bumped": false,
+ "false_source_claims_corrected": [
+  "module docstring: 'pins JAVA_HOME the same way' now states the bare-java dispatch contract",
+  "from_env: 'the JVM is never located through PATH' -> identity is named explicitly and never discovered",
+  "java_binary docstring: distinguishes pinned identity from launcher dispatch",
+  "_verify_java docstring: identity check, with dispatch delegated to _verify_java_dispatch",
+  "the no-discovery control now pins shutil.which to exactly one call site instead of banning the name"
+ ],
+ "finding": "GATK 4.5.0.0's launcher builds its own command as [\"java\", ...] \u2014 a bare token \u2014 and hands it to check_call, so the JVM that runs HaplotypeCaller is resolved from the child PATH. JAVA_HOME/bin/java was the pinned IDENTITY; nothing proved it was the DISPATCH.",
+ "finding_evidence": {
+  "gatk_bare_java_dispatch": true,
+  "launcher_line_240": "return [\"java\"] + PACKAGED_LOCAL_JAR_OPTIONS + [ \"-jar\", localJar]",
+  "launcher_line_416": "check_call(cmd, env=gatk_env)"
+ },
+ "gatk_launcher_sha256": "91fa870b65312522f8c77f0f7adfb5a92b8da97d91c05302ce3535516036d1b8",
+ "harness_gate": {
+  "gate_hash": "0e8411ebffa9b6a27ec47cd896efd234bd60cdb30edf6f8f998ff8f06419fcc3",
+  "mandatory_checks": 40,
+  "status": "PASS"
+ },
+ "harness_pass": true,
+ "identity_components_unchanged": {
+  "gatk_launcher_sha256": "91fa870b65312522f8c77f0f7adfb5a92b8da97d91c05302ce3535516036d1b8",
+  "gatk_runtime_bundle_sha256": "2707ad203c82a9498fb2ffad8d97d8fbdb7e07a9bb963d0c4f4bc427e8372600",
+  "gatk_version": "4.5.0.0",
+  "java_sha256": "b48547e88afbabc19425ec282fb0dc48c7b4e99ec23e72cd57bdcba524ad31b0",
+  "java_version": "17.0.9",
+  "launcher_python_sha256": "1643dacd9feaedc58f3cc581e4d22577dfe25c09b10282936186ccf0f2e61118",
+  "launcher_python_version": "3.12.3"
+ },
+ "java_home": "/home/hr/.local/opt/java17",
+ "java_missing_negative": "PASS",
+ "java_shadow_negative": "PASS",
+ "migration_added": false,
+ "no_credentials_recorded": true,
+ "path_mutation_after_preflight_negative": "PASS",
+ "per_run_dispatch_verification": true,
+ "phase_a_analysis_hash": "25794987e49ca2a17776bf355326e8ff396366a6e3340fe7f9d2e24a855c80ae",
+ "phase_a_note": "the accepted production environment resolves bare 'java' to the already-pinned JVM, verified read-only. No evidence indicates the completed clean Phase-A campaign used a different JVM; the corrective prevents an unproven possibility from recurring.",
+ "phase_a_preclaim_negative": "PASS",
+ "phase_a_reinterpreted": false,
+ "phase_a_rerun": false,
+ "phase_b_candidate_set_hash": "63b0244935edb46c799583cae9715733e52b25fba85f581a33ebe6949c09de0e",
+ "phase_b_plan_hash": "e80594043580334ddf2504577e2fa030dff0c1217ac334804d9304a0ec72596b",
+ "phase_b_preclaim_negative": "PASS",
+ "pinned_java_path": "/home/hr/.local/opt/java17/bin/java",
+ "pinned_java_sha256": "b48547e88afbabc19425ec282fb0dc48c7b4e99ec23e72cd57bdcba524ad31b0",
+ "preclaim_zero_queue_mutation": true,
+ "preflight_dispatch_verification": true,
+ "production_bare_java_path": "/home/hr/.local/opt/java17/bin/java",
+ "production_bare_java_realpath": "/home/hr/.local/opt/java17/bin/java",
+ "production_bare_java_sha256": "b48547e88afbabc19425ec282fb0dc48c7b4e99ec23e72cd57bdcba524ad31b0",
+ "production_child_path_entries": 13,
+ "production_dispatch_matches_pinned": true,
+ "production_path_note": "only the resolved Java dispatch facts are recorded; the PATH itself is host data",
+ "production_path_recorded": false,
+ "protocol_changed": false,
+ "racing_changed": false,
+ "real_database_mutated": false,
+ "real_database_revision": "0018_l2f2_eval_owner_fix",
+ "real_phase_b_evaluations": 0,
+ "real_phase_b_executions": 0,
+ "real_phase_b_jobs": 0,
+ "same_child_env_verified_and_launched": true,
+ "schema_version": "l2f2-e-java-dispatch-closure-v1",
+ "select_config_blocked": true,
+ "source_digests": {
+  "src/minos_engine/storage/l2f_gatk_runner.py": "0e2f96afdbbaaad7d3031faaeebfb51d20291c8a1b1649ae5978667cbf7d4a37",
+  "tests/gatk_runtime.py": "ba47d3f08653eaa4172f79e0d70ec86f5ddcb5ad8af82134b542fe09f7c93124",
+  "tests/integration/layer2_db/test_l2f2_runtime_preflight.py": "74b6385b8f18b1b7dc58f3378e94b50e585d0232dd86cbebacf9407bbc305de5",
+  "tests/unit/storage/test_l2f_execution_security.py": "4726c917df97a80501266fb7fc563b84758eb595d54e8c347c0a4406c7178d8e",
+  "tests/unit/storage/test_l2f_gatk_runtime_environment.py": "c9a43dcc0c893ba830291fb973f9ef74ebcc523d72f651321c5a9b0e138411a9"
+ },
+ "source_parent": "8f2df184e9288c0bb28691053a6b2b5ebbe51f3d",
+ "source_parent_ci": 33040009970,
+ "source_parent_tree": "ba3269f26d22393e956364e05c8949e2f16e5cd0",
+ "status": "SOURCE_READY",
+ "task": "L2-F2-E JVM DISPATCH CLOSURE",
+ "test_truth_accessed": false,
+ "tests": {
+  "fixture_note": "25 existing tests provisioned JAVA_HOME without putting the stub JVM on PATH \u2014 a deployment that cannot actually run GATK. Provisioning now does both halves.",
+  "new_or_updated": [
+   "tests/unit/storage/test_l2f_gatk_runtime_environment.py \u2014 7 dispatch controls",
+   "tests/unit/storage/test_l2f_execution_security.py \u2014 3 per-run controls",
+   "tests/integration/layer2_db/test_l2f2_runtime_preflight.py \u2014 3 preclaim controls",
+   "tests/gatk_runtime.py \u2014 provisioning now pins the dispatch as production does",
+   "tests/conftest.py \u2014 autouse PATH restoration"
+  ],
+  "proven": [
+   "the pinned JVM on PATH is accepted and preflights",
+   "a PATH with no java fails closed with no process started",
+   "an empty PATH fails closed",
+   "a shadowing java earlier on PATH is refused even with the pinned JVM also present",
+   "a same-version impostor is refused on content",
+   "preflight refuses before the version probe starts a launcher process",
+   "preflight verifies and probes with the SAME environment (recorded which/subprocess seams)",
+   "a correctly provisioned scientific launch still runs",
+   "a PATH that moves AFTER preflight stops the next job before Popen, with no output",
+   "the launch receives exactly the environment whose dispatch was proven",
+   "a shadowed JVM stops the Phase-A entry before any job is claimed, with zero queue mutation",
+   "a shadowed JVM stops the Phase-B entry before it reaches the database",
+   "the no-discovery control now pins shutil.which to one call site that ends in equality, not a launch"
+  ]
+ },
+ "validation_truth_accessed": false,
+ "wrong_java_negative": "PASS"
+}

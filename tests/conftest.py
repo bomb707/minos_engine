@@ -7,7 +7,9 @@ import production; production must never import `tests.*`.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -52,3 +54,21 @@ def parameter_space_path() -> Path:
 @pytest.fixture
 def default_config_path() -> Path:
     return GATK_FIXTURES / "default_config.json"
+
+
+@pytest.fixture(autouse=True)
+def _restore_path_env() -> Any:
+    """Restore ``PATH`` after every test.
+
+    Provisioning a ``SubprocessGatkRunner`` puts its stub JVM's ``bin`` on ``PATH``, exactly as a
+    real deployment does, because the GATK launcher resolves a bare ``java`` from there. That is a
+    process-wide mutation, so it is undone here rather than left to leak into the next test.
+    """
+    before = os.environ.get("PATH")
+    try:
+        yield
+    finally:
+        if before is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = before

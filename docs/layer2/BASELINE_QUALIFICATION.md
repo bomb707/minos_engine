@@ -257,8 +257,12 @@ per chromosome, chosen by lowest `sort_order` within each chromosome.
   the authority table admits `PHASE_A` or `PHASE_B` (Phase C remains a later
   migration), `canary_job_key` is nullable under a phase-semantic rule that forbids a
   Phase-B canary, and a dedicated `PHASE_B` resolver joins the untouched Phase-A one.
-  Running Phase B additionally requires the store to be at `0018` and a prepared
-  `PHASE_B` execution authority for the exact derived plan. (`0017` and `0018` take
+  **Phase B is ACTIVATED and not started**: the plan is persisted on the real
+  baseline at `0018`, its `PHASE_B` execution authority is prepared, and progress
+  is 0/480 with no job enqueued. Running it additionally requires the runner to
+  prove its JVM dispatch — GATK's launcher starts a bare `java`, so the runner
+  verifies that token resolves to the pinned `JAVA_HOME` JVM against the exact
+  child environment, before preflight and before every scientific launch. (`0017` and `0018` take
   SUPERUSER authority away from the legacy `0011` runner definers and the `0009`/`0010`
   evaluator definers respectively; both change ownership metadata only — no function
   body, no table shape and no scientific row.) **The active baseline is

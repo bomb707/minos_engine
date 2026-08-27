@@ -22,6 +22,14 @@ through an EXPLICITLY provisioned, content-verified interpreter — ``[python, l
 so the shebang and the ambient ``PATH`` are irrelevant to whether a scientific job can run, and
 pins ``JAVA_HOME`` the same way.
 
+The JVM needs one more step, because the pin alone does not decide which JVM starts. Broad's
+launcher builds its own command as ``["java", ...]`` — a BARE token — so the Java process GATK
+actually runs is whatever the child ``PATH`` resolves. ``JAVA_HOME/bin/java`` is therefore the
+pinned runtime IDENTITY, and the runner additionally proves, against the exact child environment
+it is about to hand the launcher, that bare ``java`` resolves to that same binary by canonical
+path AND by content. That proof runs at preflight and again immediately before every scientific
+launch, so a ``PATH`` that changed after startup cannot silently substitute another JVM.
+
 **No memory limit is claimed**: this runner does not install an enforced RSS/cgroup cap, so it
 deliberately does not pretend to have one.
 """
@@ -32,11 +40,13 @@ import contextlib
 import hashlib
 import os
 import re
+import shutil
 import signal
 import stat
 import subprocess  # noqa: S404 - shell=False, fixed argv, pinned executable (see module docstring)
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -551,7 +561,9 @@ class SubprocessGatkRunner:
     #: never consulted.
     launcher_python: Path
     expected_python_sha256: str
-    #: the provisioned JDK. ``java_home/bin/java`` is resolved without any PATH lookup.
+    #: the provisioned JDK. ``java_home/bin/java`` is the pinned JVM identity, resolved without any
+    #: PATH lookup — but the upstream launcher starts a BARE ``java``, so what that resolves to in
+    #: the child environment is verified against this binary before every launch.
     java_home: Path
     timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS
     #: the scientific payload the official launcher will run. Resolved fail-closed from the
@@ -569,6 +581,10 @@ class SubprocessGatkRunner:
         located through ``PATH``, ``shutil.which``, ``/usr/bin/env`` or ``sys.executable``: an
         interpreter chosen by the worker's shell is exactly how a runtime defect became five
         candidate-failure observations.
+
+        ``PATH`` is consulted in exactly one place and never to CHOOSE anything — see
+        :meth:`_verify_java_dispatch`, which predicts what the upstream launcher's bare ``java``
+        will resolve to and requires it to be the JVM already pinned here.
         """
         raw = os.environ.get(ENV_GATK_EXECUTABLE, "").strip()
         sha = os.environ.get(ENV_GATK_EXECUTABLE_SHA256, "").strip()
@@ -589,7 +605,8 @@ class SubprocessGatkRunner:
         java_home_raw = os.environ.get(ENV_JAVA_HOME, "").strip()
         if not java_home_raw:
             raise GatkExecutionError(
-                f"{ENV_JAVA_HOME} must be provisioned; the JVM is never located through PATH"
+                f"{ENV_JAVA_HOME} must be provisioned; the JVM identity is named explicitly and "
+                "never discovered"
             )
         timeout = int(os.environ.get(ENV_GATK_TIMEOUT_SECONDS, _DEFAULT_TIMEOUT_SECONDS))
         launcher = Path(raw)
@@ -637,7 +654,11 @@ class SubprocessGatkRunner:
 
     @property
     def java_binary(self) -> Path:
-        """``JAVA_HOME/bin/java``, resolved WITHOUT any PATH lookup."""
+        """The pinned JVM: ``JAVA_HOME/bin/java``, named explicitly and never discovered.
+
+        This is the identity every runtime hash is taken over. It is not, by itself, the JVM the
+        upstream launcher will start — that is what :meth:`_verify_java_dispatch` exists to prove.
+        """
         return self.java_home / "bin" / "java"
 
     def observe_python_version(self) -> str:
@@ -679,16 +700,20 @@ class SubprocessGatkRunner:
             )
         return match.group(1)
 
-    def observe_version(self) -> str:
+    def observe_version(self, *, child_env: Mapping[str, str] | None = None) -> str:
         """Bounded, offline ``gatk --version`` probe under the SAME restricted child environment.
 
         HaplotypeCaller is never executed here, and the launcher is started through the EXPLICIT
         interpreter, so this probe answers "can this worker run GATK at all" without depending on
         whether some ``python`` happens to be on PATH.
+
+        ``child_env`` lets a caller that has ALREADY verified an environment hand in that exact
+        dictionary, so the environment proved and the environment launched are the same object
+        rather than two constructions that merely ought to agree.
         """
         self._verify_executable()
         self._verify_python()
-        env = self._child_env()
+        env = dict(child_env) if child_env is not None else self._child_env()
         proc = subprocess.run(  # noqa: S603 - pinned executable, fixed argv, shell=False
             self._launch_argv("--version"),
             capture_output=True,
@@ -756,7 +781,11 @@ class SubprocessGatkRunner:
             )
 
     def _verify_java(self) -> None:
-        """The JVM must be the provisioned one, resolved from JAVA_HOME and never from PATH."""
+        """The pinned JVM must exist and be executable. Its IDENTITY never comes from PATH.
+
+        Which JVM the launcher actually starts is a separate question, answered by
+        :meth:`_verify_java_dispatch` against the exact child environment.
+        """
         home = self.java_home
         if not home.is_absolute():
             raise GatkRuntimeIdentityError(f"JAVA_HOME {home} must be an absolute path")
@@ -767,6 +796,59 @@ class SubprocessGatkRunner:
             raise GatkRuntimeIdentityError(f"{java} does not exist")
         if not os.access(java, os.X_OK):
             raise GatkRuntimeIdentityError(f"{java} is not executable")
+
+    def _verify_java_dispatch(self, child_env: Mapping[str, str]) -> Path:
+        """Prove the launcher's BARE ``java`` resolves to the pinned JVM, in THIS child env.
+
+        Broad's launcher builds ``["java", ...]`` and hands it to ``check_call``, so the JVM that
+        actually runs HaplotypeCaller is whichever one the child ``PATH`` resolves — not the one
+        this runner hashed. Pinning ``JAVA_HOME`` fixes the IDENTITY; it does not fix the
+        DISPATCH, and the two only coincide because the provisioned ``PATH`` happens to put the
+        pinned JDK first. "Happens to" is not a contract.
+
+        So the resolution is predicted here, exactly as the launcher will perform it, against the
+        very dictionary about to be passed as ``env=``. Note what this is NOT: nothing is
+        *discovered* through ``PATH``. The pinned binary is already known; this asks what the
+        launcher would pick and refuses unless the answer is that same binary — by canonical path
+        AND by content, because a same-version impostor is still a different JVM.
+
+        Returns the resolved path so a caller can record what it proved.
+        """
+        raw_path = child_env.get("PATH", "")
+        if not raw_path.strip():
+            raise GatkRuntimeIdentityError(
+                "the child environment supplies no PATH, so the GATK launcher's bare 'java' "
+                "cannot resolve to anything; the JVM would be chosen by the C library's default "
+                "search rather than by provisioning"
+            )
+        resolved_raw = shutil.which("java", path=raw_path)
+        if resolved_raw is None:
+            raise GatkRuntimeIdentityError(
+                "the child PATH resolves no executable named 'java'. The GATK launcher invokes a "
+                "bare 'java', so this worker would fail inside the launcher with the JVM never "
+                "started — the same shape as the interpreter defect that cost five observations"
+            )
+        resolved = Path(resolved_raw)
+        if not resolved.is_file() or not os.access(resolved, os.X_OK):
+            raise GatkRuntimeIdentityError(
+                f"the child PATH resolves 'java' to {resolved}, which is not an executable file"
+            )
+        pinned = self.java_binary
+        if resolved.resolve() != pinned.resolve():
+            raise GatkRuntimeIdentityError(
+                f"the GATK launcher's bare 'java' would resolve to {resolved} "
+                f"({resolved.resolve()}), but this worker is provisioned for {pinned}. The JVM "
+                "that runs the science must be the JVM whose identity the result is recorded "
+                "under"
+            )
+        actual = _stable_sha256(resolved)
+        expected = _stable_sha256(pinned)
+        if actual != expected:
+            raise GatkRuntimeIdentityError(
+                f"the JVM the launcher would start hashes to {actual}, but the pinned JVM hashes "
+                f"to {expected}; a matching path is not a matching binary"
+            )
+        return resolved
 
     def java_sha256(self) -> str:
         """The content identity of the provisioned ``java`` binary."""
@@ -800,15 +882,20 @@ class SubprocessGatkRunner:
         """Prove this worker can run GATK AT ALL, before any scientific job is at stake.
 
         Verifies the launcher, the scientific payload bundle, the explicit interpreter and the
-        provisioned JVM by content, then runs the real ``gatk --version`` through that exact
-        interpreter and requires the pinned version. A worker that cannot pass this must never
-        consume a candidate observation, so the caller runs it BEFORE claiming a job.
+        provisioned JVM by content, proves that the child environment's bare ``java`` is that same
+        JVM, and only then runs the real ``gatk --version`` through that exact interpreter and
+        that exact environment. A worker that cannot pass this must never consume a candidate
+        observation, so the caller runs it BEFORE claiming a job — and a bad PATH now fails here,
+        before a launcher process exists at all.
         """
         self._verify_executable()
         self._verify_python()
         self._verify_java()
+        # ONE dictionary: verified here, and handed to the probe below unchanged.
+        child_env = self._child_env()
+        self._verify_java_dispatch(child_env)
         environment = self.execution_environment()
-        observed = self.observe_version()
+        observed = self.observe_version(child_env=child_env)
         if observed != self.expected_version:
             raise GatkRuntimeIdentityError(
                 f"the GATK bundle reports version {observed!r}, but this worker is provisioned "
@@ -868,6 +955,10 @@ class SubprocessGatkRunner:
             expected_execution_environment_hash, when="before execution"
         )
         env = self._child_env()
+        # Preflight proved this at service startup, which is not when this job runs: a PATH can be
+        # re-provisioned between job 1 and job N. Re-prove it against the dictionary THIS launch
+        # will use, immediately before use, so the window between check and launch is empty.
+        self._verify_java_dispatch(env)
         stdout_path = work_dir / "gatk.stdout"
         stderr_path = work_dir / "gatk.stderr"
         limit = self.max_captured_stream_bytes

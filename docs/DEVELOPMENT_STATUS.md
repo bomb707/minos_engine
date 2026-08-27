@@ -27,7 +27,9 @@ does not restate or override them.
 | HARNESS historical Alembic head | `0008_l2f_execution_results` (stage-scoped; the repository head advances independently) |
 | Operational DB revision | `0005_l2e_feature_view` |
 | Next gate | **BASELINE-QUALIFIED** (designed in `docs/layer2/BASELINE_QUALIFICATION.md`, not implemented) |
-| Current task | **L2-F2-E — EVALUATOR-OWNER CORRECTIVE: SOURCE READY.** `0018` finishes what `0017` began: the four `0009`/`0010` evaluator definers and their two outcome ledgers are re-owned to `minos_admin`. No superuser-owned definer remains on either the runner or the evaluator production path. **The active baseline is still at `0015`** |
+| Current task | **L2-F2-E — JVM DISPATCH CLOSURE: SOURCE READY.** GATK's launcher starts a bare `java`; the runner now proves that token resolves to the pinned `JAVA_HOME` JVM against the exact child environment, at preflight and before every scientific launch. No migration, no protocol change, execution-environment hash unchanged |
+| Real baseline | **`0018_l2f2_eval_owner_fix`. Phase A 195/195 COMPLETE. Phase B ACTIVATED: plan `e8059404…` persisted, `PHASE_B` authority prepared, 0/480 — NOT STARTED** |
+| Previous task | **L2-F2-E — EVALUATOR-OWNER CORRECTIVE: SOURCE READY.** `0018` finishes what `0017` began: the four `0009`/`0010` evaluator definers and their two outcome ledgers are re-owned to `minos_admin`. No superuser-owned definer remains on either the runner or the evaluator production path. **The active baseline is still at `0015`** |
 | Previous task | **L2-F2-E — PRIVILEGED-OWNER CORRECTIVE: SOURCE READY.** `0017` took SUPERUSER authority away from the two `0011` `SECURITY DEFINER` functions the runner calls |
 | Previous task | **L2-F2-E — PHASE-B EXECUTION AUTHORITY: SOURCE READY.** `0016` admits `PHASE_B` to the runner boundary and adds its own resolver; the Phase-B execution authority has a production control-plane boundary; the runner selects a resolver from the authority, never from a caller. Proven end-to-end on ephemeral PostgreSQL under a `minos_runner`-only principal. **No real Phase-B execution**: the active baseline is still at `0015` until a separate privileged environment migration |
 | Previous task | L2-F2-E — Phase-B control plane — design, persistence, materialization, racing and promotion, held at the `0011` `PHASE_A`-only boundary now corrected |
@@ -817,6 +819,33 @@ and one pair of outcome writers; only the resolution boundary differs.
 Phase-B plan, a prepared authority, a claim, a Phase-B resolve, `CLAIMED → RUNNING`, and a durable
 decided observation — all under a principal whose only membership is `minos_runner`. **The active
 baseline was not migrated and holds no Phase-B row of any kind.**
+
+### L2-F2-E status — JVM DISPATCH CLOSURE
+
+Real Phase-B activation surfaced one concrete gap, and it is the exit-127 defect one level down.
+`0015` fixed how the launcher *starts*: an explicit, content-verified interpreter, so a `PATH`
+without `python` can no longer stop a job. But Broad's launcher then builds its own command as
+`["java", ...]` — a bare token — so the JVM that actually runs HaplotypeCaller is whatever the
+child `PATH` resolves. `JAVA_HOME/bin/java` was the pinned *identity*; nothing proved it was the
+*dispatch*.
+
+The two coincided only because the provisioned `PATH` happens to put the pinned JDK first. That
+was verified read-only on the live runtime — bare `java` resolves to `/home/hr/.local/opt/java17/
+bin/java`, sha `b48547e8…`, the pinned binary — so **the completed Phase-A campaign is unaffected
+and is not reopened**. What was missing was a proof, not a correct outcome.
+
+The runner now derives that proof from the exact environment dictionary it is about to pass as
+`env=`: bare `java` must resolve to the pinned JVM by canonical path *and* by content. It runs at
+`preflight()` — before any launcher process exists, so a bad `PATH` costs no observation — and
+again immediately before every scientific launch, because a `PATH` can move between service
+startup and job N. The same dictionary that is proven is the one that is launched; verifying one
+environment and running another is precisely the hole being closed.
+
+Deliberately unchanged: policy stays `l2f-gatk-child-env-v2` and the execution-environment hash
+stays `71e14a49…`. v2 already claimed the JVM was pinned — this makes the implementation enforce
+what it claimed, and a new policy version would falsely imply a different runtime. Source comments
+that said the JVM "is never located through PATH" were literally untrue of the upstream launcher
+and now state the real contract.
 
 ### L2-F2-E status — PRIVILEGED-OWNER CORRECTIVE (migration `0017`)
 

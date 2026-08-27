@@ -147,6 +147,31 @@ Deliberately **not** granted:
 * generic `INSERT` on `catalog.artifacts`
 * anything in the `evaluation` schema — the runner is truth-free by construction
 
+## The JVM the launcher actually starts
+
+`JAVA_HOME/bin/java` is the **pinned JVM identity**: it is named explicitly, never discovered, and
+its bytes are what every runtime hash is taken over. That pin does not, by itself, decide which
+JVM runs, because Broad's launcher builds its own command as `["java", ...]` — a bare token — and
+hands it to `check_call`. The Java process that runs HaplotypeCaller is therefore whatever the
+**child `PATH`** resolves.
+
+The runner now closes that gap. Against the exact environment dictionary it is about to pass as
+`env=`, it predicts what the launcher's bare `java` would resolve to and refuses unless that is
+the pinned binary by **canonical path and by content** — a same-version impostor is still a
+different JVM. The proof runs twice: at `preflight()`, before any launcher process exists, and
+again immediately before every scientific launch, because a `PATH` can be re-provisioned between
+service startup and job N.
+
+Nothing is discovered by this: the binary is already known, and `PATH` is consulted only to ask
+what upstream would pick. The child `PATH` is not rewritten — whatever allowlisted `PATH` is
+provisioned must simply resolve `java` to the pinned JVM, which the accepted deployment does
+(`JAVA_HOME/bin` is on it).
+
+This is the same shape as the exit-127 interpreter defect, one level down: there, `env` could not
+find `python`; here, the launcher could find *a* `java` that was not the provisioned one. The
+execution-environment identity is unchanged — policy `l2f-gatk-child-env-v2` already claimed the
+JVM was pinned, and this makes the implementation enforce what it claimed.
+
 ## GATK runtime provisioning (mandatory)
 
 The GATK 4.5.0.0 launcher is a `#!/usr/bin/env python` script. Under the original policy a worker

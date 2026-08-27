@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -129,19 +130,46 @@ def test_the_launcher_shebang_is_never_consulted(tmp_path: Path) -> None:
 
 
 def test_the_boundary_starts_no_process_it_cannot_name(tmp_path: Path) -> None:
-    """No discovery API is reachable from the production module: nothing is located by name."""
+    """Nothing this boundary EXECUTES is located by name.
+
+    ``shutil.which`` appears exactly once, and not to choose anything: Broad's launcher builds its
+    own ``["java", ...]``, so the runner predicts what that bare token would resolve to in the
+    exact child environment and refuses unless it is the JVM already pinned. The distinction that
+    matters is between *discovering* an executable and *proving* which one upstream will pick, so
+    this control now pins the single permitted call site rather than banning the name.
+    """
     import ast
 
     source = Path("src/minos_engine/storage/l2f_gatk_runner.py").read_text("utf-8")
+    tree = ast.parse(source)
     called: set[str] = set()
-    for node in ast.walk(ast.parse(source)):
+    which_sites: list[str] = []
+    for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             target = node.func
-            called.add(
-                target.attr if isinstance(target, ast.Attribute) else getattr(target, "id", "")
-            )
-    for forbidden in ("which", "find_executable", "executable"):
+            name = target.attr if isinstance(target, ast.Attribute) else getattr(target, "id", "")
+            called.add(name)
+    for function in ast.walk(tree):
+        if isinstance(function, ast.FunctionDef):
+            for node in ast.walk(function):
+                if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "which":
+                    which_sites.append(function.name)
+
+    for forbidden in ("find_executable", "executable"):
         assert forbidden not in called, f"the runner discovers an executable via {forbidden!r}"
+    assert which_sites == ["_verify_java_dispatch"], (
+        f"shutil.which is reachable from {which_sites}; the ONLY permitted use is proving the "
+        "launcher's bare-java dispatch against the pinned JVM"
+    )
+    # and that one use must end in an equality against the pinned binary, never in a launch.
+    verifier = next(
+        f
+        for f in ast.walk(tree)
+        if isinstance(f, ast.FunctionDef) and f.name == "_verify_java_dispatch"
+    )
+    body = ast.get_source_segment(source, verifier) or ""
+    assert "java_binary" in body and "_stable_sha256" in body
+    assert "Popen" not in body and "subprocess" not in body
     assert "sys" not in source.split("import")[0]
 
 
@@ -422,3 +450,131 @@ def test_no_shell_is_involved_anywhere(tmp_path: Path) -> None:
     )
     assert os.name == "posix"
     assert subprocess.run  # the module under test uses the same API surface
+
+
+# --------------------------------------------------------------------------- #
+# THE second dispatch defect: the launcher starts a BARE `java`
+# --------------------------------------------------------------------------- #
+_JAVA_STUB = "#!/bin/sh\necho 'openjdk version \"17.0.11\"' 1>&2\n"
+
+
+def _java_bin(tmp_path: Path, name: str, body: str = _JAVA_STUB) -> Path:
+    """A directory containing an executable called ``java``."""
+    directory = tmp_path / name
+    directory.mkdir(parents=True, exist_ok=True)
+    java = directory / "java"
+    java.write_text(body, encoding="utf-8")
+    java.chmod(0o755)
+    return directory
+
+
+def test_the_pinned_jvm_on_PATH_is_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The accepted deployment shape: bare ``java`` resolves to the JVM that was pinned."""
+    runner = _runner(tmp_path)
+    monkeypatch.setenv("PATH", str(runner.java_home / "bin"))
+
+    resolved = runner._verify_java_dispatch(runner._child_env())
+
+    assert resolved.resolve() == runner.java_binary.resolve()
+    assert runner.preflight().gatk_version == _VERSION
+
+
+def test_a_PATH_without_java_fails_closed_before_any_launcher_starts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The launcher would fail INSIDE itself with the JVM never started. Refuse first."""
+    runner = _runner(tmp_path)
+    monkeypatch.setenv("PATH", str(_java_bin(tmp_path, "empty-bin", body="").parent / "nothing"))
+
+    started: list[Any] = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: started.append(a) or None)
+    with pytest.raises(GatkRuntimeIdentityError, match="resolves no executable named 'java'"):
+        runner._verify_java_dispatch(runner._child_env())
+    assert started == [], "no process may be started once dispatch cannot be proven"
+
+
+def test_an_empty_PATH_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = _runner(tmp_path)
+    monkeypatch.setenv("PATH", "   ")
+    with pytest.raises(GatkRuntimeIdentityError, match="supplies no PATH"):
+        runner._verify_java_dispatch(runner._child_env())
+
+
+def test_a_shadowing_java_earlier_on_PATH_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PATH ORDER must not be able to choose the JVM. The pinned one is still on the path."""
+    runner = _runner(tmp_path)
+    shadow = _java_bin(tmp_path, "shadow-bin")
+    monkeypatch.setenv("PATH", f"{shadow}:{runner.java_home / 'bin'}")
+
+    with pytest.raises(GatkRuntimeIdentityError, match="would resolve to"):
+        runner._verify_java_dispatch(runner._child_env())
+
+
+def test_a_same_version_impostor_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reporting the right version is not being the right JVM.
+
+    The impostor prints the identical banner the pinned stub prints, so nothing about its
+    behaviour distinguishes it. Its bytes do, and that is what the runner compares.
+    """
+    runner = _runner(tmp_path)
+    impostor = _java_bin(tmp_path, "impostor-bin", body=_JAVA_STUB + "# same banner, other bytes\n")
+    assert (impostor / "java").read_text().startswith(_JAVA_STUB)
+    monkeypatch.setenv("PATH", str(impostor))
+
+    with pytest.raises(GatkRuntimeIdentityError):
+        runner._verify_java_dispatch(runner._child_env())
+
+
+def test_preflight_proves_dispatch_before_it_starts_the_version_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bad PATH must fail before a launcher process exists at all."""
+    runner = _runner(tmp_path)
+    monkeypatch.setenv("PATH", str(_java_bin(tmp_path, "shadow-bin")))
+
+    launched: list[Any] = []
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: launched.append(a) or pytest.fail("a probe started")
+    )
+    with pytest.raises(GatkRuntimeIdentityError):
+        runner.preflight()
+    assert launched == []
+
+
+def test_preflight_verifies_and_probes_with_the_SAME_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify ENV_A then launch with ENV_B is exactly the hole this closes."""
+    runner = _runner(tmp_path)
+    monkeypatch.setenv("PATH", str(runner.java_home / "bin"))
+
+    verified: list[str] = []
+    real_which = shutil.which
+
+    def _recording_which(cmd: str, *, path: str | None = None, **kw: Any) -> str | None:
+        if cmd == "java":
+            verified.append(path or "")
+        return real_which(cmd, path=path, **kw)
+
+    launched: list[str] = []
+    real_run = subprocess.run
+
+    def _recording_run(*args: Any, **kwargs: Any) -> Any:
+        launched.append(kwargs.get("env", {}).get("PATH", ""))
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(shutil, "which", _recording_which)
+    monkeypatch.setattr(subprocess, "run", _recording_run)
+    runner.preflight()
+
+    assert verified, "dispatch was never verified"
+    assert launched, "no probe ran"
+    assert set(launched) == {verified[0]}, (
+        "the PATH that was proven is not the PATH the launcher received"
+    )

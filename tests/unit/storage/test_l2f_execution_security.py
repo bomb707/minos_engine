@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ from minos_engine.experiments.execution_contract import (
     ExecutionInput,
     GatkExecutionError,
     GatkOutputError,
+    GatkRuntimeIdentityError,
     GatkTimeoutError,
 )
 from minos_engine.experiments.gatk_live_space import canonicalize_live_gatk_config
@@ -784,3 +786,84 @@ def test_the_fake_runner_accepts_the_protocol_parameter_without_claiming_verific
     # it does not pretend to verify a bundle it does not own
     assert "runtime_bundle_sha256()" not in source
     assert FakeGatkRunner.__name__ != "SubprocessGatkRunner"
+
+
+# --------------------------------------------------------------------------- #
+# the JVM the launcher actually starts — re-proven at EVERY scientific launch
+# --------------------------------------------------------------------------- #
+def test_a_scientific_launch_reproves_java_dispatch_against_its_own_environment(
+    tmp_path: Path,
+) -> None:
+    """The positive control: an unchanged, correctly provisioned dispatch runs as before."""
+    script = _script(tmp_path, "gatk.sh", _VCF_WRITER)
+    runner = _runner_for(script, timeout_seconds=60)
+    work = _work(tmp_path)
+
+    outcome = _run(runner, argv=(), work_dir=work, vcf_path=work / "o.vcf", inputs=_inputs())
+
+    assert outcome.exit_code == 0
+    assert shutil.which("java", path=os.environ["PATH"]) is not None
+
+
+def test_a_PATH_that_moves_AFTER_preflight_stops_the_next_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Preflight happens at service startup; job N happens later. Both must be proven.
+
+    A worker that passed preflight hours ago is not evidence about the environment this job will
+    hand the launcher, so the dispatch is re-derived from the very dictionary about to be used —
+    and a JVM that moved underneath it stops the job before HaplotypeCaller is started, rather
+    than producing an observation attributed to a runtime that did not run it.
+    """
+    script = _script(tmp_path, "gatk.sh", _VCF_WRITER)
+    runner = _runner_for(script, timeout_seconds=60)
+    assert runner._verify_java_dispatch(runner._child_env())  # the worker starts out healthy
+
+    shadow = tmp_path / "late-shadow-bin"
+    shadow.mkdir()
+    (shadow / "java").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (shadow / "java").chmod(0o755)
+    monkeypatch.setenv("PATH", str(shadow))
+
+    work = _work(tmp_path)
+    launched: list[Any] = []
+    real_popen = subprocess.Popen
+    monkeypatch.setattr(
+        subprocess, "Popen", lambda *a, **k: launched.append(a) or real_popen(*a, **k)
+    )
+    with pytest.raises(GatkRuntimeIdentityError, match="would resolve to"):
+        _run(runner, argv=(), work_dir=work, vcf_path=work / "o.vcf", inputs=_inputs())
+
+    assert launched == [], "the scientific process must not start once dispatch fails"
+    assert not (work / "o.vcf").exists(), "no output, and therefore no outcome to attribute"
+
+
+def test_the_launch_receives_exactly_the_environment_whose_dispatch_was_proven(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Prohibits verify-ENV_A-then-launch-ENV_B inside the runner's own boundary."""
+    script = _script(tmp_path, "gatk.sh", _VCF_WRITER)
+    runner = _runner_for(script, timeout_seconds=60)
+    work = _work(tmp_path)
+
+    proven: list[str] = []
+    real_which = shutil.which
+
+    def _recording_which(cmd: str, *, path: str | None = None, **kw: Any) -> str | None:
+        if cmd == "java":
+            proven.append(path or "")
+        return real_which(cmd, path=path, **kw)
+
+    launched: list[str] = []
+    real_popen = subprocess.Popen
+
+    def _recording_popen(*args: Any, **kwargs: Any) -> Any:
+        launched.append(kwargs["env"]["PATH"])
+        return real_popen(*args, **kwargs)
+
+    monkeypatch.setattr(shutil, "which", _recording_which)
+    monkeypatch.setattr(subprocess, "Popen", _recording_popen)
+    _run(runner, argv=(), work_dir=work, vcf_path=work / "o.vcf", inputs=_inputs())
+
+    assert len(proven) == 1 and len(launched) == 1
+    assert proven[0] == launched[0], "the proven PATH is not the launched PATH"
