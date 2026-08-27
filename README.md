@@ -18,7 +18,7 @@ fixture-backed Validator Twin (`src/minos_engine/twin/`, declared parity
 **FIXTURE_REPLAY**; composite score typed-unavailable — see
 `docs/twin/SCORING_CONTRACT.md`).
 
-### Layer 1 (truth-free profiling) — implemented
+#### Layer 1 (truth-free profiling) — implemented
 - Frozen contracts + 7 schemas (request, result, fingerprint, integration report,
   bam-profile, window-profile, manifest); typed unavailable measurements.
 - One-pass, bounded-memory scan (Welford, fixed histograms, deterministic
