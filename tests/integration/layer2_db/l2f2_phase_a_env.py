@@ -36,7 +36,7 @@ from tests.integration.layer2_db.conftest import alembic_upgrade, scratch_databa
 from tests.integration.layer2_db.test_l2f_plan_store import _engine
 
 BASELINE_DB = "minos_l2f2_baseline"
-REQUIRED_REVISION = "0018_l2f2_eval_owner_fix"
+REQUIRED_REVISION = "0019_l2f2_phase_b_bootstrap"
 _CI_ROLE = "minos_phase_a_ci_svc"
 _EVAL_ROLE = "minos_phase_a_eval_svc"
 

@@ -23,9 +23,13 @@ contains one would let a defect of ours eliminate a candidate, which is exactly 
 first Phase-A campaign made at a smaller scale.
 
 Materializing a job is not authorizing it. Executing one additionally requires the store to be at
-``0016`` and a prepared ``PHASE_B`` execution authority for this exact plan
-(:mod:`~minos_engine.storage.l2f2_phase_b_prepare`) — an administrative act this module never
-performs as a side effect of filling a queue.
+the runner's exact ``BASELINE_REVISION`` and a prepared ``PHASE_B`` execution authority for this
+exact plan (:mod:`~minos_engine.storage.l2f2_phase_b_prepare`) — an administrative act this module
+never performs as a side effect of filling a queue.
+
+Everything in this module is CONTROL PLANE: it derives the Phase-B design from the completed
+Phase-A scientific ledger, which is exactly the reading a runner must never do. The runner learns
+only which plan it may claim within, through the truth-free bootstrap ``0019`` provides.
 """
 
 from __future__ import annotations

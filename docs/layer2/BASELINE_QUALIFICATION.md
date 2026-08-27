@@ -258,8 +258,11 @@ per chromosome, chosen by lowest `sort_order` within each chromosome.
   migration), `canary_job_key` is nullable under a phase-semantic rule that forbids a
   Phase-B canary, and a dedicated `PHASE_B` resolver joins the untouched Phase-A one.
   **Phase B is ACTIVATED and not started**: the plan is persisted on the real
-  baseline at `0018`, its `PHASE_B` execution authority is prepared, and progress
-  is 0/480 with no job enqueued. Running it additionally requires the runner to
+  baseline, its `PHASE_B` execution authority is prepared, batch 0 is materialized
+  as 240 PENDING jobs, and progress is 0/480 decided. A Phase-B worker additionally
+  needs `0019`'s truth-free bootstrap: the runner is denied the scientific ledger,
+  so it is told only which plan it may claim within and which runtime Phase A ran
+  under, never how the design was derived. Running it additionally requires the runner to
   prove its JVM dispatch — GATK's launcher starts a bare `java`, so the runner
   verifies that token resolves to the pinned `JAVA_HOME` JVM against the exact
   child environment, before preflight and before every scientific launch. (`0017` and `0018` take

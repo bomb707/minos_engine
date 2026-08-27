@@ -655,10 +655,12 @@ def test_the_re_owned_writers_persist_a_real_evaluation_under_evaluator_only(
     recorded upstream score, at the accepted test seam.
     """
     from minos_engine.baseline.phase_a_observations import load_phase_a_observations
-    from tests.integration.layer2_db.l2f2_phase_a_env import phase_a_store
+    from tests.integration.layer2_db.l2f2_phase_a_env import REQUIRED_REVISION, phase_a_store
 
     with phase_a_store(isolated_pg_base_url, tmp_path) as env:
-        assert _revision(env.engine) == _HEAD
+        # the store is built at whatever revision the RUNNER currently requires; 0018's own
+        # lifecycle pin above is about this migration, not about where the campaign store lives.
+        assert _revision(env.engine) == REQUIRED_REVISION
         dispatched = env.run(worker_id="ci-eval-owner")
         assert dispatched is not None and dispatched.status == "SUCCEEDED"
 

@@ -84,6 +84,10 @@ Granted by `0011` through `minos_runner`, on top of the existing `0007`/`0008` g
 * `EXECUTE` on `experiments.l2f2_resolve_claimed_execution` — the truth-free scientific identity
   of a job this worker already owns. Truth digests, mutation digests and evaluation rows are
   structurally absent from its result type, and a non-TRAIN member cannot be resolved at all
+* `EXECUTE` on `experiments.l2f2_resolve_phase_b_runner_bootstrap` — which Phase-B plan this
+  worker may claim within, and the execution environment the completed Phase-A campaign ran under.
+  Two strings, no arguments, no science: the Phase-B design itself is derived by the control plane
+  long beforehand and is already durable as a persisted plan and a recorded authority
 * `EXECUTE` on `experiments.l2f2_resolve_claimed_phase_b_execution` — the same truth-free
   resolution for Phase B, with its own fixed `phase = 'PHASE_B'` predicate. Which function is
   called is decided by the authority being executed, never by an argument, and neither resolver
@@ -97,7 +101,7 @@ Granted by `0011` through `minos_runner`, on top of the existing `0007`/`0008` g
 
 The runner authority **functions and grants originate in `0011`**, and `0016` adds exactly one
 more: the Phase-B resolver. The revision the boundary requires on every connection is
-**`0018_l2f2_eval_owner_fix`**, exactly — never a floor, never `head`.
+**`0019_l2f2_phase_b_bootstrap`**, exactly — never a floor, never `head`.
 
 The reason it tracks a later revision than its own functions is that the runner and the evaluator
 **share one database**. Neither later migration grants the runner anything:
@@ -118,6 +122,11 @@ The reason it tracks a later revision than its own functions is that the runner 
   nullable under a phase-semantic rule (Phase A must carry a canary, Phase B must not), and adds
   `experiments.l2f2_resolve_claimed_phase_b_execution`. The runner gains `EXECUTE` on that one
   function and nothing else — no table privilege anywhere, and the Phase-A resolver is untouched.
+* `0019` adds `experiments.l2f2_resolve_phase_b_runner_bootstrap()` — the ONLY way this service
+  learns which Phase-B plan it may consume and which runtime that plan's science was chosen under.
+  It takes no arguments, reads nothing in the `evaluation` schema, and grants the runner one more
+  `EXECUTE` and no table access. Without it a Phase-B worker cannot start at all, which is why the
+  required revision moves.
 * `0018` re-owns the four `0009`/`0010` evaluator definers and their two outcome ledgers to
   `minos_admin`. It grants the runner nothing and touches nothing the runner reads; the revision
   moves because the runner and the evaluator share one store.
@@ -133,7 +142,7 @@ database, and without `0016` a claimed Phase-B job cannot be resolved at all. Th
 why the revision check is exact.
 
 The service principal's authority grows by exactly one `EXECUTE` at `0016` and is otherwise
-identical under all seven revisions. What changes at `0017` is not the runner's authority but the
+identical under all eight revisions. What changes at `0017` is not the runner's authority but the
 **definer's**: every `SECURITY DEFINER` function this service can reach is owned by `minos_admin`,
 and none is owned by a superuser. That is asserted through `pg_roles.rolsuper` rather than by
 owner name.

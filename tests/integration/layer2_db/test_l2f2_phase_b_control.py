@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DatabaseError
 
 from minos_engine.baseline.phase_a_analysis import derive_completed_phase_a_analysis
@@ -218,7 +218,7 @@ def test_phase_b_persists_beside_phase_a_without_a_new_migration(
                 )
             ).mappings()
         }
-    assert revision == "0018_l2f2_eval_owner_fix"
+    assert revision == "0019_l2f2_phase_b_bootstrap"
     assert len(plans) == 2, "Phase A and Phase B now coexist"
     row = plans[authority.plan_hash]
     assert int(row["train_member_count"]) == PHASE_B_MEMBER_COUNT == 10
@@ -798,3 +798,106 @@ def test_a_phase_b_job_executes_through_the_least_privilege_runner(
     assert read_l2f2_phase_a_progress(env.engine) == before_phase_a
     with pytest.raises(PhaseBExpansionError, match="batch 0 is not complete"):
         race_l2f2_phase_b_batch0(env.engine)
+
+
+# --------------------------------------------------------------------------- #
+# the runner learns which plan it may consume — and nothing else
+# --------------------------------------------------------------------------- #
+def test_the_runner_bootstrap_returns_the_plan_and_the_runtime_and_nothing_more(
+    authorized: Any, authority: Any
+) -> None:
+    """The corrective for L2F2E-F6, on the real shape: a truth-free ticket, not an authority.
+
+    The first real Phase-B invocation opened the store as the runner and then built a
+    ``PhaseBAuthority``, whose derivation reads the completed Phase-A SCIENTIFIC ledger. The
+    runner is denied that on purpose. It needs two strings, and this returns exactly two.
+    """
+    from minos_engine.storage.l2f2_runner import _resolve_phase_b_runner_bootstrap
+
+    env, _result = authorized
+    with env.service.connect() as conn:
+        bootstrap = _resolve_phase_b_runner_bootstrap(conn)
+
+    assert bootstrap.authority.plan_hash == authority.plan_hash
+    assert bootstrap.authority.phase == "PHASE_B"
+    assert bootstrap.execution_environment_hash == authority.execution_environment_hash
+    # it is NOT a PhaseBAuthority: no configs, no members, no design, no analysis.
+    assert not hasattr(bootstrap.authority, "design")
+    assert not hasattr(bootstrap.authority, "configs")
+    assert set(vars(bootstrap.authority)) == {"plan_hash", "phase"}
+
+
+def test_the_runner_principal_still_cannot_read_the_scientific_ledger(authorized: Any) -> None:
+    """The bootstrap must not have been bought with a grant."""
+    env, _result = authorized
+    with env.service.connect() as conn:
+        assert (
+            conn.execute(
+                text("SELECT has_schema_privilege(session_user, 'evaluation', 'USAGE')")
+            ).scalar_one()
+            is False
+        )
+        for table in (
+            "experiments.l2f2_execution_authorities",
+            "experiments.l2f_experiment_plans",
+            "experiments.l2f_experiment_jobs",
+            "experiments.l2f_execution_results",
+        ):
+            assert (
+                conn.execute(
+                    text("SELECT has_table_privilege(session_user, :t, 'SELECT')"), {"t": table}
+                ).scalar_one()
+                is False
+            ), table
+    # and the derivation it used to attempt is genuinely out of reach for that principal.
+    from sqlalchemy.exc import ProgrammingError
+
+    from minos_engine.baseline.phase_b import build_l2f2_phase_b_authority
+
+    with pytest.raises(ProgrammingError, match="permission denied"):
+        build_l2f2_phase_b_authority(env.service)
+
+
+def test_the_public_phase_b_entry_refuses_a_worker_on_another_runtime(
+    authorized: Any, authority: Any, monkeypatch: Any
+) -> None:
+    """The preclaim runtime gate still holds, now against the bootstrap's ticket.
+
+    A worker whose JVM or interpreter differs from the completed Phase-A campaign's must refuse
+    BEFORE it claims anything: the design it would be measuring was chosen from that runtime's
+    numbers.
+    """
+    from minos_engine.experiments.execution_contract import GatkRuntimeIdentityError
+    from minos_engine.storage import l2f2_runner
+    from minos_engine.storage.l2f2_runner import _resolve_phase_b_runner_bootstrap
+
+    env, _result = authorized
+    before = read_l2f2_phase_b_progress(env.engine)
+    with env.service.connect() as conn:
+        ticket = _resolve_phase_b_runner_bootstrap(conn)
+
+    class _OtherRuntime:
+        def environment_hash(self) -> str:
+            return "9" * 64
+
+    class _Runner:
+        @staticmethod
+        def preflight() -> Any:
+            return _OtherRuntime()
+
+    # both are imported inside the entry, so they are patched at their source modules; the engine
+    # is a FRESH one to the same runner-only principal, because the entry disposes what it opens.
+    from minos_engine.storage import database as _database
+    from minos_engine.storage import l2f_gatk_runner as _gatk
+
+    monkeypatch.setattr(_gatk.SubprocessGatkRunner, "from_env", staticmethod(lambda: _Runner()))
+    monkeypatch.setattr(
+        _database, "create_db_engine", lambda: create_engine(env.service.url), raising=True
+    )
+
+    with pytest.raises(GatkRuntimeIdentityError, match="must not mix runtimes"):
+        l2f2_runner.execute_next_l2f2_phase_b_job(worker_id="ci-wrong-runtime")
+
+    after = read_l2f2_phase_b_progress(env.engine)
+    assert after == before, "a refused worker mutated the queue"
+    assert ticket.execution_environment_hash != "9" * 64

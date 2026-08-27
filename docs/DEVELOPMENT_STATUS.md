@@ -27,14 +27,15 @@ does not restate or override them.
 | HARNESS historical Alembic head | `0008_l2f_execution_results` (stage-scoped; the repository head advances independently) |
 | Operational DB revision | `0005_l2e_feature_view` |
 | Next gate | **BASELINE-QUALIFIED** (designed in `docs/layer2/BASELINE_QUALIFICATION.md`, not implemented) |
-| Current task | **L2-F2-E — JVM DISPATCH CLOSURE: SOURCE READY.** GATK's launcher starts a bare `java`; the runner now proves that token resolves to the pinned `JAVA_HOME` JVM against the exact child environment, at preflight and before every scientific launch. No migration, no protocol change, execution-environment hash unchanged |
-| Real baseline | **`0018_l2f2_eval_owner_fix`. Phase A 195/195 COMPLETE. Phase B ACTIVATED: plan `e8059404…` persisted, `PHASE_B` authority prepared, 0/480 — NOT STARTED** |
+| Current task | **L2-F2-E — PHASE-B RUNNER BOOTSTRAP: SOURCE READY.** The Phase-B runner entry no longer builds a `PhaseBAuthority`; `0019` gives it a truth-free ticket — the authorized plan hash and the completed Phase-A runtime — so it never reads the scientific ledger it is denied |
+| Previous task | **L2-F2-E — JVM DISPATCH CLOSURE: SOURCE READY.** GATK's launcher starts a bare `java`; the runner now proves that token resolves to the pinned `JAVA_HOME` JVM against the exact child environment, at preflight and before every scientific launch. No migration, no protocol change, execution-environment hash unchanged |
+| Real baseline | **`0018_l2f2_eval_owner_fix` (not yet migrated to `0019`). Phase A 195/195 COMPLETE. Phase B ACTIVATED: plan `e8059404…` persisted, `PHASE_B` authority prepared, batch 0 materialized — 240 jobs, all PENDING, 0/480 decided — NOT STARTED** |
 | Previous task | **L2-F2-E — EVALUATOR-OWNER CORRECTIVE: SOURCE READY.** `0018` finishes what `0017` began: the four `0009`/`0010` evaluator definers and their two outcome ledgers are re-owned to `minos_admin`. No superuser-owned definer remains on either the runner or the evaluator production path. **The active baseline is still at `0015`** |
 | Previous task | **L2-F2-E — PRIVILEGED-OWNER CORRECTIVE: SOURCE READY.** `0017` took SUPERUSER authority away from the two `0011` `SECURITY DEFINER` functions the runner calls |
 | Previous task | **L2-F2-E — PHASE-B EXECUTION AUTHORITY: SOURCE READY.** `0016` admits `PHASE_B` to the runner boundary and adds its own resolver; the Phase-B execution authority has a production control-plane boundary; the runner selects a resolver from the authority, never from a caller. Proven end-to-end on ephemeral PostgreSQL under a `minos_runner`-only principal. **No real Phase-B execution**: the active baseline is still at `0015` until a separate privileged environment migration |
 | Previous task | L2-F2-E — Phase-B control plane — design, persistence, materialization, racing and promotion, held at the `0011` `PHASE_A`-only boundary now corrected |
-| Source Alembic head | `0018_l2f2_eval_owner_fix` (migrations `0001`–`0018`) |
-| Baseline DB revision required by the runner | `0018_l2f2_eval_owner_fix` (exact; every other revision is refused, including `0017`) |
+| Source Alembic head | `0019_l2f2_phase_b_bootstrap` (migrations `0001`–`0019`) |
+| Baseline DB revision required by the runner | `0019_l2f2_phase_b_bootstrap` (exact; every other revision is refused, including `0018`) |
 | Production score authority | pinned `minos-protocol/minos_subnet` @ `649bb92c…` — executed, not reimplemented |
 | Scoring contract | `l2f2-minos-scoring-v2` (`b24a07e2…`); v1 `d6f29e11…` superseded, still recomputable |
 | Real baseline DB revision | `0015_l2f2_exec_environment` — **not yet migrated to `0016`**; that is a separate privileged environment task. The CLEAN campaign: 1 plan, 195 jobs, 190 execution results, 5 execution failures, 190 evaluations, 0 evaluation failures, **195/195 decided**, 179 admitted, 16 candidate failures, **0 infrastructure incidents**, one execution environment `71e14a49…`. No Phase-B plan and no Phase-B job exist in it |
@@ -819,6 +820,43 @@ and one pair of outcome writers; only the resolution boundary differs.
 Phase-B plan, a prepared authority, a claim, a Phase-B resolve, `CLAIMED → RUNNING`, and a durable
 decided observation — all under a principal whose only membership is `minos_runner`. **The active
 baseline was not migrated and holds no Phase-B row of any kind.**
+
+### L2-F2-E status — PHASE-B RUNNER BOOTSTRAP (migration `0019`)
+
+The first real Phase-B invocation failed before it claimed anything, and it failed for the right
+reason. `execute_next_l2f2_phase_b_job` opened the store as `minos_runner_svc` and then called
+`build_l2f2_phase_b_authority`, whose derivation reads the completed Phase-A **scientific** ledger:
+evaluations, scores, dataset identities. `minos_runner` has no `USAGE` on `evaluation` and no
+`SELECT` on the jobs, plans, dataset-registry or authority tables — every one of those denials is
+deliberate, because the runner is truth-free by construction. **The runner boundary had
+accidentally taken a dependency on the control plane's derivation** (finding L2F2E-F6).
+
+Phase A never showed this: `execute_next_l2f2_phase_a_job` builds its authority from committed
+source manifests, not from a database read, so the defect could not surface until Phase B ran.
+
+Granting the runner those reads would trade the entire boundary for convenience. The runner does
+not need the Phase-B authority — 48 configurations, ten members, six dimensions, the analysis they
+came from. It needs two strings: **which plan** it may claim within, and **which runtime** that
+plan's science was chosen under, so a worker on a different JVM refuses before consuming an
+observation.
+
+`0019_l2f2_phase_b_bootstrap` adds one narrow `SECURITY DEFINER` function,
+`experiments.l2f2_resolve_phase_b_runner_bootstrap()`, owned by `minos_admin`, `STABLE`, with no
+arguments — so no worker can nominate a plan or a runtime. Everything the answer depends on is
+checked inside: exactly one `PHASE_B` authority under the frozen protocol, bound to its exact
+persisted TRAIN plan with matching identities and the frozen 10 × 48 = 480 shape; exactly one
+`PHASE_A` authority; that campaign durably complete and terminal; and its execution outcomes
+carrying exactly one execution-environment hash. It **reads nothing in the `evaluation` schema** —
+runtime lineage is a question about execution, not results, which is what makes it safe to hand to
+a truth-free principal. A Phase-A campaign with legitimate candidate execution failures (the real
+one has five) is complete for this purpose: a failure records its runtime exactly as a success
+does.
+
+The runner now consumes a `_PhaseBRunnerAuthority` carrying only `plan_hash` and `phase`. The
+claim stays plan-scoped through `minos_l2f_claim_next_job`, and the claimed-job resolver
+`l2f2_resolve_claimed_phase_b_execution` still enforces the exact job identity afterwards — the
+two boundaries answer different questions and both remain. No table, grant, role or relation
+changed; the runner gained `EXECUTE` on one function and no table access whatsoever.
 
 ### L2-F2-E status — JVM DISPATCH CLOSURE
 
