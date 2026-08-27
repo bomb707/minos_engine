@@ -117,8 +117,9 @@ BASELINE_DATABASE_NAME = "minos_l2f2_baseline"
 #: all: a runner that accepted ``0015`` would claim a Phase-B job and then fail to resolve it.
 #: ``0017`` takes SUPERUSER authority away from the two ``0011`` definers this boundary calls, so
 #: a runner at ``0016`` is one whose privileged calls still execute with more authority than the
-#: control plane has.
-BASELINE_REVISION = "0017_l2f2_owner_corrective"
+#: control plane has, and ``0018`` does the same for the evaluator's four. The runner and the
+#: evaluator share this store, so the revision this boundary accepts tracks both of them.
+BASELINE_REVISION = "0018_l2f2_eval_owner_fix"
 
 #: the ONLY MINOS group role the runner service may hold.
 _REQUIRED_MEMBERSHIP = "minos_runner"

@@ -123,12 +123,33 @@ Granted by `0009` through `minos_evaluator`:
 
 Deliberately **not** granted:
 
+* any direct `INSERT`/`UPDATE`/`DELETE` on `evaluation.l2f_evaluation_results` or
+  `l2f_evaluation_failures` — the outcome ledgers are append-only and reachable only through the
+  `0009` writers
 * any direct `INSERT`/`UPDATE`/`DELETE` on `catalog.artifacts` — registration goes through the
   `0010` registrar or not at all
 * any write on `experiments.*` — the execution ledger stays owned by the runner path
 * broad `SELECT` on the L2-F experiment tables — `0008` gives application roles no direct table
   privileges there, and `0009` preserves that boundary
 * anything reaching validation or test truth
+
+## Who those `SECURITY DEFINER` functions execute as
+
+A `SECURITY DEFINER` function runs with its **owner's** authority, so the owner is the real
+privilege boundary — not the grant. `0009` and `0010` created their functions and their two
+outcome ledgers without `SET ROLE minos_admin`, so all six inherited the migration principal, in
+practice a SUPERUSER. Every evaluation therefore made four privileged calls that ran far wider
+than the control plane itself.
+
+`0018_l2f2_eval_owner_fix` corrects that: the four functions and the two ledgers are re-owned to
+`minos_admin` — `NOLOGIN`, `NOSUPERUSER` — by `ALTER ... OWNER TO`, never by recreating anything.
+Function OIDs, bodies, signatures, `SECURITY DEFINER` and `search_path` are unchanged, the tables'
+columns, constraints, indexes, triggers and rows are unchanged, and **no application role gains or
+loses a single privilege**. The writers get their `INSERT` authority the same way `0008`'s
+execution writers always have: by the control plane owning the ledger they append to.
+
+This service's own authority is exactly what it was. What changed is what stands behind the four
+functions it calls.
 
 ## The pinned scoring checkout — `MINOS_L2F_MINOS_SUBNET_ROOT`
 

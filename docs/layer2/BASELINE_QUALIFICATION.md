@@ -257,10 +257,11 @@ per chromosome, chosen by lowest `sort_order` within each chromosome.
   the authority table admits `PHASE_A` or `PHASE_B` (Phase C remains a later
   migration), `canary_job_key` is nullable under a phase-semantic rule that forbids a
   Phase-B canary, and a dedicated `PHASE_B` resolver joins the untouched Phase-A one.
-  Running Phase B additionally requires the store to be at `0017` and a prepared
-  `PHASE_B` execution authority for the exact derived plan. (`0017` takes SUPERUSER
-  authority away from the two legacy `0011` `SECURITY DEFINER` functions the runner
-  calls; it changes ownership metadata only and no function body or scientific row.) **The active baseline is
+  Running Phase B additionally requires the store to be at `0018` and a prepared
+  `PHASE_B` execution authority for the exact derived plan. (`0017` and `0018` take
+  SUPERUSER authority away from the legacy `0011` runner definers and the `0009`/`0010`
+  evaluator definers respectively; both change ownership metadata only — no function
+  body, no table shape and no scientific row.) **The active baseline is
   still at `0015` and holds no Phase-B row: no Phase-B GATK has run and no Phase-B
   score exists.**
 * **Phase C — survivor confirmation.** Survivors run across all 50 TRAIN BAMs.

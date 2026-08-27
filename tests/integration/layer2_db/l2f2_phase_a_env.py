@@ -36,8 +36,9 @@ from tests.integration.layer2_db.conftest import alembic_upgrade, scratch_databa
 from tests.integration.layer2_db.test_l2f_plan_store import _engine
 
 BASELINE_DB = "minos_l2f2_baseline"
-REQUIRED_REVISION = "0017_l2f2_owner_corrective"
+REQUIRED_REVISION = "0018_l2f2_eval_owner_fix"
 _CI_ROLE = "minos_phase_a_ci_svc"
+_EVAL_ROLE = "minos_phase_a_eval_svc"
 
 #: the pinned GATK identity the runner records. No GATK runs; these are the fixed test values
 #: already used by the runner-boundary suite.
@@ -118,6 +119,8 @@ class PhaseAEnv:
     dataset_root: DatasetRoot
     publisher: ResultArtifactPublisher
     work_root: Path
+    #: lazily created by :meth:`evaluator_engine`; disposed with the store.
+    _evaluator: Any = None
 
     # -- reads ------------------------------------------------------------------------- #
     def count(self, sql: str) -> int:
@@ -182,6 +185,30 @@ class PhaseAEnv:
         _register_truth(self, root)
         register_train_truth_identities(self.engine, dataset_root=root)
 
+    def evaluator_engine(self) -> Any:
+        """A LOGIN principal whose ONLY MINOS membership is ``minos_evaluator``, created on demand.
+
+        The evaluator writes exclusively through ``SECURITY DEFINER`` functions, so a test that
+        persists an evaluation as this principal proves those functions carry enough authority of
+        their own — which is precisely what an ownership corrective must not break.
+        """
+        if self._evaluator is None:
+            from sqlalchemy.engine import make_url
+
+            parsed = make_url(self.url)
+            with self.engine.connect() as conn, conn.begin():
+                conn.execute(text(f"DROP ROLE IF EXISTS {_EVAL_ROLE}"))
+                conn.execute(
+                    text(
+                        f"CREATE ROLE {_EVAL_ROLE} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                        "NOBYPASSRLS INHERIT"
+                    )
+                )
+                conn.execute(text(f'GRANT CONNECT ON DATABASE "{parsed.database}" TO {_EVAL_ROLE}'))
+                conn.execute(text(f"GRANT minos_evaluator TO {_EVAL_ROLE}"))
+            self._evaluator = create_engine(parsed.set(username=_EVAL_ROLE, password=""))
+        return self._evaluator
+
     def evaluate(
         self,
         dispatched: Any,
@@ -189,8 +216,14 @@ class PhaseAEnv:
         minos_score: float,
         admitted: bool = True,
         admission_code: str = "ADMITTED",
+        as_evaluator: bool = False,
     ) -> Any:
-        """Persist ONE evaluation for a successful execution, through the production path."""
+        """Persist ONE evaluation for a successful execution, through the production path.
+
+        ``as_evaluator`` routes the two privileged WRITES through a ``minos_evaluator``-only
+        principal instead of the administrative connection, so a test can prove the evaluator
+        boundary end to end without any direct table grant.
+        """
         from minos_engine.evaluation.contracts import build_metrics_artifact_bytes
         from minos_engine.evaluation.evaluator import (
             EvaluationArtifactPublisher,
@@ -225,9 +258,10 @@ class PhaseAEnv:
         published = EvaluationArtifactPublisher(root).publish(
             build_metrics_artifact_bytes(artifact)
         )
-        artifact_id, _created = register_metrics_artifact(self.engine, published)
+        writer = self.evaluator_engine() if as_evaluator else self.engine
+        artifact_id, _created = register_metrics_artifact(writer, published)
         return record_evaluation_result(
-            self.engine,
+            writer,
             build_evaluation_record(
                 execution_result_id=self.execution_result_id(dispatched.job_key),
                 inputs=inputs,
@@ -239,14 +273,16 @@ class PhaseAEnv:
             ),
         )
 
-    def fail_evaluation(self, dispatched: Any, *, failure_code: str) -> Any:
+    def fail_evaluation(
+        self, dispatched: Any, *, failure_code: str, as_evaluator: bool = False
+    ) -> Any:
         """Persist ONE bounded evaluation failure for a successful execution."""
         from minos_engine.evaluation.evaluator import record_evaluation_failure
         from minos_engine.evaluation.scoring_contract import compute_scoring_contract_hash
         from tests.integration.layer2_db.test_l2f2_evaluation_ledger import _authority
 
         return record_evaluation_failure(
-            self.engine,
+            self.evaluator_engine() if as_evaluator else self.engine,
             execution_result_id=self.execution_result_id(dispatched.job_key),
             scoring_contract_hash=compute_scoring_contract_hash(_authority()),
             failure_code=failure_code,
@@ -271,14 +307,18 @@ def _create_service_login(engine: Any, url: str) -> Any:
     return create_engine(parsed.set(username=_CI_ROLE, password=""))
 
 
-def _drop_service_login(engine: Any, url: str) -> None:
+def _drop_login(engine: Any, url: str, role: str, *, group: str) -> None:
     from sqlalchemy.engine import make_url
 
     database = make_url(url).database
     with engine.connect() as conn, conn.begin():
-        conn.execute(text(f'REVOKE ALL ON DATABASE "{database}" FROM {_CI_ROLE}'))
-        conn.execute(text(f"REVOKE minos_runner FROM {_CI_ROLE}"))
-        conn.execute(text(f"DROP ROLE IF EXISTS {_CI_ROLE}"))
+        conn.execute(text(f'REVOKE ALL ON DATABASE "{database}" FROM {role}'))
+        conn.execute(text(f"REVOKE {group} FROM {role}"))
+        conn.execute(text(f"DROP ROLE IF EXISTS {role}"))
+
+
+def _drop_service_login(engine: Any, url: str) -> None:
+    _drop_login(engine, url, _CI_ROLE, group="minos_runner")
 
 
 @contextlib.contextmanager
@@ -309,6 +349,7 @@ def phase_a_store(base_url: str, tmp_path: Path) -> Iterator[PhaseAEnv]:
         alembic_upgrade(url, REQUIRED_REVISION)
         engine = _engine(url)
         service = None
+        env: PhaseAEnv | None = None
         try:
             with engine.connect() as conn, conn.begin():
                 seed_upstream_for_plan(conn, accepted, dataset_identity=identity)
@@ -330,7 +371,7 @@ def phase_a_store(base_url: str, tmp_path: Path) -> Iterator[PhaseAEnv]:
                     {"h": "a" * 64},
                 )
             service = _create_service_login(engine, url)
-            yield PhaseAEnv(
+            env = PhaseAEnv(
                 url=url,
                 engine=engine,
                 service=service,
@@ -342,7 +383,11 @@ def phase_a_store(base_url: str, tmp_path: Path) -> Iterator[PhaseAEnv]:
                 publisher=ResultArtifactPublisher(result_root),
                 work_root=work_root,
             )
+            yield env
         finally:
+            if env is not None and env._evaluator is not None:
+                env._evaluator.dispose()
+                _drop_login(engine, url, _EVAL_ROLE, group="minos_evaluator")
             if service is not None:
                 service.dispose()
                 _drop_service_login(engine, url)

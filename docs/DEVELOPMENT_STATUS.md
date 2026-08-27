@@ -27,11 +27,12 @@ does not restate or override them.
 | HARNESS historical Alembic head | `0008_l2f_execution_results` (stage-scoped; the repository head advances independently) |
 | Operational DB revision | `0005_l2e_feature_view` |
 | Next gate | **BASELINE-QUALIFIED** (designed in `docs/layer2/BASELINE_QUALIFICATION.md`, not implemented) |
-| Current task | **L2-F2-E — PRIVILEGED-OWNER CORRECTIVE: SOURCE READY.** `0017` takes SUPERUSER authority away from the two `0011` `SECURITY DEFINER` functions the runner calls on every execution. Ownership metadata only — same OIDs, same bodies, same grants. **The active baseline is still at `0015`** |
+| Current task | **L2-F2-E — EVALUATOR-OWNER CORRECTIVE: SOURCE READY.** `0018` finishes what `0017` began: the four `0009`/`0010` evaluator definers and their two outcome ledgers are re-owned to `minos_admin`. No superuser-owned definer remains on either the runner or the evaluator production path. **The active baseline is still at `0015`** |
+| Previous task | **L2-F2-E — PRIVILEGED-OWNER CORRECTIVE: SOURCE READY.** `0017` took SUPERUSER authority away from the two `0011` `SECURITY DEFINER` functions the runner calls |
 | Previous task | **L2-F2-E — PHASE-B EXECUTION AUTHORITY: SOURCE READY.** `0016` admits `PHASE_B` to the runner boundary and adds its own resolver; the Phase-B execution authority has a production control-plane boundary; the runner selects a resolver from the authority, never from a caller. Proven end-to-end on ephemeral PostgreSQL under a `minos_runner`-only principal. **No real Phase-B execution**: the active baseline is still at `0015` until a separate privileged environment migration |
 | Previous task | L2-F2-E — Phase-B control plane — design, persistence, materialization, racing and promotion, held at the `0011` `PHASE_A`-only boundary now corrected |
-| Source Alembic head | `0017_l2f2_owner_corrective` (migrations `0001`–`0017`) |
-| Baseline DB revision required by the runner | `0017_l2f2_owner_corrective` (exact; every other revision is refused, including `0016`) |
+| Source Alembic head | `0018_l2f2_eval_owner_fix` (migrations `0001`–`0018`) |
+| Baseline DB revision required by the runner | `0018_l2f2_eval_owner_fix` (exact; every other revision is refused, including `0017`) |
 | Production score authority | pinned `minos-protocol/minos_subnet` @ `649bb92c…` — executed, not reimplemented |
 | Scoring contract | `l2f2-minos-scoring-v2` (`b24a07e2…`); v1 `d6f29e11…` superseded, still recomputable |
 | Real baseline DB revision | `0015_l2f2_exec_environment` — **not yet migrated to `0016`**; that is a separate privileged environment task. The CLEAN campaign: 1 plan, 195 jobs, 190 execution results, 5 execution failures, 190 evaluations, 0 evaluation failures, **195/195 decided**, 179 admitted, 16 candidate failures, **0 infrastructure incidents**, one execution environment `71e14a49…`. No Phase-B plan and no Phase-B job exist in it |
@@ -846,16 +847,34 @@ real Phase-B activation was held until it was corrected.
 | Runtime | ownership is a privilege context, not decoration, so it is proven by execution: the re-owned resolver and registrar both work for a principal whose only membership is `minos_runner`, and a whole Phase-A execution runs end to end |
 | Hard regression | every `SECURITY DEFINER` function reachable from `execute_next_l2f2_phase_a_job` or `execute_next_l2f2_phase_b_job` is checked against `pg_roles.rolsuper`, not against an owner name. After `0017` the count of superuser-owned ones is **0** |
 
-#### FINDING — four `evaluation` definers have the same defect
+#### FINDING (CORRECTED by `0018`) — four `evaluation` definers had the same defect
 
 `0009`/`0010` created `evaluation.l2f_record_evaluation_result`,
 `evaluation.l2f_record_evaluation_failure`, `evaluation.l2f_register_metrics_artifact` and
 `evaluation.l2f_register_train_truth_identity` the same way: `SECURITY DEFINER`, owned by the
-migration superuser. So are the tables `evaluation.l2f_evaluation_results` and
-`evaluation.l2f_evaluation_failures`. These are **evaluator-facing, not runner-facing**, so they
-are outside the boundary `0017` was authorized to touch and are reported rather than folded in —
-widening a privileged corrective past its authorization is how privileged changes go wrong. They
-need their own migration.
+migration superuser. So were the tables `evaluation.l2f_evaluation_results` and
+`evaluation.l2f_evaluation_failures`. They were reported rather than folded into `0017` — they are
+evaluator-facing, not runner-facing, and widening a privileged corrective past its authorization
+is how privileged changes go wrong. `0018` is their own migration.
+
+### L2-F2-E status — EVALUATOR-OWNER CORRECTIVE (migration `0018`)
+
+`0008` wrapped its entire upgrade in `SET ROLE minos_admin`, so the execution ledgers and their
+writers are control-plane-owned. `0009` and `0010` did not. `0018` restores the evaluation side to
+that same model — it does not invent one.
+
+| | |
+|---|---|
+| Functions re-owned | the four above → `minos_admin`, by `ALTER FUNCTION ... OWNER TO`. OIDs, bodies, signatures, `SECURITY DEFINER` and `search_path` all identical, asserted field by field |
+| Tables re-owned | `evaluation.l2f_evaluation_results`, `evaluation.l2f_evaluation_failures` → `minos_admin`, by `ALTER TABLE ... OWNER TO`. OID, columns, constraints, indexes, triggers, row count and row digest all identical |
+| Why these tables, when `0017` left its table alone | `experiments.l2f2_execution_authorities` is a control-plane relation on which `0011` deliberately restricted `minos_admin` to explicit `INSERT, SELECT`, and no definer needed more. These two are the evaluator's append-only outcome ledgers, exactly analogous to `0008`'s — and the re-owned writers genuinely need `INSERT` on them, which `minos_admin` held by no grant at all |
+| Application privileges | unchanged, to the privilege. No role gains a direct write anywhere; the evaluator still writes only through the four functions and reads only what it already read |
+| Runtime proof | truth registration, metrics registration, the success writer and the failure writer all exercised through production code under a principal whose only membership is `minos_evaluator`, on a `0018` store — plus the ledger XOR and append-only rules, from that same principal |
+| Hard regression | zero superuser-owned `SECURITY DEFINER` functions on the evaluator path, and `0017`'s runner-side guarantee re-asserted so fixing one side cannot regress the other |
+
+One observation recorded rather than changed: `minos_evaluator` already holds direct `INSERT` on
+`evaluation.dataset_evaluation_identity` from the L2-E identity path, long predating this work.
+`0018` neither grants nor removes it.
 
 ---
 

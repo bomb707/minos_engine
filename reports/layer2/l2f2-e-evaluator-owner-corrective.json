@@ -1,0 +1,240 @@
+{
+ "accepted_runner_owner_corrective": "ba854d82c5ee1a8cc7109952d02dd7e845e338a0",
+ "accepted_runner_owner_corrective_ci": 33033268685,
+ "application_direct_write_grants_changed": false,
+ "application_roles_compared": [
+  "minos_evaluator",
+  "minos_runner",
+  "minos_trainer",
+  "minos_live",
+  "public"
+ ],
+ "checks": {
+  "full_serial_regression": {
+   "command": "pytest --cov=src/minos_engine --cov-report=term-missing",
+   "coverage_total_percent": 90,
+   "duration_seconds": 2492.19,
+   "errors": 0,
+   "failed": 0,
+   "passed": 3281,
+   "skipped": 2
+  },
+  "git_diff_check": "clean",
+  "mypy": "Success: no issues found in 224 source files",
+  "ruff_check": "All checks passed",
+  "ruff_format_check": "586 files already formatted"
+ },
+ "control_plane_gain": "minos_admin gains owner authority over the two ledgers \u2014 the INSERT the writers need, and the only intended privilege change in this migration",
+ "dependency_verification": {
+  "conclusion": "every dependency outside the two ledgers is already minos_admin-owned, so re-owning the four functions plus those two tables is exactly sufficient and nothing more is needed. The two 0009 VIEWS are read by the Python evaluator as minos_evaluator, never by a definer, so they are correctly out of scope.",
+  "l2f_record_evaluation_failure": [
+   "evaluation.l2f_evaluation_failures",
+   "experiments.l2f_execution_results",
+   "experiments.l2f_experiment_jobs",
+   "experiments.l2f_experiment_plan_members"
+  ],
+  "l2f_record_evaluation_result": [
+   "evaluation.dataset_evaluation_identity",
+   "evaluation.l2f_evaluation_results",
+   "experiments.l2f_execution_results",
+   "experiments.l2f_experiment_jobs",
+   "experiments.l2f_experiment_plan_members"
+  ],
+  "l2f_register_metrics_artifact": [
+   "catalog.artifacts"
+  ],
+  "l2f_register_train_truth_identity": [
+   "catalog.split_allocations",
+   "evaluation.dataset_evaluation_identity"
+  ],
+  "method": "parsed each definer's prosrc for FROM/JOIN/INTO/UPDATE targets and checked owner + minos_admin privilege on each",
+  "no_view_is_referenced": true
+ },
+ "downgrade_policy": "ALTER FUNCTION/TABLE ... OWNER TO CURRENT_USER, then re-issue what ownership absorbed: EXECUTE to minos_evaluator and minos_admin on the four functions, SELECT to minos_evaluator on the two ledgers. minos_admin is deliberately given NO explicit table privilege, because it held none at 0017.",
+ "downgrade_principal_assumption_pinned": true,
+ "downgrade_round_trip": "PASS",
+ "evaluation_failure_writer_runtime_proof": "PASS",
+ "evaluation_success_writer_runtime_proof": "PASS",
+ "evaluator_effective_function_grants_changed": false,
+ "evaluator_facing_superuser_definers_after": 0,
+ "fail_closed_conditions": [
+  "minos_admin does not exist",
+  "minos_admin holds any of SUPERUSER/LOGIN/CREATEDB/CREATEROLE/BYPASSRLS/REPLICATION",
+  "any of the four signatures does not resolve to exactly one function",
+  "either ledger does not exist"
+ ],
+ "finding_id": "L2F2E-F5",
+ "forensic_database": {
+  "name": "minos_l2f2_baseline_tainted_20260826",
+  "revision": "0014_l2f2_exec_failure_runtime",
+  "unchanged": true
+ },
+ "function_bodies_preserved": true,
+ "function_oids_preserved": true,
+ "function_owner_after": "minos_admin",
+ "function_owner_before": "the migration principal (postgres on the real lineage)",
+ "function_search_paths_preserved": true,
+ "function_security_definer_preserved": true,
+ "function_signatures_preserved": true,
+ "functions_corrected": [
+  "evaluation.l2f_register_train_truth_identity(uuid, char, char, char, char)",
+  "evaluation.l2f_record_evaluation_result(uuid, char, text, char, char, text, text, uuid, char, text, double precision, double precision, double precision, double precision, double precision, double precision, double precision, text, char)",
+  "evaluation.l2f_record_evaluation_failure(uuid, char, text, integer, char)",
+  "evaluation.l2f_register_metrics_artifact(char, text, integer)"
+ ],
+ "functions_recreated": false,
+ "global_privileged_audit": {
+  "note": "exactly twelve SECURITY DEFINER functions exist; the six superuser-owned ones are precisely the two 0017 corrects and the four 0018 corrects. No unrelated historical object required an ownership sweep.",
+  "scope": "every SECURITY DEFINER function in experiments/evaluation/catalog/profiling on the real lineage",
+  "superuser_owned_after_both": [],
+  "superuser_owned_before_0017_and_0018": [
+   "evaluation.l2f_record_evaluation_failure",
+   "evaluation.l2f_record_evaluation_result",
+   "evaluation.l2f_register_metrics_artifact",
+   "evaluation.l2f_register_train_truth_identity",
+   "experiments.l2f2_register_execution_artifact",
+   "experiments.l2f2_resolve_claimed_execution"
+  ],
+  "total": 12,
+  "unrelated_superuser_definer_found": false
+ },
+ "harness_gate": {
+  "gate_hash": "0e8411ebffa9b6a27ec47cd896efd234bd60cdb30edf6f8f998ff8f06419fcc3",
+  "mandatory_checks": 40,
+  "status": "PASS",
+  "verified_by": "minos-engine layer2 harness gate require-pass"
+ },
+ "harness_pass": true,
+ "historical_migrations_edited": [],
+ "metrics_registrar_runtime_proof": "PASS",
+ "migration_down_revision": "0017_l2f2_owner_corrective",
+ "migration_revision": "0018_l2f2_eval_owner_fix",
+ "migration_revision_length": 24,
+ "minos_admin_bypassrls": false,
+ "minos_admin_createdb": false,
+ "minos_admin_createrole": false,
+ "minos_admin_login": false,
+ "minos_admin_replication": false,
+ "minos_admin_superuser": false,
+ "no_credentials_recorded": true,
+ "observations": [
+  {
+   "detail": "granted by the L2-E identity path long before this work (acl: minos_evaluator=ar/minos_admin). It is not a write on an L2-F outcome ledger and 0018 neither grants nor removes it.",
+   "id": "L2F2E-O1",
+   "severity": "INFORMATIONAL",
+   "title": "minos_evaluator already holds direct INSERT on evaluation.dataset_evaluation_identity"
+  }
+ ],
+ "phase_b_fixture_execution_and_evaluation": "PASS",
+ "phase_b_separation_note": "in tests/integration/layer2_db/test_l2f2_phase_b_control.py the Phase-B job is executed by a minos_runner-only principal and the resulting evaluation is persisted by a minos_evaluator-only principal, so the two halves of one decided observation never share an authority.",
+ "populated_0017_upgrade": "PASS",
+ "precedent_verified": {
+  "0008": "wraps its ENTIRE upgrade in SET ROLE minos_admin / RESET ROLE, so experiments.l2f_execution_results, experiments.l2f_execution_failures and every F5 writer are control-plane-owned",
+  "0009": "no SET ROLE anywhere in upgrade(); its tables, views and functions inherit the migration principal",
+  "0010": "same \u2014 no SET ROLE; the metrics registrar inherits the migration principal",
+  "conclusion": "the evaluation side is restored to the 0008 model rather than to a newly invented one. Verified against the live lineage, not inferred."
+ },
+ "production_evaluator_fixture_proof": "PASS",
+ "production_evaluator_scope_note": "the L2-F2 baseline evaluator path is evaluate_metrics -> register_metrics_artifact -> record_evaluation_result (plus register_train_truth_identities), and that is what is proven here at 0018 under a minos_evaluator-only principal, with only the upstream score stubbed at the accepted seam. evaluate_execution is the L2-F1/operational orchestrator over the same four functions; its own suite runs against the historical minos_f5_exec store at 0010 and is unaffected by ownership.",
+ "protocol_changed": false,
+ "racing_changed": false,
+ "real_baseline_migrated": false,
+ "real_baseline_revision": "0015_l2f2_exec_environment",
+ "real_baseline_state": {
+  "authority_phases": "PHASE_A",
+  "evaluation_failures": 0,
+  "evaluation_results": 190,
+  "execution_authorities": 1,
+  "execution_failures": 5,
+  "execution_results": 190,
+  "jobs": 195,
+  "plans": 1,
+  "superuser_owned_definers_still_present": 6,
+  "truth_identities": 50
+ },
+ "real_gatk_runs": 0,
+ "real_phase_b_authority_prepared": false,
+ "real_phase_b_jobs": 0,
+ "real_phase_b_plan_persisted": false,
+ "real_score_runs": 0,
+ "revision_gates_audited": {
+  "deliberately_unchanged": [
+   "l2f_plan_store.L2F_GRAPH_COMPATIBLE_REVISIONS {0006,0007,0008}",
+   "l2f_job_claim.F4_COMPATIBLE_REVISIONS {0007,0008}",
+   "l2f_execution.F5_EXECUTION_REVISION 0008",
+   "l2f_harness_ready_contract.ACCEPTED_ALEMBIC_HEAD 0008",
+   "each migration's own lifecycle pin: 0015, 0016 and 0017 suites",
+   "test_l2f2_evaluation_ledger._SCORE_ORACLE 0014"
+  ],
+  "moved_to_0018": [
+   "minos_engine.storage.l2f2_runner.BASELINE_REVISION",
+   "l2f2_canary_prepare and l2f2_phase_b_prepare (import BASELINE_REVISION)",
+   "tests/integration/layer2_db/l2f2_phase_a_env.REQUIRED_REVISION",
+   "tests/integration/layer2_db/test_l2f2_runner_boundary._REQUIRED",
+   "tests/integration/layer2_db/test_l2f2_canary_prepare._SOURCE_INDEX",
+   "tests/unit/storage/test_l2f2_runner_boundary (asserted contract)"
+  ],
+  "operational_database": {
+   "name": "minos_engine_db",
+   "revision": "0005_l2e_feature_view",
+   "unchanged": true
+  }
+ },
+ "runner_facing_superuser_definers_after": 0,
+ "runner_required_revision": "0018_l2f2_eval_owner_fix",
+ "schema_version": "l2f2-e-evaluator-owner-corrective-v1",
+ "scientific_rows_changed": false,
+ "select_config_blocked": true,
+ "source_digests": {
+  "migrations/versions/0018_l2f2_eval_owner_fix.py": "d479618ac34197aa6d9887bf7586444bb6dd5bc24a079652aeb9c945c549a100",
+  "src/minos_engine/storage/l2f2_runner.py": "7fba28737c871a3cae0bbffc56b40116aed7a51feb80dadd488c2c14e2b0d285",
+  "tests/integration/layer2_db/l2f2_phase_a_env.py": "264c0cb3dc021c40a38bb828f2c95c94129640865608fa6913a63ba85d28505f",
+  "tests/integration/layer2_db/test_l2f2_eval_owner_migration.py": "87620544a070af4c4af6963553bac0c043d10aa27e45379c9ba9448e8e79422d"
+ },
+ "source_parent": "7771b8fb4429d1286faa7a3678b90023e675f0cc",
+ "source_parent_ci": 33033317533,
+ "source_parent_note": "README-only commit over the accepted runner ownership corrective",
+ "source_parent_tree": "ef5ae946d29802a16902b18b5fe9d1c7dadbe448",
+ "status": "SOURCE_READY",
+ "table_constraints_preserved": true,
+ "table_indexes_preserved": true,
+ "table_oids_preserved": true,
+ "table_owner_after": "minos_admin",
+ "table_owner_before": "the migration principal (postgres on the real lineage)",
+ "table_rows_preserved": true,
+ "table_schema_preserved": true,
+ "table_triggers_preserved": true,
+ "tables_corrected": [
+  "evaluation.l2f_evaluation_results",
+  "evaluation.l2f_evaluation_failures"
+ ],
+ "tables_recreated": false,
+ "task": "L2-F2-E EVALUATOR SECURITY-DEFINER OWNERSHIP CORRECTIVE",
+ "test_truth_accessed": false,
+ "tests": {
+  "gatk_executions": "FakeGatkRunner only, through the private test seam. No real GATK, no MINOS_SUBNET.",
+  "phase_b_chain": "tests/integration/layer2_db/test_l2f2_phase_b_control.py now executes its Phase-B job as a minos_runner-only principal and persists the evaluation as a minos_evaluator-only principal, on a 0018 store.",
+  "proven": [
+   "0017 -> 0018 -> 0017 -> 0018: per-field function identity (OID, proname, namespace, argtypes, rettype, prosecdef, proconfig, pg_get_functiondef) and per-field table identity (OID, relkind, columns, constraints, indexes, triggers, row count, row digest) identical; owner is the only delta",
+   "at 0017 all six objects are owned by the migration principal and that principal IS a superuser \u2014 the defect asserted, not assumed",
+   "0018 alters no constraint, index, trigger, role, membership, schema ACL or default ACL, and touches exactly six objects",
+   "no APPLICATION role (evaluator, runner, trainer, live, PUBLIC) moves by a single effective privilege across the whole round trip",
+   "the control plane gains exactly what the writers need: SELECT+INSERT on the two ledgers, by owning them",
+   "minos_admin is NOLOGIN, NOSUPERUSER, NOCREATEDB, NOCREATEROLE, NOBYPASSRLS, NOREPLICATION",
+   "zero evaluator-facing SECURITY DEFINER functions owned by a role with rolsuper = true, and every one still SECURITY DEFINER with a fixed search_path",
+   "0017's runner-side guarantee re-asserted: fixing one side did not regress the other",
+   "no application role holds a direct write on either ledger or catalog.artifacts, and the evaluator keeps its accepted SELECT on both ledgers",
+   "the evaluator principal holds exactly one MINOS membership and is_superuser is off",
+   "the re-owned metrics registrar registers, replays idempotently, refuses a non-hex digest / empty URI / negative size / metadata conflict, and is the ONLY route the evaluator has into catalog.artifacts",
+   "the re-owned truth registrar registers a TRAIN identity, replays idempotently, and refuses a dataset that is not in the accepted split",
+   "the re-owned success writer persists one durable evaluation, and the re-owned failure writer one durable bounded failure, both under a minos_evaluator-only principal on a 0018 store",
+   "the ledger XOR holds in both directions from that principal, and neither ledger can be touched directly",
+   "a populated store (plan, authority, jobs, execution result, TRAIN truth identity, evaluation result) migrates 0017 -> 0018 with every count, every evaluation row and both table identities unchanged"
+  ],
+  "suite": "tests/integration/layer2_db/test_l2f2_eval_owner_migration.py",
+  "tests": 12
+ },
+ "truth_registration_runtime_proof": "PASS",
+ "validation_truth_accessed": false,
+ "why_this_differs_from_the_0017_authority_table": "experiments.l2f2_execution_authorities is a control-plane relation on which 0011 deliberately restricted minos_admin to explicit INSERT + SELECT, and no definer needed more \u2014 owning it would have widened a deliberately narrow relation to UPDATE, DELETE, TRUNCATE, ALTER and DROP over append-only lineage. evaluation.l2f_evaluation_results and l2f_evaluation_failures are the evaluator's append-only OUTCOME LEDGERS, exactly analogous to the 0008 execution ledgers, and the re-owned writers genuinely need INSERT authority on them \u2014 which minos_admin held by NO grant at all (verified: has_table_privilege('minos_admin', ..., 'SELECT') was false before this migration). Both are tables; that is where the similarity ends."
+}

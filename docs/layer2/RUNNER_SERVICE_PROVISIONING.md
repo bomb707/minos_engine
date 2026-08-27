@@ -97,7 +97,7 @@ Granted by `0011` through `minos_runner`, on top of the existing `0007`/`0008` g
 
 The runner authority **functions and grants originate in `0011`**, and `0016` adds exactly one
 more: the Phase-B resolver. The revision the boundary requires on every connection is
-**`0017_l2f2_owner_corrective`**, exactly — never a floor, never `head`.
+**`0018_l2f2_eval_owner_fix`**, exactly — never a floor, never `head`.
 
 The reason it tracks a later revision than its own functions is that the runner and the evaluator
 **share one database**. Neither later migration grants the runner anything:
@@ -118,6 +118,9 @@ The reason it tracks a later revision than its own functions is that the runner 
   nullable under a phase-semantic rule (Phase A must carry a canary, Phase B must not), and adds
   `experiments.l2f2_resolve_claimed_phase_b_execution`. The runner gains `EXECUTE` on that one
   function and nothing else — no table privilege anywhere, and the Phase-A resolver is untouched.
+* `0018` re-owns the four `0009`/`0010` evaluator definers and their two outcome ledgers to
+  `minos_admin`. It grants the runner nothing and touches nothing the runner reads; the revision
+  moves because the runner and the evaluator share one store.
 * `0017` re-owns the two `0011` `SECURITY DEFINER` functions to `minos_admin`. A definer executes
   with its owner's authority, and `0011` created them as the migration principal — a SUPERUSER —
   so the runner's two privileged calls were running far wider than the control plane itself. This
@@ -130,7 +133,7 @@ database, and without `0016` a claimed Phase-B job cannot be resolved at all. Th
 why the revision check is exact.
 
 The service principal's authority grows by exactly one `EXECUTE` at `0016` and is otherwise
-identical under all six revisions. What changes at `0017` is not the runner's authority but the
+identical under all seven revisions. What changes at `0017` is not the runner's authority but the
 **definer's**: every `SECURITY DEFINER` function this service can reach is owned by `minos_admin`,
 and none is owned by a superuser. That is asserted through `pg_roles.rolsuper` rather than by
 owner name.

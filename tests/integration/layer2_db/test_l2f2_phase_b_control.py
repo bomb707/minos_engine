@@ -218,7 +218,7 @@ def test_phase_b_persists_beside_phase_a_without_a_new_migration(
                 )
             ).mappings()
         }
-    assert revision == "0017_l2f2_owner_corrective"
+    assert revision == "0018_l2f2_eval_owner_fix"
     assert len(plans) == 2, "Phase A and Phase B now coexist"
     row = plans[authority.plan_hash]
     assert int(row["train_member_count"]) == PHASE_B_MEMBER_COUNT == 10
@@ -761,7 +761,7 @@ def test_claiming_is_plan_scoped_with_three_plans_holding_pending_jobs(
 def test_a_phase_b_job_executes_through_the_least_privilege_runner(
     authorized: Any, authority: Any
 ) -> None:
-    """Claim, PHASE-B resolve, CLAIMED -> RUNNING, durable outcome — under minos_runner only.
+    """Claim, PHASE-B resolve, CLAIMED -> RUNNING, durable outcome, then a decided observation.
 
     The principal here holds ``minos_runner`` and nothing else, so every step goes through the
     narrow SECURITY DEFINER interfaces. Only the resolver differs from Phase A; the execution
@@ -777,7 +777,9 @@ def test_a_phase_b_job_executes_through_the_least_privilege_runner(
     index_map = _index_map(authority.plan)
     member_index, config_index = index_map[dispatched.job_key]
     assert member_index in (0, 1, 2, 3, 4), "batch 0 only"
-    env.evaluate(dispatched, minos_score=_score_for(config_index, member_index))
+    # and the evaluation is persisted by a principal whose ONLY membership is minos_evaluator, so
+    # the runner side and the truth side of this observation never share an authority.
+    env.evaluate(dispatched, minos_score=_score_for(config_index, member_index), as_evaluator=True)
 
     snapshot = load_phase_b_observations(env.engine, authority=authority)
     assert len(snapshot.observations) == 1
