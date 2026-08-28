@@ -55,7 +55,7 @@ _RUNNER_BOUNDARY = "0011_l2f2_runner_boundary"
 #: namespaces, 0013 let evaluation store what the pinned upstream scorer exposes, 0015 bound the
 #: execution environment into every outcome and 0016 admitted Phase B. It fails closed on every
 #: revision but the current one — including the one immediately behind it.
-_REQUIRED = "0019_l2f2_phase_b_bootstrap"
+_REQUIRED = "0020_l2f2_phase_c_execution"
 _BASELINE_DB = "minos_l2f2_baseline"
 _CI_ROLE = "minos_runner_ci_svc"
 _AUTHORITIES = "experiments.l2f2_execution_authorities"
@@ -277,6 +277,7 @@ def test_the_boundary_refuses_a_database_that_is_not_the_baseline_store(
         "0016_l2f2_phase_b_execution",
         "0017_l2f2_owner_corrective",
         "0018_l2f2_eval_owner_fix",
+        "0019_l2f2_phase_b_bootstrap",
     ],
 )
 def test_the_boundary_refuses_a_database_at_the_wrong_revision(

@@ -49,6 +49,7 @@ __all__ = [
     "PhaseBDesign",
     "dimension_of_alternative",
     "parameter_impacts",
+    "phase_c_inherited_candidate_index",
     "select_anchors",
     "select_influential_dimensions",
     "build_phase_b_configs",
@@ -101,6 +102,36 @@ class PhaseBDesign(BaseModel):
     @property
     def candidate_index(self) -> dict[str, int]:
         return {h: i for i, h in enumerate(self.ordered_config_hashes)}
+
+
+def phase_c_inherited_candidate_index(
+    phase_b_design: PhaseBDesign, selected_hashes: tuple[str, ...]
+) -> dict[str, int]:
+    """THE scientific tie-break index for Phase C: each candidate's ORIGINAL Phase-B position.
+
+    The frozen tie-break's third key is "lower candidate index in the frozen phase design", and
+    :class:`PhaseBDesign` is the only frozen candidate design these ten configurations belong to.
+    Its ordering was fixed before a single Phase-B score existed, which is exactly what makes it
+    usable as a tie-break: renumbering the promoted ten 0..9 would invent an index *after*
+    observing outcomes, and an index chosen after the results is not a pre-registered rule.
+
+    So Phase C carries two different indexes and they must not be confused. The plan's own
+    ``config_index`` (0..9) is bookkeeping — where a config sits in the Phase-C plan. This mapping
+    is science, and it returns values in 0..47.
+
+    There is deliberately no parameter by which a caller could supply integers or ask for the
+    other numbering.
+    """
+    inherited = phase_b_design.candidate_index
+    missing = sorted(h for h in selected_hashes if h not in inherited)
+    if missing:
+        raise ValueError(
+            f"{len(missing)} promoted configuration(s) are absent from the frozen Phase-B design; "
+            "a Phase-C candidate that was never a Phase-B candidate has no inherited index"
+        )
+    if len(set(selected_hashes)) != len(selected_hashes):
+        raise ValueError("the promoted set contains a duplicate configuration")
+    return {config_hash: inherited[config_hash] for config_hash in selected_hashes}
 
 
 def dimension_of_alternative(alternative: CanonicalConfig, seed: CanonicalConfig) -> str:

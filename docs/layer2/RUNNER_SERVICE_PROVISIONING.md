@@ -90,8 +90,12 @@ Granted by `0011` through `minos_runner`, on top of the existing `0007`/`0008` g
   long beforehand and is already durable as a persisted plan and a recorded authority
 * `EXECUTE` on `experiments.l2f2_resolve_claimed_phase_b_execution` — the same truth-free
   resolution for Phase B, with its own fixed `phase = 'PHASE_B'` predicate. Which function is
-  called is decided by the authority being executed, never by an argument, and neither resolver
-  falls back to the other phase's authorities
+  called is decided by the authority being executed, never by an argument, and no resolver
+  falls back to another phase's authorities
+* `EXECUTE` on `experiments.l2f2_resolve_phase_c_runner_bootstrap` and
+  `experiments.l2f2_resolve_claimed_phase_c_execution` — the identical pair for Phase C, added by
+  `0020` with a fixed `phase = 'PHASE_C'` predicate. Three phases now have three resolvers and two
+  bootstraps, and each is fixed internally to its own phase
 * `EXECUTE` on `experiments.l2f2_register_execution_artifact` — the ONLY path into
   `catalog.artifacts`. It accepts `vcf` or `result_manifest` and fixes media type and provenance
   itself, so it cannot register any other kind of artifact
@@ -99,9 +103,10 @@ Granted by `0011` through `minos_runner`, on top of the existing `0007`/`0008` g
 
 ### Required baseline schema revision
 
-The runner authority **functions and grants originate in `0011`**, and `0016` adds exactly one
-more: the Phase-B resolver. The revision the boundary requires on every connection is
-**`0019_l2f2_phase_b_bootstrap`**, exactly — never a floor, never `head`.
+The runner authority **functions and grants originate in `0011`**; `0016` adds one more (the
+Phase-B resolver), `0019` a second (the Phase-B bootstrap), and `0020` two more (the Phase-C pair).
+The revision the boundary requires on every connection is
+**`0020_l2f2_phase_c_execution`**, exactly — never a floor, never `head`.
 
 The reason it tracks a later revision than its own functions is that the runner and the evaluator
 **share one database**. Neither later migration grants the runner anything:
@@ -136,16 +141,22 @@ The reason it tracks a later revision than its own functions is that the runner 
   grants nothing and revokes nothing: every MINOS role's effective `EXECUTE` is unchanged, the
   function bodies and OIDs are untouched, and the definer simply stops being a superuser.
 
-The last three are migrations the runner's own code depends on: `0014` and `0015` drop the
-narrower writer signatures, so a runner at `0015` cannot record an outcome against an older
-database, and without `0016` a claimed Phase-B job cannot be resolved at all. That is precisely
-why the revision check is exact.
+* `0020` admits `PHASE_C` to `experiments.l2f2_execution_authorities`, extends the canary rule to
+  forbid a Phase-C canary, and adds `experiments.l2f2_resolve_claimed_phase_c_execution` and
+  `experiments.l2f2_resolve_phase_c_runner_bootstrap()`. The runner gains `EXECUTE` on those two
+  functions and nothing else; the Phase-A and Phase-B resolvers are untouched, and the Phase-C
+  bootstrap reads nothing in the `evaluation` schema, exactly as `0019`'s does.
 
-The service principal's authority grows by exactly one `EXECUTE` at `0016` and is otherwise
-identical under all eight revisions. What changes at `0017` is not the runner's authority but the
-**definer's**: every `SECURITY DEFINER` function this service can reach is owned by `minos_admin`,
-and none is owned by a superuser. That is asserted through `pg_roles.rolsuper` rather than by
-owner name.
+Several of these are migrations the runner's own code depends on: `0014` and `0015` drop the
+narrower writer signatures, so a runner at `0015` cannot record an outcome against an older
+database; without `0016` a claimed Phase-B job cannot be resolved at all; and without `0020` the
+same is true of a Phase-C job. That is precisely why the revision check is exact.
+
+The service principal's authority grows by exactly one `EXECUTE` at `0016`, one at `0019` and two
+at `0020`, and is otherwise identical under all nine revisions. What changes at `0017` is not the
+runner's authority but the **definer's**: every `SECURITY DEFINER` function this service can reach
+is owned by `minos_admin`, and none is owned by a superuser. That is asserted through
+`pg_roles.rolsuper` rather than by owner name.
 * the existing `0007`/`0008` claim, start, release, complete-success and fail functions
 
 Deliberately **not** granted:

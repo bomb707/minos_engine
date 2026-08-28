@@ -253,20 +253,48 @@ def test_0016_touches_only_the_authority_table_and_adds_exactly_one_function(
 # --------------------------------------------------------------------------- #
 # what the widened CHECKs admit, and what they still refuse
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("phase", ["PHASE_C", "PHASE_D", "validation", "phase_b", "TEST", ""])
-def test_a_third_phase_is_still_a_later_migration(l2f2: Any, phase: str) -> None:
-    """0016 widened the vocabulary by exactly one value, not into a free-text column.
+def test_0016_itself_admitted_exactly_two_phases_and_never_pre_admitted_the_third(
+    isolated_pg_base_url: str,
+) -> None:
+    """``0016`` widened the vocabulary by exactly ONE value, and left the third to a migration.
 
-    An unknown phase is refused twice over — by the phase vocabulary and by the canary rule, which
-    names both admitted phases explicitly — so the assertion is on the refusal and on what the
-    vocabulary CHECK actually says, rather than on which of the two fires first.
+    Pinned at ``0016``, not at head. ``0020`` has since delivered that third phase, so a store at
+    head legitimately admits ``PHASE_C`` — which is the promise being kept, not broken. The claim
+    worth keeping testable forever is the one about ``0016`` itself: on the day it shipped, the
+    column was not quietly widened to hold a phase nothing could yet execute.
+    """
+    with scratch_database(isolated_pg_base_url, _DB) as url:
+        alembic_upgrade(url, _HEAD)
+        engine = _engine(url)
+        try:
+            phase = _constraint(engine, "ck_l2f2_authority_phase")
+            canary = _constraint(engine, "ck_l2f2_authority_canary_phase")
+        finally:
+            engine.dispose()
+
+    assert phase is not None and canary is not None
+    assert "PHASE_A" in phase and "PHASE_B" in phase
+    assert "PHASE_C" not in phase, "0016 pre-admitted a phase it could not execute"
+    assert "VALIDATION" not in phase.upper() and "TEST" not in phase.upper()
+    assert "PHASE_C" not in canary, "the canary rule pre-admitted a phase 0016 did not have"
+
+
+@pytest.mark.parametrize("phase", ["PHASE_D", "validation", "phase_b", "TEST", ""])
+def test_an_unknown_phase_is_still_refused_twice_over(l2f2: Any, phase: str) -> None:
+    """The vocabulary is a closed set, not a free-text column — at 0016 and at every head since.
+
+    An unknown phase is refused twice — by the phase vocabulary and by the canary rule, which
+    names every admitted phase explicitly — so the assertion is on the refusal rather than on
+    which of the two fires first. ``PHASE_C`` is deliberately absent from this list: it is a real
+    phase now, and :mod:`tests.integration.layer2_db.test_l2f2_phase_c_execution_migration` owns
+    the equivalent control for the next one.
     """
     from sqlalchemy.exc import IntegrityError
 
     definition = _constraint(l2f2.engine, "ck_l2f2_authority_phase")
     assert definition is not None
     assert "PHASE_A" in definition and "PHASE_B" in definition
-    assert "PHASE_C" not in definition and "VALIDATION" not in definition.upper()
+    assert "VALIDATION" not in definition.upper()
 
     with (
         pytest.raises(IntegrityError, match="ck_l2f2_authority_(phase|canary_phase)"),

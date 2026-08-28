@@ -405,6 +405,35 @@ def _enqueue_l2f2_phase_b_slice_with_trust(
     )
 
 
+def _enqueue_l2f2_phase_c_slice_with_trust(
+    engine: Engine, *, start: int, count: int
+) -> JobEnqueueResult:
+    """PRIVATE dedicated enqueue of a BOUNDED slice of the derived L2-F2 Phase-C logical jobs.
+
+    The Phase-C counterpart of the Phase-A and Phase-B seams: the authority is derived from the
+    completed Phase-B ledger here, so the ONLY caller choice is which contiguous slice of the
+    frozen logical order to insert, bounded by :data:`MAX_ENQUEUE_BATCH` exactly as every other
+    enqueue path is.
+    """
+    from minos_engine.baseline.phase_c import build_l2f2_phase_c_authority
+    from minos_engine.storage.l2f_plan_store import (
+        _phase_c_candidate_set_for,
+        _resolve_phase_c_upstream,
+    )
+
+    _validate_range_prearg(start, count)
+    authority = build_l2f2_phase_c_authority(engine)
+    candidate_set = _phase_c_candidate_set_for(authority)
+    return _enqueue_in_new_transaction(
+        engine,
+        start=start,
+        count=count,
+        verify_identity=False,
+        build_plan=lambda _conn: (authority.plan, candidate_set),
+        upstream_resolver=_resolve_phase_c_upstream,
+    )
+
+
 def _enqueue_l2f2_phase_a_canary_with_trust(engine: Engine) -> JobEnqueueResult:
     """PRIVATE dedicated enqueue of EXACTLY the frozen L2-F2 Phase-A canary — logical job 0.
 

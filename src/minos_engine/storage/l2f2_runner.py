@@ -92,6 +92,7 @@ __all__ = [
     "L2F2ExecutionError",
     "execute_next_l2f2_phase_a_job",
     "execute_next_l2f2_phase_b_job",
+    "execute_next_l2f2_phase_c_job",
 ]
 
 #: the dedicated baseline store. The operational database is NEVER a valid target here.
@@ -119,7 +120,7 @@ BASELINE_DATABASE_NAME = "minos_l2f2_baseline"
 #: a runner at ``0016``/``0017`` is one whose privileged calls still execute with more authority than the
 #: control plane has, and ``0018`` does the same for the evaluator's four. The runner and the
 #: evaluator share this store, so the revision this boundary accepts tracks both of them.
-BASELINE_REVISION = "0019_l2f2_phase_b_bootstrap"
+BASELINE_REVISION = "0020_l2f2_phase_c_execution"
 
 #: the ONLY MINOS group role the runner service may hold.
 _REQUIRED_MEMBERSHIP = "minos_runner"
@@ -132,12 +133,18 @@ _FORBIDDEN_MEMBERSHIPS = ("minos_admin", "minos_evaluator", "minos_trainer", "mi
 _RESOLVE_SQL_BY_PHASE: dict[str, str] = {
     "PHASE_A": "SELECT * FROM experiments.l2f2_resolve_claimed_execution(:h, :j, :w)",
     "PHASE_B": "SELECT * FROM experiments.l2f2_resolve_claimed_phase_b_execution(:h, :j, :w)",
+    "PHASE_C": "SELECT * FROM experiments.l2f2_resolve_claimed_phase_c_execution(:h, :j, :w)",
 }
 #: the truth-free Phase-B bootstrap (0019). No arguments: the database decides what is
 #: authorized, so a worker cannot nominate a plan or a runtime.
 _PHASE_B_BOOTSTRAP_SQL = (
     "SELECT plan_hash, execution_environment_hash FROM "
     "experiments.l2f2_resolve_phase_b_runner_bootstrap()"
+)
+#: the truth-free Phase-C bootstrap (0020). Same contract, same absence of arguments.
+_PHASE_C_BOOTSTRAP_SQL = (
+    "SELECT plan_hash, execution_environment_hash FROM "
+    "experiments.l2f2_resolve_phase_c_runner_bootstrap()"
 )
 _REGISTER_SQL = (
     "SELECT artifact_id, created FROM experiments.l2f2_register_execution_artifact("
@@ -403,6 +410,71 @@ class _PhaseBRunnerBootstrap:
 
     authority: _PhaseBRunnerAuthority
     execution_environment_hash: str
+
+
+def _resolve_phase_c_runner_bootstrap(conn: Connection) -> _PhaseBRunnerBootstrap:
+    """The Phase-C ticket: which plan this worker may claim within, and under what runtime.
+
+    Identical in shape and in spirit to the Phase-B bootstrap — no arguments, no science, and no
+    fallback — because the reason is identical: deriving the Phase-C authority means reading the
+    completed Phase-B SCIENTIFIC ledger, which the runner is denied.
+    """
+    row = conn.execute(text(_PHASE_C_BOOTSTRAP_SQL)).mappings().one_or_none()
+    if row is None:  # pragma: no cover - the function raises rather than returning empty
+        raise L2F2ExecutionError("the Phase-C runner bootstrap returned no row")
+    plan_hash = str(row["plan_hash"])
+    environment = str(row["execution_environment_hash"])
+    if not plan_hash or not environment:
+        raise L2F2ExecutionError("the Phase-C runner bootstrap returned an incomplete ticket")
+    return _PhaseBRunnerBootstrap(
+        authority=_PhaseBRunnerAuthority(plan_hash=plan_hash, phase="PHASE_C"),
+        execution_environment_hash=environment,
+    )
+
+
+def execute_next_l2f2_phase_c_job(*, worker_id: str) -> L2F2DispatchResult | None:
+    """THE accepted L2-F2 Phase-C execution entry. Same core, same truth-free bootstrap.
+
+    Phase C confirms ten already-promoted configurations across the whole TRAIN partition. Which
+    ten, on which fifty members, was decided by the CONTROL PLANE from a finished Phase-B screen
+    and is already durable as a persisted plan and a recorded ``PHASE_C`` authority; this entry
+    asks the database only what a truth-free worker may know.
+
+    The runtime check is the same one Phase B enforces, for the same reason: the design being
+    confirmed was chosen from the numbers one runtime produced.
+    """
+    from minos_engine.experiments.execution_contract import GatkRuntimeIdentityError
+    from minos_engine.storage.database import create_db_engine
+    from minos_engine.storage.l2f_gatk_runner import SubprocessGatkRunner, work_root_from_env
+    from minos_engine.storage.l2f_job_claim import validate_worker_id
+
+    validate_worker_id(worker_id)
+    runner = SubprocessGatkRunner.from_env()
+    environment = runner.preflight()
+    engine = create_db_engine()
+    try:
+        with engine.connect() as conn:
+            authorize_baseline_runner_connection(conn)
+            bootstrap = _resolve_phase_c_runner_bootstrap(conn)
+        observed = environment.environment_hash()
+        if observed != bootstrap.execution_environment_hash:
+            raise GatkRuntimeIdentityError(
+                f"this worker's execution environment is {observed}, but the baseline search's "
+                f"completed Phase B ran under {bootstrap.execution_environment_hash}; Phase C "
+                "confirms a design chosen from that runtime's numbers and must not mix runtimes"
+            )
+        return _execute_l2f2_job(
+            engine,
+            bootstrap.authority,
+            worker_id=worker_id,
+            runner=runner,
+            dataset_root=dataset_root_from_env(),
+            publisher=ResultArtifactPublisher(result_artifact_root_from_env()),
+            work_root=work_root_from_env(),
+            execution_environment=environment,
+        )
+    finally:
+        engine.dispose()
 
 
 def _resolve_phase_b_runner_bootstrap(conn: Connection) -> _PhaseBRunnerBootstrap:

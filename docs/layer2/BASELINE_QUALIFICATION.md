@@ -221,7 +221,7 @@ Open: **D2** (form), **D3** (α and floor weight), **D4** (runtime), **D1**
 
 | Situation | Rule |
 |---|---|
-| Tie in `J` | lower mean runtime → lower `config_index` → lexicographically smaller `config_hash`. Fully deterministic. |
+| Tie in `J` | lower mean runtime → lower `config_index` **in the frozen design the candidate came from** → lexicographically smaller `config_hash`. Fully deterministic. For Phase C that index is the candidate's **inherited Phase-B design position** (`0..47`), never its Phase-C promotion position (`0..9`): the promotion order is bookkeeping computed after the ten were known, and using it would be a new tie-break invented after the fact. See §12. |
 | GATK failure | evaluation counts toward `F(c)`; score contributes nothing. Never silently dropped. |
 | GATK timeout | same as failure; the timeout bound is part of the protocol hash. |
 | Non-admitted score (`≤ 0`, `> 1`, or zero-input fingerprint) | counted in `F(c)`; **not** recorded as 0.0. |
@@ -245,33 +245,38 @@ per chromosome, chosen by lowest `sort_order` within each chromosome.
 * **Phase B — compact interaction search.** A pre-registered deterministic rule
   selects the influential dimensions from Phase A; a compact design (Sobol / LHS
   / fractional-factorial — **D8**) covers only those, evaluated on 10 TRAIN BAMs
-  (two per chromosome). **Frozen and materializable; not executed.** The design is
-  48 candidates × 10 members — seed `4251cb85…`, candidate set
+  (two per chromosome). **COMPLETE.** The design is 48 candidates × 10 members —
+  seed `4251cb85…`, candidate set
   `63b0244935edb46c799583cae9715733e52b25fba85f581a33ebe6949c09de0e`, plan
   `e80594043580334ddf2504577e2fa030dff0c1217ac334804d9304a0ec72596b` — derived from
   the completed Phase-A ledger and re-derivable from it deterministically. Two of the
   six anchors are total-failure Phase-A configurations: impact measures *sensitivity*,
   and a dimension whose alternatives all failed is precisely one Phase B must explore.
-  Execution was blocked at the database boundary — migration `0011` admitted only
-  `PHASE_A` execution authorities — and `0016_l2f2_phase_b_execution` corrects that:
-  the authority table admits `PHASE_A` or `PHASE_B` (Phase C remains a later
-  migration), `canary_job_key` is nullable under a phase-semantic rule that forbids a
-  Phase-B canary, and a dedicated `PHASE_B` resolver joins the untouched Phase-A one.
-  **Phase B is ACTIVATED and not started**: the plan is persisted on the real
-  baseline, its `PHASE_B` execution authority is prepared, batch 0 is materialized
-  as 240 PENDING jobs, and progress is 0/480 decided. A Phase-B worker additionally
-  needs `0019`'s truth-free bootstrap: the runner is denied the scientific ledger,
-  so it is told only which plan it may claim within and which runtime Phase A ran
-  under, never how the design was derived. Running it additionally requires the runner to
-  prove its JVM dispatch — GATK's launcher starts a bare `java`, so the runner
-  verifies that token resolves to the pinned `JAVA_HOME` JVM against the exact
-  child environment, before preflight and before every scientific launch. (`0017` and `0018` take
-  SUPERUSER authority away from the legacy `0011` runner definers and the `0009`/`0010`
-  evaluator definers respectively; both change ownership metadata only — no function
-  body, no table shape and no scientific row.) **The active baseline is
-  still at `0015` and holds no Phase-B row: no Phase-B GATK has run and no Phase-B
+  All 480 pairs were decided on the real baseline under the single execution environment
+  `71e14a49…`: 450 executions succeeded, 30 failed, 308 were admitted, 142 were validator
+  non-admissions, and **0 infrastructure incidents** occurred. Racing eliminated nobody
+  after batch 0, exactly as the note below predicts, so the full ceiling was spent.
+  Reaching execution took four database correctives — `0016` widened the runner boundary
+  from `PHASE_A` to `PHASE_A|PHASE_B` with a phase-semantic canary rule and a dedicated
+  `PHASE_B` resolver; `0017` and `0018` took SUPERUSER authority away from the legacy
+  `0011` runner definers and the `0009`/`0010` evaluator definers; `0019` gave the runner
+  a truth-free bootstrap, since it is denied the scientific ledger and must be told only
+  which plan it may claim within and which runtime Phase A ran under — plus one runtime
+  closure: GATK's launcher starts a bare `java`, so the runner now proves that token
+  resolves to the pinned `JAVA_HOME` JVM against the exact child environment, before
+  preflight and before every scientific launch.
+* **Phase C — survivor confirmation.** The ten promoted survivors run across all 50
+  TRAIN BAMs, in 10 balanced batches of 5 chromosomes, racing down to 4 finalists.
+  **Frozen and materializable; not executed.** Promotion from Phase B selected exactly ten
+  — one seed, three anchors, six LHS points — with the seed placing fifth on its own merit,
+  so the rule that it can never be eliminated did not have to be used. Phase-B completion
+  `0c98017a…`, Phase-C candidate set `923e45d5…`, plan `03b846e7…`; 500 logical jobs as a
+  **ceiling**, since a candidate eliminated at batch *k* legitimately stops there.
+  `0020_l2f2_phase_c_execution` opens the boundary the same way `0016` did — the authority
+  table admits `PHASE_A`, `PHASE_B` or `PHASE_C`, the canary rule forbids a Phase-C canary,
+  and a dedicated `PHASE_C` resolver and truth-free bootstrap join the untouched earlier
+  ones. **The active baseline holds no Phase-C row: no Phase-C GATK has run and no Phase-C
   score exists.**
-* **Phase C — survivor confirmation.** Survivors run across all 50 TRAIN BAMs.
 
 **Racing note (measured, not theoretical).** With five of ten members observed, the
 frozen `-1.0 · failure_rate` term shifts both bounds by exactly 0.5, so the worst
@@ -280,6 +285,13 @@ Elimination needs a **strict** inequality, so the batch-0 race can never elimina
 candidate: Phase B spends its full 480-job ceiling. The rule is frozen and errs in the
 safe direction (it can never eliminate a candidate that could still win), so this is
 recorded rather than adjusted.
+
+The same arithmetic says Phase C cannot eliminate early either — five of fifty members leaves
+the bounds far too wide — but it does not say Phase C can never eliminate. As observed
+fraction grows the bounds close, and the end-to-end suite drives a complete ten-batch Phase C
+in which racing genuinely removes a candidate and the later batches are correspondingly
+smaller. That is the budget saving racing exists for, and it is reachable here because Phase C
+runs ten batches rather than two.
 * **Phase D — frozen validation.** Freeze candidate set, objective, ranking and
   tie-breaks, *then* read the 10 validation scores for a very small finalist set.
   **No TEST.**
@@ -386,7 +398,13 @@ truth identity per evaluation row.
 ## 12. Promotion rules
 
 1. A candidate is rankable only if **every** protocol-required evaluation exists.
-2. TRAIN ranking uses frozen `J`; ties broken per §8.
+   A candidate racing eliminated part-way through a phase legitimately stops there and is
+   simply not ranked; its unseen remainder is never fabricated to complete its aggregate.
+2. TRAIN ranking uses frozen `J`; ties broken per §8. A phase that inherits its candidates
+   from an earlier one **inherits that phase's design index with them** — Phase C breaks ties
+   on the promoted candidate's original Phase-B position, not on the order it was promoted in.
+   The rule lives in exactly one place (`baseline.design.phase_c_inherited_candidate_index`)
+   and is bound into both the Phase-C candidate-set identity and the finalist-set identity.
 3. The top `N_f` finalists promote to VALIDATION — `N_f` fixed before any
    validation read.
 4. The baseline is the best finalist on VALIDATION under the **same** frozen `J`.

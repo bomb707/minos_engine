@@ -838,6 +838,63 @@ def _persist_l2f2_phase_b_plan_with_trust(
     )
 
 
+def _persist_l2f2_phase_c_plan_with_trust(
+    engine: Engine, *, publisher: ConfigPayloadPublisher
+) -> PlanPersistResult:
+    """PRIVATE persistence of the derived L2-F2 Phase-C plan. CONTROL PLANE only.
+
+    The Phase-C counterpart of the Phase-B seam, and for the same reasons: the authority is
+    derived here from the completed Phase-B ledger, so no caller supplies a plan, a candidate set,
+    a member list or a config; and the upstream resolution is a projection of the accepted
+    closure at the full 50 TRAIN ordinals rather than a fresh inventory.
+
+    All ten CONFIG payloads already exist — these are Phase-B configurations — so a correct run
+    creates none and reuses every one.
+    """
+    from minos_engine.baseline.phase_c import build_l2f2_phase_c_authority
+
+    authority = build_l2f2_phase_c_authority(engine)
+    candidate_set = _phase_c_candidate_set_for(authority)
+    return _execute_persistence_txn(
+        engine,
+        verify_identity=False,
+        build_inputs=lambda _conn: (authority.plan, candidate_set, publisher),
+        upstream_resolver=_resolve_phase_c_upstream,
+    )
+
+
+def _phase_c_candidate_set_for(authority: Any) -> CandidateSet:
+    """The ten promoted configurations as the persistence core's candidate-set object."""
+    from dataclasses import replace
+
+    from minos_engine.experiments.candidates import generate_accepted_candidate_set
+
+    hashes = tuple(c.config_hash for c in authority.configs)
+    return replace(
+        generate_accepted_candidate_set(),
+        configs=tuple(authority.configs),
+        ordered_config_hashes=hashes,
+        candidate_count=len(hashes),
+        candidate_set_hash=authority.phase_c_candidate_set_hash,
+        skipped=(),
+    )
+
+
+def _resolve_phase_c_upstream(conn: Connection, plan: ExperimentPlan) -> dict[str, Any]:
+    """Resolve upstream for the derived Phase-C plan, by the SAME projection rules.
+
+    Phase C is the whole accepted 50-member TRAIN closure, so the projection is the identity on
+    members — but it still goes through the shared resolver, because what that proves is not the
+    subsetting: it is that the COMPLETE closure is intact before anything is written.
+    """
+    from minos_engine.baseline.phase_c import build_l2f2_phase_c_authority
+
+    engine = conn.engine
+    return _resolve_projected_upstream(
+        conn, plan, frozen=build_l2f2_phase_c_authority(engine).plan, label="Phase-C"
+    )
+
+
 def _phase_b_candidate_set_for(authority: Any) -> CandidateSet:
     """The Phase-B candidate set object the persistence core writes payloads from."""
     from dataclasses import replace

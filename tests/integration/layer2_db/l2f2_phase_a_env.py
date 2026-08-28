@@ -36,7 +36,7 @@ from tests.integration.layer2_db.conftest import alembic_upgrade, scratch_databa
 from tests.integration.layer2_db.test_l2f_plan_store import _engine
 
 BASELINE_DB = "minos_l2f2_baseline"
-REQUIRED_REVISION = "0019_l2f2_phase_b_bootstrap"
+REQUIRED_REVISION = "0020_l2f2_phase_c_execution"
 _CI_ROLE = "minos_phase_a_ci_svc"
 _EVAL_ROLE = "minos_phase_a_eval_svc"
 
@@ -86,7 +86,7 @@ def _provision_inputs(root: Path, *, round_id: str, chromosome: str) -> None:
 
 
 def _dataset_identity(members: Any, root: Path) -> dict[str, dict[str, Any]]:
-    """Provision real input bytes for the frozen members and return their REAL identities."""
+    """Provision real input bytes for these members and return their REAL identities."""
     identity: dict[str, dict[str, Any]] = {}
     for member in members:
         round_id, chromosome = _split(member.dataset_id)
@@ -103,6 +103,26 @@ def _dataset_identity(members: Any, root: Path) -> dict[str, dict[str, Any]]:
             "bam_size_bytes": (practice / "input.bam").stat().st_size,
         }
     return identity
+
+
+def _allocate_train_partition(engine: Any) -> int:
+    """TRAIN-allocate every persisted plan member that is not allocated yet. Idempotent."""
+    with engine.connect() as conn, conn.begin():
+        conn.execute(text("SET LOCAL ROLE minos_admin"))
+        result = conn.execute(
+            text(
+                "INSERT INTO catalog.split_allocations "
+                "  (dataset_registry_id, partition, sort_order, manifest_hash) "
+                "SELECT DISTINCT m.dataset_registry_id, 'train', "
+                "       row_number() OVER (ORDER BY m.dataset_registry_id) "
+                "         + (SELECT count(*) FROM catalog.split_allocations), :h "
+                "  FROM experiments.l2f_experiment_plan_members m "
+                " WHERE NOT EXISTS (SELECT 1 FROM catalog.split_allocations sa "
+                "                    WHERE sa.dataset_registry_id = m.dataset_registry_id)"
+            ),
+            {"h": "a" * 64},
+        )
+    return int(result.rowcount)
 
 
 @dataclass
@@ -175,6 +195,16 @@ class PhaseAEnv:
         )
 
     # -- the production evaluation path ---------------------------------------------------- #
+    def allocate_train_members(self) -> int:
+        """TRAIN-allocate every plan member now persisted. Idempotent; returns the rows added.
+
+        The upstream seed does not populate ``catalog.split_allocations``, and the truth
+        projection reads it, so a member that no plan referenced yet has no truth. A later phase
+        persists members the earlier phases never had, so this has to be re-runnable rather than
+        a one-shot step inside :func:`phase_a_store`.
+        """
+        return _allocate_train_partition(self.engine)
+
     def register_truth(self) -> None:
         """Publish and register synthetic TRAIN truth for every registered target."""
         from minos_engine.evaluation.truth_registration import register_train_truth_identities
@@ -334,7 +364,11 @@ def phase_a_store(base_url: str, tmp_path: Path) -> Iterator[PhaseAEnv]:
 
     dataset_root = tmp_path / "datasets"
     dataset_root.mkdir()
-    identity = _dataset_identity(authority.plan.members, dataset_root)
+    # EVERY accepted train member, not only Phase A's five. ``catalog.dataset_registry`` is
+    # append-only, so a member seeded with a fabricated byte hash can never be corrected — and
+    # the later phases execute members Phase A never touches. Provisioning the whole train set
+    # keeps the registry describing files that actually exist, for all of it.
+    identity = _dataset_identity(accepted.members, dataset_root)
 
     config_root = tmp_path / "cfgroot"
     config_root.mkdir()
@@ -356,20 +390,7 @@ def phase_a_store(base_url: str, tmp_path: Path) -> Iterator[PhaseAEnv]:
             prepare_l2f2_phase_a_canary(engine, config_artifact_root=config_root)
             # the TRAIN truth projection reads catalog.split_allocations, which the upstream seed
             # does not populate. Every frozen Phase-A member is a TRAIN member by construction.
-            with engine.connect() as conn, conn.begin():
-                conn.execute(text("SET LOCAL ROLE minos_admin"))
-                conn.execute(
-                    text(
-                        "INSERT INTO catalog.split_allocations "
-                        "  (dataset_registry_id, partition, sort_order, manifest_hash) "
-                        "SELECT DISTINCT m.dataset_registry_id, 'train', "
-                        "       row_number() OVER (ORDER BY m.dataset_registry_id), :h "
-                        "  FROM experiments.l2f_experiment_plan_members m "
-                        " WHERE NOT EXISTS (SELECT 1 FROM catalog.split_allocations sa "
-                        "                    WHERE sa.dataset_registry_id = m.dataset_registry_id)"
-                    ),
-                    {"h": "a" * 64},
-                )
+            _allocate_train_partition(engine)
             service = _create_service_login(engine, url)
             env = PhaseAEnv(
                 url=url,

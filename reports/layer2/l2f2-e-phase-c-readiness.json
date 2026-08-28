@@ -1,0 +1,253 @@
+{
+ "boundaries": {
+  "authority_preparation": "minos_engine.storage.l2f2_phase_c_prepare.prepare_l2f2_phase_c_execution_authority",
+  "caller_supplied_survivor_list_accepted": false,
+  "enqueue_all_api_exists": false,
+  "execution_entry": "minos_engine.storage.l2f2_runner.execute_next_l2f2_phase_c_job",
+  "finalist_freeze": "minos_engine.baseline.validation_finalists.derive_validation_finalist_set",
+  "materialization": "minos_engine.storage.l2f2_phase_c_control.expand_l2f2_phase_c_batch",
+  "max_enqueue_batch": 64,
+  "partial_candidate_can_never_be_ranked": true,
+  "phase_b_completion": "minos_engine.baseline.phase_b_completion.derive_completed_phase_b_result",
+  "phase_c_authority": "minos_engine.baseline.phase_c.build_l2f2_phase_c_authority",
+  "phase_c_observations": "minos_engine.baseline.phase_c_observations.load_phase_c_observations",
+  "progress": "minos_engine.storage.l2f2_phase_c_control.read_l2f2_phase_c_progress",
+  "promotion": "minos_engine.storage.l2f2_phase_c_control.select_l2f2_validation_finalists",
+  "racing": "minos_engine.storage.l2f2_phase_c_control.race_l2f2_phase_c_batch",
+  "racing_refuses_on_infrastructure_incident": true,
+  "racing_requires_complete_balanced_batch": true,
+  "seed_can_never_be_eliminated": true,
+  "tie_break_index": "minos_engine.baseline.design.phase_c_inherited_candidate_index"
+ },
+ "checks": {
+  "full_serial_regression": {
+   "command": "pytest --cov=src/minos_engine --cov-report=term-missing",
+   "coverage_total_percent": 90,
+   "duration_seconds": 5263,
+   "errors": 0,
+   "exit_code": 0,
+   "failed": 0,
+   "passed": 3394,
+   "postgresql_three_plan_coexistence_covered": true,
+   "skipped": 2
+  },
+  "git_diff_check": "clean",
+  "mypy": "Success: no issues found in 230 source files",
+  "new_module_coverage_percent": {
+   "baseline/design.py": 90,
+   "baseline/phase_b_completion.py": 89,
+   "baseline/phase_c.py": 90,
+   "baseline/phase_c_observations.py": 100,
+   "baseline/validation_finalists.py": 95,
+   "storage/l2f2_phase_c_control.py": 96,
+   "storage/l2f2_phase_c_prepare.py": 95,
+   "storage/l2f2_runner.py": 90
+  },
+  "new_tests": {
+   "tests/integration/layer2_db/test_l2f2_phase_c_control.py": 40,
+   "tests/integration/layer2_db/test_l2f2_phase_c_execution_migration.py": 10,
+   "tests/unit/baseline/test_phase_c_candidate_index.py": 4,
+   "tests/unit/baseline/test_phase_c_identities.py": 29
+  },
+  "ruff_check": "All checks passed",
+  "ruff_format_check": "599 files already formatted"
+ },
+ "containment": {
+  "config_selected_or_ranked": false,
+  "d1_d8_changed": false,
+  "frozen_algorithms_reimplemented": false,
+  "immutable_reports_modified": false,
+  "minos_subnet_modified": false,
+  "new_migration_added": "0020_l2f2_phase_c_execution (source only; the real store is NOT migrated)",
+  "operational_database_modified": false,
+  "phase_c_gatk_executions_run": 0,
+  "phase_c_jobs_materialized_on_real_baseline": 0,
+  "phase_c_minos_subnet_scoring_runs": 0,
+  "phase_c_new_scores_observed": 0,
+  "phase_c_plans_persisted_on_real_baseline": 0,
+  "reaches_test_partition": false,
+  "reaches_validation_partition": false,
+  "real_baseline_database_modified": false
+ },
+ "disposition": "L2-F2-E-PHASE-C-READY",
+ "disposition_reason": "The \u00a74 index ambiguity is resolved as the INHERITED PhaseBDesign.candidate_index and pinned in exactly one place, with a unit test that constructs a genuine tie the two readings decide differently. Migration 0020, the Phase-C authority, plan persistence, bounded materialization, frozen racing, progress and four-finalist promotion are implemented, and the whole TRAIN chain is proved end to end against real PostgreSQL in one store holding a complete Phase A, a complete Phase B and a TRAIN-complete Phase C. All quality gates pass: 3394 passed, 0 failed, 0 errors, 90% coverage. No real Phase-C plan, job, GATK execution or score exists and the active baseline stays at 0019.",
+ "entry_gate": {
+  "ci_conclusion": "success",
+  "ci_event": "push",
+  "ci_run_id": 33063129354,
+  "ci_status": "completed",
+  "ci_workflow": "CI",
+  "exact_sha_match": true,
+  "head_sha": "db25e45bf57715bc8c4ab7ec30cf1bc9379eed6e",
+  "parent_commit": "db25e45bf57715bc8c4ab7ec30cf1bc9379eed6e"
+ },
+ "harness_gate": {
+  "gate_file_sha256": "c0dff7f2b4331af505c089b365f52d804844997e1cd7e047c04f26f92478df25",
+  "mandatory_checks": 40,
+  "qualification_file_sha256": "9b127d0385fcd2271a5f5312a9d9ddd0a607bbfc2da03ac5658b8626870ce688",
+  "status": "PASS",
+  "unchanged_since_l2f2_c": true,
+  "verified_by": "minos-engine layer2 harness gate require-pass --gate gates/harness-ready.json --qualification reports/layer2/harness-ready-result.json"
+ },
+ "index_clarification": {
+  "bound_into": [
+   "phase_c_candidate_set_hash (both orderings, as separate fields)",
+   "finalist_set_hash (the inherited index of each finalist)"
+  ],
+  "decisive_test": "tests/unit/baseline/test_phase_c_candidate_index.py::test_an_exact_tie_is_broken_by_the_LOWER_INHERITED_index",
+  "decisive_test_construction": "four candidates promoted in order A,B,C,D with inherited indices 9,2,7,1; A and B tie on both objective J and mean GATK runtime. Under the inherited index B wins; under the promotion position A wins. The test asserts both, so a silent regression to the rejected reading cannot pass.",
+  "inherited_indices_in_promotion_order": [
+   42,
+   6,
+   31,
+   3,
+   0,
+   36,
+   25,
+   11,
+   5,
+   43
+  ],
+  "question": "which candidate index breaks a Phase-C tie",
+  "rejected_reading": "the Phase-C promotion position (0..9), which is bookkeeping computed after the ten were known and would be a new tie-break invented after the fact",
+  "resolution": "INHERITED PhaseBDesign.candidate_index (0..47) \u2014 the candidate's ORIGINAL position in the frozen Phase-B design",
+  "single_definition_site": "minos_engine.baseline.design.phase_c_inherited_candidate_index",
+  "the_two_readings_disagree_on_this_campaign": true
+ },
+ "migration_0020": {
+  "bootstrap_reads_evaluation_schema": false,
+  "canary_rule": "PHASE_A must carry a canary; PHASE_B and PHASE_C must not",
+  "down_revision": "0019_l2f2_phase_b_bootstrap",
+  "downgrade_refuses_while_phase_c_authority_exists": true,
+  "execute_denied_to": [
+   "minos_evaluator",
+   "minos_trainer",
+   "minos_live",
+   "public"
+  ],
+  "execute_granted_to": [
+   "minos_runner",
+   "minos_admin"
+  ],
+  "functions_added": [
+   "experiments.l2f2_resolve_claimed_phase_c_execution(text, uuid, text)",
+   "experiments.l2f2_resolve_phase_c_runner_bootstrap()"
+  ],
+  "functions_redefined": 0,
+  "functions_removed": 0,
+  "lifecycle_tested": "0019 -> 0020 -> 0019 -> 0020",
+  "owner": "minos_admin",
+  "owner_is_superuser": false,
+  "phase_vocabulary": "PHASE_A | PHASE_B | PHASE_C",
+  "revision": "0020_l2f2_phase_c_execution",
+  "runner_direct_table_grants_added": 0,
+  "runner_usage_on_evaluation_schema": false,
+  "search_path_pinned": true,
+  "security_definer": true,
+  "structural_sections_unchanged": [
+   "relations",
+   "indexes",
+   "triggers",
+   "roles",
+   "role_memberships",
+   "schema_security",
+   "default_acls"
+  ]
+ },
+ "notes": [
+  "No secrets. No credentials. No DSNs.",
+  "The real store was read READ ONLY; nothing was written to it and it stays at 0019.",
+  "Migrating the real baseline to 0020, persisting the Phase-C plan and preparing the PHASE_C authority is a separate privileged environment task and was NOT performed."
+ ],
+ "observations": [
+  {
+   "action_taken": "recorded and documented at the definition site; the end-to-end suite asserts the invariant that IS guaranteed \u2014 every candidate holds a whole number of leading batches and nothing after them.",
+   "asserted_by": "tests/integration/layer2_db/test_l2f2_phase_c_control.py::test_an_eliminated_candidate_stops_dead_and_is_never_resumed",
+   "consequence": "a retrospective per-batch elimination list is a decision, not a historical record of what the control plane knew at the time. What happened to the queue is durable in the queue.",
+   "detail": "race_l2f2_phase_c_batch(batch_index=k) recomputes from the whole immutable ledger, not from the ledger as it stood when batch k closed. During a campaign the two coincide, because batch k+1 is materialized before any of it is decided. Replayed against a finished confirmation, racing batch 0 sees all fifty members and eliminates candidates the live campaign carried further.",
+   "id": "L2F2E-O2",
+   "severity": "OBSERVATION",
+   "title": "a per-batch racing decision is evaluated against the ledger as it stands",
+   "why_it_is_correct": "more observation narrows the racing bounds and can never widen them, so elimination is monotone and no candidate is ever resurrected. The operational guarantee is untouched: at the moment batch k+1 was materialized, only candidates surviving through batch k received jobs."
+  },
+  {
+   "detail": "tests/integration/layer2_db/l2f2_phase_a_env.py seeded catalog.dataset_registry with REAL byte hashes for the five Phase-A members and fabricated ones for the other forty-five accepted TRAIN members, and TRAIN-allocated only the members the Phase-A plan referenced. Nothing before this stage executed a member outside Phase A, so it never surfaced.",
+   "fix": "the whole accepted fifty-member train set is provisioned and identified, and TRAIN allocation became a re-runnable step a later phase calls after persisting its own plan. catalog.dataset_registry is append-only, so a member seeded with a fabricated hash could never have been corrected later.",
+   "id": "L2F2E-O3",
+   "scope": "test fixture only; no production code path and no real database row",
+   "severity": "FIXED",
+   "title": "the Phase-A test fixture described input files it had not provisioned"
+  }
+ ],
+ "phase_b_source_of_truth": {
+  "admitted": 308,
+  "candidate_failure_count": 172,
+  "complete": true,
+  "completion_hash": "0c98017a7a79bc7d8bf897983b4b25765d64a52d4f4caa70458abaf1d508e1fd",
+  "decided": 480,
+  "evaluation_failure_count": 0,
+  "evaluation_result_count": 450,
+  "execution_environment_hash": "71e14a49833ac77bb9dc576345fb89c4dd68f4a3ad3673eb098d38593c1ef4d3",
+  "execution_failure_count": 30,
+  "execution_result_count": 450,
+  "infrastructure_incident_count": 0,
+  "logical_job_count": 480,
+  "plan_hash": "e80594043580334ddf2504577e2fa030dff0c1217ac334804d9304a0ec72596b",
+  "racing_eliminated_after_batch_0": 0,
+  "validator_non_admissions": 142
+ },
+ "phase_c_design": {
+  "batch_count": 10,
+  "batch_size": 5,
+  "budget_is_a_ceiling_not_a_quota": true,
+  "candidate_count": 10,
+  "candidate_set_hash": "923e45d59799c34ca1831c65b57604405165935a9e51d4c0e690abbfaf122bd4",
+  "chromosomes_per_batch": [
+   "chr18",
+   "chr19",
+   "chr20",
+   "chr21",
+   "chr22"
+  ],
+  "derivation_is_deterministic": true,
+  "derived_read_only_from_the_real_ledger": true,
+  "execution_environment_hash": "71e14a49833ac77bb9dc576345fb89c4dd68f4a3ad3673eb098d38593c1ef4d3",
+  "logical_job_budget": 500,
+  "member_count": 50,
+  "ordered_config_hashes": [
+   "157d88d1587c13be395c62d60e27d1becdada78fad45e65d883bc1190e51acea",
+   "858988eeb117915305a2f334355df6c15c6c5b2aec7b47c2279e0566ddb3930b",
+   "d61d7b26fa9f216e0ed44375ca6056d84deb31a87da8976a8e6154abbe796aa8",
+   "2a14c59f715dfc2c91f14210527749b84fec48503cd4f3f7c76373e53dd9bd95",
+   "4251cb85e5cd58b7eabfe530b9df23ea7d1d14fd882114b488d67cbd81b751b8",
+   "22a1f1fd9ddf02a97776d991f11280b3982673693a4f357479098a99fb411a16",
+   "0972930f8d8c562be15382203e123b2909094e7eac46e84321d36c67abf8345e",
+   "72d0fa71b844fa42b833dbcc97c0949df25c91bca6f9395319aa3443fe6e387e",
+   "b58c3915f05ceaaac0025b0131a479ac1e03d870ea69920592fd3cbaa7a7071b",
+   "b2fc30c077e93d18fb94fa54a89e27f7a3b4021e26af6468b4ce54ed6af7d2ba"
+  ],
+  "plan_hash": "03b846e735e5817a8df7d5c37ae15778a955828a56513b16cef8ff2193a0aa43",
+  "promoted_composition": "1 seed + 3 Phase-A anchors + 6 LHS points",
+  "seed_config_hash": "4251cb85e5cd58b7eabfe530b9df23ea7d1d14fd882114b488d67cbd81b751b8",
+  "seed_promoted_on_merit": true,
+  "seed_promotion_rank_zero_based": 4,
+  "source_phase_b_plan_hash": "e80594043580334ddf2504577e2fa030dff0c1217ac334804d9304a0ec72596b"
+ },
+ "real_database_crosscheck": {
+  "alembic_revision": "0019_l2f2_phase_b_bootstrap",
+  "connection": "local passwordless maintenance connection, read-only; no credential and no DSN recorded",
+  "distinct_execution_environments": 1,
+  "evaluation_failure_count": 0,
+  "evaluation_result_count": 640,
+  "execution_authority_phases": "PHASE_A,PHASE_B",
+  "execution_environment_hash": "71e14a49833ac77bb9dc576345fb89c4dd68f4a3ad3673eb098d38593c1ef4d3",
+  "execution_failure_count": 35,
+  "execution_result_count": 640,
+  "jobs": 675,
+  "phase_c_identities_rederived_read_only": true,
+  "phase_c_rows_of_any_kind": 0,
+  "plans": 2,
+  "rederivation_matched_across_two_runs": true
+ },
+ "task": "L2-F2-E PHASE-C INDEX CLARIFICATION + CONTROL-PLANE IMPLEMENTATION"
+}

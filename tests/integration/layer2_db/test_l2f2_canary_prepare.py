@@ -32,7 +32,7 @@ _CORRECTIVE = "0010_l2f2_evaluation_corrective"
 #: the revision Phase-A preparation and the production runner now require EXACTLY. 0011 cannot
 #: represent a subset plan's two index namespaces; 0013 is where the shared baseline store now
 #: sits, because the evaluator needs it.
-_SOURCE_INDEX = "0019_l2f2_phase_b_bootstrap"
+_SOURCE_INDEX = "0020_l2f2_phase_c_execution"
 _AUTHORITIES = "experiments.l2f2_execution_authorities"
 
 
@@ -191,6 +191,7 @@ def baseline(isolated_pg_base_url: str) -> Any:
         "0016_l2f2_phase_b_execution",
         "0017_l2f2_owner_corrective",
         "0018_l2f2_eval_owner_fix",
+        "0019_l2f2_phase_b_bootstrap",
     ],
 )
 def test_preparation_refuses_a_database_at_the_wrong_revision(

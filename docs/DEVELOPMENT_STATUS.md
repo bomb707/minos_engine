@@ -27,18 +27,19 @@ does not restate or override them.
 | HARNESS historical Alembic head | `0008_l2f_execution_results` (stage-scoped; the repository head advances independently) |
 | Operational DB revision | `0005_l2e_feature_view` |
 | Next gate | **BASELINE-QUALIFIED** (designed in `docs/layer2/BASELINE_QUALIFICATION.md`, not implemented) |
-| Current task | **L2-F2-E — PHASE-B RUNNER BOOTSTRAP: SOURCE READY.** The Phase-B runner entry no longer builds a `PhaseBAuthority`; `0019` gives it a truth-free ticket — the authorized plan hash and the completed Phase-A runtime — so it never reads the scientific ledger it is denied |
+| Current task | **L2-F2-E — PHASE-C CONTROL PLANE: SOURCE READY.** Phase B is COMPLETE (480/480, 0 infrastructure incidents) and promoted exactly ten. `0020` admits `PHASE_C` to the runner boundary with its own resolver and truth-free bootstrap; the confirmation's authority, plan, bounded materialization, racing and four-finalist promotion are ready. The tie-break index is resolved as the **inherited Phase-B design position**, not the promotion position. **No real Phase-C plan, job, GATK execution or score exists** |
+| Previous task | **L2-F2-E — PHASE-B RUNNER BOOTSTRAP: SOURCE READY.** The Phase-B runner entry no longer builds a `PhaseBAuthority`; `0019` gives it a truth-free ticket — the authorized plan hash and the completed Phase-A runtime — so it never reads the scientific ledger it is denied |
 | Previous task | **L2-F2-E — JVM DISPATCH CLOSURE: SOURCE READY.** GATK's launcher starts a bare `java`; the runner now proves that token resolves to the pinned `JAVA_HOME` JVM against the exact child environment, at preflight and before every scientific launch. No migration, no protocol change, execution-environment hash unchanged |
-| Real baseline | **`0018_l2f2_eval_owner_fix` (not yet migrated to `0019`). Phase A 195/195 COMPLETE. Phase B ACTIVATED: plan `e8059404…` persisted, `PHASE_B` authority prepared, batch 0 materialized — 240 jobs, all PENDING, 0/480 decided — NOT STARTED** |
+| Real baseline | **`0019_l2f2_phase_b_bootstrap` (not yet migrated to `0020`). Phase A 195/195 COMPLETE. Phase B 480/480 COMPLETE — 450 executions, 30 execution failures, 308 admitted, 142 non-admissions, 0 infrastructure incidents — ten candidates promoted. **No Phase-C plan, job or score exists in it** |
 | Previous task | **L2-F2-E — EVALUATOR-OWNER CORRECTIVE: SOURCE READY.** `0018` finishes what `0017` began: the four `0009`/`0010` evaluator definers and their two outcome ledgers are re-owned to `minos_admin`. No superuser-owned definer remains on either the runner or the evaluator production path. **The active baseline is still at `0015`** |
 | Previous task | **L2-F2-E — PRIVILEGED-OWNER CORRECTIVE: SOURCE READY.** `0017` took SUPERUSER authority away from the two `0011` `SECURITY DEFINER` functions the runner calls |
 | Previous task | **L2-F2-E — PHASE-B EXECUTION AUTHORITY: SOURCE READY.** `0016` admits `PHASE_B` to the runner boundary and adds its own resolver; the Phase-B execution authority has a production control-plane boundary; the runner selects a resolver from the authority, never from a caller. Proven end-to-end on ephemeral PostgreSQL under a `minos_runner`-only principal. **No real Phase-B execution**: the active baseline is still at `0015` until a separate privileged environment migration |
 | Previous task | L2-F2-E — Phase-B control plane — design, persistence, materialization, racing and promotion, held at the `0011` `PHASE_A`-only boundary now corrected |
-| Source Alembic head | `0019_l2f2_phase_b_bootstrap` (migrations `0001`–`0019`) |
-| Baseline DB revision required by the runner | `0019_l2f2_phase_b_bootstrap` (exact; every other revision is refused, including `0018`) |
+| Source Alembic head | `0020_l2f2_phase_c_execution` (migrations `0001`–`0020`) |
+| Baseline DB revision required by the runner | `0020_l2f2_phase_c_execution` (exact; every other revision is refused, including `0019`) |
 | Production score authority | pinned `minos-protocol/minos_subnet` @ `649bb92c…` — executed, not reimplemented |
 | Scoring contract | `l2f2-minos-scoring-v2` (`b24a07e2…`); v1 `d6f29e11…` superseded, still recomputable |
-| Real baseline DB revision | `0015_l2f2_exec_environment` — **not yet migrated to `0016`**; that is a separate privileged environment task. The CLEAN campaign: 1 plan, 195 jobs, 190 execution results, 5 execution failures, 190 evaluations, 0 evaluation failures, **195/195 decided**, 179 admitted, 16 candidate failures, **0 infrastructure incidents**, one execution environment `71e14a49…`. No Phase-B plan and no Phase-B job exist in it |
+| Real baseline DB revision | `0019_l2f2_phase_b_bootstrap` — **not yet migrated to `0020`**; that is a separate privileged environment task. The CLEAN campaign now holds 2 plans and 675 jobs: Phase A 195/195 decided (190 execution results, 5 failures, 179 admitted, 16 candidate failures) and Phase B 480/480 decided (450 execution results, 30 failures, 308 admitted, 172 candidate failures), **0 infrastructure incidents** across both, one execution environment `71e14a49…`. No Phase-C plan and no Phase-C job exist in it |
 | Quarantined forensic DB | `minos_l2f2_baseline_tainted_20260826` at `0014_l2f2_exec_failure_runtime` — **DO NOT EXECUTE.** Retained as immutable evidence of the runtime defect |
 
 `select_config` remains deliberately blocked by `StageNotReadyError` and stays
@@ -943,6 +944,108 @@ One observation recorded rather than changed: `minos_evaluator` already holds di
 `evaluation.dataset_evaluation_identity` from the L2-E identity path, long predating this work.
 `0018` neither grants nor removes it.
 
+### L2-F2-E status — PHASE B IS COMPLETE, TEN CANDIDATES PROMOTED
+
+The 480-pair Phase-B screen ran to completion on the real baseline under the same single verified
+execution environment as Phase A, `71e14a49833ac77bb9dc576345fb89c4dd68f4a3ad3673eb098d38593c1ef4d3`:
+
+| | |
+|---|---|
+| Decided | 480 / 480 |
+| Executions | 450 succeeded, 30 execution failures |
+| Evaluations | 450, of which 308 admitted and 142 validator non-admissions |
+| Candidate failures | 172 (30 execution + 142 non-admission) |
+| Infrastructure incidents | **0** — nothing in the screen was decided by a defect of ours |
+| Racing | as predicted, batch 0 eliminated nobody; all 48 candidates ran both batches |
+
+**Promotion selected exactly ten, and the seed placed fifth on its own merit.** The promoted set
+is one seed, three Phase-A anchors and six LHS points. Nothing was reserved for the seed: the rule
+that it can never be eliminated did not have to be used.
+
+| | |
+|---|---|
+| Phase-B completion hash | `0c98017a7a79bc7d8bf897983b4b25765d64a52d4f4caa70458abaf1d508e1fd` |
+| Phase-C candidate-set hash | `923e45d59799c34ca1831c65b57604405165935a9e51d4c0e690abbfaf122bd4` |
+| Phase-C plan hash | `03b846e735e5817a8df7d5c37ae15778a955828a56513b16cef8ff2193a0aa43` |
+
+### L2-F2-E status — PHASE-C CONTROL PLANE (migration `0020`)
+
+Phase C is the TRAIN **confirmation**: the ten promoted configurations against all fifty TRAIN
+members, raced batch by batch down to four finalists. Its shape is the frozen one — 10 batches × 5
+chromosomes (`chr18…chr22`), 50 members, 500 logical jobs as a **ceiling**, not a quota, since a
+candidate eliminated at batch *k* legitimately stops there.
+
+#### The tie-break index — the ambiguity that had to be resolved before anything was written
+
+Phase C carries **two** orderings of the same ten configurations, and they are not the same fact:
+
+| Ordering | Range | What it is |
+|---|---|---|
+| Promotion order | `0..9` | plan-local bookkeeping — where a candidate sits in Phase C's own member/config grid |
+| **Inherited Phase-B design position** | `0..47` | **the scientific tie-break index** — where the candidate sat in the frozen Phase-B design |
+
+The frozen tie-break is *higher J → lower mean GATK runtime → lower candidate index in the frozen
+phase design → lexical config hash*. Reading "candidate index" as the promotion position would be
+a **new** tie-break invented after the ten were known, and on this campaign the two readings
+disagree: the promoted set's inherited indices are `[42, 6, 31, 3, 0, 36, 25, 11, 5, 43]`, which
+is not `[0..9]` in any order. The rule is now pinned in exactly one place —
+`minos_engine.baseline.design.phase_c_inherited_candidate_index` — and
+`tests/unit/baseline/test_phase_c_candidate_index.py` constructs a genuine tie in which the two
+readings choose **different winners**, so a silent regression to the wrong one cannot pass.
+
+Both orderings are bound into the Phase-C candidate-set identity, because both are facts about the
+set; only the inherited one ever breaks a tie, and it is carried unchanged into the finalist set.
+
+#### Migration `0020_l2f2_phase_c_execution`
+
+`0016` widened the runner boundary from one phase to two and said the third would be a later
+migration. `0020` is that migration, and it is deliberately the same shape as `0016` — a boundary
+that grows differently each time is a boundary nobody can audit:
+
+| | |
+|---|---|
+| Phase vocabulary | `ck_l2f2_authority_phase` becomes `PHASE_A`, `PHASE_B` or `PHASE_C`. The TRAIN vocabulary is now closed; VALIDATION remains a later migration |
+| Canary | `ck_l2f2_authority_canary_phase` extends the Phase-B arm to Phase C: Phase A must carry a canary, B and C must not. No canary is invented for a phase that inherits a proven chain |
+| Phase-C resolver | new `experiments.l2f2_resolve_claimed_phase_c_execution(text, uuid, text)`, owned by `minos_admin`, `SECURITY DEFINER`, fixed `phase = 'PHASE_C'`. Truth-free result shape; no `p_phase` argument exists, so no caller can name a phase |
+| Phase-C bootstrap | new no-argument `experiments.l2f2_resolve_phase_c_runner_bootstrap()`, returning only `(plan_hash, execution_environment_hash)` — the `0019` shape, and asserted to touch no `evaluation` relation |
+| Privileges | `EXECUTE` to `minos_runner` and `minos_admin` only; no role gains a direct table grant, and the runner still has no `USAGE` on `evaluation` |
+| Nothing else moves | relations, indexes, triggers, roles, memberships, schema security and default ACLs are all byte-identical across `0019 → 0020`, and no existing function is redefined |
+| Downgrade | REFUSES while any `PHASE_C` authority exists, before any schema mutation, for the same reason `0016`'s did |
+
+#### What the control plane does and does not decide
+
+`expand_l2f2_phase_c_batch` takes a batch index and a bounded slice and nothing else. **Which**
+candidates a batch may contain is derived inside, recomputed from the immutable ledger on every
+call: everyone for batch 0, and thereafter whoever the frozen racing rule still permits. There is
+no caller-supplied survivor list and no enqueue-all API; `MAX_ENQUEUE_BATCH` stays 64.
+
+`select_l2f2_validation_finalists` ranks only non-eliminated candidates holding a complete
+fifty-member aggregate. An eliminated candidate's unseen remainder is never fabricated to make its
+aggregate look complete.
+
+#### OBSERVATION — a per-batch racing decision is a decision, not a historical record.
+
+`race_l2f2_phase_c_batch(batch_index=k)` is evaluated against the ledger **as it stands**, not as
+it stood when batch *k* closed. During a campaign the two coincide, because batch *k+1* is
+materialized before any of it is decided. Afterwards they do not: replaying batch 0 against a
+finished confirmation sees all fifty members and eliminates candidates the live campaign carried
+further. That is the frozen rule behaving correctly — more observation narrows the racing bounds
+and can never widen them, so elimination is monotone and no candidate is ever resurrected — and
+the operational guarantee is unaffected: at the moment batch *k+1* was materialized, only
+candidates surviving through batch *k* received jobs, and what actually happened to the queue is
+durable in the queue. What it means is that a retrospective per-batch elimination list must not be
+read as a record of what the control plane knew at the time. This is recorded, not changed; the
+end-to-end suite asserts the invariant that *is* guaranteed — every candidate holds a whole number
+of leading batches and nothing after them.
+
+**The whole TRAIN chain is now proved end to end against real PostgreSQL.** One store holds a
+complete Phase A, a complete 480-pair Phase B, and a TRAIN-complete Phase C — three plans
+coexisting, with plan scoping pinned in all three directions — driven entirely through the
+production persistence, materialization, least-privilege runner and evaluator boundaries. **No
+Phase-C plan, job, GATK execution or score exists on the real baseline.**
+
+---
+
 ---
 
 ## Canonical roadmap
@@ -1042,6 +1145,13 @@ The gate binds the **qualified source**, not the evidence commit that carries it
 | Accepted experiment plan (1950 logical jobs) | `eb8de84db2e35074957ed2f812cbb4f9495195cadb99563780d00d3cfe2b5d0a` |
 | F5 DB/migration contract | `8b7d8e8961934f46d295646b4bc049bf118ba352c644d6e5d4d5d256dd201bdc` |
 | GATK runtime bundle (4.5.0.0) | `2707ad203c82a9498fb2ffad8d97d8fbdb7e07a9bb963d0c4f4bc427e8372600` |
+| Phase-A analysis (COMPLETE screen) | `25794987e49ca2a17776bf355326e8ff396366a6e3340fe7f9d2e24a855c80ae` |
+| Phase-B candidate set (48) | `63b0244935edb46c799583cae9715733e52b25fba85f581a33ebe6949c09de0e` |
+| Phase-B plan (480 logical jobs) | `e80594043580334ddf2504577e2fa030dff0c1217ac334804d9304a0ec72596b` |
+| Phase-B completion (COMPLETE screen) | `0c98017a7a79bc7d8bf897983b4b25765d64a52d4f4caa70458abaf1d508e1fd` |
+| Phase-C candidate set (10 promoted) | `923e45d59799c34ca1831c65b57604405165935a9e51d4c0e690abbfaf122bd4` |
+| Phase-C plan (500-job ceiling) | `03b846e735e5817a8df7d5c37ae15778a955828a56513b16cef8ff2193a0aa43` |
+| Execution environment (Phases A and B) | `71e14a49833ac77bb9dc576345fb89c4dd68f4a3ad3673eb098d38593c1ef4d3` |
 
 DB-V2 is **abandoned** and stays abandoned. A future additive evaluation
 migration is not permission to resurrect it.
