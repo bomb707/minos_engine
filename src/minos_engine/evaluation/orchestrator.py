@@ -436,17 +436,28 @@ def evaluate_execution(
     oracle: MinosSubnetOracle,
     publisher: EvaluationArtifactPublisher,
     provisioning: EvaluationProvisioning,
+    partition_gate: Callable[[str], None] = refuse_non_train_partition,
 ) -> EvaluationOutcome:
-    """Evaluate ONE completed TRAIN execution end to end. See the module docstring for the chain.
+    """Evaluate ONE completed execution end to end. See the module docstring for the chain.
 
-    Returns an outcome describing what was durably recorded. Raises only when no valid TRAIN
-    execution identity exists — an unknown execution, or a partition this stage must not touch.
+    Returns an outcome describing what was durably recorded. Raises only when no valid execution
+    identity exists — an unknown execution, or a partition this stage must not touch.
+
+    ``partition_gate`` defaults to the TRAIN gate, so every existing caller keeps exactly the
+    behaviour it had: TRAIN is evaluated, VALIDATION and TEST are refused. L2-F2-F supplies the
+    VALIDATION gate instead, which refuses TRAIN and TEST. It is plumbing, not an interface —
+    callers choose between two NAMED entries (``evaluate_execution`` and
+    ``evaluate_validation_execution``) rather than passing a partition around, so no caller is in
+    a position to grant itself the wrong partition.
+
+    Whichever gate is supplied runs in the same place: immediately after the execution row is
+    resolved, and before any truth path is constructed, opened or hashed.
     """
     contract_hash = compute_scoring_contract_hash(authority)
     execution = _resolve_execution(engine, execution_result_id)
 
     # THE partition gate: before any truth path is constructed, opened or hashed.
-    refuse_non_train_partition(str(execution["partition"]))
+    partition_gate(str(execution["partition"]))
 
     # An already-terminal evaluation is never re-executed: no truth hashing, no container, no
     # republication. A crash BEFORE a durable terminal row is a different case entirely and does

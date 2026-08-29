@@ -87,12 +87,16 @@ from minos_engine.storage.l2f_result_publisher import (
 __all__ = [
     "BASELINE_DATABASE_NAME",
     "BASELINE_REVISION",
+    "VALIDATION_DATABASE_NAME",
+    "VALIDATION_REVISION",
     "BaselineRunnerAuthorityError",
     "L2F2DispatchResult",
     "L2F2ExecutionError",
     "execute_next_l2f2_phase_a_job",
     "execute_next_l2f2_phase_b_job",
     "execute_next_l2f2_phase_c_job",
+    "execute_next_l2f2_phase_d_job",
+    "authorize_validation_runner_connection",
 ]
 
 #: the dedicated baseline store. The operational database is NEVER a valid target here.
@@ -122,6 +126,15 @@ BASELINE_DATABASE_NAME = "minos_l2f2_baseline"
 #: evaluator share this store, so the revision this boundary accepts tracks both of them.
 BASELINE_REVISION = "0020_l2f2_phase_c_execution"
 
+#: L2-F2-F runs in a SEPARATE store, so from ``0021`` the repository head and the TRAIN baseline's
+#: required revision are no longer the same string — and must not be. The TRAIN baseline is
+#: scientifically closed at ``0020``; migrating it to ``0021`` to keep one number tidy would alter
+#: a completed 500-observation ledger's database for the convenience of a constant. Each store
+#: therefore pins its own revision, and the runner checks the pin belonging to the store it is
+#: actually connected to.
+VALIDATION_DATABASE_NAME = "minos_l2f2_validation"
+VALIDATION_REVISION = "0021_l2f2_validation_execution"
+
 #: the ONLY MINOS group role the runner service may hold.
 _REQUIRED_MEMBERSHIP = "minos_runner"
 _FORBIDDEN_MEMBERSHIPS = ("minos_admin", "minos_evaluator", "minos_trainer", "minos_live")
@@ -134,6 +147,10 @@ _RESOLVE_SQL_BY_PHASE: dict[str, str] = {
     "PHASE_A": "SELECT * FROM experiments.l2f2_resolve_claimed_execution(:h, :j, :w)",
     "PHASE_B": "SELECT * FROM experiments.l2f2_resolve_claimed_phase_b_execution(:h, :j, :w)",
     "PHASE_C": "SELECT * FROM experiments.l2f2_resolve_claimed_phase_c_execution(:h, :j, :w)",
+    #: Phase D resolves VALIDATION members and refuses TRAIN. Its predicate is the mutually
+    #: exclusive complement of the three above, so no worker can cross the partition boundary by
+    #: reaching for the wrong resolver: the row it wants is not visible through the other one.
+    "PHASE_D": "SELECT * FROM experiments.l2f2_resolve_claimed_phase_d_execution(:h, :j, :w)",
 }
 #: the truth-free Phase-B bootstrap (0019). No arguments: the database decides what is
 #: authorized, so a worker cannot nominate a plan or a runtime.
@@ -145,6 +162,11 @@ _PHASE_B_BOOTSTRAP_SQL = (
 _PHASE_C_BOOTSTRAP_SQL = (
     "SELECT plan_hash, execution_environment_hash FROM "
     "experiments.l2f2_resolve_phase_c_runner_bootstrap()"
+)
+#: the truth-free Phase-D bootstrap (0021). Same contract, same absence of arguments.
+_PHASE_D_BOOTSTRAP_SQL = (
+    "SELECT plan_hash, execution_environment_hash FROM "
+    "experiments.l2f2_resolve_phase_d_runner_bootstrap()"
 )
 _REGISTER_SQL = (
     "SELECT artifact_id, created FROM experiments.l2f2_register_execution_artifact("
@@ -200,16 +222,36 @@ def authorize_baseline_runner_connection(conn: Connection) -> None:
     is used deliberately rather than ``current_user``: an already-issued ``SET ROLE`` must not be
     able to disguise which principal actually logged in.
     """
+    _authorize_runner_connection(
+        conn, database_name=BASELINE_DATABASE_NAME, revision=BASELINE_REVISION
+    )
+
+
+def authorize_validation_runner_connection(conn: Connection) -> None:
+    """The same boundary, pinned to the SEPARATE validation store.
+
+    Identical in every respect except which database and which revision it accepts. A validation
+    worker pointed at the closed TRAIN baseline is refused by name, and a TRAIN worker pointed at
+    the validation store is refused by name — neither can reach the other's jobs even before the
+    per-phase resolvers get a say.
+    """
+    _authorize_runner_connection(
+        conn, database_name=VALIDATION_DATABASE_NAME, revision=VALIDATION_REVISION
+    )
+
+
+def _authorize_runner_connection(conn: Connection, *, database_name: str, revision: str) -> None:
+    """The single boundary body. Both stores get exactly the same checks, on their own pins."""
     database = str(conn.execute(text("SELECT current_database()")).scalar_one())
-    if database != BASELINE_DATABASE_NAME:
+    if database != database_name:
         raise BaselineRunnerAuthorityError(
             f"the L2-F2 runner refuses database {database!r}; it executes only against "
-            f"{BASELINE_DATABASE_NAME!r}"
+            f"{database_name!r}"
         )
-    revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one_or_none()
-    if revision != BASELINE_REVISION:
+    live = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one_or_none()
+    if live != revision:
         raise BaselineRunnerAuthorityError(
-            f"baseline database revision is {revision!r}, expected {BASELINE_REVISION!r}"
+            f"baseline database revision is {live!r}, expected {revision!r}"
         )
     principal = conn.execute(
         text(
@@ -430,6 +472,74 @@ def _resolve_phase_c_runner_bootstrap(conn: Connection) -> _PhaseBRunnerBootstra
         authority=_PhaseBRunnerAuthority(plan_hash=plan_hash, phase="PHASE_C"),
         execution_environment_hash=environment,
     )
+
+
+def _resolve_phase_d_runner_bootstrap(conn: Connection) -> _PhaseBRunnerBootstrap:
+    """The Phase-D ticket: which validation plan this worker may claim within, and under what
+    runtime.
+
+    Same contract as Phase B's and Phase C's — no arguments, no science, no fallback. The reason
+    differs slightly: deriving the Phase-D authority means verifying a frozen finalist artifact
+    against the completed TRAIN ledger, and a validation worker has neither the artifact nor the
+    ledger. It is told two strings and nothing else.
+    """
+    row = conn.execute(text(_PHASE_D_BOOTSTRAP_SQL)).mappings().one_or_none()
+    if row is None:  # pragma: no cover - the function raises rather than returning empty
+        raise L2F2ExecutionError("the Phase-D runner bootstrap returned no row")
+    plan_hash = str(row["plan_hash"])
+    environment = str(row["execution_environment_hash"])
+    if not plan_hash or not environment:
+        raise L2F2ExecutionError("the Phase-D runner bootstrap returned an incomplete ticket")
+    return _PhaseBRunnerBootstrap(
+        authority=_PhaseBRunnerAuthority(plan_hash=plan_hash, phase="PHASE_D"),
+        execution_environment_hash=environment,
+    )
+
+
+def execute_next_l2f2_phase_d_job(*, worker_id: str) -> L2F2DispatchResult | None:
+    """THE accepted L2-F2-F validation execution entry. Same core, same truth-free bootstrap.
+
+    Phase D confirms four already-frozen configurations across all ten VALIDATION members. Which
+    four was decided before any validation byte existed and is durable as a verified finalist
+    artifact and a recorded ``PHASE_D`` authority; this entry asks the database only what a
+    truth-free worker may know.
+
+    The runtime check is the one every later phase enforces, for the same reason: validation
+    confirms a design chosen from one runtime's numbers, so it must not mix runtimes. A validation
+    execution produced under a different GATK is not a confirmation of anything.
+    """
+    from minos_engine.experiments.execution_contract import GatkRuntimeIdentityError
+    from minos_engine.storage.database import create_db_engine
+    from minos_engine.storage.l2f_gatk_runner import SubprocessGatkRunner, work_root_from_env
+    from minos_engine.storage.l2f_job_claim import validate_worker_id
+
+    validate_worker_id(worker_id)
+    runner = SubprocessGatkRunner.from_env()
+    environment = runner.preflight()
+    engine = create_db_engine()
+    try:
+        with engine.connect() as conn:
+            authorize_validation_runner_connection(conn)
+            bootstrap = _resolve_phase_d_runner_bootstrap(conn)
+        observed = environment.environment_hash()
+        if observed != bootstrap.execution_environment_hash:
+            raise GatkRuntimeIdentityError(
+                f"this worker's execution environment is {observed}, but the frozen search ran "
+                f"under {bootstrap.execution_environment_hash}; validation confirms a design "
+                "chosen from that runtime's numbers and must not mix runtimes"
+            )
+        return _execute_l2f2_job(
+            engine,
+            bootstrap.authority,
+            worker_id=worker_id,
+            runner=runner,
+            dataset_root=dataset_root_from_env(),
+            publisher=ResultArtifactPublisher(result_artifact_root_from_env()),
+            work_root=work_root_from_env(),
+            execution_environment=environment,
+        )
+    finally:
+        engine.dispose()
 
 
 def execute_next_l2f2_phase_c_job(*, worker_id: str) -> L2F2DispatchResult | None:

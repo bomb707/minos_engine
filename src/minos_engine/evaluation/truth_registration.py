@@ -28,6 +28,8 @@ __all__ = [
     "TruthRegistrationError",
     "TruthRegistrationResult",
     "hash_truth_bundle",
+    "refuse_non_train_partition",
+    "refuse_non_validation_partition",
     "register_train_truth_identities",
     "resolve_truth_bundle",
 ]
@@ -222,4 +224,22 @@ def refuse_non_train_partition(partition: str) -> None:
         raise ForbiddenPartitionError(
             f"L2-F2-A registers TRAIN truth only; partition {partition!r} is refused "
             "(validation opens after the objective is frozen; test stays locked until L2-I)"
+        )
+
+
+def refuse_non_validation_partition(partition: str) -> None:
+    """The L2-F2-F partition gate, and the exact complement of the TRAIN one above.
+
+    Validation confirms on the VALIDATION partition. TRAIN is refused as firmly as TEST is: a
+    validation ranking computed over TRAIN members would be the search's own training evidence
+    wearing a validation label, which is precisely the error this stage exists to avoid.
+
+    Deliberately a SECOND function rather than a partition argument on the first. A single gate
+    parameterised by the partition it should allow is a gate that can be handed the wrong
+    partition; two gates, each naming one partition literally, cannot be.
+    """
+    if partition != "validation":
+        raise ForbiddenPartitionError(
+            f"L2-F2-F evaluates VALIDATION only; partition {partition!r} is refused "
+            "(train is the frozen search's own evidence; test stays locked until L2-I)"
         )

@@ -116,22 +116,44 @@ def test_the_private_test_seam_is_not_exported_and_says_so() -> None:
 
 
 def test_the_boundary_requires_the_baseline_database_and_revision() -> None:
-    """The required revision is EXACT, and it is the repository head — never a floor, never a
-    stale pin.
+    """Each store's required revision is EXACT — never a floor, never a stale pin.
 
-    It tracks the BASELINE STORE's revision, not merely the migrations the runner itself needs:
-    the runner and the evaluator share one database, so a revision the evaluator requires is one
-    this boundary must still recognise."""
+    It tracks the STORE's revision, not merely the migrations the runner itself needs: the runner
+    and the evaluator share a database, so a revision the evaluator requires is one this boundary
+    must still recognise.
+
+    Until ``0021`` there was one store, so the required revision and the repository head were the
+    same string and this test asserted that. ``0021`` ends that coincidence on purpose: L2-F2-F
+    runs in a SEPARATE validation database, and the TRAIN baseline is scientifically closed at
+    ``0020``. Migrating a completed 500-observation ledger's database forward to keep one constant
+    tidy would be changing evidence for the convenience of a test, so the head now belongs to the
+    validation store and the TRAIN pin stays where the science left it."""
     from minos_engine.qualification.l2f_accepted_identities import recompute_alembic_head
 
     assert l2f2_runner.BASELINE_DATABASE_NAME == "minos_l2f2_baseline"
     assert l2f2_runner.BASELINE_REVISION == "0020_l2f2_phase_c_execution"
-    assert recompute_alembic_head() == l2f2_runner.BASELINE_REVISION
-    source = inspect.getsource(l2f2_runner.authorize_baseline_runner_connection)
+    assert l2f2_runner.VALIDATION_DATABASE_NAME == "minos_l2f2_validation"
+    assert l2f2_runner.VALIDATION_REVISION == "0021_l2f2_validation_execution"
+    # the head is the latest store's pin, and the two stores are distinct
+    assert recompute_alembic_head() == l2f2_runner.VALIDATION_REVISION
+    assert l2f2_runner.BASELINE_REVISION != l2f2_runner.VALIDATION_REVISION
+    assert l2f2_runner.BASELINE_DATABASE_NAME != l2f2_runner.VALIDATION_DATABASE_NAME
+    # both public entries delegate to ONE body, so neither store can drift from the other's checks
+    for entry in (
+        l2f2_runner.authorize_baseline_runner_connection,
+        l2f2_runner.authorize_validation_runner_connection,
+    ):
+        assert "_authorize_runner_connection(" in inspect.getsource(entry)
+    source = inspect.getsource(l2f2_runner._authorize_runner_connection)
     assert "current_database()" in source
     assert "alembic_version" in source
     # the SESSION principal is checked, so an already-issued SET ROLE cannot disguise it
     assert "session_user" in source
+    # the principal and membership checks live in the SHARED body, so the validation store cannot
+    # be authorized by a weaker boundary than the TRAIN one
+    assert "rolsuper" in source
+    assert "pg_auth_members" in source
+    assert "_REQUIRED_MEMBERSHIP" in source
     assert "current_user" not in _executable_source("l2f2_runner")
 
 
