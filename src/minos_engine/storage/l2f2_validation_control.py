@@ -179,7 +179,12 @@ def read_l2f2_validation_progress(
     by_config = _observations_by_finalist(authority, snapshot.observations)
     decided_by_finalist = {h: len(obs) for h, obs in by_config.items()}
     complete = sum(1 for n in decided_by_finalist.values() if n == authority.member_count)
-    candidate_failures = sum(1 for o in snapshot.observations if not o.admitted)
+
+    # "not admitted" is TWO different things, and conflating them would charge our own failures to
+    # a finalist. The split is made once, by ``BaselineObservation.outcome`` /
+    # ``classify_failure_code``, and surfaced by the snapshot; this module only reads the verdict.
+    candidate_failures = snapshot.candidate_failure_count
+    incidents = snapshot.infrastructure_incident_count
 
     return ValidationProgress(
         logical_job_budget=PHASE_D_LOGICAL_JOB_BUDGET,
@@ -195,12 +200,15 @@ def read_l2f2_validation_progress(
         evaluation_failure_count=snapshot.evaluation_failure_count,
         decided_observation_count=len(snapshot.observations),
         candidate_failure_count=candidate_failures,
-        infrastructure_incident_count=snapshot.evaluation_failure_count,
+        infrastructure_incident_count=incidents,
         decided_by_finalist=decided_by_finalist,
         complete_finalist_count=complete,
         complete=(
             len(snapshot.observations) == PHASE_D_LOGICAL_JOB_BUDGET
             and complete == authority.candidate_count
+            # ANY infrastructure incident withholds completion, whichever side produced it: an
+            # execution-side PREPARATION_FAILED is as much our failure as a scoring one.
+            and not incidents
             and not snapshot.evaluation_failure_count
         ),
     )
@@ -306,7 +314,10 @@ def rank_l2f2_validation_finalists(
     return rank_validation_observations(
         authority,
         snapshot.observations,
-        infrastructure_incident_count=snapshot.evaluation_failure_count,
+        # the authoritative count, covering execution-side AND evaluation-side incidents. An
+        # evaluation failure becomes a decided observation carrying its bounded code, so one
+        # counter sees both; ``evaluation_failure_count`` alone saw only half of them.
+        infrastructure_incident_count=snapshot.infrastructure_incident_count,
     )
 
 
