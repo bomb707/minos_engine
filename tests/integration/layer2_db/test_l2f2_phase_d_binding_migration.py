@@ -128,7 +128,8 @@ def test_lifecycle_0022_0023_0022_0023(isolated_pg_base_url: str) -> None:
             engine.dispose()
 
 
-def test_the_alembic_graph_keeps_exactly_one_head() -> None:
+def test_this_migration_sits_on_0022_and_the_graph_stays_linear() -> None:
+    """0023's own edge, plus the graph-level single-head invariant."""
     import re
     from pathlib import Path
 
@@ -143,8 +144,10 @@ def test_the_alembic_graph_keeps_exactly_one_head() -> None:
             revisions[rev.group(1)] = None if value in (None, "None") else value
     children = {d for d in revisions.values() if d}
     heads = [r for r in revisions if r not in children]
-    assert heads == [_HEAD], heads
-    assert revisions[_HEAD] == _PRIOR
+    assert len(heads) == 1, heads  # one head, whichever revision currently holds it
+    assert revisions[_HEAD] == _PRIOR, "0023 must still descend from 0022"
+    descendants = [r for r, down in revisions.items() if down == _HEAD]
+    assert len(descendants) <= 1, descendants
     assert len(_HEAD) <= 32, "alembic_version.version_num is varchar(32)"
 
 
