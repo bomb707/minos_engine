@@ -95,6 +95,5 @@
   "purpose": "CI/TEST EVIDENCE ONLY. A byte-preserving copy of already-public or deterministically-reconstructible campaign evidence, so the Phase-D preparation integration proof runs on a GitHub runner. This bundle is NEVER the operational campaign authority: production preparation reads operationally supplied storage and no production module consumes this manifest.",
   "schema": "l2f2-phase-d-ci-fixture-v1",
   "scoring_contract_hash": "b24a07e208ce8e2fff6672102ae4e61aed93c6f352a5af46ba81c4789adb76d6",
-  "seed_config_hash": "4251cb85e5cd58b7eabfe530b9df23ea7d1d14fd882114b488d67cbd81b751b8",
-  "source_campaign_root": "/home/hr/bittensor/minos_l2f2_baseline"
+  "seed_config_hash": "4251cb85e5cd58b7eabfe530b9df23ea7d1d14fd882114b488d67cbd81b751b8"
 }

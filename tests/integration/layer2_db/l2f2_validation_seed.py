@@ -361,3 +361,56 @@ def _bam_row(label: str, dsr_id: str, artifact_id: str) -> dict[str, Any]:
         "ingestion_key": H(f"ingestion:{label}"),
         "content_hash": H(f"content:{label}"),
     }
+
+
+# ------------------------------------------------------------------------------------------- #
+# validation truth bundles — SYNTHETIC bytes, never the real validation truth
+# ------------------------------------------------------------------------------------------- #
+#: the four filenames the accepted registrar resolves for one round. Named here rather than
+#: imported so a change to the production contract shows up as a test failure, not as silence.
+TRUTH_FILENAMES = (
+    "truth.vcf.gz",
+    "truth.vcf.gz.tbi",
+    "mutations.vcf.gz",
+    "mutations.vcf.gz.tbi",
+)
+
+
+def seed_truth_bundles(
+    dataset_root: Path,
+    members: tuple[Any, ...],
+    *,
+    omit_round: str | None = None,
+    omit_file: tuple[str, str] | None = None,
+    tamper_round: str | None = None,
+) -> dict[str, dict[str, str]]:
+    """Write a deterministic synthetic truth bundle per round, and return its digests.
+
+    These bytes are SYNTHETIC. The real validation truth is not read, hashed, copied or opened
+    anywhere in this suite — Phase D has not been authorized to look at it, and proving that jobs
+    can be authorized needs an identity to register, not the answer key.
+
+    ``omit_round`` leaves one round with no directory at all; ``omit_file`` removes one file from
+    one round; ``tamper_round`` rewrites a round's bytes after the digests were computed.
+    """
+    dataset_root.mkdir(parents=True, exist_ok=True)
+    digests: dict[str, dict[str, str]] = {}
+    for member in members:
+        round_id = member.round_id
+        if omit_round == round_id:
+            continue
+        directory = dataset_root / f"round_{round_id}"
+        directory.mkdir(parents=True, exist_ok=True)
+        per_round: dict[str, str] = {}
+        for name in TRUTH_FILENAMES:
+            if omit_file is not None and omit_file == (round_id, name):
+                continue
+            payload = f"synthetic-{name}-{round_id}\n".encode()
+            (directory / name).write_bytes(payload)
+            per_round[name] = hashlib.sha256(payload).hexdigest()
+        digests[round_id] = per_round
+    if tamper_round is not None:
+        directory = dataset_root / f"round_{tamper_round}"
+        target = directory / TRUTH_FILENAMES[0]
+        target.write_bytes(target.read_bytes() + b"tampered\n")
+    return digests

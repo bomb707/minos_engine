@@ -346,10 +346,10 @@ def test_the_only_machine_local_path_in_frozen_bytes_is_inert_provenance() -> No
     for path in sorted(FIXTURE_CONFIG_ROOT.glob("*.json")):
         assert b"/home/" not in path.read_bytes(), path.name
 
-    manifest = load_fixture_manifest()
-    assert manifest["source_campaign_root"] == "/home/hr/bittensor/minos_l2f2_baseline"
-    body = json.dumps({k: v for k, v in manifest.items() if k != "source_campaign_root"})
-    assert "/home/" not in body
+    # the manifest carries no machine-local path at all. Unlike the freeze's embedded provenance
+    # it is not frozen bytes, so there was nothing to trade off: it was simply removed.
+    assert b"/home/" not in FIXTURE_MANIFEST_PATH.read_bytes()
+    assert "source_campaign_root" not in load_fixture_manifest()
 
 
 def test_the_accepted_loader_never_opens_the_recorded_provenance_path(
