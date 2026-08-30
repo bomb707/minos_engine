@@ -133,7 +133,7 @@ BASELINE_REVISION = "0020_l2f2_phase_c_execution"
 #: therefore pins its own revision, and the runner checks the pin belonging to the store it is
 #: actually connected to.
 VALIDATION_DATABASE_NAME = "minos_l2f2_validation"
-VALIDATION_REVISION = "0022_l2f2_validation_store"
+VALIDATION_REVISION = "0023_l2f2_phase_d_binding"
 
 #: the ONLY MINOS group role the runner service may hold.
 _REQUIRED_MEMBERSHIP = "minos_runner"
