@@ -133,7 +133,7 @@ def test_the_boundary_requires_the_baseline_database_and_revision() -> None:
     assert l2f2_runner.BASELINE_DATABASE_NAME == "minos_l2f2_baseline"
     assert l2f2_runner.BASELINE_REVISION == "0020_l2f2_phase_c_execution"
     assert l2f2_runner.VALIDATION_DATABASE_NAME == "minos_l2f2_validation"
-    assert l2f2_runner.VALIDATION_REVISION == "0021_l2f2_validation_execution"
+    assert l2f2_runner.VALIDATION_REVISION == "0022_l2f2_validation_store"
     # the head is the latest store's pin, and the two stores are distinct
     assert recompute_alembic_head() == l2f2_runner.VALIDATION_REVISION
     assert l2f2_runner.BASELINE_REVISION != l2f2_runner.VALIDATION_REVISION

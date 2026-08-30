@@ -180,8 +180,16 @@ def test_lifecycle_0020_0021_0020_0021_adds_exactly_two_functions(
             engine.dispose()
 
 
-def test_the_alembic_graph_keeps_exactly_one_head() -> None:
-    """A second head would make "the schema" ambiguous, and ambiguity is not auditable."""
+def test_this_migration_sits_on_0020_and_the_graph_stays_linear() -> None:
+    """0021's own position in the chain, and the graph-level single-head invariant.
+
+    This test used to assert that 0021 WAS the head. That was only ever true until the next
+    migration existed, and asserting it again in every migration's suite would mean editing an
+    accepted test each time one is added. What actually matters here is 0021's own edge — it
+    descends from 0020 and exactly one revision descends from it — plus the invariant that the
+    graph as a whole has one head, whichever revision currently holds that position. The newest
+    migration's suite is what pins the identity of the head.
+    """
     import re
     from pathlib import Path
 
@@ -196,8 +204,10 @@ def test_the_alembic_graph_keeps_exactly_one_head() -> None:
             revisions[rev.group(1)] = None if value in (None, "None") else value
     children = {d for d in revisions.values() if d}
     heads = [r for r in revisions if r not in children]
-    assert heads == [_HEAD], heads
-    assert revisions[_HEAD] == _PRIOR
+    assert len(heads) == 1, heads  # one head, whichever revision currently holds it
+    assert revisions[_HEAD] == _PRIOR, "0021 must still descend from 0020"
+    descendants = [r for r, down in revisions.items() if down == _HEAD]
+    assert len(descendants) <= 1, descendants  # the chain never forks at this revision
 
 
 def test_downgrade_refuses_while_a_phase_d_authority_exists(l2f2: Any) -> None:

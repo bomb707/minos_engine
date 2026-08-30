@@ -31,6 +31,7 @@ __all__ = [
     "refuse_non_train_partition",
     "refuse_non_validation_partition",
     "register_train_truth_identities",
+    "register_validation_truth_identities",
     "resolve_truth_bundle",
 ]
 
@@ -194,6 +195,80 @@ def register_train_truth_identities(
             row = conn.execute(
                 text(
                     "SELECT created FROM evaluation.l2f_register_train_truth_identity("
+                    ":d, :tv, :tt, :mv, :mt)"
+                ),
+                {
+                    "d": bundle.dataset_registry_id,
+                    "tv": bundle.truth_vcf_sha256,
+                    "tt": bundle.truth_tbi_sha256,
+                    "mv": bundle.mutations_vcf_sha256,
+                    "mt": bundle.mutations_tbi_sha256,
+                },
+            ).one()
+            created += 1 if row[0] else 0
+
+    return TruthRegistrationResult(
+        requested=len(bundles),
+        created=created,
+        already_registered=len(bundles) - created,
+        bundles=bundles,
+    )
+
+
+def register_validation_truth_identities(
+    engine: Any, *, dataset_root: Path, expected_count: int | None = None
+) -> TruthRegistrationResult:
+    """Register every VALIDATION round's truth identity. Idempotent; conflicting bytes fail closed.
+
+    The exact counterpart of the TRAIN registrar above, and deliberately a SECOND function rather
+    than a partition argument on the first. A registrar parameterised by partition is a registrar
+    that can be handed the wrong one; two registrars, each naming its partition literally, cannot
+    be. Neither can reach the other's partition, and neither can reach TEST.
+
+    Only ``evaluation.l2f_validation_truth_registration_targets`` is queried — a VALIDATION-only
+    projection in which train and test are structurally absent, so this interface cannot enumerate
+    them even if asked. Persistence goes through the ``SECURITY DEFINER`` function added by
+    ``0022``, which re-derives the partition from ``catalog.split_allocations`` itself rather than
+    believing anything passed in.
+
+    Identity is content hashes only. No path is stored; ``dataset_root`` is used to READ the bytes
+    and is never persisted.
+    """
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        targets = (
+            conn.execute(
+                text(
+                    "SELECT dataset_registry_id, dataset_id, round_id "
+                    "FROM evaluation.l2f_validation_truth_registration_targets ORDER BY dataset_id"
+                )
+            )
+            .mappings()
+            .all()
+        )
+
+    if expected_count is not None and len(targets) != expected_count:
+        raise TruthRegistrationError(
+            f"expected {expected_count} VALIDATION registration targets, found {len(targets)}"
+        )
+
+    bundles = tuple(
+        hash_truth_bundle(
+            dataset_registry_id=str(row["dataset_registry_id"]),
+            dataset_id=str(row["dataset_id"]),
+            round_id=str(row["round_id"]),
+            dataset_root=dataset_root,
+        )
+        for row in targets
+    )
+
+    created = 0
+    with engine.connect() as conn, conn.begin():
+        for bundle in bundles:
+            row = conn.execute(
+                text(
+                    "SELECT created FROM evaluation.l2f_register_validation_truth_identity("
                     ":d, :tv, :tt, :mv, :mt)"
                 ),
                 {
