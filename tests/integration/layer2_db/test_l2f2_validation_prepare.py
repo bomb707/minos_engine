@@ -44,15 +44,18 @@ from tests.integration.layer2_db.l2f2_validation_seed import (
     seed_target_upstream,
 )
 from tests.integration.layer2_db.test_l2f_plan_store import _engine
+from tests.l2f2_phase_d_fixture import (
+    FIXTURE_CONFIG_ROOT,
+    FIXTURE_FREEZE_PATH,
+    forgery_config_hashes,
+)
 
 _SOURCE_DB = "minos_l2f2_baseline"
 _TARGET_DB = "minos_l2f2_validation"
 _SOURCE_REVISION = "0020_l2f2_phase_c_execution"
 _TARGET_REVISION = "0024_l2f2_phase_d_anchor"
 
-_FREEZE_PATH = Path(
-    "/home/hr/bittensor/minos_l2f2_baseline/phase_c_validation_finalists_20260830.json"
-)
+_FREEZE_PATH = FIXTURE_FREEZE_PATH
 _ENVIRONMENT = "71e14a49833ac77bb9dc576345fb89c4dd68f4a3ad3673eb098d38593c1ef4d3"
 _PLAN_HASH = "f6bd1e450c38d789dcfcdafaaf357dad2f7602f53fc8ec779c5be40c71e6d7ce"
 
@@ -118,14 +121,10 @@ class _Stores:
 
 
 def _a_non_finalist_config_hash(authority: Any) -> str:
-    """A REAL Phase-C candidate payload that is not one of the four. Never a fabricated hash."""
-    frozen = set(authority.ordered_config_hashes)
-    for path in sorted(
-        Path("/home/hr/bittensor/minos_l2f2_baseline/config_artifacts").glob("*.json")
-    ):
-        if path.stem not in frozen and len(path.stem) == 64:
-            return path.stem
-    raise AssertionError("the campaign artifact root holds no non-finalist configuration")
+    """ONE real, non-finalist configuration, named deterministically by the fixture manifest."""
+    intruder = forgery_config_hashes()[0]
+    assert intruder not in set(authority.ordered_config_hashes)
+    return intruder
 
 
 def _scalar(conn: Any, sql: str) -> int:
@@ -305,8 +304,8 @@ def test_the_persisted_campaign_is_the_frozen_one(
 def test_the_carried_payloads_are_the_campaign_bytes(
     isolated_pg_base_url: str, tmp_path: Path, authority: Any
 ) -> None:
-    """Every payload published into the target is byte-identical to the campaign's own."""
-    campaign = Path("/home/hr/bittensor/minos_l2f2_baseline/config_artifacts")
+    """Every payload published into the target is byte-identical to the frozen evidence."""
+    campaign = FIXTURE_CONFIG_ROOT
     with _stores(isolated_pg_base_url, tmp_path, authority) as stores:
         stores.prepare()
         for config_hash in authority.ordered_config_hashes:
@@ -947,12 +946,15 @@ def _forge_complete_campaign(
 
 
 def _four_non_finalist_config_hashes(authority: Any) -> tuple[str, ...]:
-    """Four REAL Phase-C candidate payloads that are not the frozen four."""
+    """The four adversarial identities, deterministically named by the fixture manifest.
+
+    Real configurations from the closed Phase-B design, none of them a finalist. Deliberately not
+    a directory glob: a forgery whose identity depended on filesystem ordering would make this
+    suite prove something slightly different on every machine.
+    """
     frozen = set(authority.ordered_config_hashes)
-    root = Path("/home/hr/bittensor/minos_l2f2_baseline/config_artifacts")
-    others = [p.stem for p in sorted(root.glob("*.json")) if len(p.stem) == 64]
-    picked = tuple(h for h in others if h not in frozen)[:4]
-    assert len(picked) == 4, "the campaign root holds fewer than four non-finalist configurations"
+    picked = forgery_config_hashes()
+    assert not (set(picked) & frozen), "a forgery identity is one of the frozen four"
     return picked
 
 

@@ -5,9 +5,9 @@ closed TRAIN baseline at ``0020`` and holds the four frozen CONFIG payloads, and
 looks like an empty validation store at the validation revision with the ten VALIDATION members
 allocated upstream.
 
-The four payloads are the REAL frozen bytes. They are copied from this campaign's on-disk config
-artifact root into the scratch source's own root — never referenced in place, so a test can tamper
-with its copy without touching the campaign's. Nothing here fabricates a configuration: a
+The four payloads are the REAL frozen bytes. They are copied from the repository-local campaign
+fixture into the scratch source's own root — never referenced in place, so a test can tamper with
+its copy without touching the committed bundle. Nothing here fabricates a configuration: a
 synthetic four would hash to something else, and ``0024`` anchors the real four as SQL literals,
 so a synthetic campaign could not reach the bootstrap at all. The proof runs on the real identities
 and a scratch substrate, which is the only combination that proves anything.
@@ -29,8 +29,7 @@ from typing import Any
 
 from sqlalchemy import Connection, text
 
-#: this campaign's real config artifact root; read-only, and only ever copied FROM.
-CAMPAIGN_CONFIG_ROOT = Path("/home/hr/bittensor/minos_l2f2_baseline/config_artifacts")
+from tests.l2f2_phase_d_fixture import FIXTURE_CONFIG_ROOT
 
 CONFIG_MEDIA_TYPE = "application/vnd.minos.l2f-config+json"
 CONFIG_SCHEMA_VERSION = "l2f-config-payload-v1"
@@ -79,10 +78,10 @@ def seed_source_configs(
     config_root.mkdir(parents=True, exist_ok=True)
     conn.execute(text("SET ROLE minos_admin"))
     for config_hash in ordered_config_hashes:
-        source = CAMPAIGN_CONFIG_ROOT / f"{config_hash}.json"
+        source = FIXTURE_CONFIG_ROOT / f"{config_hash}.json"
         payload = source.read_bytes()
         if hashlib.sha256(payload).hexdigest() != config_hash:  # pragma: no cover - fail closed
-            raise AssertionError(f"campaign artifact {source} does not hash to its own name")
+            raise AssertionError(f"fixture artifact {source} does not hash to its own name")
         target = config_root / f"{config_hash}.json"
         shutil.copyfile(source, target)
         artifact_id = U(f"cfg:art:{config_hash}")

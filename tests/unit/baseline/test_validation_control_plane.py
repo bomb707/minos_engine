@@ -40,6 +40,7 @@ from minos_engine.storage.l2f2_validation_control import (
     eligible_l2f2_validation_jobs,
     rank_validation_observations,
 )
+from tests.l2f2_phase_d_fixture import FIXTURE_FREEZE_PATH
 
 _SEED = "4251cb85e5cd58b7eabfe530b9df23ea7d1d14fd882114b488d67cbd81b751b8"
 _F1 = "157d88d1587c13be395c62d60e27d1becdada78fad45e65d883bc1190e51acea"
@@ -177,12 +178,14 @@ def test_a_freeze_bound_to_another_phase_c_closure_is_rejected() -> None:
 
 
 def test_the_real_frozen_outcome_verifies_against_its_recorded_digests(tmp_path: Path) -> None:
-    """The committed loader accepts the real artifact — and only at its real digest."""
-    artifact = Path(
-        "/home/hr/bittensor/minos_l2f2_baseline/phase_c_validation_finalists_20260830.json"
-    )
-    if not artifact.is_file():  # pragma: no cover - campaign evidence is not part of the repo
-        pytest.skip("the campaign freeze artifact is not present in this environment")
+    """The committed loader accepts the real artifact — and only at its real digest.
+
+    This used to read the operational campaign workspace and skip when it was absent, which meant
+    it never ran on CI: a check that silently does not happen is not a check. It now reads the
+    committed byte-preserving fixture, whose identity is proven separately in
+    ``tests/integration/layer2_db/test_l2f2_phase_d_fixture.py``, so it runs everywhere.
+    """
+    artifact = FIXTURE_FREEZE_PATH
     freeze = load_finalist_freeze(
         artifact,
         expected_artifact_sha256="540aeca0640871ca91e3ec771ec66d2df4b96d38210ec3265f944dee3e0433f3",

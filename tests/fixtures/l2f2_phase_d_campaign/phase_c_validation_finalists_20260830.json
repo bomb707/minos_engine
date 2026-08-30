@@ -1,0 +1,272 @@
+{
+ "all_ten_original_candidate_hashes": [
+  "157d88d1587c13be395c62d60e27d1becdada78fad45e65d883bc1190e51acea",
+  "858988eeb117915305a2f334355df6c15c6c5b2aec7b47c2279e0566ddb3930b",
+  "d61d7b26fa9f216e0ed44375ca6056d84deb31a87da8976a8e6154abbe796aa8",
+  "2a14c59f715dfc2c91f14210527749b84fec48503cd4f3f7c76373e53dd9bd95",
+  "4251cb85e5cd58b7eabfe530b9df23ea7d1d14fd882114b488d67cbd81b751b8",
+  "22a1f1fd9ddf02a97776d991f11280b3982673693a4f357479098a99fb411a16",
+  "0972930f8d8c562be15382203e123b2909094e7eac46e84321d36c67abf8345e",
+  "72d0fa71b844fa42b833dbcc97c0949df25c91bca6f9395319aa3443fe6e387e",
+  "b58c3915f05ceaaac0025b0131a479ac1e03d870ea69920592fd3cbaa7a7071b",
+  "b2fc30c077e93d18fb94fa54a89e27f7a3b4021e26af6468b4ce54ed6af7d2ba"
+ ],
+ "baseline_protocol_hash": "c548e190571f5e964560cf30021a520ea8aad6674569fa3202af880d7dff77d1",
+ "created_at": "2026-08-30T00:00:00+02:00",
+ "database_revision": "0020_l2f2_phase_c_execution",
+ "displaced_by_seed_control": [
+  {
+   "config_hash": "d61d7b26fa9f216e0ed44375ca6056d84deb31a87da8976a8e6154abbe796aa8",
+   "inherited_phase_b_index": 31,
+   "objective": 0.37881251238940983
+  }
+ ],
+ "execution_environment_hash": "71e14a49833ac77bb9dc576345fb89c4dd68f4a3ad3673eb098d38593c1ef4d3",
+ "finalist_detail": [
+  {
+   "config_hash": "157d88d1587c13be395c62d60e27d1becdada78fad45e65d883bc1190e51acea",
+   "cvar": 0.3794232541436487,
+   "failure_count": 0,
+   "failure_rate": 0.0,
+   "floor": 0.4546669593424354,
+   "infrastructure_incident_count": 0,
+   "inherited_phase_b_index": 42,
+   "mean": 0.6538696305693306,
+   "mean_gatk_runtime_ms": 67468.8,
+   "objective": 0.45688564098842105,
+   "observed_count": 50,
+   "rank": 1,
+   "required_count": 50
+  },
+  {
+   "config_hash": "0972930f8d8c562be15382203e123b2909094e7eac46e84321d36c67abf8345e",
+   "cvar": 0.3009340551163108,
+   "failure_count": 0,
+   "failure_rate": 0.0,
+   "floor": 0.42952240288452403,
+   "infrastructure_incident_count": 0,
+   "inherited_phase_b_index": 25,
+   "mean": 0.5500593486999081,
+   "mean_gatk_runtime_ms": 62007.08,
+   "objective": 0.3893356181634942,
+   "observed_count": 50,
+   "rank": 2,
+   "required_count": 50
+  },
+  {
+   "config_hash": "22a1f1fd9ddf02a97776d991f11280b3982673693a4f357479098a99fb411a16",
+   "cvar": 0.29569996479879734,
+   "failure_count": 0,
+   "failure_rate": 0.0,
+   "floor": 0.37713131186862914,
+   "infrastructure_incident_count": 0,
+   "inherited_phase_b_index": 36,
+   "mean": 0.600855100273709,
+   "mean_gatk_runtime_ms": 72071.3,
+   "objective": 0.3811603960147292,
+   "observed_count": 50,
+   "rank": 3,
+   "required_count": 50
+  },
+  {
+   "config_hash": "4251cb85e5cd58b7eabfe530b9df23ea7d1d14fd882114b488d67cbd81b751b8",
+   "cvar": 0.2422180203497195,
+   "failure_count": 0,
+   "failure_rate": 0.0,
+   "floor": 0.3256020603938611,
+   "infrastructure_incident_count": 0,
+   "inherited_phase_b_index": 0,
+   "mean": 0.5595095912197333,
+   "mean_gatk_runtime_ms": 72810.02,
+   "objective": 0.33069154653696475,
+   "observed_count": 50,
+   "rank": 4,
+   "required_count": 50
+  }
+ ],
+ "finished_ledger_alive_hashes": [
+  "157d88d1587c13be395c62d60e27d1becdada78fad45e65d883bc1190e51acea",
+  "d61d7b26fa9f216e0ed44375ca6056d84deb31a87da8976a8e6154abbe796aa8",
+  "4251cb85e5cd58b7eabfe530b9df23ea7d1d14fd882114b488d67cbd81b751b8",
+  "22a1f1fd9ddf02a97776d991f11280b3982673693a4f357479098a99fb411a16",
+  "0972930f8d8c562be15382203e123b2909094e7eac46e84321d36c67abf8345e"
+ ],
+ "finished_ledger_eliminated_hashes": [
+  "858988eeb117915305a2f334355df6c15c6c5b2aec7b47c2279e0566ddb3930b",
+  "2a14c59f715dfc2c91f14210527749b84fec48503cd4f3f7c76373e53dd9bd95",
+  "72d0fa71b844fa42b833dbcc97c0949df25c91bca6f9395319aa3443fe6e387e",
+  "b58c3915f05ceaaac0025b0131a479ac1e03d870ea69920592fd3cbaa7a7071b",
+  "b2fc30c077e93d18fb94fa54a89e27f7a3b4021e26af6468b4ce54ed6af7d2ba"
+ ],
+ "five_alive_aggregates": [
+  {
+   "config_hash": "157d88d1587c13be395c62d60e27d1becdada78fad45e65d883bc1190e51acea",
+   "cvar": 0.3794232541436487,
+   "failure_count": 0,
+   "failure_rate": 0.0,
+   "floor": 0.4546669593424354,
+   "infrastructure_incident_count": 0,
+   "inherited_phase_b_index": 42,
+   "mean": 0.6538696305693306,
+   "mean_gatk_runtime_ms": 67468.8,
+   "objective": 0.45688564098842105,
+   "observed_count": 50,
+   "required_count": 50,
+   "tie_break_rank": 1
+  },
+  {
+   "config_hash": "0972930f8d8c562be15382203e123b2909094e7eac46e84321d36c67abf8345e",
+   "cvar": 0.3009340551163108,
+   "failure_count": 0,
+   "failure_rate": 0.0,
+   "floor": 0.42952240288452403,
+   "infrastructure_incident_count": 0,
+   "inherited_phase_b_index": 25,
+   "mean": 0.5500593486999081,
+   "mean_gatk_runtime_ms": 62007.08,
+   "objective": 0.3893356181634942,
+   "observed_count": 50,
+   "required_count": 50,
+   "tie_break_rank": 2
+  },
+  {
+   "config_hash": "22a1f1fd9ddf02a97776d991f11280b3982673693a4f357479098a99fb411a16",
+   "cvar": 0.29569996479879734,
+   "failure_count": 0,
+   "failure_rate": 0.0,
+   "floor": 0.37713131186862914,
+   "infrastructure_incident_count": 0,
+   "inherited_phase_b_index": 36,
+   "mean": 0.600855100273709,
+   "mean_gatk_runtime_ms": 72071.3,
+   "objective": 0.3811603960147292,
+   "observed_count": 50,
+   "required_count": 50,
+   "tie_break_rank": 3
+  },
+  {
+   "config_hash": "d61d7b26fa9f216e0ed44375ca6056d84deb31a87da8976a8e6154abbe796aa8",
+   "cvar": 0.2952657328531344,
+   "failure_count": 0,
+   "failure_rate": 0.0,
+   "floor": 0.3711912195716511,
+   "infrastructure_incident_count": 0,
+   "inherited_phase_b_index": 31,
+   "mean": 0.5991114004567366,
+   "mean_gatk_runtime_ms": 67794.32,
+   "objective": 0.37881251238940983,
+   "observed_count": 50,
+   "required_count": 50,
+   "tie_break_rank": 4
+  },
+  {
+   "config_hash": "4251cb85e5cd58b7eabfe530b9df23ea7d1d14fd882114b488d67cbd81b751b8",
+   "cvar": 0.2422180203497195,
+   "failure_count": 0,
+   "failure_rate": 0.0,
+   "floor": 0.3256020603938611,
+   "infrastructure_incident_count": 0,
+   "inherited_phase_b_index": 0,
+   "mean": 0.5595095912197333,
+   "mean_gatk_runtime_ms": 72810.02,
+   "objective": 0.33069154653696475,
+   "observed_count": 50,
+   "required_count": 50,
+   "tie_break_rank": 5
+  }
+ ],
+ "harness": "PASS \u2014 40 mandatory checks, all true",
+ "inherited_phase_b_indices_in_promotion_order": [
+  42,
+  6,
+  31,
+  3,
+  0,
+  36,
+  25,
+  11,
+  5,
+  43
+ ],
+ "isolation": {
+  "database_mutated": false,
+  "source_mutated": false,
+  "test_truth_accessed": false,
+  "validation_database_created": false,
+  "validation_jobs_materialized": false,
+  "validation_truth_accessed": false,
+  "validation_workspace_created": false
+ },
+ "minos_subnet_sha": "649bb92c6abccebde58a736a2b2af7fd77a701c1",
+ "natural_top_four_before_seed_control": [
+  {
+   "config_hash": "157d88d1587c13be395c62d60e27d1becdada78fad45e65d883bc1190e51acea",
+   "inherited_phase_b_index": 42,
+   "objective": 0.45688564098842105,
+   "rank": 1
+  },
+  {
+   "config_hash": "0972930f8d8c562be15382203e123b2909094e7eac46e84321d36c67abf8345e",
+   "inherited_phase_b_index": 25,
+   "objective": 0.3893356181634942,
+   "rank": 2
+  },
+  {
+   "config_hash": "22a1f1fd9ddf02a97776d991f11280b3982673693a4f357479098a99fb411a16",
+   "inherited_phase_b_index": 36,
+   "objective": 0.3811603960147292,
+   "rank": 3
+  },
+  {
+   "config_hash": "d61d7b26fa9f216e0ed44375ca6056d84deb31a87da8976a8e6154abbe796aa8",
+   "inherited_phase_b_index": 31,
+   "objective": 0.37881251238940983,
+   "rank": 4
+  }
+ ],
+ "note": "Outcome evidence produced by the frozen protocol. NOT a new protocol identity.",
+ "notes": [
+  "No credentials. No DSNs.",
+  "The four hashes above, together with this artifact's SHA-256, are the frozen finalist outcome for L2-F2-F. No second finalist selection may be produced from validation results.",
+  "All five alive candidates are complete at 50/50 TRAIN observations.",
+  "The five eliminated candidates were removed by the frozen monotone racing rule recomputed against the COMPLETE immutable ledger. Historically all ten ran all ten batches; that is durable in the 500-job queue and no campaign record was altered."
+ ],
+ "parameter_space_hash": "b2d401918084d64023305d9262baf5011a89fe517bee4e0bd33af79fb14aee2e",
+ "phase_a_analysis_hash": "25794987e49ca2a17776bf355326e8ff396366a6e3340fe7f9d2e24a855c80ae",
+ "phase_b_completion_hash": "0c98017a7a79bc7d8bf897983b4b25765d64a52d4f4caa70458abaf1d508e1fd",
+ "phase_b_completion_hash_recomputed": "0c98017a7a79bc7d8bf897983b4b25765d64a52d4f4caa70458abaf1d508e1fd",
+ "phase_b_observation_count": 480,
+ "phase_c": {
+  "candidate_failure_count": 1,
+  "complete": true,
+  "completed_batch_count": 10,
+  "decided_observation_count": 500,
+  "enqueued_count": 500,
+  "infrastructure_incident_count": 0,
+  "logical_job_budget": 500
+ },
+ "phase_c_candidate_set_hash": "923e45d59799c34ca1831c65b57604405165935a9e51d4c0e690abbfaf122bd4",
+ "phase_c_closure_artifact": {
+  "path": "/home/hr/bittensor/minos_l2f2_baseline/phase_c_complete_20260829.json",
+  "sha256": "5de368eec327b66c868737d1819cc1b1a590eaf185b28e53d1cfecae59b593ca",
+  "size_bytes": 11466
+ },
+ "phase_c_plan_hash": "03b846e735e5817a8df7d5c37ae15778a955828a56513b16cef8ff2193a0aa43",
+ "repository_sha": "aad323e2ee92b8d7db7a5901589d09945384a6d4",
+ "repository_tree": "10e4b6ba1f0a1b4e8c5bfc8b0b74397d8ac6645d",
+ "schema": "l2f2-phase-c-validation-finalists-v1",
+ "scoring_contract_hash": "b24a07e208ce8e2fff6672102ae4e61aed93c6f352a5af46ba81c4789adb76d6",
+ "seed_config_hash": "4251cb85e5cd58b7eabfe530b9df23ea7d1d14fd882114b488d67cbd81b751b8",
+ "seed_control_applied": true,
+ "seed_naturally_in_top_four": false,
+ "selector": "minos_engine.storage.l2f2_phase_c_control.select_l2f2_validation_finalists",
+ "selector_called_twice_identical": true,
+ "source_ci": 33146053890,
+ "validation_finalist_count": 4,
+ "validation_finalists_ordered": [
+  "157d88d1587c13be395c62d60e27d1becdada78fad45e65d883bc1190e51acea",
+  "0972930f8d8c562be15382203e123b2909094e7eac46e84321d36c67abf8345e",
+  "22a1f1fd9ddf02a97776d991f11280b3982673693a4f357479098a99fb411a16",
+  "4251cb85e5cd58b7eabfe530b9df23ea7d1d14fd882114b488d67cbd81b751b8"
+ ]
+}
