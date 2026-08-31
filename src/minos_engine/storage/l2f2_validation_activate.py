@@ -176,7 +176,7 @@ def _load_validation_plan(
             f"the frozen protocol fixes {PHASE_D_LOGICAL_JOB_BUDGET}"
         )
 
-    members = _load_members(conn, plan_id, snapshot_id=str(plan["profile_snapshot_id"]))
+    members = _load_members(conn, plan_id, authority, snapshot_id=str(plan["profile_snapshot_id"]))
     configs = _load_configs(conn, plan_id, authority)
     return ValidationPlan(
         plan_hash=str(plan["plan_hash"]),
@@ -194,9 +194,20 @@ def _load_validation_plan(
 
 
 def _load_members(
-    conn: Connection, plan_id: str, *, snapshot_id: str
+    conn: Connection, plan_id: str, authority: PhaseDAuthority, *, snapshot_id: str
 ) -> tuple[ValidationPlanMember, ...]:
-    """The ten members, with the identity fields the frozen job key is computed from."""
+    """The ten members, compared ROW BY ROW against the frozen schedule.
+
+    Counting ten validation members at indices 0..9 says the plan has the right shape. It does
+    not say the plan holds the right ten: a store seeded with ten other validation rounds
+    satisfies every structural check and is a different experiment.
+
+    So each persisted row is compared to ``authority.schedule.members[i]`` on the identity the
+    split manifest froze — dataset, round, chromosome and the upstream identity tuple. The
+    persisted ``plan_hash`` is not accepted as a substitute: the database stores that hash as a
+    value, and a value cannot vouch for the rows that were supposed to have produced it. This is
+    the member-side counterpart of the exact-four configuration check.
+    """
     from sqlalchemy import text
 
     rows = (
@@ -205,7 +216,8 @@ def _load_members(
                 "SELECT pm.member_index, pm.partition, pm.profile_snapshot_id, "
                 "       pm.dataset_registry_id, pm.profile_snapshot_member_id, "
                 "       pm.bam_profile_id, pm.feature_values_hash, "
-                "       dr.dataset_id, dr.round_id, dr.chromosome, sa.partition AS allocation, "
+                "       dr.dataset_id, dr.round_id, dr.chromosome, dr.identity_tuple_hash, "
+                "       sa.partition AS allocation, "
                 "       bp.profile_id, bp.content_hash "
                 "  FROM experiments.l2f_experiment_plan_members pm "
                 "  JOIN catalog.dataset_registry dr ON dr.id = pm.dataset_registry_id "
@@ -227,6 +239,10 @@ def _load_members(
         raise ValidationActivationError(
             "the Phase-D plan member_index inventory is not 0..9 exactly once"
         )
+    frozen = {m.member_index: m for m in authority.schedule.members}
+    if sorted(frozen) != list(range(VALIDATION_COUNT)):  # pragma: no cover - schedule guarantees
+        raise ValidationActivationError("the frozen schedule is not indexed 0..9 exactly once")
+
     members: list[ValidationPlanMember] = []
     for row in rows:
         # BOTH the plan member's partition and the split's own allocation. The member row is what
@@ -246,6 +262,30 @@ def _load_members(
             raise ValidationActivationError(
                 f"Phase-D plan member {row['dataset_id']} belongs to a different profile snapshot "
                 "than its plan"
+            )
+        # THE frozen identity check. Every field the split manifest fixes for this index.
+        expected = frozen[int(row["member_index"])]
+        persisted_identity = {
+            "dataset_id": str(row["dataset_id"]),
+            "round_id": str(row["round_id"]),
+            "chromosome": str(row["chromosome"]),
+            "identity_tuple_hash": str(row["identity_tuple_hash"]),
+        }
+        frozen_identity = {
+            "dataset_id": expected.dataset_id,
+            "round_id": expected.round_id,
+            "chromosome": expected.chromosome,
+            "identity_tuple_hash": expected.identity_tuple_hash,
+        }
+        differing = sorted(
+            field for field, value in persisted_identity.items() if value != frozen_identity[field]
+        )
+        if differing:
+            raise ValidationActivationError(
+                f"Phase-D plan member at index {row['member_index']} is not the frozen validation "
+                f"member: {differing} disagree with the split manifest "
+                f"(persisted dataset {persisted_identity['dataset_id']}, frozen "
+                f"{frozen_identity['dataset_id']})"
             )
         members.append(
             ValidationPlanMember(
@@ -369,6 +409,12 @@ def activate_l2f2_validation_truth(
     present? Truth that is registered but incomplete would let materialization authorize jobs the
     evaluator could never score.
 
+    It also adds the question that must be answered FIRST. Before any truth file is opened or
+    hashed, this store must be proven to hold the exact prepared Phase-D campaign: right database,
+    right revision, a bootstrap that resolves the frozen plan and environment, and a persisted
+    graph whose ten members and four configurations survive re-verification. An unprepared or
+    malformed target is refused with the answer key still unread.
+
     ``dataset_root`` is where the bytes are READ from. No path is ever persisted.
     """
     from minos_engine.storage.l2f2_runner import VALIDATION_DATABASE_NAME, VALIDATION_REVISION
@@ -394,8 +440,15 @@ def _activate_truth_with_trust(
     from minos_engine.evaluation.truth_registration import register_validation_truth_identities
 
     authority = _authority_from(finalist_freeze_path)
+
+    # THE authorization gate, and it runs before a single truth byte is opened. Truth is the
+    # answer key: pointing provisioning at a directory is not a reason to read it. The store must
+    # already hold THIS exact prepared campaign — the database's own bootstrap must resolve it,
+    # and the persisted graph must re-verify against the frozen ten and the frozen four — before
+    # the registrar is allowed to touch the filesystem.
     with target.connect() as conn:
         _require_target(conn, database=expected_database, revision=expected_revision)
+        _authorized_plan(conn, authority)
 
     result = register_validation_truth_identities(
         target, dataset_root=dataset_root, expected_count=VALIDATION_COUNT
@@ -434,18 +487,25 @@ def _authority_from(finalist_freeze_path: str | Path) -> PhaseDAuthority:
 
 
 def _truth_readiness(conn: Connection, authority: PhaseDAuthority) -> int:
-    """Exactly one complete VALIDATION truth identity per frozen member, or a typed refusal.
+    """Exactly one complete truth identity for each EXACT frozen validation round, or a refusal.
+
+    Matching on ``dataset_id`` alone would only prove that truth is attached to a row carrying a
+    familiar name. What has to be true is stronger: that this is the truth for THIS exact frozen
+    round. So every registered identity is joined back to its registry row and that row is
+    compared to the frozen schedule on dataset, round, chromosome and the upstream identity tuple
+    — the same identity the plan members are held to.
 
     Counted against the FROZEN schedule rather than against whatever the store happens to hold,
     so a store with ten identities that are not these ten is not ready.
     """
     from sqlalchemy import text
 
-    expected = {member.dataset_id for member in authority.schedule.members}
+    frozen = {member.dataset_id: member for member in authority.schedule.members}
     rows = (
         conn.execute(
             text(
-                "SELECT dr.dataset_id, sa.partition, "
+                "SELECT dr.dataset_id, dr.round_id, dr.chromosome, dr.identity_tuple_hash, "
+                "       sa.partition, "
                 "       d.truth_vcf_sha256, d.truth_tbi_sha256, "
                 "       d.mutations_vcf_sha256, d.mutations_tbi_sha256 "
                 "  FROM evaluation.dataset_evaluation_identity d "
@@ -453,7 +513,7 @@ def _truth_readiness(conn: Connection, authority: PhaseDAuthority) -> int:
                 "  JOIN catalog.split_allocations sa ON sa.dataset_registry_id = dr.id "
                 " WHERE dr.dataset_id = ANY(:ids)"
             ),
-            {"ids": sorted(expected)},
+            {"ids": sorted(frozen)},
         )
         .mappings()
         .all()
@@ -472,6 +532,25 @@ def _truth_readiness(conn: Connection, authority: PhaseDAuthority) -> int:
                 f"truth identity for {dataset_id} is allocated to {row['partition']!r}; "
                 "Phase D evaluates the VALIDATION partition only"
             )
+        member = frozen[dataset_id]
+        differing = sorted(
+            field
+            for field, persisted, expected_value in (
+                ("round_id", str(row["round_id"]), member.round_id),
+                ("chromosome", str(row["chromosome"]), member.chromosome),
+                (
+                    "identity_tuple_hash",
+                    str(row["identity_tuple_hash"]),
+                    member.identity_tuple_hash,
+                ),
+            )
+            if persisted != expected_value
+        )
+        if differing:
+            raise ValidationActivationError(
+                f"the truth identity registered for {dataset_id} belongs to a different round: "
+                f"{differing} disagree with the frozen validation schedule"
+            )
         missing = [
             column
             for column in (
@@ -486,7 +565,7 @@ def _truth_readiness(conn: Connection, authority: PhaseDAuthority) -> int:
             raise ValidationActivationError(
                 f"the truth identity for {dataset_id} is incomplete: {sorted(missing)} absent"
             )
-    absent = sorted(expected - seen)
+    absent = sorted(set(frozen) - seen)
     if absent:
         raise ValidationActivationError(
             f"{len(absent)} of {VALIDATION_COUNT} validation members have no truth identity "
@@ -581,7 +660,7 @@ def _materialize_with_trust(
             )
 
         existing = _existing_jobs(conn, plan_id)
-        _reject_conflicting_graph(existing, wanted)
+        _require_empty_or_complete(existing, wanted)
 
         created = 0
         for job_key, (member_index, config_index) in wanted.items():
@@ -660,7 +739,8 @@ def _existing_jobs(conn: Connection, plan_id: str) -> dict[str, dict[str, Any]]:
     rows = (
         conn.execute(
             text(
-                "SELECT j.job_key, j.status, j.claimed_by, pm.member_index, pc.config_index "
+                "SELECT j.job_key, j.status, j.claimed_by, j.claimed_at, "
+                "       pm.member_index, pc.config_index "
                 f"  FROM {_JOBS} j "  # noqa: S608
                 "  JOIN experiments.l2f_experiment_plan_members pm ON pm.id = j.plan_member_id "
                 "  JOIN experiments.l2f_experiment_plan_configs pc ON pc.id = j.plan_config_id "
@@ -674,14 +754,20 @@ def _existing_jobs(conn: Connection, plan_id: str) -> dict[str, dict[str, Any]]:
     return {str(r["job_key"]): dict(r) for r in rows}
 
 
-def _reject_conflicting_graph(
+def _require_empty_or_complete(
     existing: dict[str, dict[str, Any]], wanted: dict[str, tuple[int, int]]
 ) -> None:
-    """An existing job graph must be a PREFIX of the logical product, or nothing is written.
+    """The persisted job graph must be EMPTY or COMPLETE. There is no third acceptable state.
+
+    Not a prefix. A partial durable graph is not a materialization that got part of the way and
+    may be finished later — it is evidence that a previous activation was interrupted or ran
+    outside this contract, and completing it would silently convert that evidence into a campaign
+    that looks like it was authorized in one piece. Between 1 and 39 jobs is therefore a typed
+    refusal requiring an operator to look, not a gap to fill.
 
     Never repaired. A job is the durable authorization to spend GATK hours on one exact pair, and
     a graph that disagrees with the frozen product is a disagreement about which experiment is
-    running — not a row to be tidied.
+    running.
     """
     unexpected = sorted(set(existing) - set(wanted))
     if unexpected:
@@ -696,8 +782,22 @@ def _reject_conflicting_graph(
                 f"persisted Phase-D job {job_key} binds member {row['member_index']}/config "
                 f"{row['config_index']}, the frozen product binds {member_index}/{config_index}"
             )
-        if str(row["status"]) != INITIAL_JOB_STATUS or row["claimed_by"] is not None:
+        if (
+            str(row["status"]) != INITIAL_JOB_STATUS
+            or row["claimed_by"] is not None
+            or row["claimed_at"] is not None
+        ):
             raise ValidationActivationError(
                 f"persisted Phase-D job {job_key} is {row['status']} and not unclaimed; "
                 "activation refuses to extend a campaign that has already begun executing"
             )
+
+    # EMPTY or COMPLETE. Every row above was individually legitimate; the count is the last
+    # question, and the one a top-up would answer by writing rather than by refusing.
+    if existing and len(existing) != len(wanted):
+        raise ValidationActivationError(
+            f"the Phase-D plan already holds {len(existing)} of {len(wanted)} jobs; a partial "
+            "durable job graph is evidence of an interrupted or out-of-contract activation and "
+            "is never completed in place. Activation proceeds from zero jobs or verifies all "
+            f"{len(wanted)}"
+        )

@@ -139,6 +139,7 @@ def seed_target_upstream(
     omit_member: str | None = None,
     wrong_round_for: str | None = None,
     wrong_chromosome_for: str | None = None,
+    wrong_identity_tuple_for: str | None = None,
 ) -> SeededTarget:
     """Seed the ten VALIDATION members (and, on request, one deliberate defect).
 
@@ -245,6 +246,9 @@ def seed_target_upstream(
                 dsr_id,
                 round_id="0000000000000000" if wrong_round_for == label else None,
                 chromosome="chr18" if wrong_chromosome_for == label else None,
+                identity_tuple_hash=(
+                    "0" * 64 if wrong_identity_tuple_for == label else member.identity_tuple_hash
+                ),
             ),
         )
         _insert(
@@ -296,6 +300,7 @@ def _dataset_row(
     *,
     round_id: str | None = None,
     chromosome: str | None = None,
+    identity_tuple_hash: str | None = None,
 ) -> dict[str, Any]:
     tag = label
     chromosome = chromosome or label.split("-")[1]
@@ -318,7 +323,7 @@ def _dataset_row(
         "bam_size_bytes": 1024,
         "parameter_space_hash": H(f"dsr_ps:{tag}"),
         "feature_registry_hash": H(f"dsr_fr:{tag}"),
-        "identity_tuple_hash": H(f"idtuple:{tag}"),
+        "identity_tuple_hash": identity_tuple_hash or H(f"idtuple:{tag}"),
         "manifest_hash": H(f"manifest:{tag}"),
         "split_algorithm_version": "v1",
         "split_salt": "salt",

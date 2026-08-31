@@ -310,19 +310,72 @@ def test_only_the_ten_frozen_validation_members_carry_truth(
 def test_a_non_validation_member_cannot_reach_truth_readiness(
     isolated_pg_base_url: str, scratch_root: Path, authority: Any, partition: str
 ) -> None:
-    """TRAIN and TEST are not refused politely — the registrar's projection excludes them."""
+    """A member reallocated away from validation stops the campaign before truth is touched.
+
+    The allocation is flipped AFTER preparation, because preparation itself refuses a
+    non-validation member — which is the point: there is no ordering in which TRAIN or TEST
+    reaches Phase D.
+    """
     victim = authority.schedule.members[0].dataset_id
-    with _campaign(
-        isolated_pg_base_url,
-        scratch_root,
-        authority,
-        prepare=False,
-        truth=False,
-        seed_kwargs={"partitions": {victim: partition}},
-    ) as campaign:
-        with pytest.raises(Exception, match="9|expected 10"):
+    with _campaign(isolated_pg_base_url, scratch_root, authority, truth=False) as campaign:
+        with campaign.target.connect() as conn, conn.begin():
+            conn.execute(text("SET LOCAL ROLE minos_admin"))
+            conn.execute(text("ALTER TABLE catalog.split_allocations DISABLE TRIGGER USER"))
+            conn.execute(
+                text(
+                    "UPDATE catalog.split_allocations SET partition = :part "
+                    " WHERE dataset_registry_id = ("
+                    "   SELECT id FROM catalog.dataset_registry WHERE dataset_id = :d)"
+                ),
+                {"part": partition, "d": victim},
+            )
+            conn.execute(text("ALTER TABLE catalog.split_allocations ENABLE TRIGGER USER"))
+
+        with pytest.raises(ValidationActivationError, match="allocated to"):
             campaign.register_truth()
-        assert campaign.counts()["truth"] < 10
+        assert campaign.counts()["truth"] == 0
+        with pytest.raises(ValidationActivationError, match="allocated to"):
+            campaign.materialize()
+        assert campaign.counts()["jobs"] == 0
+
+
+@pytest.mark.parametrize("partition", ["train", "test"])
+def test_the_registrar_projection_cannot_enumerate_train_or_test(
+    isolated_pg_base_url: str, scratch_root: Path, authority: Any, partition: str
+) -> None:
+    """Structural, not polite: the accepted registration target view has no TRAIN or TEST row.
+
+    TRAIN and TEST are excluded because the interface the registrar reads cannot name them, so
+    there is no argument a caller could pass to reach one.
+    """
+    victim = authority.schedule.members[1].dataset_id
+    with _campaign(isolated_pg_base_url, scratch_root, authority, truth=False) as campaign:
+        with campaign.target.connect() as conn, conn.begin():
+            conn.execute(text("SET LOCAL ROLE minos_admin"))
+            conn.execute(text("ALTER TABLE catalog.split_allocations DISABLE TRIGGER USER"))
+            conn.execute(
+                text(
+                    "UPDATE catalog.split_allocations SET partition = :part "
+                    " WHERE dataset_registry_id = ("
+                    "   SELECT id FROM catalog.dataset_registry WHERE dataset_id = :d)"
+                ),
+                {"part": partition, "d": victim},
+            )
+            conn.execute(text("ALTER TABLE catalog.split_allocations ENABLE TRIGGER USER"))
+        # read as the connecting principal: 0022 grants SELECT on this projection to
+        # minos_evaluator alone, so switching to the control plane would lose the privilege.
+        with campaign.target.connect() as conn:
+            visible = {
+                str(r[0])
+                for r in conn.execute(
+                    text(
+                        "SELECT dataset_id FROM "
+                        "evaluation.l2f_validation_truth_registration_targets"
+                    )
+                )
+            }
+        assert victim not in visible
+        assert len(visible) == 9
 
 
 def test_a_missing_truth_bundle_is_refused(
@@ -898,3 +951,386 @@ def test_the_pending_graph_matches_what_the_runner_would_claim(
             assert int(claimable) == 40
             # and nothing has actually been claimed by anyone.
             assert campaign.counts()["claimed"] == 0
+
+
+# --------------------------------------------------------------------------------------------
+# GAP A — a partial durable job graph is refused, never topped up
+# --------------------------------------------------------------------------------------------
+def _delete_jobs_down_to(campaign: Any, keep: int) -> None:
+    """Privileged TEST corruption seam: leave exactly ``keep`` legitimate jobs behind.
+
+    ``l2f_experiment_jobs`` forbids DELETE by trigger, which is why a partial graph cannot arise
+    through any accepted interface — and why staging one for the negative needs an explicit seam
+    rather than a production code path.
+    """
+    with campaign.target.connect() as conn, conn.begin():
+        conn.execute(text("SET LOCAL ROLE minos_admin"))
+        conn.execute(text("ALTER TABLE experiments.l2f_experiment_jobs DISABLE TRIGGER USER"))
+        conn.execute(
+            text(
+                "DELETE FROM experiments.l2f_experiment_jobs WHERE job_key IN ("
+                "  SELECT job_key FROM experiments.l2f_experiment_jobs "
+                "   ORDER BY job_key OFFSET :keep)"
+            ),
+            {"keep": keep},
+        )
+        conn.execute(text("ALTER TABLE experiments.l2f_experiment_jobs ENABLE TRIGGER USER"))
+
+
+@pytest.mark.parametrize("survivors", [1, 19, 39])
+def test_a_partial_job_graph_is_refused_and_never_completed(
+    isolated_pg_base_url: str, scratch_root: Path, authority: Any, survivors: int
+) -> None:
+    """Every surviving job is legitimate. The count alone is the refusal.
+
+    A partial durable graph is evidence that some previous activation was interrupted or ran
+    outside this contract. Filling in the gap would convert that evidence into a campaign that
+    looks like it was authorized in one piece, so activation refuses and leaves it for an
+    operator to look at.
+    """
+    with _campaign(isolated_pg_base_url, scratch_root, authority) as campaign:
+        campaign.materialize()
+        _delete_jobs_down_to(campaign, survivors)
+        assert campaign.counts()["jobs"] == survivors
+        surviving_keys = {str(r["job_key"]) for r in _job_rows(campaign)}
+
+        with pytest.raises(
+            ValidationActivationError, match=f"already holds {survivors} of 40 jobs"
+        ):
+            campaign.materialize()
+
+        # not one job was inserted to close the gap, and none was removed either.
+        assert campaign.counts()["jobs"] == survivors
+        assert {str(r["job_key"]) for r in _job_rows(campaign)} == surviving_keys
+
+
+def test_the_replay_contract_is_empty_or_complete(
+    isolated_pg_base_url: str, scratch_root: Path, authority: Any
+) -> None:
+    """The whole contract in one place: 0 -> 40, 40 -> 40 created 0, anything between -> refuse."""
+    with _campaign(isolated_pg_base_url, scratch_root, authority) as campaign:
+        assert campaign.counts()["jobs"] == 0
+        assert campaign.materialize().created_jobs == 40
+
+        second = campaign.materialize()
+        assert (second.created_jobs, second.existing_jobs, second.pending_jobs) == (0, 40, 40)
+
+        _delete_jobs_down_to(campaign, 25)
+        with pytest.raises(ValidationActivationError, match="already holds 25 of 40 jobs"):
+            campaign.materialize()
+        assert campaign.counts()["jobs"] == 25
+
+
+def test_the_empty_or_complete_rule_is_stated_not_prefixed() -> None:
+    """The old contract was documented as a PREFIX. It is not one, and the source says so."""
+    source = Path("src/minos_engine/storage/l2f2_validation_activate.py").read_text(
+        encoding="utf-8"
+    )
+    assert "_require_empty_or_complete" in source
+    assert "_reject_conflicting_graph" not in source
+    assert "PREFIX" not in source
+    assert "EMPTY or COMPLETE" in source
+
+
+# --------------------------------------------------------------------------------------------
+# GAP B — the persisted ten must BE the frozen ten
+# --------------------------------------------------------------------------------------------
+def _corrupt_registry(campaign: Any, dataset_id: str, column: str, value: str) -> None:
+    """Privileged TEST seam for a defect the accepted interfaces cannot construct."""
+    with campaign.target.connect() as conn, conn.begin():
+        conn.execute(text("SET LOCAL ROLE minos_admin"))
+        conn.execute(text("ALTER TABLE catalog.dataset_registry DISABLE TRIGGER USER"))
+        conn.execute(
+            text(
+                f"UPDATE catalog.dataset_registry SET {column} = :v "  # noqa: S608
+                " WHERE dataset_id = :d"
+            ),
+            {"v": value, "d": dataset_id},
+        )
+        conn.execute(text("ALTER TABLE catalog.dataset_registry ENABLE TRIGGER USER"))
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "field"),
+    [
+        ("round_id", "ffffffffffffffff", "round_id"),
+        ("chromosome", "chr18", "chromosome"),
+        ("identity_tuple_hash", "0" * 64, "identity_tuple_hash"),
+    ],
+)
+def test_a_member_whose_frozen_identity_drifts_is_refused(
+    isolated_pg_base_url: str,
+    scratch_root: Path,
+    authority: Any,
+    column: str,
+    value: str,
+    field: str,
+) -> None:
+    """Ten validation members at the right indices is not the same as the right ten."""
+    victim = authority.schedule.members[4]
+    with _campaign(isolated_pg_base_url, scratch_root, authority) as campaign:
+        campaign.materialize()
+        _delete_jobs_down_to(campaign, 0)
+        _corrupt_registry(campaign, victim.dataset_id, column, value)
+
+        with pytest.raises(
+            ValidationActivationError, match=f"is not the frozen validation.*|{field}"
+        ):
+            campaign.materialize()
+        assert campaign.counts()["jobs"] == 0
+
+
+def test_a_wrong_dataset_at_a_member_index_is_refused(
+    isolated_pg_base_url: str, scratch_root: Path, authority: Any
+) -> None:
+    """A validation round that is simply not in the frozen ten."""
+    victim = authority.schedule.members[8]
+    with _campaign(isolated_pg_base_url, scratch_root, authority) as campaign:
+        _corrupt_registry(campaign, victim.dataset_id, "dataset_id", "minos-chr22-000000000000dead")
+        with pytest.raises(ValidationActivationError, match="is not the frozen validation member"):
+            campaign.materialize()
+        assert campaign.counts()["jobs"] == 0
+
+
+def test_the_right_ten_in_the_wrong_order_are_refused(
+    isolated_pg_base_url: str, scratch_root: Path, authority: Any
+) -> None:
+    """Every frozen identity is present; two are at each other's index. That is a different plan.
+
+    This is the case a count-and-set check cannot see, and the reason the comparison is
+    positional rather than a set membership test.
+    """
+    a, b = authority.schedule.members[0], authority.schedule.members[1]
+    with _campaign(isolated_pg_base_url, scratch_root, authority) as campaign:
+        with campaign.target.connect() as conn, conn.begin():
+            conn.execute(text("SET LOCAL ROLE minos_admin"))
+            conn.execute(
+                text("ALTER TABLE experiments.l2f_experiment_plan_members DISABLE TRIGGER USER")
+            )
+            for index, dataset_id in ((99, a.dataset_id), (0, b.dataset_id), (1, a.dataset_id)):
+                conn.execute(
+                    text(
+                        "UPDATE experiments.l2f_experiment_plan_members pm "
+                        "   SET member_index = :i FROM catalog.dataset_registry dr "
+                        " WHERE dr.id = pm.dataset_registry_id AND dr.dataset_id = :d"
+                    ),
+                    {"i": index, "d": dataset_id},
+                )
+            conn.execute(
+                text("ALTER TABLE experiments.l2f_experiment_plan_members ENABLE TRIGGER USER")
+            )
+        with pytest.raises(ValidationActivationError, match="is not the frozen validation member"):
+            campaign.materialize()
+        assert campaign.counts()["jobs"] == 0
+
+
+def test_the_persisted_plan_hash_is_not_accepted_as_proof_of_its_rows(
+    isolated_pg_base_url: str, scratch_root: Path, authority: Any
+) -> None:
+    """The plan hash still matches; the rows do not. The rows win.
+
+    A hash stored in a column is a value, and a value cannot vouch for the rows that were
+    supposed to have produced it.
+    """
+    victim = authority.schedule.members[2]
+    with _campaign(isolated_pg_base_url, scratch_root, authority) as campaign:
+        _corrupt_registry(campaign, victim.dataset_id, "round_id", "aaaaaaaaaaaaaaaa")
+        with campaign.target.connect() as conn:
+            conn.execute(text("SET ROLE minos_admin"))
+            stored = str(
+                conn.execute(
+                    text("SELECT plan_hash FROM experiments.l2f_experiment_plans")
+                ).scalar_one()
+            )
+        assert stored == _PLAN_HASH == authority.plan_hash
+        with pytest.raises(ValidationActivationError, match="is not the frozen validation member"):
+            campaign.materialize()
+        assert campaign.counts()["jobs"] == 0
+
+
+# --------------------------------------------------------------------------------------------
+# GAP C — truth is the answer key, and it stays shut until the campaign is proven
+# --------------------------------------------------------------------------------------------
+class _TruthFileSpy:
+    """Records every truth file the process opens, by any route the registrar could take."""
+
+    def __init__(self, dataset_root: Path) -> None:
+        self.root = dataset_root.resolve()
+        self.opened: list[str] = []
+
+    def __enter__(self) -> _TruthFileSpy:
+        import builtins
+        import os
+
+        self._open, self._os_open = builtins.open, os.open
+        self._read_bytes, self._read_text = Path.read_bytes, Path.read_text
+        self._path_open = Path.open
+        spy = self
+
+        def record(target: Any) -> None:
+            with contextlib.suppress(Exception):
+                resolved = Path(target).resolve()
+                if resolved.is_relative_to(spy.root):
+                    spy.opened.append(str(resolved))
+
+        def builtins_open(file: Any, *a: Any, **k: Any) -> Any:
+            record(file)
+            return spy._open(file, *a, **k)
+
+        def os_open(path: Any, *a: Any, **k: Any) -> Any:
+            record(path)
+            return spy._os_open(path, *a, **k)
+
+        def path_read_bytes(self_: Path) -> bytes:
+            record(self_)
+            return spy._read_bytes(self_)
+
+        def path_read_text(self_: Path, *a: Any, **k: Any) -> str:
+            record(self_)
+            return spy._read_text(self_, *a, **k)
+
+        def path_open(self_: Path, *a: Any, **k: Any) -> Any:
+            record(self_)
+            return spy._path_open(self_, *a, **k)
+
+        builtins.open, os.open = builtins_open, os_open
+        Path.read_bytes, Path.read_text, Path.open = (  # type: ignore[method-assign]
+            path_read_bytes,
+            path_read_text,
+            path_open,
+        )
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        import builtins
+        import os
+
+        builtins.open, os.open = self._open, self._os_open
+        Path.read_bytes, Path.read_text, Path.open = (  # type: ignore[method-assign]
+            self._read_bytes,
+            self._read_text,
+            self._path_open,
+        )
+
+
+def test_the_spy_sees_truth_files_when_they_are_legitimately_read(
+    isolated_pg_base_url: str, scratch_root: Path, authority: Any
+) -> None:
+    """The instrument must be shown to work before its silence can mean anything."""
+    with _campaign(isolated_pg_base_url, scratch_root, authority, truth=False) as campaign:
+        with _TruthFileSpy(campaign.dataset_root) as spy:
+            campaign.register_truth()
+        assert len(spy.opened) >= 40  # four files per round, ten rounds
+        assert campaign.counts()["truth"] == 10
+
+
+def test_an_unprepared_target_is_refused_before_any_truth_byte_is_opened(
+    isolated_pg_base_url: str, scratch_root: Path, authority: Any
+) -> None:
+    """The decisive one. Right database, right revision, real upstream, truth files sitting there.
+
+    No PHASE_D plan, authority or binding, so the campaign is not this campaign — and the answer
+    key must still be unread when the refusal happens. Provisioning pointing at a directory is
+    not a reason to open it.
+    """
+    with _campaign(
+        isolated_pg_base_url, scratch_root, authority, prepare=False, truth=False
+    ) as campaign:
+        assert (campaign.dataset_root / f"round_{authority.schedule.members[0].round_id}").is_dir()
+
+        with (
+            _TruthFileSpy(campaign.dataset_root) as spy,
+            pytest.raises(Exception, match="PHASE_D"),
+        ):
+            activate_l2f2_validation_truth(
+                target=campaign.target,
+                finalist_freeze_path=FIXTURE_FREEZE_PATH,
+                dataset_root=campaign.dataset_root,
+            )
+        assert spy.opened == []
+        assert campaign.counts()["truth"] == 0
+
+
+def test_a_malformed_prepared_campaign_is_refused_before_any_truth_byte_is_opened(
+    isolated_pg_base_url: str, scratch_root: Path, authority: Any
+) -> None:
+    """Prepared, but not this campaign: one member's frozen identity has drifted."""
+    victim = authority.schedule.members[5]
+    with _campaign(isolated_pg_base_url, scratch_root, authority, truth=False) as campaign:
+        _corrupt_registry(campaign, victim.dataset_id, "round_id", "bbbbbbbbbbbbbbbb")
+
+        with (
+            _TruthFileSpy(campaign.dataset_root) as spy,
+            pytest.raises(ValidationActivationError, match="is not the frozen validation"),
+        ):
+            campaign.register_truth()
+        assert spy.opened == []
+        assert campaign.counts()["truth"] == 0
+
+
+@pytest.mark.parametrize("expected_database", ["minos_l2f2_baseline", "some_other_store"])
+def test_a_wrong_store_is_refused_before_any_truth_byte_is_opened(
+    isolated_pg_base_url: str, scratch_root: Path, authority: Any, expected_database: str
+) -> None:
+    with _campaign(isolated_pg_base_url, scratch_root, authority, truth=False) as campaign:
+        with (
+            _TruthFileSpy(campaign.dataset_root) as spy,
+            pytest.raises(ValidationActivationError, match="validation target connection"),
+        ):
+            campaign.register_truth(expected_database=expected_database)
+        assert spy.opened == []
+        assert campaign.counts()["truth"] == 0
+
+
+def test_a_wrong_revision_is_refused_before_any_truth_byte_is_opened(
+    isolated_pg_base_url: str, scratch_root: Path, authority: Any
+) -> None:
+    with _campaign(isolated_pg_base_url, scratch_root, authority, truth=False) as campaign:
+        with (
+            _TruthFileSpy(campaign.dataset_root) as spy,
+            pytest.raises(ValidationActivationError, match="expected '0025"),
+        ):
+            campaign.register_truth(expected_revision="0025_not_a_revision")
+        assert spy.opened == []
+        assert campaign.counts()["truth"] == 0
+
+
+# --------------------------------------------------------------------------------------------
+# truth readiness means THIS exact frozen round
+# --------------------------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("round_id", "cccccccccccccccc"),
+        ("chromosome", "chr22"),
+        ("identity_tuple_hash", "1" * 64),
+    ],
+)
+def test_truth_registered_against_a_different_round_is_refused(
+    isolated_pg_base_url: str, scratch_root: Path, authority: Any, column: str, value: str
+) -> None:
+    """A familiar dataset_id is not enough: readiness is checked on the full frozen identity.
+
+    Truth is registered legitimately, and only afterwards does the registry row stop being the
+    frozen round — which is exactly the shape of a store whose truth was attached to the right
+    name and the wrong data.
+    """
+    victim = authority.schedule.members[3]
+    with _campaign(isolated_pg_base_url, scratch_root, authority) as campaign:
+        assert campaign.counts()["truth"] == 10
+        _corrupt_registry(campaign, victim.dataset_id, column, value)
+
+        with pytest.raises(ValidationActivationError, match="is not the frozen validation|round"):
+            campaign.materialize()
+        assert campaign.counts()["jobs"] == 0
+
+
+def test_truth_readiness_reads_the_full_frozen_identity_not_the_dataset_id_alone() -> None:
+    """A source-level statement of the rule the negatives above exercise."""
+    source = Path("src/minos_engine/storage/l2f2_validation_activate.py").read_text(
+        encoding="utf-8"
+    )
+    readiness = source[source.index("def _truth_readiness") :]
+    readiness = readiness[: readiness.index("\ndef ")]
+    for field in ("round_id", "chromosome", "identity_tuple_hash"):
+        assert field in readiness, field
