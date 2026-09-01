@@ -36,6 +36,12 @@ __all__ = [
 ENV_DATASET_ROOT = "MINOS_L2F_DATASET_ROOT"
 _CHUNK = 1024 * 1024
 _TRAIN = "train"
+_VALIDATION = "validation"
+
+#: the ONLY partitions L2-F will ever execute. TEST is absent by construction, not by a
+#: check that could be relaxed: it is not a member of the set an expected partition is
+#: drawn from, so no phase policy can name it and no caller can supply it.
+_EXECUTABLE_PARTITIONS = frozenset({_TRAIN, _VALIDATION})
 
 
 @dataclass(frozen=True)
@@ -201,26 +207,51 @@ def resolve_accepted_execution_input(
         {"p": plan_id, "m": plan_member_id},
         "accepted plan member",
     )
-    return verify_execution_input(member, root=root, reference_length=reference_length)
+    # the historical operational path is TRAIN, and pins TRAIN here rather than inheriting a
+    # default: a default is a thing that can later change underneath a caller.
+    return verify_execution_input(
+        member, root=root, expected_partition=_TRAIN, reference_length=reference_length
+    )
 
 
 def verify_execution_input(
     member: Mapping[str, Any],
     *,
     root: DatasetRoot,
+    expected_partition: str,
     reference_length: int | None = None,
 ) -> tuple[ExecutionInput, ResolvedInputPaths]:
-    """Byte-verify one TRAIN member's provisioned inputs against its accepted identity.
+    """Byte-verify one member's provisioned inputs against its accepted identity.
 
     The SHARED core. ``resolve_accepted_execution_input`` reads ``member`` with a direct SELECT
-    (the historical operational path); the L2-F2 runner receives the identical column set from a
-    ``SECURITY DEFINER`` function because ``minos_runner`` has no direct table privilege. Both
-    then verify the same bytes the same way, so neither path can drift into trusting metadata.
+    (the historical operational path, which is TRAIN and stays TRAIN); the L2-F2 runner receives
+    the identical column set from a ``SECURITY DEFINER`` function because ``minos_runner`` has no
+    direct table privilege. Both then verify the same bytes the same way, so neither path can
+    drift into trusting metadata.
+
+    ``expected_partition`` is an INTERNAL scientific contract, not user input. It is fed only from
+    already-authorized phase policy — the historical path pins ``train``; the L2-F2 runner derives
+    it from the authority's own phase, where Phase A/B/C screen on TRAIN and Phase D confirms on
+    VALIDATION. No public execution entry has a partition argument, so there is nowhere for a
+    caller to assert one.
+
+    This used to be hard-coded to TRAIN, which contradicted the Phase-D resolver that ``0021``
+    deliberately restricted to VALIDATION: a correct Phase-D job resolved from the database and
+    was then refused here. Widening it to accept any partition would have been the wrong repair —
+    the phases differ, and the point is that each executes exactly one.
+
+    TEST is never an accepted value, in any phase, by any route.
     """
-    if member["partition"] != _TRAIN:
+    if expected_partition not in _EXECUTABLE_PARTITIONS:
+        raise InputResolutionError(
+            f"{expected_partition!r} is not an executable L2-F partition; L2-F executes "
+            f"{sorted(_EXECUTABLE_PARTITIONS)} only and TEST is never executable"
+        )
+    if member["partition"] != expected_partition:
         raise InputResolutionError(
             f"plan member {member.get('dataset_id')} has partition "
-            f"{member['partition']!r}; only accepted TRAIN members may be executed"
+            f"{member['partition']!r}; this execution phase accepts "
+            f"{expected_partition!r} members only"
         )
 
     paths = root.paths_for(round_id=str(member["round_id"]), chromosome=str(member["chromosome"]))

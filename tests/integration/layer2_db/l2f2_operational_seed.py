@@ -34,6 +34,7 @@ from minos_engine.baseline.validation_members import build_validation_schedule
 
 __all__ = [
     "ACCEPTED_REGISTRY_SNAPSHOT_HASH",
+    "provision_scratch_dataset_root",
     "ACCEPTED_SNAPSHOT_HASH",
     "OPERATIONAL_REVISION",
     "seed_operational_store",
@@ -315,3 +316,52 @@ def scratch_root_under_minos(prefix: str) -> Path:
     if not resolved.is_relative_to(minos.resolve()):  # pragma: no cover - fail closed
         raise AssertionError(f"requested {requested}, realpath {resolved}, outside {minos}")
     return resolved
+
+
+def provision_scratch_dataset_root(root: Path, members: tuple[Any, ...]) -> dict[str, Any]:
+    """Write a complete input set per member and return the REAL digests of what was written.
+
+    The operational seeder can then record those digests, so the scratch campaign's metadata and
+    its provisioned bytes agree — which is what makes the byte verifier's PASS mean something
+    rather than being a comparison of one invented constant against another.
+
+    Only BAM/BAI/reference/FAI/dictionary. No truth file is created, so the pre-GATK proof has no
+    truth bytes available to open even by accident.
+    """
+    digests: dict[str, Any] = {}
+    for member in members:
+        practice = root / "practice" / f"round_{member.round_id}"
+        reference = root / "reference" / member.chromosome
+        practice.mkdir(parents=True, exist_ok=True)
+        reference.mkdir(parents=True, exist_ok=True)
+
+        payloads = {
+            practice / "input.bam": f"bam:{member.dataset_id}\n".encode(),
+            practice / "input.bam.bai": f"bai:{member.dataset_id}\n".encode(),
+            reference / f"{member.chromosome}.fa": b">seq\nACGTACGTAC\n",
+            reference / f"{member.chromosome}.fa.fai": f"fai:{member.chromosome}\n".encode(),
+        }
+        for path, payload in payloads.items():
+            if not path.exists():
+                path.write_bytes(payload)
+        dictionary = reference / f"{member.chromosome}.dict"
+        if not dictionary.exists():
+            dictionary.write_bytes(f"@HD\tVN:1.6\n@SQ\tSN:{member.chromosome}\tLN:10\n".encode())
+
+        def sha(path: Path) -> str:
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+
+        bam = practice / "input.bam"
+        digests[member.dataset_id] = {
+            "bam_sha256": sha(bam),
+            "bai_sha256": sha(practice / "input.bam.bai"),
+            "reference_sha256": sha(reference / f"{member.chromosome}.fa"),
+            "fai_sha256": sha(reference / f"{member.chromosome}.fa.fai"),
+            "bam_size_bytes": bam.stat().st_size,
+            "region_start0": 0,
+            "region_end0_exclusive": 10,
+            # ck_dataset_registry_region_length ties these together; the override must
+            # carry all three or the row is internally inconsistent.
+            "region_length_bp": 10,
+        }
+    return digests

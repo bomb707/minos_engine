@@ -143,6 +143,22 @@ _FORBIDDEN_MEMBERSHIPS = ("minos_admin", "minos_evaluator", "minos_trainer", "mi
 #: Nothing here is selected by a caller: the mapping is keyed by the authority's own phase, so a
 #: Phase-A authority cannot reach the Phase-B resolver even by mistake, and neither function falls
 #: back to the other phase's authorities.
+#: WHICH partition each accepted phase executes. Phase A, B and C screen candidates on the fifty
+#: TRAIN members; Phase D confirms the four finalists on the ten VALIDATION members. The mapping
+#: is immutable and total over the accepted phases, and an unknown phase resolves to nothing and
+#: fails closed. TEST appears nowhere and is not executable through any phase.
+#:
+#: This duplicates what the database's own per-phase resolvers already enforce, deliberately: the
+#: SQL resolver decides which rows a phase may see, and this decides which partition the byte
+#: verifier will accept for them. Either alone would be sufficient; both together mean a mistake
+#: has to be made twice, in two languages, to reach GATK.
+_EXECUTED_PARTITION_BY_PHASE: dict[str, str] = {
+    "PHASE_A": "train",
+    "PHASE_B": "train",
+    "PHASE_C": "train",
+    "PHASE_D": "validation",
+}
+
 _RESOLVE_SQL_BY_PHASE: dict[str, str] = {
     "PHASE_A": "SELECT * FROM experiments.l2f2_resolve_claimed_execution(:h, :j, :w)",
     "PHASE_B": "SELECT * FROM experiments.l2f2_resolve_claimed_phase_b_execution(:h, :j, :w)",
@@ -329,8 +345,17 @@ def _resolve_prepared(
             f"resolved job_key {row['job_key']!r} does not match the claimed {job_key!r}"
         )
 
-    # the SAME byte-verification core the historical operational path uses.
-    inputs, paths = verify_execution_input(dict(row), root=dataset_root)
+    # the SAME byte-verification core the historical operational path uses, told which partition
+    # THIS phase executes. The phase came from the authority, so the partition is authority too:
+    # there is no argument anywhere in this call chain in which a caller could assert one.
+    expected_partition = _EXECUTED_PARTITION_BY_PHASE.get(phase)
+    if expected_partition is None:  # pragma: no cover - the resolver lookup above rejects first
+        raise L2F2ExecutionError(
+            f"no L2-F2 execution partition policy is accepted for phase {phase!r}"
+        )
+    inputs, paths = verify_execution_input(
+        dict(row), root=dataset_root, expected_partition=expected_partition
+    )
     config = validate_execution_config_artifact(
         {
             "config_index": row["config_index"],

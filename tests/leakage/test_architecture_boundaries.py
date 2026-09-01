@@ -557,14 +557,42 @@ def test_f6_sql_never_selects_an_evaluation_column() -> None:
                 assert literal.strip().startswith("select count(*) from "), literal[:120]
 
 
-def test_f6_only_train_members_are_executable() -> None:
-    """The input resolver requires the TRAIN partition; it has no validation/test branch."""
+def test_f6_executes_train_or_validation_and_never_test() -> None:
+    """The byte verifier admits exactly two partitions, and TEST is not one of them.
+
+    This assertion used to be "train, and nothing else", which described the module accurately
+    and described the SYSTEM wrongly: 0021 restricted the Phase-D resolver to VALIDATION on
+    purpose, so a TRAIN-only verifier refused correct Phase-D jobs. The contract is now
+    per-phase — A/B/C screen on TRAIN, D confirms on VALIDATION — so ``validation`` is expected
+    here. ``test`` still is not, and that is the part worth guarding.
+    """
     import minos_engine.storage.l2f_execution_inputs as INPUTS
 
     literals = _code_strings(SRC / "storage/l2f_execution_inputs.py")
     assert "train" in literals
-    assert "validation" not in literals and "test" not in literals
+    assert "validation" in literals
+    assert "test" not in literals
+    # the executable set is exactly those two: TEST is absent by construction, not by a check.
+    assert frozenset({"train", "validation"}) == INPUTS._EXECUTABLE_PARTITIONS
     assert hasattr(INPUTS, "resolve_accepted_execution_input")
+
+
+def test_f6_partition_is_never_caller_supplied() -> None:
+    """``expected_partition`` is phase authority. No public entry lets a caller assert one."""
+    import inspect
+
+    from minos_engine.storage import l2f2_runner
+    from minos_engine.storage.l2f_execution_inputs import resolve_accepted_execution_input
+
+    assert "partition" not in inspect.signature(resolve_accepted_execution_input).parameters
+    for name in (
+        "execute_next_l2f2_phase_a_job",
+        "execute_next_l2f2_phase_b_job",
+        "execute_next_l2f2_phase_c_job",
+        "execute_next_l2f2_phase_d_job",
+    ):
+        assert "partition" not in inspect.signature(getattr(l2f2_runner, name)).parameters, name
+    assert "test" not in set(l2f2_runner._EXECUTED_PARTITION_BY_PHASE.values())
 
 
 def test_f6_resolves_no_truth_or_scoring_path() -> None:
