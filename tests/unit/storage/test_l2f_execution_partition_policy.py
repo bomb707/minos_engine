@@ -283,3 +283,70 @@ def test_verification_opens_no_truth_file(validation_member: Any) -> None:
         assert "mutations" not in path
     names = {Path(p).name for p in opened if str(root) in p}
     assert names <= {"input.bam", "input.bam.bai", "chr22.fa", "chr22.fa.fai", "chr22.dict"}
+
+
+# --------------------------------------------------------------------------------------------
+# scratch-root portability
+# --------------------------------------------------------------------------------------------
+def test_scratch_root_falls_back_when_there_is_no_minos_filesystem(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A machine with no MINOS physical root must still be able to run these suites.
+
+    The canonical root exists to keep the operator's filesystem tidy. On a runner that has no
+    such root there is nothing to keep tidy, and asserting the path unconditionally made every
+    scratch fixture fail at setup. The root is discovered; this proves the discovery, with the
+    canonical root pointed somewhere that does not exist.
+    """
+    from tests import minos_scratch
+
+    monkeypatch.setattr(minos_scratch, "CANONICAL_MINOS_ROOT", tmp_path / "absent")
+    fallback = tmp_path / "fallback"
+    fallback.mkdir()
+
+    scratch, effective_root = minos_scratch.minos_scratch_root("probe_", fallback=fallback)
+    assert effective_root == fallback.resolve()
+    assert scratch.is_dir()
+    assert scratch.resolve().is_relative_to(fallback.resolve())
+    assert not scratch.resolve().is_relative_to(Path(__file__).resolve().parents[3])
+
+
+def test_scratch_root_uses_the_canonical_root_when_the_machine_has_one(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Where a MINOS filesystem does exist, scratch state still belongs inside it."""
+    from tests import minos_scratch
+
+    canonical = tmp_path / "bittensor"
+    canonical.mkdir()
+    monkeypatch.setattr(minos_scratch, "CANONICAL_MINOS_ROOT", canonical)
+    unused_fallback = tmp_path / "fallback"
+    unused_fallback.mkdir()
+
+    scratch, effective_root = minos_scratch.minos_scratch_root("probe_", fallback=unused_fallback)
+    assert effective_root == canonical
+    assert scratch.resolve().is_relative_to(canonical.resolve())
+    assert not scratch.resolve().is_relative_to(unused_fallback.resolve())
+
+
+def test_no_test_support_module_hard_codes_the_operator_minos_root() -> None:
+    """The regression guard: one constant, in one place, discovered rather than assumed."""
+    import ast
+
+    tests_root = Path(__file__).resolve().parents[2]
+    # assembled from parts so this guard does not match itself.
+    operator_root = "/" + "/".join(("home", "hr", "bittensor"))
+    offenders: list[str] = []
+    for path in sorted(tests_root.rglob("*.py")):
+        if path.name == "minos_scratch.py" or "fixtures" in path.parts:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and node.value.startswith(operator_root)
+                and "corpus" not in node.value
+            ):
+                offenders.append(f"{path.relative_to(tests_root)}:{node.lineno}")
+    assert offenders == [], offenders

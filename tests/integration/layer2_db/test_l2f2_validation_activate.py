@@ -57,10 +57,9 @@ _TARGET_REVISION = "0024_l2f2_phase_d_anchor"
 _PLAN_HASH = "f6bd1e450c38d789dcfcdafaaf357dad2f7602f53fc8ec779c5be40c71e6d7ce"
 _ENVIRONMENT = "71e14a49833ac77bb9dc576345fb89c4dd68f4a3ad3673eb098d38593c1ef4d3"
 
-#: all MINOS physical state this suite creates lives beneath the canonical root — and OUTSIDE the
-#: repository, so a scratch directory can never be mistaken for tracked content.
-_MINOS_ROOT = Path("/home/hr/bittensor")
-_SCRATCH_ROOT = _MINOS_ROOT / ".minos_scratch_activation"
+#: scratch state lives beneath the MINOS physical root when the machine has one, and beneath a
+#: temporary directory when it does not — always outside the repository. The root is discovered
+#: rather than assumed: hard-coding the operator's path made this suite unrunnable anywhere else.
 
 
 @pytest.fixture(scope="module")
@@ -75,23 +74,24 @@ def authority() -> Any:
 
 
 @pytest.fixture(scope="module")
-def scratch_root() -> Any:
-    """A scratch filesystem root, proven to lie beneath the canonical MINOS physical root."""
+def scratch_root(tmp_path_factory: Any) -> Any:
+    """A scratch filesystem root, proven to lie beneath whichever MINOS root is in force."""
     import shutil
-    import tempfile
 
-    _SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
-    requested = Path(tempfile.mkdtemp(prefix="phase_d_", dir=_SCRATCH_ROOT))
-    resolved = requested.resolve()
-    assert resolved.is_relative_to(_MINOS_ROOT.resolve()), (
-        f"requested {requested}, realpath {resolved}, which is outside {_MINOS_ROOT}"
+    from tests.minos_scratch import minos_scratch_root, prune_scratch_parent
+
+    scratch, effective_root = minos_scratch_root(
+        "phase_d_", fallback=tmp_path_factory.mktemp("minos_scratch")
     )
+    print(f"scratch requested: {scratch}")
+    print(f"scratch realpath : {scratch.resolve()}")
+    print(f"effective root   : {effective_root}")
+    assert scratch.resolve().is_relative_to(effective_root.resolve())
     try:
-        yield resolved
+        yield scratch
     finally:
-        shutil.rmtree(resolved, ignore_errors=True)
-        with contextlib.suppress(OSError):
-            _SCRATCH_ROOT.rmdir()  # only when this run left it empty
+        shutil.rmtree(scratch, ignore_errors=True)
+        prune_scratch_parent(scratch)
 
 
 class _Campaign:
@@ -234,12 +234,15 @@ def _campaign(
 # --------------------------------------------------------------------------------------------
 # the scratch filesystem invariant
 # --------------------------------------------------------------------------------------------
-def test_every_scratch_root_lies_under_the_canonical_minos_root(scratch_root: Path) -> None:
+def test_every_scratch_root_lies_under_the_minos_root_in_force(scratch_root: Path) -> None:
+    """Under the canonical MINOS root where one exists, and never inside the repository."""
+    from tests.minos_scratch import CANONICAL_MINOS_ROOT
+
     assert scratch_root.is_absolute()
-    assert scratch_root.resolve().is_relative_to(_MINOS_ROOT.resolve())
     assert not scratch_root.is_symlink()
-    # and outside the repository, so nothing it writes can drift into a commit.
     assert not scratch_root.resolve().is_relative_to(Path(__file__).resolve().parents[3])
+    if CANONICAL_MINOS_ROOT.is_dir():
+        assert scratch_root.resolve().is_relative_to(CANONICAL_MINOS_ROOT.resolve())
 
 
 # --------------------------------------------------------------------------------------------

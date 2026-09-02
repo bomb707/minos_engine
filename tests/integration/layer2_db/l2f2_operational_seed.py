@@ -304,18 +304,16 @@ def _bam_row(
     }
 
 
-def scratch_root_under_minos(prefix: str) -> Path:
-    """A scratch filesystem root, proven to lie under the canonical MINOS root and outside git."""
-    import tempfile
+def scratch_root_under_minos(prefix: str, *, fallback: Path) -> tuple[Path, Path]:
+    """A scratch root under the MINOS physical root when one exists, else under ``fallback``.
 
-    minos = Path("/home/hr/bittensor")
-    parent = minos / ".minos_scratch_provision"
-    parent.mkdir(parents=True, exist_ok=True)
-    requested = Path(tempfile.mkdtemp(prefix=prefix, dir=parent))
-    resolved = requested.resolve()
-    if not resolved.is_relative_to(minos.resolve()):  # pragma: no cover - fail closed
-        raise AssertionError(f"requested {requested}, realpath {resolved}, outside {minos}")
-    return resolved
+    Delegates to :mod:`tests.minos_scratch`, which discovers the root rather than assuming the
+    operator's. Returns ``(scratch, effective_root)`` so containment can be asserted against the
+    root actually in force.
+    """
+    from tests.minos_scratch import minos_scratch_root
+
+    return minos_scratch_root(prefix, fallback=fallback)
 
 
 def provision_scratch_dataset_root(root: Path, members: tuple[Any, ...]) -> dict[str, Any]:
@@ -336,6 +334,8 @@ def provision_scratch_dataset_root(root: Path, members: tuple[Any, ...]) -> dict
         reference.mkdir(parents=True, exist_ok=True)
 
         payloads = {
+            # round-distinct bytes, as real BAMs are: identical filler would let a substituted
+            # round hash the same as the real one and quietly pass.
             practice / "input.bam": f"bam:{member.dataset_id}\n".encode(),
             practice / "input.bam.bai": f"bai:{member.dataset_id}\n".encode(),
             reference / f"{member.chromosome}.fa": b">seq\nACGTACGTAC\n",
@@ -360,8 +360,8 @@ def provision_scratch_dataset_root(root: Path, members: tuple[Any, ...]) -> dict
             "bam_size_bytes": bam.stat().st_size,
             "region_start0": 0,
             "region_end0_exclusive": 10,
-            # ck_dataset_registry_region_length ties these together; the override must
-            # carry all three or the row is internally inconsistent.
+            # ck_dataset_registry_region_length ties these together; the override must carry all
+            # three or the row is internally inconsistent.
             "region_length_bp": 10,
         }
     return digests

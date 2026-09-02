@@ -82,11 +82,14 @@ def authority() -> Any:
 
 
 @pytest.fixture(scope="module")
-def scratch_root() -> Any:
-    requested = scratch_root_under_minos("pre_gatk_")
+def scratch_root(tmp_path_factory: Any) -> Any:
+    requested, effective_root = scratch_root_under_minos(
+        "pre_gatk_", fallback=tmp_path_factory.mktemp("minos_scratch")
+    )
     print(f"scratch requested: {requested}")
     print(f"scratch realpath : {requested.resolve()}")
-    assert requested.resolve().is_relative_to(Path("/home/hr/bittensor"))
+    print(f"effective root   : {effective_root}")
+    assert requested.resolve().is_relative_to(effective_root.resolve())
     assert not requested.resolve().is_relative_to(Path(__file__).resolve().parents[3])
     try:
         yield requested

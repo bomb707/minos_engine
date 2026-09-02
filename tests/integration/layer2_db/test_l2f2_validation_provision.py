@@ -86,8 +86,11 @@ def authority() -> Any:
 
 
 @pytest.fixture(scope="module")
-def scratch_root() -> Any:
-    root = scratch_root_under_minos("provision_")
+def scratch_root(tmp_path_factory: Any) -> Any:
+    root, effective_root = scratch_root_under_minos(
+        "provision_", fallback=tmp_path_factory.mktemp("minos_scratch")
+    )
+    assert root.resolve().is_relative_to(effective_root.resolve())
     try:
         yield root
     finally:
