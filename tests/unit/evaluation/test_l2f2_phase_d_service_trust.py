@@ -112,15 +112,68 @@ def test_the_public_entry_builds_its_own_engine_and_oracle() -> None:
 
 
 def test_authority_is_established_before_the_component_seam_is_called() -> None:
-    """Ordering is the guarantee: truth is opened by the seam, and only after every gate."""
+    """Ordering is the guarantee: truth is opened by the seam, and only after EVERY gate.
+
+    The host preflight is part of this chain, not an afterthought. Asserting only that the
+    scoring MANIFEST is loaded before the seam was insufficient: it held on 500b483, where a
+    correctly authorized execution on a host whose scorer had drifted still opened and hashed the
+    truth bundle — sixteen reads — before ``score()`` refused it, and persisted an
+    ``EVALUATION_ERROR`` row for a runtime fault that was never the candidate's doing.
+    """
     source = inspect.getsource(phase_d_service._evaluate_with_trust)
     order = [
         source.index("_authorize_evaluator_connection("),
         source.index("_require_exact_phase_d_execution("),
         source.index("_require_scoring_authority()"),
+        source.index("_preflight_scoring_runtime("),
         source.index("return evaluate_validation_execution("),
     ]
     assert order == sorted(order), order
+
+
+def test_the_host_preflight_runs_the_oracles_own_verification() -> None:
+    """It must REUSE the oracle's methods, never reimplement provenance beside them."""
+    source = inspect.getsource(phase_d_service._preflight_scoring_runtime)
+    assert "oracle.verify()" in source
+    assert "oracle.verify_runtime_provenance(work_dir=work_dir)" in source
+    # no second implementation of the policy living in the service
+    for leaked in ("repo_digests", "docker", "image_id", "resolved_digest", "upstream_ref"):
+        assert leaked not in source, leaked
+
+
+def test_the_host_preflight_is_given_no_biological_input() -> None:
+    """The probe verifies source and runtime. It is handed no truth, query, mutations or genome."""
+    import ast
+
+    tree = ast.parse(inspect.getsource(phase_d_service))
+    fn = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_preflight_scoring_runtime"
+    )
+    passed = {kw.arg for call in ast.walk(fn) if isinstance(call, ast.Call) for kw in call.keywords}
+    assert passed <= {"work_dir"}, passed
+    for forbidden in (
+        "truth_vcf",
+        "query_vcf",
+        "mutations_vcf",
+        "reference_fasta",
+        "reference_sdf",
+    ):
+        assert forbidden not in passed, forbidden
+
+
+def test_a_runtime_refusal_is_never_persisted_as_a_candidate_outcome() -> None:
+    """An unusable scorer is an operational refusal, not a finalist's scientific result.
+
+    It matters beyond bookkeeping: the exclusive-outcome trigger makes a persisted failure and a
+    later success mutually impossible under one scoring contract, so recording a host fault as
+    ``EVALUATION_ERROR`` would permanently foreclose that execution's real evaluation.
+    """
+    source = inspect.getsource(phase_d_service._preflight_scoring_runtime)
+    assert "PhaseDEvaluatorAuthorityError" in source
+    for persisted in ("EVALUATION_ERROR", "HAPPY_NONZERO_EXIT", "HAPPY_TIMEOUT", "_fail("):
+        assert persisted not in source, persisted
 
 
 def test_the_service_never_creates_a_provisioned_root() -> None:
@@ -173,3 +226,21 @@ def test_the_seam_defaults_to_the_pinned_authority_rather_than_a_caller_value() 
         inspect.signature(phase_d_service._evaluate_with_trust).parameters["authority"].default
         is None
     )
+
+
+def test_score_time_verification_is_still_performed_by_the_oracle() -> None:
+    """The pre-truth preflight ADDS a gate; it must never be read as licence to drop the old one.
+
+    Verifying once and scoring later leaves a TOCTOU window: a checkout or an image can move
+    between the preflight and the score. ``score()`` therefore still verifies before running,
+    attests the subprocess it actually ran under, and verifies again afterwards. Deleting any of
+    those to avoid "duplicate" work would reopen exactly the window the repetition closes.
+    """
+    import inspect as _inspect
+
+    from minos_engine.evaluation.minos_subnet_oracle import MinosSubnetOracle
+
+    source = _inspect.getsource(MinosSubnetOracle.score)
+    assert source.count("self.verify()") >= 2, "score() must verify BEFORE and AFTER"
+    assert "verify_runtime_provenance(" in source
+    assert "_require_attested_source(" in source

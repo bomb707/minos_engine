@@ -409,7 +409,27 @@ def test_the_authorized_execution_evaluates_and_never_evaluates_twice(
     before = store.ledger_counts()
     assert before == {"evaluations": 0, "failures": 0}
 
-    outcome = store.evaluate(genuine, oracle=oracle, authority=authority)
+    # ---- §12: record the ORDER, not merely the outcome ------------------------------------
+    events: list[tuple[str, int]] = []
+    with _TruthSpy() as first_spy:
+        _instrument_order(oracle, first_spy, events)
+        outcome = store.evaluate(genuine, oracle=oracle, authority=authority)
+
+    # Host authority is fully established while ZERO truth files have been opened, and the score
+    # happens only after truth has been read. This is the sequence 500b483 did not produce: there
+    # the same run reached sixteen truth opens before verification refused it.
+    steps = [label for label, _ in events]
+    assert steps[:2] == ["verify", "provenance"], events
+    assert "score" in steps, events
+    score_at = steps.index("score")
+
+    # everything before the score verified the host while NO truth had been opened
+    assert all(n == 0 for _, n in events[:score_at]), events
+    # ...and the score itself only ran after truth had been read
+    assert events[score_at][1] > 0, events
+    # score-time verification still repeats afterwards -- that repetition is the TOCTOU guard
+    assert {label for label, _ in events[score_at:]} >= {"verify", "provenance"}, events
+    assert first_spy.truth_opens, "the success must genuinely have opened truth"
     assert outcome.status == "EVALUATED", (outcome, store.failure_detail())
     assert outcome.execution_result_id == genuine
     assert outcome.metrics_artifact_sha256 is not None
@@ -598,3 +618,189 @@ def test_no_execution_outside_the_validation_partition_is_visible_to_the_evaluat
             ).scalars()
         )
     assert partitions == {"validation"}, partitions
+
+
+# --------------------------------------------------------------------------------------------
+# PRE-TRUTH SCORING-RUNTIME AUTHORITY
+#
+# These are NOT the "perturbed scoring contract" negatives above. There the committed manifest is
+# wrong and ``_require_scoring_authority`` catches it without a host ever being consulted. Here
+# the contract is INTERNALLY CORRECT and what is wrong is the HOST'S ACTUAL PROVISIONED RUNTIME:
+# a checkout whose bytes no longer match the authority it satisfies, or a local image resolving
+# to a digest the authority never audited.
+#
+# On 500b483 these reached ``hash_truth_bundle`` — the answer key was opened and hashed — before
+# ``oracle.score`` performed the verification that refuses them. The assertion that matters in
+# every one of them is therefore ``spy.truth_opens == []``.
+# --------------------------------------------------------------------------------------------
+def _oracle_with_inspector(upstream: Any, authority: Any, inspector: Any) -> Any:
+    """A REAL ``MinosSubnetOracle`` on the synthetic checkout, with a substituted host inspector.
+
+    ``image_inspector`` is the accepted test-only seam and is unreachable from ``from_env``; it
+    stands in for the Docker daemon so the whole verification POLICY runs without one.
+    """
+    import os
+    import sys
+
+    from minos_engine.evaluation.minos_subnet_oracle import (
+        ENV_MINOS_SUBNET_PYTHON,
+        MinosSubnetOracle,
+    )
+
+    os.environ[ENV_MINOS_SUBNET_PYTHON] = sys.executable
+    return MinosSubnetOracle(
+        authority=authority,
+        root=upstream.root,
+        timeout_seconds=300,
+        image_inspector=inspector,
+    )
+
+
+def _wrong_digest_inspector(label: str) -> Any:
+    """Resolve ONE image to a digest the authority never audited; the other stays honest."""
+    from minos_engine.evaluation.runtime_images import LocalImage
+    from tests.integration.layer2_db.l2f2_fake_upstream import fake_image_inspector
+
+    targets = {"happy": "fake/happy@sha256:" + "a" * 64, "bcftools": "fake/bcftools:1.20--test"}
+    target = targets[label]
+
+    def inspector(reference: str) -> Any:
+        if reference != target:
+            return fake_image_inspector(reference)
+        family = "fake/happy" if label == "happy" else "fake/bcftools"
+        return LocalImage(
+            reference=reference,
+            image_id="sha256:" + "e" * 64,
+            repo_digests=(f"{family}@sha256:" + "d" * 64,),
+        )
+
+    return inspector
+
+
+def _score_call_counter(oracle: Any) -> dict[str, int]:
+    """Count real scoring invocations. A pre-truth refusal must never reach one."""
+    calls = {"n": 0}
+    original = type(oracle).score
+
+    def counting(self: Any, **kwargs: Any) -> Any:
+        calls["n"] += 1
+        return original(self, **kwargs)
+
+    oracle.__dict__["score"] = counting.__get__(oracle, type(oracle))
+    return calls
+
+
+def test_a_checkout_that_no_longer_matches_its_authority_is_refused_before_truth(
+    store: Any, tmp_path: Path, monkeypatch: Any
+) -> None:
+    """§9 — the pinned source's bytes moved after the authority was computed.
+
+    The scoring contract is internally consistent throughout; the CHECKOUT is what is wrong. On
+    500b483 this was discovered inside ``oracle.score``, which runs after the truth bundle has
+    already been opened and hashed.
+    """
+    from tests.integration.layer2_db.l2f2_fake_upstream import (
+        authority_for,
+        build_fake_upstream,
+        fake_image_inspector,
+    )
+
+    _runtime_env(store, tmp_path, monkeypatch)
+    base = tmp_path / "fake_upstream_base"
+    base.mkdir(parents=True, exist_ok=True)
+    upstream = build_fake_upstream(base)
+    upstream.set_mode("metrics")
+    authority = authority_for(upstream, _load_authority())
+
+    # the authority is now fixed; the checkout moves underneath it.
+    scoring = upstream.root / "utils" / "scoring.py"
+    scoring.write_bytes(scoring.read_bytes() + b"\n# tampered after attestation\n")
+
+    oracle = _oracle_with_inspector(upstream, authority, fake_image_inspector)
+    scores = _score_call_counter(oracle)
+
+    with _TruthSpy() as spy, pytest.raises(PhaseDEvaluatorAuthorityError):
+        store.evaluate(
+            store.seeded["genuine_execution_result_id"], oracle=oracle, authority=authority
+        )
+
+    assert spy.truth_opens == [], spy.truth_opens
+    assert scores["n"] == 0, scores
+    assert store.ledger_counts() == {"evaluations": 0, "failures": 0}
+    assert not _published_artifacts(tmp_path)
+
+
+@pytest.mark.parametrize("image", ["happy", "bcftools"])
+def test_a_host_image_digest_the_authority_never_audited_is_refused_before_truth(
+    store: Any, tmp_path: Path, monkeypatch: Any, image: str
+) -> None:
+    """§10 — the contract is right, the checkout is right, the HOST'S image is not.
+
+    A moving tag that swapped the implementation under a fixed name is exactly this shape, and it
+    must be refused without the answer key ever being opened.
+    """
+    from tests.integration.layer2_db.l2f2_fake_upstream import (
+        authority_for,
+        build_fake_upstream,
+    )
+
+    _runtime_env(store, tmp_path, monkeypatch)
+    base = tmp_path / "fake_upstream_base"
+    base.mkdir(parents=True, exist_ok=True)
+    upstream = build_fake_upstream(base)
+    upstream.set_mode("metrics")
+    authority = authority_for(upstream, _load_authority())
+
+    oracle = _oracle_with_inspector(upstream, authority, _wrong_digest_inspector(image))
+    scores = _score_call_counter(oracle)
+
+    with _TruthSpy() as spy, pytest.raises(PhaseDEvaluatorAuthorityError):
+        store.evaluate(
+            store.seeded["genuine_execution_result_id"], oracle=oracle, authority=authority
+        )
+
+    assert spy.truth_opens == [], spy.truth_opens
+    assert scores["n"] == 0, scores
+    assert store.ledger_counts() == {"evaluations": 0, "failures": 0}
+    assert not _published_artifacts(tmp_path)
+
+
+def _load_authority() -> Any:
+    from minos_engine.evaluation.scoring_contract import load_scoring_authority
+
+    return load_scoring_authority()
+
+
+def _published_artifacts(tmp_path: Path) -> list[str]:
+    root = tmp_path / "evaluation_artifacts"
+    return sorted(p.name for p in root.rglob("*") if p.is_file()) if root.is_dir() else []
+
+
+def _instrument_order(oracle: Any, spy: Any, events: list[tuple[str, int]]) -> None:
+    """Record each oracle step together with how many truth files had been opened by then.
+
+    The truth count is read from the spy rather than by patching ``builtins.open`` a second time:
+    the spy already owns that patch and restores it on exit, so a second layer would be restored
+    in the wrong order and leak a live opener into every later test.
+    """
+    cls = type(oracle)
+    real_verify, real_prov, real_score = cls.verify, cls.verify_runtime_provenance, cls.score
+
+    def note(label: str) -> None:
+        events.append((label, len(spy.truth_opens)))
+
+    def verify(self: Any) -> Any:
+        note("verify")
+        return real_verify(self)
+
+    def provenance(self: Any, **kwargs: Any) -> Any:
+        note("provenance")
+        return real_prov(self, **kwargs)
+
+    def score(self: Any, **kwargs: Any) -> Any:
+        note("score")
+        return real_score(self, **kwargs)
+
+    oracle.__dict__["verify"] = verify.__get__(oracle, cls)
+    oracle.__dict__["verify_runtime_provenance"] = provenance.__get__(oracle, cls)
+    oracle.__dict__["score"] = score.__get__(oracle, cls)

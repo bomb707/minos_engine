@@ -241,6 +241,47 @@ def _require_scoring_authority() -> Any:
     return authority
 
 
+def _preflight_scoring_runtime(oracle: Any, *, work_dir: Path) -> None:
+    """Prove the HOST can score under the pinned authority BEFORE the answer key is opened.
+
+    ``_require_scoring_authority`` proves the committed manifest is this campaign's. It says
+    nothing about the machine: ``MinosSubnetOracle.from_env`` only CONSTRUCTS an oracle, and the
+    checkout bytes, the interpreter, and the two container images were first verified inside
+    ``score()`` — which the orchestrator reaches only AFTER ``hash_truth_bundle`` has opened and
+    hashed the truth bundle. A correctly authorized execution on a host whose scorer had drifted
+    therefore read the validation answer key before being refused.
+
+    This runs the oracle's OWN verification, ahead of any truth path:
+
+    * :meth:`MinosSubnetOracle.verify` — the checkout is the pinned commit and its authority files
+      hash to what the contract records;
+    * :meth:`MinosSubnetOracle.verify_runtime_provenance` — the pinned source still names the
+      containers the authority audited, both exist on this host, and each resolves to exactly the
+      audited immutable digest.
+
+    The probe underneath is source/runtime only. It is handed no truth VCF, no query VCF, no
+    mutations VCF and no reference: it asks the pinned source what it WOULD run, and scores
+    nothing. ``work_dir`` is the provisioned evaluation work root, which holds no biological input
+    of its own; the bounded temporary directory the probe needs is created beneath it.
+
+    None of this replaces the score-time checks. ``score()`` still verifies the source before and
+    after running, and attests the subprocess it actually ran under — this is an additional
+    authorization gate, and the repetition is what closes the TOCTOU window between the two.
+    """
+    from minos_engine.evaluation.minos_subnet_oracle import MinosSubnetOracleError
+
+    try:
+        oracle.verify()
+        oracle.verify_runtime_provenance(work_dir=work_dir)
+    except MinosSubnetOracleError as exc:
+        # An unusable scorer is an OPERATIONAL refusal, never a candidate's scientific outcome.
+        # Persisting it as one would be a lie about the finalist AND — under the exclusive-outcome
+        # trigger — would make the real evaluation of this execution permanently impossible.
+        raise PhaseDEvaluatorAuthorityError(
+            f"the provisioned scoring runtime is not the pinned authority: {exc}"
+        ) from exc
+
+
 def _required_directory(variable: str) -> Path:
     """A provisioned root. Validated, never created here: the evaluator provisions nothing."""
     raw = os.environ.get(variable, "").strip()
@@ -343,6 +384,9 @@ def _evaluate_with_trust(
     resolved_oracle = (
         oracle if oracle is not None else MinosSubnetOracle.from_env(resolved_authority)
     )
+
+    # ---- the host itself, before any truth path exists -------------------------------------
+    _preflight_scoring_runtime(resolved_oracle, work_dir=provisioning.work_dir)
 
     # ---- only now: the audited component seam, which opens truth ---------------------------
     return evaluate_validation_execution(
