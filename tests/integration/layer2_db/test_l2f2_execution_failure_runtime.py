@@ -383,6 +383,9 @@ def test_a_negative_runtime_is_refused_before_it_reaches_the_database(
     with pytest.raises(L2F2ExecutionError, match="not a measurement"):
         _fail(
             service,
+            # the store this failure is recorded in follows the authority's phase, exactly as it
+            # does on the real lifecycle; this env is the TRAIN baseline.
+            phase=l2f2.authority.phase,
             plan_hash=l2f2.authority.plan_hash,
             job_id="00000000-0000-0000-0000-000000000000",
             job_key="k" * 64,

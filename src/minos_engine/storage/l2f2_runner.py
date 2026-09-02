@@ -34,6 +34,7 @@ from __future__ import annotations
 import hashlib
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -254,6 +255,47 @@ def authorize_validation_runner_connection(conn: Connection) -> None:
     _authorize_runner_connection(
         conn, database_name=VALIDATION_DATABASE_NAME, revision=VALIDATION_REVISION
     )
+
+
+#: WHICH STORE each accepted phase executes against. Phase A, B and C screen candidates in the
+#: closed TRAIN baseline; Phase D confirms the four finalists in the separate validation store.
+#: The mapping is immutable and total over the accepted phases, and an unknown phase resolves to
+#: nothing and fails closed.
+#:
+#: This is the store counterpart of the partition policy below, and the two are deliberately
+#: SEPARATE layers rather than one permissive check: Phase D must be the validation database AND
+#: validation rows, and a TRAIN phase must be the baseline database AND train rows. Collapsing
+#: them into "either store, either partition" would let one mistake open both doors.
+#:
+#: The authorizers themselves are not re-implemented here — ``authorize_baseline_runner_connection``
+#: and ``authorize_validation_runner_connection`` already pin database, revision, principal and
+#: membership. This only routes between them, and the route comes from the authority's own phase.
+_STORE_AUTHORIZER_BY_PHASE: dict[str, Callable[[Connection], None]] = {
+    "PHASE_A": authorize_baseline_runner_connection,
+    "PHASE_B": authorize_baseline_runner_connection,
+    "PHASE_C": authorize_baseline_runner_connection,
+    "PHASE_D": authorize_validation_runner_connection,
+}
+
+
+def _authorize_runner_connection_for_phase(conn: Connection, *, phase: str) -> None:
+    """Authorize this connection against the store THIS phase executes in.
+
+    Private. There is no public store-selection API and no caller-supplied database, revision or
+    store selector: the phase arrives from an already-authorized authority, exactly as the
+    partition policy works.
+
+    Every connection in one job's lifecycle — claim, prepare, start, release, fail, complete —
+    goes through here with the same phase, so no step can silently fall back to a different store
+    than the one the job belongs to.
+    """
+    authorizer = _STORE_AUTHORIZER_BY_PHASE.get(phase)
+    if authorizer is None:
+        raise L2F2ExecutionError(
+            f"no L2-F2 execution store is accepted for phase {phase!r}; "
+            f"accepted phases are {sorted(_STORE_AUTHORIZER_BY_PHASE)}"
+        )
+    authorizer(conn)
 
 
 def _authorize_runner_connection(conn: Connection, *, database_name: str, revision: str) -> None:
@@ -740,10 +782,21 @@ def _execute_l2f2_job(
 ) -> L2F2DispatchResult | None:
     """PRIVATE least-privilege orchestration core. TEST-ONLY as a direct entry point.
 
-    The accepted production boundary is :func:`execute_next_l2f2_phase_a_job`, which accepts no
-    runner, constructs the real one itself and PREFLIGHTS it before claiming anything. This helper
-    exists so tests can drive the identical least-privilege sequence with a deterministic runner;
-    it is never exported.
+    Shared by FOUR accepted production boundaries — ``execute_next_l2f2_phase_a_job`` through
+    ``..._phase_d_job`` — none of which accepts a runner: each constructs the real one itself and
+    PREFLIGHTS it before claiming anything. This helper exists so tests can drive the identical
+    least-privilege sequence with a deterministic runner; it is never exported.
+
+    The AUTHORITY'S PHASE decides two independent things, and neither is a caller's to choose:
+
+    * which STORE every connection in this job's lifecycle authorizes against — Phase A/B/C the
+      closed TRAIN baseline, Phase D the separate validation store;
+    * which PARTITION the byte verifier will accept for its members — train for A/B/C, validation
+      for D.
+
+    Both are enforced on every step of the lifecycle, so a Phase-D job cannot claim, prepare,
+    start, release, fail or complete against the baseline, and a TRAIN phase cannot reach the
+    validation store.
 
     The GATK identity is taken from ``execution_environment`` rather than from three loose
     strings, so the identity a result is recorded under and the runtime that produced it cannot
@@ -755,7 +808,7 @@ def _execute_l2f2_job(
     plan_hash = authority.plan_hash
 
     with engine.connect() as conn, conn.begin():
-        authorize_baseline_runner_connection(conn)
+        _authorize_runner_connection_for_phase(conn, phase=authority.phase)
         claimed = (
             conn.execute(
                 text("SELECT job_id, job_key FROM experiments.minos_l2f_claim_next_job(:h, :w)"),
@@ -771,7 +824,7 @@ def _execute_l2f2_job(
     # ---- everything while merely CLAIMED recovers to PENDING ------------------------------
     try:
         with engine.connect() as conn, conn.begin():
-            authorize_baseline_runner_connection(conn)
+            _authorize_runner_connection_for_phase(conn, phase=authority.phase)
             prepared = _resolve_prepared(
                 conn,
                 phase=authority.phase,
@@ -785,19 +838,31 @@ def _execute_l2f2_job(
                 gatk_version=execution_environment.gatk_version,
             )
     except BaseException:
-        _release(engine, plan_hash=plan_hash, job_id=job_id, worker_id=worker_id)
+        _release(
+            engine,
+            phase=authority.phase,
+            plan_hash=plan_hash,
+            job_id=job_id,
+            worker_id=worker_id,
+        )
         raise
 
     # ---- CLAIMED -> RUNNING ----------------------------------------------------------------
     try:
         with engine.connect() as conn, conn.begin():
-            authorize_baseline_runner_connection(conn)
+            _authorize_runner_connection_for_phase(conn, phase=authority.phase)
             conn.execute(
                 text("SELECT * FROM experiments.minos_l2f_start_job(:h, :j, :w)"),
                 {"h": plan_hash, "j": job_id, "w": worker_id},
             )
     except BaseException:
-        _release(engine, plan_hash=plan_hash, job_id=job_id, worker_id=worker_id)
+        _release(
+            engine,
+            phase=authority.phase,
+            plan_hash=plan_hash,
+            job_id=job_id,
+            worker_id=worker_id,
+        )
         raise
 
     return _run_and_finalize(
@@ -812,10 +877,15 @@ def _execute_l2f2_job(
     )
 
 
-def _release(engine: Engine, *, plan_hash: str, job_id: str, worker_id: str) -> None:
-    """Return a merely-CLAIMED job to PENDING. Never called once the job is RUNNING."""
+def _release(engine: Engine, *, phase: str, plan_hash: str, job_id: str, worker_id: str) -> None:
+    """Return a merely-CLAIMED job to PENDING. Never called once the job is RUNNING.
+
+    ``phase`` is threaded through this PRIVATE signature so the release authorizes against the
+    same store the claim did. A recovery path that reached for a different database than the one
+    holding the job would leave it CLAIMED forever.
+    """
     with engine.connect() as conn, conn.begin():
-        authorize_baseline_runner_connection(conn)
+        _authorize_runner_connection_for_phase(conn, phase=phase)
         conn.execute(
             text("SELECT * FROM experiments.minos_l2f_release_job(:h, :j, :w)"),
             {"h": plan_hash, "j": job_id, "w": worker_id},
@@ -825,6 +895,7 @@ def _release(engine: Engine, *, plan_hash: str, job_id: str, worker_id: str) -> 
 def _fail(
     engine: Engine,
     *,
+    phase: str,
     plan_hash: str,
     job_id: str,
     job_key: str,
@@ -851,7 +922,7 @@ def _fail(
     if runtime_ms < 0:
         raise L2F2ExecutionError(f"elapsed runtime {runtime_ms} is not a measurement")
     with engine.connect() as conn, conn.begin():
-        authorize_baseline_runner_connection(conn)
+        _authorize_runner_connection_for_phase(conn, phase=phase)
         conn.execute(
             text("SELECT * FROM experiments.minos_l2f_fail_job(:h, :j, :w, :c, :e, :s, :rt, :ee)"),
             {
@@ -980,6 +1051,7 @@ def _run_and_finalize(
             code, exit_code, stderr = _failure_code(exc)
             recorded = _fail(
                 engine,
+                phase=authority.phase,
                 plan_hash=plan_hash,
                 job_id=job_id,
                 job_key=job_key,
@@ -1015,6 +1087,7 @@ def _run_and_finalize(
         except BaseException as exc:
             recorded = _fail(
                 engine,
+                phase=authority.phase,
                 plan_hash=plan_hash,
                 job_id=job_id,
                 job_key=job_key,
@@ -1069,7 +1142,7 @@ def _complete_success(
     manifest_sha = hashlib.sha256(manifest_bytes).hexdigest()
 
     with engine.connect() as conn, conn.begin():
-        authorize_baseline_runner_connection(conn)
+        _authorize_runner_connection_for_phase(conn, phase=authority.phase)
         vcf_art = publisher.publish(vcf_bytes, kind="vcf", sha256=outcome.vcf_sha256)
         man_art = publisher.publish(manifest_bytes, kind="result_manifest", sha256=manifest_sha)
         vcf_artifact_id = _register(
