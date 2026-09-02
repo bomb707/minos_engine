@@ -149,7 +149,15 @@ def test_lifecycle_0023_0024_0023_0024(isolated_pg_base_url: str) -> None:
             engine.dispose()
 
 
-def test_this_migration_is_the_head_and_the_name_fits() -> None:
+def test_this_migration_is_on_the_single_linear_chain_and_the_name_fits() -> None:
+    """0024 sits on one unbranched chain, directly after 0023, with a name that fits.
+
+    This asserted that 0024 was the HEAD until ``0025`` was authorized to add the Phase-D
+    evaluator authority surface. Being last is a fact about the newest migration, not a
+    property of this one, so continuing to assert it here would make every future migration
+    edit an accepted suite. What 0024 must keep is its POSITION: one head overall, and 0023
+    immediately beneath it. ``0025``'s own suite asserts that ``0025`` is the head.
+    """
     import re
     from pathlib import Path
 
@@ -164,7 +172,8 @@ def test_this_migration_is_the_head_and_the_name_fits() -> None:
             revisions[rev.group(1)] = None if value in (None, "None") else value
     children = {d for d in revisions.values() if d}
     heads = [r for r in revisions if r not in children]
-    assert heads == [_HEAD], heads
+    assert len(heads) == 1, heads  # the chain never branches
+    assert _HEAD in revisions, _HEAD
     assert revisions[_HEAD] == _PRIOR
     assert len(_HEAD) <= 32, "alembic_version.version_num is varchar(32)"
 

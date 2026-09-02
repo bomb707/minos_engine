@@ -20,6 +20,37 @@ deliberately `NOLOGIN` group roles. That is the architecture and it stays.
 Migrations `0009` and `0010` grant evaluation authority to the **group role**. The service
 principal gets that authority purely by membership.
 
+## The two evaluated stores — TRAIN and Phase-D VALIDATION
+
+The evaluator now has **two** legitimate destinations, and they are different databases holding
+different partitions. They are listed separately because the whole point of the partition
+boundary is lost if an operator provisions one and assumes the other came with it.
+
+| store | revision | partition | what the evaluator scores there |
+|---|---|---|---|
+| `minos_l2f2_baseline` | `0020_l2f2_phase_c_execution` | `train` | Phase-A/B/C TRAIN executions |
+| `minos_l2f2_validation` | `0025_l2f2_phase_d_eval_auth` | `validation` | the forty frozen Phase-D executions |
+
+`minos_engine_db` is **not** an evaluated store. It is the operational validation-lineage
+authority and the evaluator connects to it for nothing.
+
+`0025` adds the one authority the Phase-D evaluator was missing:
+`evaluation.l2f_phase_d_execution_authority`, a two-column view — `execution_result_id` and the
+persisted `plan_hash` — restricted to `partition = 'validation'` and readable by
+`minos_evaluator` alone. It exists because *partition alone is not campaign identity*: a second
+validation plan over the same ten frozen members and the same four frozen configurations passes
+every partition, member, config and parameter-space check and is still a different campaign. The
+service compares that `plan_hash` against the hash **derived** from the frozen finalist artifact
+before any truth path is constructed.
+
+`0025` also grants `SELECT ON public.alembic_version` to `minos_evaluator`, exactly as `0011`
+already grants it to `minos_runner` and for the same reason: a boundary that pins the schema
+revision has to be able to read it, and `alembic_version` carries no scientific data.
+
+> **The Phase-D evaluator must never be pointed at `minos_l2f2_baseline`.** That store holds no
+> validation lineage at all, so the failure would not be a clean refusal — there is simply
+> nothing there to refuse against.
+
 ## Database connection isolation — the rule that was missing
 
 PostgreSQL role memberships are **cluster-global**. `minos_evaluator_svc` inherits
@@ -45,6 +76,13 @@ GRANT  CONNECT ON DATABASE minos_engine_db TO <each verified operational LOGIN p
 REVOKE CONNECT ON DATABASE minos_l2f2_baseline FROM PUBLIC;
 GRANT  CONNECT ON DATABASE minos_l2f2_baseline TO minos_evaluator_svc;
 GRANT  CONNECT ON DATABASE minos_l2f2_baseline TO <migration/admin LOGIN principal>;
+
+-- the Phase-D validation store. It is created with PUBLIC CONNECT and this is NOT optional:
+-- until PUBLIC is revoked, every LOGIN role in the cluster can reach the validation partition.
+REVOKE CONNECT ON DATABASE minos_l2f2_validation FROM PUBLIC;
+GRANT  CONNECT ON DATABASE minos_l2f2_validation TO minos_evaluator_svc;
+GRANT  CONNECT ON DATABASE minos_l2f2_validation TO minos_runner_svc;
+GRANT  CONNECT ON DATABASE minos_l2f2_validation TO <migration/admin LOGIN principal>;
 ```
 
 Before revoking `PUBLIC` `CONNECT`, enumerate every LOGIN principal that legitimately needs the
@@ -83,7 +121,8 @@ The service principal must be created with:
 CREATE ROLE minos_evaluator_svc LOGIN PASSWORD :'evaluator_password'
     NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS INHERIT;
 
-GRANT CONNECT ON DATABASE minos_l2f2_baseline TO minos_evaluator_svc;
+GRANT CONNECT ON DATABASE minos_l2f2_baseline   TO minos_evaluator_svc;  -- TRAIN
+GRANT CONNECT ON DATABASE minos_l2f2_validation TO minos_evaluator_svc;  -- Phase-D VALIDATION
 GRANT minos_evaluator TO minos_evaluator_svc;
 ```
 
@@ -103,6 +142,34 @@ SELECT r.rolname FROM pg_auth_members m
 SELECT rolcanlogin FROM pg_roles WHERE rolname = 'minos_evaluator';
 -- expect: f  (the group role stays NOLOGIN)
 ```
+
+The `CONNECT` allowlist is a claim about who is *excluded*, so verify it by enumerating rather
+than by spot-checking the roles you expect to pass:
+
+```sql
+SELECT r.rolname
+  FROM pg_roles r
+ WHERE r.rolcanlogin
+   AND has_database_privilege(r.rolname, 'minos_l2f2_validation', 'CONNECT')
+ ORDER BY 1;
+-- expect exactly: minos_evaluator_svc, minos_runner_svc, <migration/admin LOGIN principal>
+
+SELECT has_database_privilege('public', 'minos_l2f2_validation', 'CONNECT');
+-- expect: f
+```
+
+### Phase-D evaluator runtime roots
+
+The service **validates** these and never creates them; a missing root is a refusal, not a
+`mkdir`. Provision them under the canonical MINOS root before the first Phase-D evaluation:
+
+| variable | path | mode |
+|---|---|---|
+| `MINOS_L2F2_FINALIST_FREEZE_PATH` | the frozen finalist artifact | `0640` |
+| `MINOS_L2F2_EVALUATION_PRACTICE_ROOT` | validation truth bundles | `0750` |
+| `MINOS_L2F2_EVALUATION_REFERENCE_ROOT` | `<chrom>/<chrom>.fa` beside `<chrom>.sdf` | `0750` |
+| `MINOS_L2F2_EVALUATION_WORK_ROOT` | `…/minos_l2f2_validation/evaluation_work` | `0750` |
+| `MINOS_L2F2_EVALUATION_ARTIFACT_ROOT` | `…/minos_l2f2_validation/evaluation_artifacts` | `02750` |
 
 ## What the principal can and cannot do
 

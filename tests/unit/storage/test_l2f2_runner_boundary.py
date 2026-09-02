@@ -134,8 +134,17 @@ def test_the_boundary_requires_the_baseline_database_and_revision() -> None:
     assert l2f2_runner.BASELINE_REVISION == "0020_l2f2_phase_c_execution"
     assert l2f2_runner.VALIDATION_DATABASE_NAME == "minos_l2f2_validation"
     assert l2f2_runner.VALIDATION_REVISION == "0024_l2f2_phase_d_anchor"
-    # the head is the latest store's pin, and the two stores are distinct
-    assert recompute_alembic_head() == l2f2_runner.VALIDATION_REVISION
+    # The head is now AHEAD of the runner's validation pin, and that is deliberate. ``0025``
+    # adds the Phase-D EVALUATOR's authority surface; the runner does not read it and the real
+    # validation store is still at ``0024``, where its forty terminal Phase-D executions live.
+    # Bumping this pin to match the head would make the boundary refuse the actual store — the
+    # same "tidy the constant, break the evidence" trade ``0021`` already declined, inverted.
+    #
+    # NOTE FOR THE OPERATOR: applying ``0025`` to the real validation store therefore requires
+    # deciding this pin at the same time. It is a live coupling, not an oversight.
+    head = recompute_alembic_head()
+    assert head == "0025_l2f2_phase_d_eval_auth", head
+    assert head != l2f2_runner.VALIDATION_REVISION
     assert l2f2_runner.BASELINE_REVISION != l2f2_runner.VALIDATION_REVISION
     assert l2f2_runner.BASELINE_DATABASE_NAME != l2f2_runner.VALIDATION_DATABASE_NAME
     # both public entries delegate to ONE body, so neither store can drift from the other's checks
