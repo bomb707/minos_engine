@@ -222,23 +222,28 @@ def test_the_status_admits_it_is_a_post_collection_clarification() -> None:
 
 
 def test_the_module_never_claims_original_pre_registration() -> None:
+    """It must not claim THIS artifact was pre-registered.
+
+    It may — and now must — say that the RULE was, because BASELINE_QUALIFICATION.md section 12
+    rule 4 states it and predates every validation score. The distinction is the whole point: the
+    rule was pre-registered in prose; the hash binding was not, and is labelled outcome-blind
+    instead. Banning the bare phrase would forbid the true statement along with the false one.
+    """
     source = (
         (_repo() / "src/minos_engine/baseline/phase_d_selection.py")
         .read_text(encoding="utf-8")
         .lower()
     )
     assert "part of the original frozen protocol, and must never be presented" in source
-    # affirmative forgeries only: the module's own "do not describe this as ..." warning
-    # legitimately quotes the phrase it forbids, so the bare phrase is not the thing to ban.
+    assert "do not describe this as" in source
+    assert "it does not invent one" in source
     for forged in (
-        "was pre-registered",
-        "is pre-registered",
-        "pre-registered in c548",
-        "part of protocol hash",
+        "this interpretation was pre-registered",
+        "this document was pre-registered",
         "hash-bound in c548",
+        "part of protocol hash",
     ):
         assert forged not in source, forged
-    assert "do not describe this as" in source
 
 
 def test_the_committed_manifest_matches_the_code() -> None:

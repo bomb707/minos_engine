@@ -411,7 +411,25 @@ truth identity per evaluation row.
 5. If VALIDATION contradicts TRAIN, that is **recorded**, not re-optimised.
 6. TEST is never consulted.
 
-## 13. BASELINE-QUALIFIED gate design (not implemented)
+## 12a. Phase-D selection semantics — hash-bound authority
+
+Rule 4 above — *"The baseline is the best finalist on VALIDATION under the same frozen `J`"* — was
+committed here before any validation score existed, and it is the final-selection rule. It is
+recorded in prose, however, and the hashed protocol manifest
+(`l2f2-baseline-search-protocol-v1`, `c548e190…`) names `baseline_selection` only as something
+diagnostics must never influence, without restating the rule itself.
+
+`l2f2-phase-d-selection-interpretation-v1` (`4c169912…`) closes that gap. It adds **hash-bound
+authority to this already-documented rule** — binding `SELECT_RANK_ZERO`, the exact four
+finalists, their inherited Phase-B indices, and the explicit absence of any post-validation seed
+override, TRAIN/VALIDATION combination or new threshold. Its status is
+`OUTCOME_BLIND_POST_COLLECTION_CLARIFICATION`: it was written while the forty Phase-D observations
+already existed but before their scores, runtimes or admission outcomes had been read.
+
+It did **not** invent the rule, and must not be described as though it had. What was outcome-blind
+was the *hash binding*; the rule itself was pre-registered here in §12.
+
+## 13. BASELINE-QUALIFIED gate design (implemented — source only)
 
 Bindings:
 
@@ -431,10 +449,33 @@ It must prove: TEST untouched; no post-hoc objective change (objective hash
 frozen before the first evaluation timestamp); baseline reproducibility from
 committed identities; and that **no failed evaluation was silently ignored**.
 
-Uses the established two-commit pattern: a qualified **source** commit with green
-exact-SHA CI, then a separate **evidence** commit containing only the gate and
-qualification result, with the gate naming the qualified source rather than the
-evidence commit.
+Uses the established two-commit pattern: a qualified **source** commit, then a separate
+**evidence** commit containing only the gate and qualification result, with the gate naming the
+qualified source rather than the evidence commit.
+
+### Implemented source (L2-F2-G)
+
+| concern | source |
+|---|---|
+| frozen Phase-D result | `baseline.baseline_selected` / `manifests/l2f2_baseline_selected_v1.json` |
+| TRAIN evidence contract | `qualification.l2f2_train_evidence` |
+| check derivation + offline verifier | `qualification.l2f2_baseline_qualified_runner` |
+| registered check set | `gates.required_checks["BASELINE-QUALIFIED"]` (42 checks) |
+
+`baseline_selected` is a **result** manifest, not a decision rule: every field is verified against
+the canonical Phase-D closure artifact before it is accepted, so a hand-copied winner that the
+closure does not support is refused rather than believed.
+
+**TRAIN evidence completeness** is defined against §12 rule 1 rather than the parameter space: the
+required set is every logical job the three TRAIN plans actually materialised, each of which must
+be terminal. A raced-out candidate's unexecuted remainder is not required and is never fabricated;
+a *missing* evaluation and a *failed* one are both refusals, never zeros.
+
+**Exact-SHA CI.** The verification policy in force for this campaign does not consult GitHub
+Actions, so the "green exact-SHA CI" binding above is **not** claimed as satisfied by an Actions
+run. Every scientific and offline check is implemented and enforced locally; whether an external
+CI attestation is additionally required before the gate may be issued is an operational decision
+for the owner, and is recorded here rather than quietly assumed.
 
 ## 14. Substages
 

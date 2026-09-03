@@ -555,6 +555,63 @@ REQUIRED_CHECKS: dict[str, frozenset[str]] = {
             "no_network_access",
         }
     ),
+    # BASELINE-QUALIFIED — L2-F2-G. The bindings are section 13 of
+    # docs/layer2/BASELINE_QUALIFICATION.md, grouped as that section states them.
+    "BASELINE-QUALIFIED": frozenset(
+        {
+            # SOURCE
+            "qualified_source_present",
+            "qualified_source_tree_matches",
+            "worktree_matches_qualified_source",
+            # PREREQUISITES
+            "harness_ready_gate_bound",
+            "harness_ready_qualification_bound",
+            "phase_d_closure_artifact_bound",
+            "baseline_selected_authority_bound",
+            # PROTOCOL
+            "baseline_protocol_hash_exact",
+            "objective_authority_exact",
+            "candidate_design_authority_exact",
+            "selection_interpretation_exact",
+            "no_post_hoc_objective_change",
+            # SCORER
+            "scoring_contract_exact",
+            "minos_subnet_commit_exact",
+            "scorer_source_identities_exact",
+            "happy_immutable_digest_exact",
+            "bcftools_immutable_digest_exact",
+            # TRAIN EVIDENCE
+            "train_revision_exact",
+            "train_plans_exact",
+            "train_every_logical_job_terminal",
+            "train_every_success_evaluated",
+            "train_evaluation_set_exact",
+            "train_execution_failure_set_exact",
+            "train_failure_codes_bounded",
+            "train_no_infrastructure_incident",
+            "train_no_failed_evaluation_silently_ignored",
+            "train_single_scoring_contract",
+            "train_single_execution_environment",
+            # VALIDATION EVIDENCE
+            "validation_closure_hash_recomputed",
+            "validation_matrix_is_exact_ten_by_four",
+            "validation_forty_terminal_outcomes",
+            "validation_all_candidates_complete",
+            "validation_no_infrastructure_incident",
+            # SELECTION
+            "selected_config_is_closure_rank_zero",
+            "selected_statistics_agree_with_closure",
+            "selected_inherited_index_exact",
+            "seed_rank_recorded",
+            "no_seed_override",
+            # ISOLATION
+            "test_untouched",
+            "train_and_validation_identities_not_mixed",
+            # REPRODUCIBILITY
+            "closure_reproducible_from_committed_identities",
+            "evidence_hashes_complete",
+        }
+    ),
 }
 
 

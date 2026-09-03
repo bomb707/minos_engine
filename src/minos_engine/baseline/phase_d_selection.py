@@ -5,10 +5,18 @@ WHAT THIS IS, STATED PLAINLY
 This is **not** part of the original frozen protocol, and must never be presented as though it
 were. ``l2f2-baseline-search-protocol-v1`` (hash
 ``c548e190571f5e964560cf30021a520ea8aad6674569fa3202af880d7dff77d1``) fixes the robust objective,
-the total tie-break, the Phase-D 4x10 VALIDATION design and the absence of Phase-D racing, and the
-roadmap records that L2-F2-F exits with a baseline selected. What it does **not** contain is one
-explicit sentence mapping the final Phase-D ranking to the selected baseline. A closure task
-stopped on exactly that gap rather than inventing the rule.
+the total tie-break, the Phase-D 4x10 VALIDATION design and the absence of Phase-D racing.
+
+CORRECTION, recorded rather than quietly amended: an earlier revision of this docstring said the
+project contained no sentence mapping the final Phase-D ranking to the selected baseline. That was
+wrong. ``docs/layer2/BASELINE_QUALIFICATION.md`` §12 rule 4 — *"The baseline is the best finalist
+on VALIDATION under the same frozen J"* — was committed before any validation score existed, and
+IS the final-selection rule. The gap is narrower than first described: the rule was pre-registered
+in prose, but the HASHED manifest names ``baseline_selection`` only as something diagnostics must
+never influence, without restating it.
+
+This module closes that narrower gap. It adds hash-bound authority to an already-documented rule;
+it does not invent one.
 
 This module records the operator's chosen reading, and its status is:
 
