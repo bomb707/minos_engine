@@ -261,16 +261,17 @@ def derive_checks(observation: BaselineQualifiedObservation) -> dict[str, bool]:
         and observation.evidence_hashes.get("execution_environment_hash")
         == EXECUTION_ENVIRONMENT_HASH
     )
-    checks["evidence_hashes_complete"] = all(
-        observation.evidence_hashes.get(key)
-        for key in (
-            "phase_d_activation_evidence",
-            "phase_d_execution_evidence",
-            "phase_d_sentinel_evidence",
-            "phase_d_complete_matrix_evidence",
-            "phase_d_closure_artifact",
-            "phase_d_closure_evidence",
-        )
+    # EXACT, not merely present. Six non-empty strings could be six unrelated files.
+    from minos_engine.qualification.l2f2_baseline_qualified_qualifier import (
+        ACCEPTED_EVIDENCE_SHA256,
+    )
+
+    checks["evidence_hashes_complete"] = {
+        name: observation.evidence_hashes.get(name) for name in ACCEPTED_EVIDENCE_SHA256
+    } == dict(ACCEPTED_EVIDENCE_SHA256) and not (
+        set(observation.evidence_hashes)
+        - set(ACCEPTED_EVIDENCE_SHA256)
+        - {"scoring_contract_hash", "minos_subnet_sha", "execution_environment_hash"}
     )
     return checks
 
@@ -330,12 +331,15 @@ def observation_from_result(result: BaselineQualificationResult) -> BaselineQual
 
 
 def assemble_baseline_qualified_gate(
-    trusted: TrustedBaselineQualification,
-    *,
-    created_at: str | None = None,
-    evidence: tuple[Any, ...] = (),
+    trusted: TrustedBaselineQualification, *, created_at: str | None = None
 ) -> Any:
-    """Assemble the canonical :class:`GateArtifact`. Status and checks are derived, never given."""
+    """Assemble the canonical :class:`GateArtifact`. Nothing about it is caller-nominable.
+
+    ``evidence`` used to be a caller parameter. It is gone: a caller able to inject evidence items
+    could have placed an external-CI assertion inside the scientific authority, which is precisely
+    what this gate must never carry. The authority is the canonical ``input_hashes`` plus the
+    qualification artifact, both derived from the trusted result.
+    """
     from datetime import UTC, datetime
 
     from minos_engine.gates.contracts import GateArtifact, GateStatus
@@ -375,7 +379,7 @@ def assemble_baseline_qualified_gate(
             "objective_identity": result.objective_identity,
             "candidate_design_identity": result.candidate_design_identity,
         },
-        evidence=evidence,
+        evidence=(),
         mandatory_checks=checks,
         created_at=created_at or datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
@@ -544,6 +548,72 @@ def verify_baseline_qualified_gate(
                 )
     else:
         reasons.append("git provenance could not be verified: not a git repository")
+
+    # exact immutable identities, recomputed offline rather than trusted from the artifact
+    from minos_engine.evaluation.scoring_contract import (
+        compute_scoring_contract_hash,
+        load_scoring_authority,
+    )
+    from minos_engine.qualification.l2f2_baseline_qualified_contract import (
+        ACCEPTED_BCFTOOLS_DIGEST,
+        ACCEPTED_HAPPY_DIGEST,
+        HARNESS_READY_GATE_HASH,
+        HARNESS_READY_QUALIFICATION_HASH,
+        candidate_design_identity,
+        objective_identity,
+    )
+    from minos_engine.qualification.l2f2_baseline_qualified_qualifier import (
+        ACCEPTED_EVIDENCE_SHA256,
+        ACCEPTED_MINOS_SUBNET_SHA,
+        ACCEPTED_SCORING_PY_SHA256,
+        ACCEPTED_TOOL_PARAMS_PY_SHA256,
+        ACCEPTED_VALIDATOR_PY_SHA256,
+    )
+
+    try:
+        protocol_content = dict(
+            (
+                __import__("minos_engine.baseline.protocol", fromlist=["load_committed_protocol"])
+                .load_committed_protocol(base)
+                .get("content")
+            )
+            or {}
+        )
+    except Exception as exc:
+        reasons.append(f"the committed protocol is unusable: {exc}")
+    else:
+        if result.objective_identity != objective_identity(protocol_content):
+            reasons.append("objective_identity does not match the committed protocol")
+        if result.candidate_design_identity != candidate_design_identity(protocol_content):
+            reasons.append("candidate_design_identity does not match the committed protocol")
+
+    try:
+        authority = load_scoring_authority(base)
+    except Exception as exc:
+        reasons.append(f"the committed scoring authority is unusable: {exc}")
+    else:
+        for label, got, want in (
+            (
+                "scoring contract",
+                compute_scoring_contract_hash(authority),
+                result.scoring_contract_hash,
+            ),
+            ("MINOS_SUBNET", authority.upstream_commit, ACCEPTED_MINOS_SUBNET_SHA),
+            ("hap.py digest", authority.happy.resolved_digest, ACCEPTED_HAPPY_DIGEST),
+            ("bcftools digest", authority.bcftools.resolved_digest, ACCEPTED_BCFTOOLS_DIGEST),
+            ("scoring.py", authority.scoring_py_sha256, ACCEPTED_SCORING_PY_SHA256),
+            ("validator.py", authority.validator_py_sha256, ACCEPTED_VALIDATOR_PY_SHA256),
+            ("tool_params.py", authority.tool_params_py_sha256, ACCEPTED_TOOL_PARAMS_PY_SHA256),
+        ):
+            if got != want:
+                reasons.append(f"committed scorer {label} is {got}, expected {want}")
+
+    if result.harness_ready_gate_hash != HARNESS_READY_GATE_HASH:
+        reasons.append("qualification names a different HARNESS gate identity")
+    if result.harness_ready_qualification_hash != HARNESS_READY_QUALIFICATION_HASH:
+        reasons.append("qualification names a different HARNESS qualification identity")
+    if dict(result.evidence_sha256) != dict(ACCEPTED_EVIDENCE_SHA256):
+        reasons.append("qualification evidence hashes are not the accepted six")
 
     try:
         committed = load_committed_baseline_selected(base)

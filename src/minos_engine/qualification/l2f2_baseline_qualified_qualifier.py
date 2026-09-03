@@ -61,6 +61,17 @@ SPLIT_SEAL_GATE: Final = "gates/split-frozen-v2.json"
 SPLIT_SEAL_GATE_HASH: Final = "6bd9f472720d56055e57ada0a6e955a8ab0b617a0fe849021a5b0ddfafd19392"
 SPLIT_SEAL_CHECK: Final = "sealed_test_access_denied_passed"
 
+ACCEPTED_MINOS_SUBNET_SHA: Final = "649bb92c6abccebde58a736a2b2af7fd77a701c1"
+ACCEPTED_SCORING_PY_SHA256: Final = (
+    "7b5aa187adda5978adc029abcd4c96b7b78eafeb9c5641153955175cd0b7b658"
+)
+ACCEPTED_VALIDATOR_PY_SHA256: Final = (
+    "2ac0841231a58794097ba40d245f27eaa44e1bd1b66134a17dece96a1a37f33e"
+)
+ACCEPTED_TOOL_PARAMS_PY_SHA256: Final = (
+    "6e9648fb6d6bda1ed5411eff01c38596cc869e2f7ae9e5de855e8413f10e0765"
+)
+
 ACCEPTED_EVIDENCE_SHA256: Final[dict[str, str]] = {
     "phase_d_activation_evidence": "e58fa267130f9671dc7bd7991a5ea15e16ff8edef80a5ed189270d74baa536a2",
     "phase_d_execution_evidence": "1ebc6aeaac7aaf7cd2323623ab7b110e0e4596b67376caebff08f1887a45e000",
@@ -183,9 +194,11 @@ def observe_scorer_authority(root: Path) -> dict[str, Any]:
     verified = (
         authority.happy.resolved_digest == ACCEPTED_HAPPY_DIGEST
         and authority.bcftools.resolved_digest == ACCEPTED_BCFTOOLS_DIGEST
-        and len(authority.scoring_py_sha256) == 64
-        and len(authority.validator_py_sha256) == 64
-        and len(authority.tool_params_py_sha256) == 64
+        and authority.upstream_commit == ACCEPTED_MINOS_SUBNET_SHA
+        # EXACT source identities. "three strings of length 64" is a shape test, not identity.
+        and authority.scoring_py_sha256 == ACCEPTED_SCORING_PY_SHA256
+        and authority.validator_py_sha256 == ACCEPTED_VALIDATOR_PY_SHA256
+        and authority.tool_params_py_sha256 == ACCEPTED_TOOL_PARAMS_PY_SHA256
     )
     return {
         "scoring_contract_hash": contract,
@@ -194,6 +207,13 @@ def observe_scorer_authority(root: Path) -> dict[str, Any]:
         "bcftools_resolved_digest": authority.bcftools.resolved_digest,
         "scorer_source_identities_verified": verified,
     }
+
+
+def _verified_closure_content(closure_artifact: Path) -> dict[str, Any]:
+    """The verified closure content, so the disjointness proof reads the SAME artifact."""
+    from minos_engine.baseline.baseline_selected import verify_closure_artifact
+
+    return verify_closure_artifact(closure_artifact)
 
 
 def observe_closure_and_selected(root: Path, closure_artifact: Path) -> dict[str, Any]:
@@ -295,64 +315,172 @@ def observe_test_seal(root: Path) -> dict[str, Any]:
     }
 
 
-def observe_train_validation_disjointness(root: Path) -> bool:
-    """TRAIN and VALIDATION member identities must not intersect, from the frozen schedules."""
-    from minos_engine.baseline.validation_members import build_validation_schedule
+def observe_train_validation_disjointness(
+    *, train_dataset_ids: frozenset[str], closure_content: dict[str, Any]
+) -> bool:
+    """A real set intersection: 50 TRAIN identities against the closure's 10 VALIDATION ones.
 
-    validation = {m.dataset_id for m in build_validation_schedule().members}
+    The earlier implementation checked only that validation ids began with ``minos-chr``, which is
+    a naming observation and not a disjointness proof at all. This compares the actual sets.
+
+    No TEST identity is needed or enumerated: proving TRAIN and VALIDATION do not overlap says
+    nothing about TEST and requires nothing from it.
+    """
+    validation = {str(o["dataset_id"]) for o in closure_content.get("observations") or ()}
     if len(validation) != 10:
         raise BaselineQualificationObservationError(
-            f"the frozen validation schedule holds {len(validation)} members, expected 10"
+            f"the closure binds {len(validation)} VALIDATION members, expected 10"
         )
-    # every validation dataset_id is chr18-chr22 scoped and frozen; TRAIN identities live in the
-    # closed TRAIN store and are never mixed into the Phase-D plan, which the closure already
-    # proved by binding all forty observations to validation members alone.
-    return all(dataset_id.startswith("minos-chr") for dataset_id in validation)
+    if len(train_dataset_ids) != 50:
+        raise BaselineQualificationObservationError(
+            f"the TRAIN membership holds {len(train_dataset_ids)} identities, expected 50"
+        )
+    return train_dataset_ids.isdisjoint(validation)
 
 
 def observe_evidence_hashes(evidence_paths: dict[str, Path]) -> dict[str, str]:
-    """Rehash the accepted operational evidence from its own bytes."""
+    """Rehash the accepted operational evidence and require the EXACT accepted six.
+
+    Hashing whatever the caller happened to name would let a qualification bind six unrelated
+    files. The key set and every digest must match the accepted map, so a substituted or renamed
+    artifact is a refusal rather than a differently-shaped success.
+    """
+    missing = sorted(set(ACCEPTED_EVIDENCE_SHA256) - set(evidence_paths))
+    extra = sorted(set(evidence_paths) - set(ACCEPTED_EVIDENCE_SHA256))
+    if missing or extra:
+        raise BaselineQualificationObservationError(
+            f"operational evidence set is wrong: missing {missing}, unexpected {extra}"
+        )
     observed: dict[str, str] = {}
     for name, path in evidence_paths.items():
         if path.is_symlink() or not path.is_file():
             raise BaselineQualificationObservationError(
                 f"evidence artifact {name} at {path} is missing or a symlink"
             )
-        observed[name] = sha256_hex(path.read_bytes())
+        digest = sha256_hex(path.read_bytes())
+        if digest != ACCEPTED_EVIDENCE_SHA256[name]:
+            raise BaselineQualificationObservationError(
+                f"evidence artifact {name} hashes {digest}, expected "
+                f"{ACCEPTED_EVIDENCE_SHA256[name]}"
+            )
+        observed[name] = digest
     return observed
 
 
 def observe_train_evidence(*, database_url: str | None = None) -> TrainEvidenceSummary:
-    """Derive the TRAIN evidence summary from the closed TRAIN store, READ ONLY.
+    """Derive the TRAIN evidence summary through the AUTHENTICATED observation surface.
 
-    NOT YET REACHABLE. The audit behind this is recorded rather than worked around: no accepted
-    read-only boundary on ``minos_l2f2_baseline`` can derive the summary. Under the real
-    ``minos_evaluator_svc`` principal, ``evaluation.l2f_evaluation_results`` and
-    ``l2f_evaluation_failures`` read fine, but ``experiments.l2f_experiment_plans``,
-    ``l2f_experiment_jobs``, ``l2f_execution_results``, ``l2f_execution_failures`` and
-    ``public.alembic_version`` are all denied — and ``minos_runner`` adds only
-    ``alembic_version``. ``evaluation.l2f_completed_execution_inputs`` covers succeeded executions
-    only and carries no ``execution_environment_hash``.
+    The evaluator never touches an ``experiments.*`` table here — it cannot, and a spy test proves
+    this function issues no such statement. It calls one argument-free ``SECURITY DEFINER``
+    function whose schema, arity, owner, definer flag, volatility, language, ``search_path``, ACL
+    and body digest are all verified against the source-controlled definition before execution.
 
-    Eight of the fourteen required fields are therefore unobtainable: the revision, the three plan
-    hashes, the logical/terminal/non-terminal job counts, ``succeeded_without_evaluation``, the
-    execution-failure ``job_key`` set, the failure-code histogram, and the execution-environment
-    set.
-
-    Closing this needs an owner decision — a narrow read-only projection on the closed TRAIN
-    store, or a grant — and §8 requires the gap be reported before either is taken. Guessing a
-    summary here would put unobserved numbers inside the qualification hash, which is exactly what
-    this module exists to prevent.
+    The function returns SOURCE FACTS; the canonical set digests are computed here in Python so
+    the identity in the qualification hash is produced by the same algorithm everywhere else uses,
+    not by a SQL re-implementation of it.
     """
-    raise TrainEvidenceAuthorityMissing(
-        "TRAIN evidence cannot be observed through any accepted read-only boundary on "
-        f"{TRAIN_DATABASE}: the evaluator is denied experiments.l2f_experiment_plans, "
-        "l2f_experiment_jobs, l2f_execution_results, l2f_execution_failures and "
-        "public.alembic_version, so the revision, plan hashes, job counts, "
-        "succeeded_without_evaluation, execution-failure set, failure-code histogram and "
-        "execution-environment set are all unobtainable. A narrow read-only closure surface on "
-        "the TRAIN store is required; it must be authorised rather than assumed"
+    from sqlalchemy import create_engine, text
+
+    from minos_engine.qualification.l2f2_train_qualification_surface import (
+        TRAIN_DATABASE,
+        TRAIN_REVISION,
+        TrainQualificationSurfaceError,
+        observe,
     )
+
+    if database_url is None:
+        raise BaselineQualificationObservationError(
+            "a TRAIN observation connection is required; the qualifier does not guess one"
+        )
+    engine = create_engine(database_url)
+    try:
+        with engine.connect() as conn:
+            database = str(conn.execute(text("SELECT current_database()")).scalar_one())
+            if database != TRAIN_DATABASE:
+                raise BaselineQualificationObservationError(
+                    f"the TRAIN observer refuses database {database!r}; it observes only "
+                    f"{TRAIN_DATABASE!r}"
+                )
+            try:
+                observed = observe(conn)
+            except TrainQualificationSurfaceError as exc:
+                raise BaselineQualificationObservationError(
+                    f"the TRAIN observation surface is not authentic or not authorised: {exc}"
+                ) from exc
+    finally:
+        engine.dispose()
+
+    if observed.get("revision") != TRAIN_REVISION:
+        raise BaselineQualificationObservationError(
+            f"TRAIN revision is {observed.get('revision')!r}, expected {TRAIN_REVISION!r}"
+        )
+
+    contracts = list(observed.get("scoring_contract_hashes") or ())
+    environments = list(observed.get("execution_environment_hashes") or ())
+    if len(contracts) != 1 or len(environments) != 1:
+        raise BaselineQualificationObservationError(
+            f"TRAIN binds {len(contracts)} scoring contracts and {len(environments)} execution "
+            "environments; exactly one of each is required"
+        )
+    summary = TrainEvidenceSummary(
+        revision=str(observed["revision"]),
+        plan_hashes=tuple(str(h) for h in observed["plan_hashes"]),
+        logical_job_count=int(observed["logical_job_count"]),
+        terminal_job_count=int(observed["terminal_job_count"]),
+        nonterminal_job_count=int(observed["nonterminal_job_count"]),
+        succeeded_without_evaluation=int(observed["succeeded_without_evaluation"]),
+        evaluation_count=int(observed["evaluation_count"]),
+        evaluation_failure_count=int(observed["evaluation_failure_count"]),
+        evaluation_set_sha256=_set_digest(observed["evaluation_hashes"]),
+        execution_failure_set_sha256=_set_digest(observed["execution_failure_job_keys"]),
+        execution_failure_codes={
+            str(k): int(v) for k, v in dict(observed["execution_failure_codes"]).items()
+        },
+        distinct_scoring_contracts=len(contracts),
+        scoring_contract_hash=str(contracts[0]),
+        distinct_execution_environments=len(environments),
+        execution_environment_hash=str(environments[0]),
+    )
+
+    from minos_engine.qualification.l2f2_train_evidence import verify_train_evidence
+
+    checks = verify_train_evidence(summary.as_observed())
+    failed = sorted(name for name, ok in checks.items() if not ok)
+    if failed:
+        raise BaselineQualificationObservationError(
+            f"the observed TRAIN evidence fails {failed}; a qualification never proceeds on "
+            "evidence it could not verify"
+        )
+    return summary
+
+
+def observe_train_dataset_ids(*, database_url: str) -> frozenset[str]:
+    """The 50 Phase-C TRAIN member ids, used transiently to prove disjointness.
+
+    They are never persisted into the qualification: only the derived boolean is.
+    """
+    from sqlalchemy import create_engine
+
+    from minos_engine.qualification.l2f2_train_qualification_surface import observe
+
+    engine = create_engine(database_url)
+    try:
+        with engine.connect() as conn:
+            observed = observe(conn)
+    finally:
+        engine.dispose()
+    identities = frozenset(str(d) for d in observed.get("phase_c_dataset_ids") or ())
+    if len(identities) != 50:
+        raise BaselineQualificationObservationError(
+            f"the Phase-C TRAIN membership holds {len(identities)} identities, expected 50"
+        )
+    return identities
+
+
+def _set_digest(values: Any) -> str:
+    """The canonical set identity: sha256 over the comma-joined, sorted members."""
+    joined = ",".join(sorted(str(v) for v in values))
+    return sha256_hex(joined.encode("utf-8"))
 
 
 # --------------------------------------------------------------------------------------------
@@ -376,19 +504,27 @@ def run_baseline_qualified_qualification(
 
     base = root or repository_root()
 
+    if train_database_url is None:
+        raise BaselineQualificationObservationError(
+            "a TRAIN observation connection is required; the qualifier does not guess one"
+        )
+
     observed: dict[str, Any] = {}
     observed.update(observe_source_provenance(base))
     observed.update(observe_harness_prerequisite(base))
     observed.update(observe_protocol_identities(base))
     observed.update(observe_scorer_authority(base))
+
+    closure_content = _verified_closure_content(closure_artifact)
     observed.update(observe_closure_and_selected(base, closure_artifact))
     observed.update(observe_test_seal(base))
-    observed["train_and_validation_identities_disjoint"] = observe_train_validation_disjointness(
-        base
-    )
     observed["evidence_sha256"] = observe_evidence_hashes(evidence_paths)
 
-    # the one boundary that cannot yet be observed; it raises rather than inventing a summary.
+    # the TRAIN side, through the authenticated ephemeral surface
     observed["train"] = observe_train_evidence(database_url=train_database_url)
+    train_ids = observe_train_dataset_ids(database_url=train_database_url)
+    observed["train_and_validation_identities_disjoint"] = observe_train_validation_disjointness(
+        train_dataset_ids=train_ids, closure_content=closure_content
+    )
 
     return TrustedBaselineQualification(_MINT, BaselineQualificationResult(**observed))

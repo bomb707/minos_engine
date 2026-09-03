@@ -36,6 +36,9 @@ from minos_engine.qualification.l2f2_baseline_qualified_contract import (
     candidate_design_identity,
     objective_identity,
 )
+from minos_engine.qualification.l2f2_baseline_qualified_qualifier import (
+    ACCEPTED_EVIDENCE_SHA256,
+)
 from minos_engine.qualification.l2f2_baseline_qualified_runner import (
     BASELINE_QUALIFIED_GATE,
     BaselineQualifiedObservation,
@@ -132,12 +135,7 @@ def _observation(**overrides: Any) -> BaselineQualifiedObservation:
             "scoring_contract_hash": "b24a07e208ce8e2fff6672102ae4e61aed93c6f352a5af46ba81c4789adb76d6",
             "minos_subnet_sha": "649bb92c6abccebde58a736a2b2af7fd77a701c1",
             "execution_environment_hash": "71e14a49833ac77bb9dc576345fb89c4dd68f4a3ad3673eb098d38593c1ef4d3",
-            "phase_d_activation_evidence": "e58fa267",
-            "phase_d_execution_evidence": "1ebc6aea",
-            "phase_d_sentinel_evidence": "db8ebc43",
-            "phase_d_complete_matrix_evidence": "35431e54",
-            "phase_d_closure_artifact": "4eaf622b",
-            "phase_d_closure_evidence": "90f0f535",
+            **ACCEPTED_EVIDENCE_SHA256,
         },
     }
     fields.update(overrides)

@@ -526,14 +526,17 @@ def test_the_verifier_needs_no_database_gatk_or_truth() -> None:
             type_ignores=[],
         )
     ).lower()
+    # what must be absent is a CONNECTION or an execution, not the words: the verifier now
+    # legitimately names hap.py and bcftools while comparing their committed digests offline.
     for forbidden in (
         "create_engine",
         "create_db_engine",
         "psycopg",
         "sqlalchemy",
-        "gatk",
-        "hap.py",
-        "truth",
+        "subprocess",
+        "connect(",
+        "truth_vcf",
+        "mutations_vcf",
     ):
         assert forbidden not in body, forbidden
 

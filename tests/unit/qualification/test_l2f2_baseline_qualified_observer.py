@@ -22,7 +22,6 @@ from minos_engine.qualification.l2f2_baseline_qualified_contract import (
 from minos_engine.qualification.l2f2_baseline_qualified_qualifier import (
     CLOSURE_AUTHORITY_SOURCE,
     BaselineQualificationObservationError,
-    TrainEvidenceAuthorityMissing,
     TrustedBaselineQualification,
     observe_closure_and_selected,
     observe_evidence_hashes,
@@ -206,22 +205,65 @@ def test_the_test_seal_is_derived_from_an_accepted_gate_without_opening_test() -
         assert forbidden not in source, forbidden
 
 
-def test_disjointness_is_derived_from_the_frozen_schedule() -> None:
-    assert observe_train_validation_disjointness(_repo()) is True
+def test_disjointness_is_a_real_set_intersection() -> None:
+    """§11 -- the earlier check only looked at a name prefix, which proved nothing."""
+    train = frozenset(f"minos-train-{i:02d}" for i in range(50))
+    closure = {"observations": [{"dataset_id": f"minos-chr18-{i:02d}"} for i in range(10)]}
+    assert (
+        observe_train_validation_disjointness(train_dataset_ids=train, closure_content=closure)
+        is True
+    )
+    # an actual collision must be caught
+    colliding = frozenset({*list(train)[:49], "minos-chr18-00"})
+    assert (
+        observe_train_validation_disjointness(train_dataset_ids=colliding, closure_content=closure)
+        is False
+    )
 
 
-def test_evidence_hashes_are_rehashed_from_bytes(tmp_path: Path) -> None:
-    from minos_engine.common.hashing import sha256_hex
+@pytest.mark.parametrize(
+    ("train_n", "validation_n"),
+    [pytest.param(49, 10, id="wrong-train-count"), pytest.param(50, 9, id="wrong-validation")],
+)
+def test_disjointness_refuses_a_wrong_sized_set(train_n: int, validation_n: int) -> None:
+    train = frozenset(f"minos-train-{i:02d}" for i in range(train_n))
+    closure = {
+        "observations": [{"dataset_id": f"minos-chr18-{i:02d}"} for i in range(validation_n)]
+    }
+    with pytest.raises(BaselineQualificationObservationError):
+        observe_train_validation_disjointness(train_dataset_ids=train, closure_content=closure)
 
-    artifact = tmp_path / "evidence.json"
-    artifact.write_bytes(b"{}")
-    observed = observe_evidence_hashes({"probe": artifact})
-    assert observed["probe"] == sha256_hex(b"{}")
+
+def test_evidence_must_be_the_exact_accepted_six(tmp_path: Path) -> None:
+    """§12 -- hashing whatever the caller named would let six unrelated files qualify."""
+    from minos_engine.qualification.l2f2_baseline_qualified_qualifier import (
+        ACCEPTED_EVIDENCE_SHA256,
+    )
+
+    with pytest.raises(BaselineQualificationObservationError, match="missing"):
+        observe_evidence_hashes({"probe": tmp_path / "x.json"})
+
+    complete = {name: tmp_path / f"{name}.json" for name in ACCEPTED_EVIDENCE_SHA256}
+    for path in complete.values():
+        path.write_bytes(b"{}")
+    with pytest.raises(BaselineQualificationObservationError, match="hashes"):
+        observe_evidence_hashes(complete)
+
+    extra = {**complete, "surprise": tmp_path / "surprise.json"}
+    with pytest.raises(BaselineQualificationObservationError, match="unexpected"):
+        observe_evidence_hashes(extra)
 
 
 def test_a_missing_evidence_artifact_is_refused(tmp_path: Path) -> None:
+    from minos_engine.qualification.l2f2_baseline_qualified_qualifier import (
+        ACCEPTED_EVIDENCE_SHA256,
+    )
+
+    paths = {name: tmp_path / f"{name}.json" for name in ACCEPTED_EVIDENCE_SHA256}
+    for path in list(paths.values())[1:]:
+        path.write_bytes(b"{}")
     with pytest.raises(BaselineQualificationObservationError, match="missing or a symlink"):
-        observe_evidence_hashes({"absent": tmp_path / "nope.json"})
+        observe_evidence_hashes(paths)
 
 
 @pytest.mark.skipif(not _REAL_CLOSURE.is_file(), reason="real closure artifact not present")
@@ -256,19 +298,22 @@ def test_a_tampered_closure_artifact_is_refused_by_the_observer(tmp_path: Path) 
 # --------------------------------------------------------------------------------------------
 # §7/§8 — the TRAIN authority gap, reported rather than invented
 # --------------------------------------------------------------------------------------------
-def test_the_train_observer_refuses_rather_than_inventing_a_summary() -> None:
-    """No accepted read-only boundary can derive it, so it raises. It never guesses."""
-    with pytest.raises(TrainEvidenceAuthorityMissing) as excinfo:
+def test_the_train_observer_requires_a_connection_and_never_guesses() -> None:
+    """It observes through the authenticated surface, or it refuses. It never invents."""
+    with pytest.raises(BaselineQualificationObservationError, match="does not guess one"):
         observe_train_evidence()
-    message = str(excinfo.value)
-    for named in (
-        "l2f_experiment_plans",
-        "l2f_experiment_jobs",
-        "l2f_execution_failures",
-        "alembic_version",
-        "must be authorised rather than assumed",
+
+
+def test_the_train_observer_reads_no_experiments_table_itself() -> None:
+    """§10 -- the evaluator-side observer must go through the function, never the raw ledger."""
+    source = inspect.getsource(observe_train_evidence)
+    for forbidden in (
+        "experiments.l2f_experiment_plans",
+        "experiments.l2f_experiment_jobs",
+        "experiments.l2f_execution_results",
+        "experiments.l2f_execution_failures",
     ):
-        assert named in message, named
+        assert forbidden not in source, forbidden
 
 
 def test_the_production_entry_cannot_complete_while_train_is_unobservable(
@@ -277,7 +322,7 @@ def test_the_production_entry_cannot_complete_while_train_is_unobservable(
     """The whole qualification fails closed on the gap; it does not mint a partial trust."""
     artifact = tmp_path / "closure.json"
     artifact.write_text("{}", encoding="utf-8")
-    with pytest.raises((TrainEvidenceAuthorityMissing, Exception)):
+    with pytest.raises(BaselineQualificationObservationError):
         run_baseline_qualified_qualification(
             root=_repo(), closure_artifact=artifact, evidence_paths={}
         )
