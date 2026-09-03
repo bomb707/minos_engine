@@ -1,0 +1,53 @@
+{
+  "content": {
+    "aggregation_rule": "USE_EXISTING_AGGREGATE_CANDIDATE",
+    "baseline_protocol_hash": "c548e190571f5e964560cf30021a520ea8aad6674569fa3202af880d7dff77d1",
+    "diagnostics_may_influence_selection": false,
+    "final_selection_rule": "SELECT_RANK_ZERO",
+    "finalist_freeze_sha256": "540aeca0640871ca91e3ec771ec66d2df4b96d38210ec3265f944dee3e0433f3",
+    "inherited_candidate_index": [
+      [
+        "157d88d1587c13be395c62d60e27d1becdada78fad45e65d883bc1190e51acea",
+        42
+      ],
+      [
+        "0972930f8d8c562be15382203e123b2909094e7eac46e84321d36c67abf8345e",
+        25
+      ],
+      [
+        "22a1f1fd9ddf02a97776d991f11280b3982673693a4f357479098a99fb411a16",
+        36
+      ],
+      [
+        "4251cb85e5cd58b7eabfe530b9df23ea7d1d14fd882114b488d67cbd81b751b8",
+        0
+      ]
+    ],
+    "interpretation_status": "OUTCOME_BLIND_POST_COLLECTION_CLARIFICATION",
+    "new_thresholds": "NONE",
+    "ordered_finalists": [
+      "157d88d1587c13be395c62d60e27d1becdada78fad45e65d883bc1190e51acea",
+      "0972930f8d8c562be15382203e123b2909094e7eac46e84321d36c67abf8345e",
+      "22a1f1fd9ddf02a97776d991f11280b3982673693a4f357479098a99fb411a16",
+      "4251cb85e5cd58b7eabfe530b9df23ea7d1d14fd882114b488d67cbd81b751b8"
+    ],
+    "phase_c_closure_sha256": "5de368eec327b66c868737d1819cc1b1a590eaf185b28e53d1cfecae59b593ca",
+    "phase_d_plan_hash": "f6bd1e450c38d789dcfcdafaaf357dad2f7602f53fc8ec779c5be40c71e6d7ce",
+    "ranking_rule": "USE_EXISTING_RANK_CANDIDATES",
+    "schema_version": "l2f2-phase-d-selection-interpretation-v1",
+    "seed_config_hash": "4251cb85e5cd58b7eabfe530b9df23ea7d1d14fd882114b488d67cbd81b751b8",
+    "seed_override_after_validation": "NONE",
+    "selection_observations": "EXACT_TEN_FROZEN_VALIDATION_MEMBERS_PER_FINALIST",
+    "selection_population": "EXACT_FOUR_PHASE_D_FINALISTS",
+    "source_state": {
+      "commit": "274765331a4307a4a9d7282b0563a6bb2315183f",
+      "tree": "6c09f1742991f05f2f5189d968a2e6940d009840"
+    },
+    "train_validation_combination": "NONE"
+  },
+  "disclosure": "This is an outcome-blind interpretation clarification of the frozen L2-F2-F protocol. It is NOT part of l2f2-baseline-search-protocol-v1 and is NOT inside protocol hash c548e190571f5e964560cf30021a520ea8aad6674569fa3202af880d7dff77d1. The original protocol fixes the objective, the total tie-break, the Phase-D 4x10 VALIDATION design and the absence of Phase-D racing, and the roadmap records that L2-F2-F exits with a baseline selected, but it contains no explicit sentence mapping the final Phase-D ranking to the selected baseline. This document records the operator's chosen reading of that gap. The forty real Phase-D observations already existed when it was written; their scores, runtimes and admission outcomes had not been read and did not influence it.",
+  "interpretation_status": "OUTCOME_BLIND_POST_COLLECTION_CLARIFICATION",
+  "interpretation_version": "l2f2-phase-d-selection-interpretation-v1",
+  "schema_version": "l2f2-phase-d-selection-interpretation-v1",
+  "selection_interpretation_hash": "4c169912f67877d6ba254fb280dbd2ff44aa4aaaf65bedfa1bca9975f1efebbd"
+}
