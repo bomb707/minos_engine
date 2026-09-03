@@ -23,6 +23,10 @@ from minos_engine.common.errors import MinosEngineError
 from minos_engine.qualification.l2f2_baseline_qualified_contract import (
     BaselineQualificationResult,
 )
+from minos_engine.qualification.l2f2_baseline_qualified_qualifier import (
+    CLOSURE_AUTHORITY_SOURCE,
+    TrustedBaselineQualification,
+)
 
 __all__ = [
     "BASELINE_QUALIFIED_GATE",
@@ -30,7 +34,6 @@ __all__ = [
     "BASELINE_QUALIFICATION_RESULT_PATH",
     "BaselineQualificationError",
     "BaselineQualifiedObservation",
-    "TrustedBaselineQualification",
     "assemble_baseline_qualified_gate",
     "derive_checks",
     "observation_from_result",
@@ -39,9 +42,6 @@ __all__ = [
 ]
 
 BASELINE_QUALIFIED_GATE: Final = "BASELINE-QUALIFIED"
-
-#: the accepted Phase-D closure authority source. A qualified source must descend it.
-CLOSURE_AUTHORITY_SOURCE: Final = "b61e2adfb3f871b4e0a1738ae12c1b9f0b7f9130"
 
 #: FULL prerequisite identities. The eight-character forms once used here were prefixes, not
 #: identities: any hash sharing those eight characters would have passed.
@@ -329,35 +329,6 @@ def observation_from_result(result: BaselineQualificationResult) -> BaselineQual
     )
 
 
-class TrustedBaselineQualification:
-    """A qualification result the PRODUCTION qualifier verified. Only this may mint PASS.
-
-    Deliberately not a pydantic model and deliberately not constructible from data alone: it
-    carries a private marker the qualifier supplies. A caller can build a
-    :class:`BaselineQualifiedObservation` saying anything — useful for unit-testing
-    ``derive_checks`` — but it cannot wrap one in this and reach the assembler.
-    """
-
-    __slots__ = ("_marker", "result")
-
-    def __init__(self, result: BaselineQualificationResult, *, _marker: object) -> None:
-        if _marker is not _TRUST_MARKER:
-            raise BaselineQualificationError(
-                "TrustedBaselineQualification is minted by the production qualifier only; a "
-                "caller-constructed observation can never assemble a PASS gate"
-            )
-        self.result = result
-        self._marker = _marker
-
-
-_TRUST_MARKER: Final = object()
-
-
-def _mint_trusted(result: BaselineQualificationResult) -> TrustedBaselineQualification:
-    """The production qualifier's private door. Not exported."""
-    return TrustedBaselineQualification(result, _marker=_TRUST_MARKER)
-
-
 def assemble_baseline_qualified_gate(
     trusted: TrustedBaselineQualification,
     *,
@@ -418,8 +389,28 @@ def write_baseline_qualification_outputs(
     from minos_engine.gates.verifier import write_gate
     from minos_engine.qualification.l2f2_baseline_qualified_contract import (
         canonical_baseline_qualification_bytes,
+        compute_baseline_qualification_hash,
     )
     from minos_engine.qualification.l2f_accepted_identities import repository_root
+
+    # publishing a gate beside a qualification it does not describe would create durable evidence
+    # that verifies against nothing. Refuse before writing, not after.
+    expected = compute_baseline_qualification_hash(result)
+    if gate.input_hashes.get("qualification_hash") != expected:
+        raise BaselineQualificationError(
+            "refusing to publish: the gate's qualification_hash does not describe this result"
+        )
+    if (gate.qualified_source_git_sha, gate.qualified_source_tree_sha) != (
+        result.qualified_source_git_sha,
+        result.qualified_source_tree_sha,
+    ):
+        raise BaselineQualificationError(
+            "refusing to publish: the gate names a different qualified source than the result"
+        )
+    if gate.input_hashes.get("baseline_selected_hash") != result.baseline_selected_hash:
+        raise BaselineQualificationError(
+            "refusing to publish: the gate names a different baseline-selected authority"
+        )
 
     base = root or repository_root()
     gate_path = write_gate(gate, base / BASELINE_QUALIFIED_GATE_PATH)

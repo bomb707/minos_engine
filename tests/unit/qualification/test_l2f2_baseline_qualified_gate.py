@@ -32,11 +32,13 @@ from minos_engine.qualification.l2f2_baseline_qualified_contract import (
     compute_baseline_qualification_hash,
     objective_identity,
 )
+from minos_engine.qualification.l2f2_baseline_qualified_qualifier import (
+    BaselineQualificationObservationError,
+    TrustedBaselineQualification,
+)
 from minos_engine.qualification.l2f2_baseline_qualified_runner import (
     BASELINE_QUALIFIED_GATE,
     BaselineQualificationError,
-    TrustedBaselineQualification,
-    _mint_trusted,
     assemble_baseline_qualified_gate,
     derive_checks,
     observation_from_result,
@@ -51,6 +53,7 @@ from minos_engine.qualification.l2f2_train_evidence import (
     TRAIN_LOGICAL_JOB_COUNT,
     TRAIN_PLAN_HASHES,
 )
+from tests.baseline_qualification_seam import trusted_for_tests
 
 _CONTRACT = "b24a07e208ce8e2fff6672102ae4e61aed93c6f352a5af46ba81c4789adb76d6"
 _ENVIRONMENT = "71e14a49833ac77bb9dc576345fb89c4dd68f4a3ad3673eb098d38593c1ef4d3"
@@ -145,7 +148,7 @@ def _result(**overrides: Any) -> BaselineQualificationResult:
 
 def _publish(tmp_path: Path, result: BaselineQualificationResult) -> tuple[Any, Path, Path]:
     gate = assemble_baseline_qualified_gate(
-        _mint_trusted(result), created_at="2026-09-03T12:00:00Z"
+        trusted_for_tests(result), created_at="2026-09-03T12:00:00Z"
     )
     gate_path = write_gate(gate, tmp_path / "gate.json")
     qual_path = tmp_path / "qualification.json"
@@ -226,8 +229,8 @@ def test_the_timestamp_is_excluded_but_every_scientific_field_is_not() -> None:
 # --------------------------------------------------------------------------------------------
 def test_a_caller_cannot_construct_a_trusted_qualification() -> None:
     """The decisive one: an observation saying whatever it likes must not reach the assembler."""
-    with pytest.raises(BaselineQualificationError, match="production qualifier only"):
-        TrustedBaselineQualification(_result(), _marker=object())
+    with pytest.raises(BaselineQualificationObservationError, match="production qualifier alone"):
+        TrustedBaselineQualification(object(), _result())  # type: ignore[arg-type]
 
 
 def test_the_assembler_refuses_anything_that_is_not_trusted() -> None:
@@ -247,7 +250,7 @@ def test_the_assembler_refuses_anything_that_is_not_trusted() -> None:
 )
 def test_a_false_verification_yields_hold_not_pass(override: dict) -> None:
     gate = assemble_baseline_qualified_gate(
-        _mint_trusted(_result(**override)), created_at="2026-09-03T12:00:00Z"
+        trusted_for_tests(_result(**override)), created_at="2026-09-03T12:00:00Z"
     )
     assert gate.status is GateStatus.HOLD, override
 
@@ -257,7 +260,7 @@ def test_a_false_verification_yields_hold_not_pass(override: dict) -> None:
 # --------------------------------------------------------------------------------------------
 def test_the_assembled_gate_is_a_canonical_gate_artifact() -> None:
     gate = assemble_baseline_qualified_gate(
-        _mint_trusted(_result()), created_at="2026-09-03T12:00:00Z"
+        trusted_for_tests(_result()), created_at="2026-09-03T12:00:00Z"
     )
     assert gate.gate_name == BASELINE_QUALIFIED_GATE
     assert gate.status is GateStatus.PASS
@@ -284,10 +287,10 @@ def test_the_assembled_gate_is_a_canonical_gate_artifact() -> None:
 
 def test_the_gate_hash_is_deterministic() -> None:
     a = assemble_baseline_qualified_gate(
-        _mint_trusted(_result()), created_at="2026-09-03T12:00:00Z"
+        trusted_for_tests(_result()), created_at="2026-09-03T12:00:00Z"
     )
     b = assemble_baseline_qualified_gate(
-        _mint_trusted(_result()), created_at="2026-09-03T12:00:00Z"
+        trusted_for_tests(_result()), created_at="2026-09-03T12:00:00Z"
     )
     assert a.gate_hash == b.gate_hash
 
@@ -332,7 +335,7 @@ def test_a_forged_all_true_gate_is_rejected_by_the_artifact_hash(tmp_path: Path)
     """Flipping the checks after assembly breaks GateArtifact's own canonical hash."""
     result = _result(test_untouched=False)
     gate = assemble_baseline_qualified_gate(
-        _mint_trusted(result), created_at="2026-09-03T12:00:00Z"
+        trusted_for_tests(result), created_at="2026-09-03T12:00:00Z"
     )
     assert gate.status is GateStatus.HOLD
     forged = gate.model_copy(
@@ -357,7 +360,7 @@ def test_a_hash_consistent_forgery_still_dies_on_re_derivation(tmp_path: Path) -
     checks must STILL be re-derived from the qualification and contradict the forged ones."""
     result = _result(test_untouched=False)
     gate = assemble_baseline_qualified_gate(
-        _mint_trusted(result), created_at="2026-09-03T12:00:00Z"
+        trusted_for_tests(result), created_at="2026-09-03T12:00:00Z"
     )
     payload = gate.model_dump(mode="json")
     payload["status"] = GateStatus.PASS.value
@@ -490,7 +493,7 @@ def test_a_wrong_identity_fails_its_check(override: dict, failing: str) -> None:
 def test_the_writer_emits_a_gate_and_canonical_qualification_bytes(tmp_path: Path) -> None:
     result = _result()
     gate = assemble_baseline_qualified_gate(
-        _mint_trusted(result), created_at="2026-09-03T12:00:00Z"
+        trusted_for_tests(result), created_at="2026-09-03T12:00:00Z"
     )
     gate_path, result_path = write_baseline_qualification_outputs(gate, result, root=tmp_path)
     assert gate_path.is_file() and result_path.is_file()
@@ -538,7 +541,7 @@ def test_the_verifier_needs_no_database_gatk_or_truth() -> None:
 def test_the_gate_carries_no_external_ci_assertion() -> None:
     """No fabricated GitHub Actions attestation anywhere in the gate."""
     gate = assemble_baseline_qualified_gate(
-        _mint_trusted(_result()), created_at="2026-09-03T12:00:00Z"
+        trusted_for_tests(_result()), created_at="2026-09-03T12:00:00Z"
     )
     blob = json.dumps(gate.model_dump(mode="json")).lower()
     for forbidden in ("github", "actions", "ci_green", "workflow_run"):
