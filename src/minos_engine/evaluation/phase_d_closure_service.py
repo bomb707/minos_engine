@@ -32,6 +32,14 @@ __all__ = [
     "derive_l2f2_phase_d_closure",
 ]
 
+ACCEPTED_BASELINE_PROTOCOL_HASH: Final = (
+    "c548e190571f5e964560cf30021a520ea8aad6674569fa3202af880d7dff77d1"
+)
+ACCEPTED_SELECTION_INTERPRETATION_HASH: Final = (
+    "4c169912f67877d6ba254fb280dbd2ff44aa4aaaf65bedfa1bca9975f1efebbd"
+)
+ACCEPTED_INTERPRETATION_STATUS: Final = "OUTCOME_BLIND_POST_COLLECTION_CLARIFICATION"
+
 PHASE_D_CLOSURE_DATABASE: Final = "minos_l2f2_validation"
 PHASE_D_CLOSURE_REVISION: Final = "0026_l2f2_phase_d_closure"
 _CLOSURE_VIEW: Final = "evaluation.l2f_phase_d_closure_inputs"
@@ -146,6 +154,92 @@ def _required_file(variable: str) -> Path:
     return path
 
 
+def _verify_committed_authorities(authority: Any) -> str:
+    """Verify the COMMITTED manifests, and their agreement, before a score row is read.
+
+    Recomputing a hash from source proves the source is self-consistent; it proves nothing about
+    what was committed. A tampered or missing manifest has to stop closure BEFORE it reads a
+    score, because by the time an outcome has been consumed the damage of having consulted the
+    wrong rulebook is already done.
+
+    Returns the VERIFIED committed protocol hash, which is what the closure then binds — never a
+    source-derived value that happens to disagree with the manifest.
+    """
+    from minos_engine.baseline.phase_d_selection import (
+        PhaseDSelectionInterpretationError,
+        load_committed_selection_interpretation,
+    )
+    from minos_engine.baseline.protocol import (
+        BaselineProtocolError,
+        build_baseline_protocol,
+        compute_protocol_hash,
+        load_committed_protocol,
+    )
+
+    try:
+        committed_protocol = load_committed_protocol()
+    except BaselineProtocolError as exc:
+        raise PhaseDClosureAuthorityError(
+            f"the committed baseline protocol manifest is unusable: {exc}"
+        ) from exc
+    protocol_hash = str(committed_protocol.get("protocol_hash"))
+    if protocol_hash != ACCEPTED_BASELINE_PROTOCOL_HASH:
+        raise PhaseDClosureAuthorityError(
+            f"the committed protocol hash is {protocol_hash}, not this search's "
+            f"{ACCEPTED_BASELINE_PROTOCOL_HASH}"
+        )
+    if compute_protocol_hash(build_baseline_protocol()) != protocol_hash:
+        raise PhaseDClosureAuthorityError(
+            "the committed protocol manifest and the protocol source disagree"
+        )
+
+    try:
+        committed_interpretation = load_committed_selection_interpretation()
+    except PhaseDSelectionInterpretationError as exc:
+        raise PhaseDClosureAuthorityError(
+            f"the committed selection interpretation is unusable: {exc}"
+        ) from exc
+    interpretation_hash = str(committed_interpretation.get("selection_interpretation_hash"))
+    if interpretation_hash != ACCEPTED_SELECTION_INTERPRETATION_HASH:
+        raise PhaseDClosureAuthorityError(
+            f"the committed selection interpretation is {interpretation_hash}, not the accepted "
+            f"{ACCEPTED_SELECTION_INTERPRETATION_HASH}"
+        )
+    content = committed_interpretation["content"]
+    if content.get("interpretation_status") != ACCEPTED_INTERPRETATION_STATUS:
+        raise PhaseDClosureAuthorityError(
+            f"the committed interpretation status is {content.get('interpretation_status')!r}, "
+            f"not {ACCEPTED_INTERPRETATION_STATUS!r}"
+        )
+
+    # the two authorities must AGREE, not merely sit side by side in the closure hash.
+    if content.get("baseline_protocol_hash") != protocol_hash:
+        raise PhaseDClosureAuthorityError(
+            "the selection interpretation cites a different baseline protocol than the committed "
+            "manifest"
+        )
+    if content.get("phase_d_plan_hash") != authority.plan_hash:
+        raise PhaseDClosureAuthorityError(
+            "the selection interpretation cites a different Phase-D plan than the verified "
+            "finalist freeze derives"
+        )
+    if list(content.get("ordered_finalists", [])) != list(authority.ordered_config_hashes):
+        raise PhaseDClosureAuthorityError(
+            "the interpretation's finalists differ from the verified freeze, in value or order"
+        )
+    if dict(content.get("inherited_candidate_index", [])) != dict(
+        authority.inherited_candidate_index
+    ):
+        raise PhaseDClosureAuthorityError(
+            "the interpretation's inherited candidate indices differ from the verified freeze"
+        )
+    if content.get("final_selection_rule") != "SELECT_RANK_ZERO":
+        raise PhaseDClosureAuthorityError(
+            f"the committed final selection rule is {content.get('final_selection_rule')!r}"
+        )
+    return protocol_hash
+
+
 def _read_closure_rows(conn: Connection) -> list[dict[str, Any]]:
     """Every VALIDATION Phase-D row the narrow surface exposes. No filter, no ordering trust."""
     from sqlalchemy import text
@@ -182,17 +276,15 @@ def _derive_with_trust(
     reachable from the public entry, which compiles them in, so widening them here does not widen
     the production trust surface.
     """
-    from minos_engine.baseline.protocol import build_baseline_protocol, compute_protocol_hash
-
     with engine.connect() as conn:
+        # ---- every scientific authority, in order, ALL of it before a score row exists -------
         _authorize_closure_connection(
             conn, database_name=expected_database, revision=expected_revision
         )
         authority = _frozen_phase_d_authority(_required_file(ENV_FINALIST_FREEZE_PATH))
+        protocol_hash = _verify_committed_authorities(authority)
+
+        # ---- only now: the outcomes ---------------------------------------------------------
         rows = _read_closure_rows(conn)
 
-    return build_phase_d_closure(
-        rows,
-        authority=authority,
-        baseline_protocol_hash=compute_protocol_hash(build_baseline_protocol()),
-    )
+    return build_phase_d_closure(rows, authority=authority, baseline_protocol_hash=protocol_hash)

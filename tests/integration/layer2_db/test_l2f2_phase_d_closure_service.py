@@ -236,3 +236,144 @@ def test_tampering_with_an_external_matrix_json_cannot_move_the_ranking(
     assert compute_phase_d_closure_hash(after) == before
     assert after.selected_config_hash == _EXPECTED_WINNER
     assert after.selected_config_hash != SEED_CONFIG_HASH
+
+
+# --------------------------------------------------------------------------------------------
+# CORRECTIVE: the committed manifests are VERIFIED before an outcome row is read
+#
+# Recomputing a hash from source proves the source is self-consistent; it proves nothing about
+# what was committed. A tampered rulebook has to stop closure BEFORE it consults any score.
+# --------------------------------------------------------------------------------------------
+class _RowSpy:
+    """Records whether the closure surface was queried at all."""
+
+    def __init__(self) -> None:
+        self.reads = 0
+
+    def __enter__(self) -> _RowSpy:
+        from minos_engine.evaluation import phase_d_closure_service as mod
+
+        self._real = mod._read_closure_rows
+        spy = self
+
+        def counting(conn: Any) -> Any:
+            spy.reads += 1
+            return spy._real(conn)
+
+        mod._read_closure_rows = counting  # type: ignore[assignment]
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        from minos_engine.evaluation import phase_d_closure_service as mod
+
+        mod._read_closure_rows = self._real  # type: ignore[assignment]
+
+
+def test_a_missing_selection_interpretation_stops_closure_before_any_row_is_read(
+    store: Any, monkeypatch: Any
+) -> None:
+    from minos_engine.baseline import phase_d_selection as sel
+    from minos_engine.evaluation import phase_d_closure_service as mod
+
+    def absent(root: Any = None) -> Any:
+        raise sel.PhaseDSelectionInterpretationError("interpretation manifest is missing")
+
+    monkeypatch.setattr(sel, "load_committed_selection_interpretation", absent)
+    monkeypatch.setattr(mod, "_read_closure_rows", mod._read_closure_rows)
+    with _RowSpy() as spy, pytest.raises(PhaseDClosureAuthorityError, match="unusable"):
+        store.close()
+    assert spy.reads == 0, "a score row was read despite an unusable interpretation"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "match"),
+    [
+        pytest.param("final_selection_rule", "SELECT_SEED", "final selection rule", id="rule"),
+        pytest.param("interpretation_status", "PRE_REGISTERED", "status", id="status"),
+        pytest.param("baseline_protocol_hash", "a" * 64, "different baseline protocol", id="proto"),
+        pytest.param("phase_d_plan_hash", "b" * 64, "different Phase-D plan", id="plan"),
+    ],
+)
+def test_a_tampered_selection_interpretation_stops_closure_before_any_row_is_read(
+    store: Any, monkeypatch: Any, field: str, value: str, match: str
+) -> None:
+    from minos_engine.baseline import phase_d_selection as sel
+
+    real = sel.load_committed_selection_interpretation
+
+    def tampered(root: Any = None) -> Any:
+        document = real(root)
+        document = {**document, "content": {**document["content"], field: value}}
+        return document
+
+    monkeypatch.setattr(sel, "load_committed_selection_interpretation", tampered)
+    with _RowSpy() as spy, pytest.raises(PhaseDClosureAuthorityError, match=match):
+        store.close()
+    assert spy.reads == 0
+
+
+def test_a_tampered_interpretation_hash_stops_closure_before_any_row_is_read(
+    store: Any, monkeypatch: Any
+) -> None:
+    from minos_engine.baseline import phase_d_selection as sel
+
+    real = sel.load_committed_selection_interpretation
+    monkeypatch.setattr(
+        sel,
+        "load_committed_selection_interpretation",
+        lambda root=None: {**real(root), "selection_interpretation_hash": "c" * 64},
+    )
+    with _RowSpy() as spy, pytest.raises(PhaseDClosureAuthorityError, match="not the accepted"):
+        store.close()
+    assert spy.reads == 0
+
+
+def test_a_missing_or_tampered_protocol_manifest_stops_closure_before_any_row_is_read(
+    store: Any, monkeypatch: Any
+) -> None:
+    from minos_engine.baseline import protocol as proto
+
+    monkeypatch.setattr(
+        proto,
+        "load_committed_protocol",
+        lambda root=None: (_ for _ in ()).throw(
+            proto.BaselineProtocolError("committed protocol manifest is missing")
+        ),
+    )
+    with _RowSpy() as spy, pytest.raises(PhaseDClosureAuthorityError, match="unusable"):
+        store.close()
+    assert spy.reads == 0
+
+    monkeypatch.setattr(
+        proto, "load_committed_protocol", lambda root=None: {"protocol_hash": "d" * 64}
+    )
+    with _RowSpy() as spy, pytest.raises(PhaseDClosureAuthorityError, match="committed protocol"):
+        store.close()
+    assert spy.reads == 0
+
+
+def test_the_closure_binds_the_verified_committed_protocol_hash(store: Any) -> None:
+    closure = store.close()
+    assert closure.baseline_protocol_hash == (
+        "c548e190571f5e964560cf30021a520ea8aad6674569fa3202af880d7dff77d1"
+    )
+    assert closure.selection_interpretation_hash == (
+        "4c169912f67877d6ba254fb280dbd2ff44aa4aaaf65bedfa1bca9975f1efebbd"
+    )
+
+
+def test_every_authority_is_established_before_the_rows_are_read() -> None:
+    """§11 — the ordering, asserted on the source rather than inferred from behaviour."""
+    import inspect
+
+    from minos_engine.evaluation import phase_d_closure_service as mod
+
+    source = inspect.getsource(mod._derive_with_trust)
+    order = [
+        source.index("_authorize_closure_connection("),
+        source.index("_frozen_phase_d_authority("),
+        source.index("_verify_committed_authorities("),
+        source.index("_read_closure_rows("),
+        source.index("return build_phase_d_closure("),
+    ]
+    assert order == sorted(order), order

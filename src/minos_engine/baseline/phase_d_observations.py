@@ -56,6 +56,7 @@ __all__ = [
     "ACCEPTED_EXECUTION_ENVIRONMENT_HASH",
     "ACCEPTED_MINOS_SUBNET_COMMIT",
     "ACCEPTED_SCORING_CONTRACT_HASH",
+    "ACCEPTED_SELECTION_INTERPRETATION_HASH",
     "PHASE_D_CLOSURE_DOMAIN",
     "PHASE_D_CLOSURE_SCHEMA",
     "CandidateClosure",
@@ -74,6 +75,9 @@ ACCEPTED_SCORING_CONTRACT_HASH: Final = (
     "b24a07e208ce8e2fff6672102ae4e61aed93c6f352a5af46ba81c4789adb76d6"
 )
 ACCEPTED_MINOS_SUBNET_COMMIT: Final = "649bb92c6abccebde58a736a2b2af7fd77a701c1"
+ACCEPTED_SELECTION_INTERPRETATION_HASH: Final = (
+    "4c169912f67877d6ba254fb280dbd2ff44aa4aaaf65bedfa1bca9975f1efebbd"
+)
 ACCEPTED_EXECUTION_ENVIRONMENT_HASH: Final = (
     "71e14a49833ac77bb9dc576345fb89c4dd68f4a3ad3673eb098d38593c1ef4d3"
 )
@@ -232,11 +236,15 @@ def _row_pair(row: Mapping[str, Any]) -> tuple[int, int]:
 
 def derive_phase_d_observations(
     rows: Sequence[Mapping[str, Any]], *, authority: PhaseDAuthority
-) -> tuple[dict[tuple[int, int], BaselineObservation], tuple[ClosureObservation, ...]]:
+) -> tuple[dict[tuple[int, int], BaselineObservation], tuple[ClosureObservation, ...], str]:
     """Turn closure rows into the exact forty observations, or refuse.
 
-    Returns the observations keyed by frozen pair, plus their canonical identities ordered by
-    ``(member_index, config_index)`` — never by database arrival order.
+    Returns the observations keyed by frozen pair, their canonical identities ordered by
+    ``(member_index, config_index)`` — never by database arrival order — and the ONE validated
+    execution environment. The environment is returned rather than re-derived by the caller: a
+    campaign whose decided outcomes are execution FAILURES carries it on the failure rows, so a
+    "first row with a success environment" search would raise ``StopIteration`` on exactly the
+    matrix that most needs to be closed carefully.
     """
     _require_frozen_authority(authority)
     frozen_configs = {h: i for i, h in enumerate(authority.ordered_config_hashes)}
@@ -266,10 +274,10 @@ def derive_phase_d_observations(
                 f"row indices {pair} disagree with the frozen identities they carry"
             )
 
-        # A different scoring contract is not this campaign's evidence. Ignored, never averaged.
-        contract = row.get("scoring_contract_hash") or row.get(
-            "evaluation_failure_scoring_contract_hash"
-        )
+        # A different scoring contract is not this campaign's evidence. The view names the
+        # contract of THIS terminal outcome in one column, so there is nothing to guess: a foreign
+        # row is skipped whole and can neither replace nor combine with the accepted one.
+        contract = row.get("evaluation_scoring_contract_hash")
         if contract is not None and str(contract) != ACCEPTED_SCORING_CONTRACT_HASH:
             continue
 
@@ -304,6 +312,14 @@ def derive_phase_d_observations(
             f"{sorted(environments)}; candidates compared across different environments are not "
             "comparable"
         )
+    environment = environments.pop()
+    # ONE environment is not enough: it must be the environment this campaign was frozen under.
+    # A uniformly-wrong environment is internally consistent and still not these results.
+    if environment != ACCEPTED_EXECUTION_ENVIRONMENT_HASH:
+        raise PhaseDClosureError(
+            f"the forty outcomes were produced under execution environment {environment}, not "
+            f"this campaign's {ACCEPTED_EXECUTION_ENVIRONMENT_HASH}"
+        )
 
     observations: dict[tuple[int, int], BaselineObservation] = {}
     identities: list[ClosureObservation] = []
@@ -317,7 +333,7 @@ def derive_phase_d_observations(
             )
         observations[pair] = observation
         identities.append(identity)
-    return observations, tuple(identities)
+    return observations, tuple(identities), environment
 
 
 def _one_observation(
@@ -331,11 +347,17 @@ def _one_observation(
 
     if execution_failure is not None:
         failure_code: str | None = str(execution_failure)
-        runtime = int(row.get("execution_failure_runtime_ms") or 0)
+        runtime = _require_runtime(
+            row.get("execution_failure_runtime_ms"),
+            pair=pair,
+            source="execution failure runtime",
+        )
         admitted, minos_score = False, None
     elif evaluation_failure is not None:
         failure_code = str(evaluation_failure)
-        runtime = int(row.get("execution_runtime_ms") or 0)
+        runtime = _require_runtime(
+            row.get("execution_runtime_ms"), pair=pair, source="execution runtime"
+        )
         admitted, minos_score = False, None
     elif row.get("evaluation_id") is None:
         raise PhaseDClosureError(
@@ -344,7 +366,9 @@ def _one_observation(
         )
     else:
         failure_code = None
-        runtime = int(row.get("execution_runtime_ms") or 0)
+        runtime = _require_runtime(
+            row.get("execution_runtime_ms"), pair=pair, source="execution runtime"
+        )
         if not admitted:
             # the validator refused the result: a candidate failure with no bounded code.
             minos_score = None
@@ -376,7 +400,7 @@ def _one_observation(
         evaluation_id=_opt(row.get("evaluation_id")),
         evaluation_hash=_opt(row.get("evaluation_hash")),
         evaluation_failure_id=_opt(row.get("evaluation_failure_id")),
-        scoring_contract_hash=_opt(row.get("scoring_contract_hash")),
+        scoring_contract_hash=_opt(row.get("evaluation_scoring_contract_hash")),
         admitted=admitted,
         minos_score=observation.minos_score,
         failure_code=failure_code,
@@ -388,6 +412,26 @@ def _opt(value: Any) -> str | None:
     return None if value is None else str(value)
 
 
+def _require_runtime(value: Any, *, pair: tuple[int, int], source: str) -> int:
+    """A measured runtime, or a refusal. Never a substituted zero.
+
+    ``0014`` exists precisely because a missing runtime silently read as zero would corrupt the
+    frozen tie-break's second level: a candidate with no measurement would appear infinitely fast
+    and win ties it never earned. The database already declares these NOT NULL, so a NULL here
+    means the ledger is not what closure believes it is, and closure stops rather than guessing.
+    """
+    if value is None:
+        raise PhaseDClosureError(
+            f"frozen pair {pair} has no {source}; the runtime tie-break is part of the frozen "
+            "total order and a missing measurement is never read as zero"
+        )
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise PhaseDClosureError(f"frozen pair {pair} has a non-integer {source} {value!r}")
+    if value < 0:
+        raise PhaseDClosureError(f"frozen pair {pair} has a negative {source} {value}")
+    return value
+
+
 def build_phase_d_closure(
     rows: Sequence[Mapping[str, Any]],
     *,
@@ -395,8 +439,21 @@ def build_phase_d_closure(
     baseline_protocol_hash: str,
 ) -> PhaseDClosure:
     """Aggregate, rank and select — every step delegated to the already-frozen implementation."""
-    observations, identities = derive_phase_d_observations(rows, authority=authority)
     interpretation = selection_interpretation_content()
+    # The authorities must AGREE before a closure exists. Placing two contradictory identities
+    # side by side inside the closure hash would make the disagreement durable instead of fatal.
+    if baseline_protocol_hash != interpretation["baseline_protocol_hash"]:
+        raise PhaseDClosureError(
+            f"the supplied baseline protocol {baseline_protocol_hash} is not the one the "
+            f"selection interpretation cites ({interpretation['baseline_protocol_hash']})"
+        )
+    if compute_selection_interpretation_hash() != ACCEPTED_SELECTION_INTERPRETATION_HASH:
+        raise PhaseDClosureError(
+            "the selection interpretation source is not the accepted "
+            f"{ACCEPTED_SELECTION_INTERPRETATION_HASH}"
+        )
+
+    observations, identities, environment = derive_phase_d_observations(rows, authority=authority)
 
     aggregates: list[CandidateAggregate] = []
     for config_index, config_hash in enumerate(authority.ordered_config_hashes):
@@ -425,13 +482,7 @@ def build_phase_d_closure(
         phase_d_plan_hash=authority.plan_hash,
         finalist_freeze_sha256=authority.finalist_freeze_sha256,
         phase_c_closure_sha256=authority.phase_c_closure_sha256,
-        execution_environment_hash=str(
-            next(
-                r["execution_environment_hash"]
-                for r in rows
-                if r.get("execution_environment_hash") is not None
-            )
-        ),
+        execution_environment_hash=environment,
         scoring_contract_hash=ACCEPTED_SCORING_CONTRACT_HASH,
         minos_subnet_sha=ACCEPTED_MINOS_SUBNET_COMMIT,
         candidate_count=len(authority.ordered_config_hashes),

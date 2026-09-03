@@ -226,3 +226,185 @@ def _artifact(conn: Any, label: str, media_type: str, provenance: str) -> str:
 
 
 _ = uuid
+
+
+def seed_single_execution(engine: Any, authority: Any, tmp_path: Path) -> tuple[str, str]:
+    """One frozen campaign with ONE SUCCEEDED execution and NO terminal evaluation yet.
+
+    The contract-cross tests then add terminal outcomes under chosen scoring contracts and read
+    the ACTUAL view output.
+    """
+    seed_two_validation_campaigns(engine, authority, tmp_path, decide_one_job=False)
+    provision_reference_root(tmp_path / "reference")
+    assert provision_validation_truth(engine, tmp_path / "practice") == 10
+
+    with engine.connect() as conn, conn.begin():
+        conn.execute(text("SET LOCAL ROLE minos_admin"))
+        plan_id = conn.execute(
+            text("SELECT id FROM experiments.l2f_experiment_plans WHERE plan_hash = :h"),
+            {"h": authority.plan_hash},
+        ).scalar_one()
+        member_id, registry_id = conn.execute(
+            text(
+                "SELECT id, dataset_registry_id FROM experiments.l2f_experiment_plan_members "
+                " WHERE plan_id = :p AND member_index = 0"
+            ),
+            {"p": plan_id},
+        ).one()
+        config_id = conn.execute(
+            text(
+                "SELECT id FROM experiments.l2f_experiment_plan_configs "
+                " WHERE plan_id = :p AND config_index = 0"
+            ),
+            {"p": plan_id},
+        ).scalar_one()
+        execution_id = _execution_only(
+            conn,
+            plan_id=plan_id,
+            member_id=member_id,
+            config_id=config_id,
+            member_index=0,
+            config_index=0,
+        )
+    return str(execution_id), str(registry_id)
+
+
+def _execution_only(
+    conn: Any,
+    *,
+    plan_id: str,
+    member_id: str,
+    config_id: str,
+    member_index: int,
+    config_index: int,
+) -> str:
+    tag = f"{member_index}-{config_index}"
+    job_key = H(f"jobkey:{tag}")
+    job_id = conn.execute(
+        text(
+            "INSERT INTO experiments.l2f_experiment_jobs "
+            "  (plan_id, plan_member_id, plan_config_id, job_key, status) "
+            "VALUES (:p, :m, :c, :k, 'SUCCEEDED') RETURNING id"
+        ),
+        {"p": plan_id, "m": member_id, "c": config_id, "k": job_key},
+    ).scalar_one()
+    vcf = _artifact(conn, f"vcf:{tag}", L2F_VCF_MEDIA_TYPE, "l2f:gatk-vcf")
+    manifest = _artifact(
+        conn, f"man:{tag}", L2F_RESULT_MANIFEST_MEDIA_TYPE, "l2f:execution-result-json"
+    )
+    config_hash, space = conn.execute(
+        text(
+            "SELECT c.config_hash, p.parameter_space_hash "
+            "  FROM experiments.l2f_experiment_plan_configs c "
+            "  JOIN experiments.l2f_experiment_plans p ON p.id = c.plan_id "
+            " WHERE c.id = :c"
+        ),
+        {"c": config_id},
+    ).one()
+    return str(
+        conn.execute(
+            text(
+                "INSERT INTO experiments.l2f_execution_results ("
+                "  plan_id, job_id, job_key, plan_member_id, plan_config_id, config_hash, "
+                "  parameter_space_hash, input_identity_hash, logical_argv_hash, "
+                "  gatk_executable_sha256, gatk_version, vcf_artifact_id, vcf_sha256, "
+                "  vcf_media_type, result_manifest_artifact_id, result_manifest_sha256, "
+                "  result_manifest_media_type, result_hash, runtime_ms, "
+                "  execution_environment_hash) "
+                "VALUES (:p, :j, :k, :m, :c, :ch, :ps, :iid, :argv, :gx, '4.5.0.0', :va, :vs, "
+                "        :vmt, :ma, :ms, :mmt, :rh, 60000, :env) RETURNING id"
+            ),
+            {
+                "p": plan_id,
+                "j": job_id,
+                "k": job_key,
+                "m": member_id,
+                "c": config_id,
+                "ch": config_hash,
+                "ps": space,
+                "iid": H(f"input:{tag}"),
+                "argv": H(f"argv:{tag}"),
+                "gx": H("gatk-exe"),
+                "va": vcf,
+                "vs": H(f"vcf:{tag}"),
+                "vmt": L2F_VCF_MEDIA_TYPE,
+                "ma": manifest,
+                "ms": H(f"man:{tag}"),
+                "mmt": L2F_RESULT_MANIFEST_MEDIA_TYPE,
+                "rh": H(f"result:{tag}"),
+                "env": ACCEPTED_EXECUTION_ENVIRONMENT_HASH,
+            },
+        ).scalar_one()
+    )
+
+
+def add_evaluation_success(
+    engine: Any, execution_id: str, registry_id: str, *, contract: str, score: float
+) -> None:
+    """One terminal evaluation SUCCESS under the given scoring contract."""
+    with engine.connect() as conn, conn.begin():
+        conn.execute(text("SET LOCAL ROLE minos_admin"))
+        identity_id = conn.execute(
+            text(
+                "SELECT id FROM evaluation.dataset_evaluation_identity "
+                " WHERE dataset_registry_id = :d"
+            ),
+            {"d": registry_id},
+        ).scalar_one()
+        metrics = _artifact(
+            conn, f"metrics:{contract[:8]}", _METRICS_MEDIA_TYPE, "l2f:evaluation-metrics"
+        )
+        conn.execute(
+            text(
+                "INSERT INTO evaluation.l2f_evaluation_results ("
+                "  execution_result_id, execution_result_hash, dataset_registry_id, partition, "
+                "  dataset_evaluation_identity_id, truth_vcf_sha256, truth_tbi_sha256, "
+                "  mutations_vcf_sha256, mutations_tbi_sha256, scoring_contract_hash, "
+                "  scorer_upstream_commit, scoring_py_sha256, validator_py_sha256, "
+                "  happy_image_digest, bcftools_image_digest, metrics_artifact_id, "
+                "  metrics_artifact_sha256, metrics_media_type, overcall_penalty, "
+                "  minos_score_100, minos_score, admitted, admission_code, evaluation_hash) "
+                "SELECT :e, r.result_hash, :d, 'validation', :ident, i.truth_vcf_sha256, "
+                "       i.truth_tbi_sha256, i.mutations_vcf_sha256, i.mutations_tbi_sha256, "
+                "       :contract, :commit, :spy, :vpy, :happy, :bcftools, :mart, :msha, :mmt, "
+                "       0, :s100, :s, true, 'ADMITTED', :vh "
+                "  FROM experiments.l2f_execution_results r "
+                "  JOIN evaluation.dataset_evaluation_identity i ON i.id = :ident "
+                " WHERE r.id = :e"
+            ),
+            {
+                "e": execution_id,
+                "d": registry_id,
+                "ident": identity_id,
+                "contract": contract,
+                "commit": ACCEPTED_MINOS_SUBNET_COMMIT,
+                "spy": H(f"scoring:{contract[:8]}"),
+                "vpy": H(f"validator:{contract[:8]}"),
+                "happy": "fake/happy@sha256:" + "a" * 64,
+                "bcftools": "fake/bcftools@sha256:" + "b" * 64,
+                "mart": metrics,
+                "msha": H(f"metrics:{contract[:8]}"),
+                "mmt": _METRICS_MEDIA_TYPE,
+                "s100": score * 100.0,
+                "s": score,
+                "vh": H(f"evalhash:{contract[:8]}"),
+            },
+        )
+
+
+def add_evaluation_failure(
+    engine: Any, execution_id: str, registry_id: str, *, contract: str, code: str
+) -> None:
+    """One terminal evaluation FAILURE under the given scoring contract."""
+    with engine.connect() as conn, conn.begin():
+        conn.execute(text("SET LOCAL ROLE minos_admin"))
+        conn.execute(
+            text(
+                "INSERT INTO evaluation.l2f_evaluation_failures ("
+                "  execution_result_id, execution_result_hash, dataset_registry_id, "
+                "  scoring_contract_hash, failure_code) "
+                "SELECT :e, r.result_hash, :d, :contract, :code "
+                "  FROM experiments.l2f_execution_results r WHERE r.id = :e"
+            ),
+            {"e": execution_id, "d": registry_id, "contract": contract, "code": code},
+        )

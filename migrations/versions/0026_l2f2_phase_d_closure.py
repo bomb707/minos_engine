@@ -28,13 +28,21 @@ Admission is the PLAN's persisted partition, joined through the job's own plan. 
 partition parameter to get wrong: TRAIN and TEST jobs are not rows a caller could filter badly,
 they are not rows at all.
 
-One row per job, and the scoring contract is not collapsed away
----------------------------------------------------------------
-A job has at most one execution result and at most one execution failure; an execution may in
-principle carry terminal evaluations under more than one scoring contract. The view therefore
-keeps ``scoring_contract_hash`` on every evaluation column set and does NOT pick a winner among
-contracts — no "latest", no "highest", no "first row". A job evaluated under two contracts appears
-as two rows, which the reader is required to notice and refuse rather than silently average.
+One row per (job x evaluation terminal outcome), and contracts never cross-multiply
+----------------------------------------------------------------------------------
+The evaluation exclusivity invariant is on ``(execution_result_id, scoring_contract_hash)``, NOT
+on ``execution_result_id`` alone: an execution may legally carry a SUCCESS under one scoring
+contract and a FAILURE under another. LEFT JOINing ``l2f_evaluation_results`` and
+``l2f_evaluation_failures`` independently would therefore pair them, emitting one row carrying an
+accepted success *and* a foreign failure — and a reader that prefers the failure would let a
+foreign contract overwrite this campaign's result. The inverse pairing is just as wrong.
+
+So the two ledgers are first UNIONed into ONE terminal relation keyed by
+``(execution_result_id, scoring_contract_hash)``, where exactly one side is populated per row,
+and only then joined to the execution. A job evaluated under two contracts becomes two rows that
+cannot contaminate each other; an execution with no terminal evaluation stays one row with the
+evaluation columns NULL. No "latest", no "highest", no "first row", no COALESCE across unrelated
+outcomes.
 """
 
 from __future__ import annotations
@@ -54,13 +62,38 @@ _DENIED_ROLES = ("minos_live", "minos_trainer", "minos_runner")
 
 
 def _closure_view() -> str:
-    """One row per (Phase-D validation job x terminal evaluation identity).
+    """One row per (Phase-D validation job x evaluation terminal outcome).
 
     Every column is an immutable ledger fact. ``member_index`` and ``config_index`` come from the
     persisted plan rows, so the frozen pair a row belongs to is not something a caller asserts.
+    ``evaluation_scoring_contract_hash`` names the contract of THIS terminal outcome — success or
+    failure — so no caller ever has to guess which contract a column belongs to.
     """
     return f"""
         CREATE VIEW {_CLOSURE_VIEW} AS
+        WITH evaluation_terminal AS (
+            SELECT ev.execution_result_id            AS execution_result_id,
+                   ev.scoring_contract_hash          AS scoring_contract_hash,
+                   ev.id                             AS evaluation_id,
+                   ev.evaluation_hash                AS evaluation_hash,
+                   ev.minos_score                    AS minos_score,
+                   ev.admitted                       AS admitted,
+                   ev.admission_code                 AS admission_code,
+                   NULL::uuid                        AS evaluation_failure_id,
+                   NULL::text                        AS evaluation_failure_code
+              FROM evaluation.l2f_evaluation_results ev
+            UNION ALL
+            SELECT evf.execution_result_id,
+                   evf.scoring_contract_hash,
+                   NULL::uuid,
+                   NULL::text,
+                   NULL::double precision,
+                   NULL::boolean,
+                   NULL::text,
+                   evf.id,
+                   evf.failure_code
+              FROM evaluation.l2f_evaluation_failures evf
+        )
         SELECT p.plan_hash                        AS plan_hash,
                j.id                               AS job_id,
                j.job_key                          AS job_key,
@@ -79,15 +112,14 @@ def _closure_view() -> str:
                ef.failure_code                    AS execution_failure_code,
                ef.runtime_ms                      AS execution_failure_runtime_ms,
                ef.execution_environment_hash       AS execution_failure_environment_hash,
-               ev.id                              AS evaluation_id,
-               ev.evaluation_hash                 AS evaluation_hash,
-               ev.scoring_contract_hash           AS scoring_contract_hash,
-               ev.minos_score                     AS minos_score,
-               ev.admitted                        AS admitted,
-               ev.admission_code                  AS admission_code,
-               evf.id                             AS evaluation_failure_id,
-               evf.failure_code                   AS evaluation_failure_code,
-               evf.scoring_contract_hash          AS evaluation_failure_scoring_contract_hash
+               et.evaluation_id                   AS evaluation_id,
+               et.evaluation_hash                 AS evaluation_hash,
+               et.scoring_contract_hash           AS evaluation_scoring_contract_hash,
+               et.minos_score                     AS minos_score,
+               et.admitted                        AS admitted,
+               et.admission_code                  AS admission_code,
+               et.evaluation_failure_id           AS evaluation_failure_id,
+               et.evaluation_failure_code         AS evaluation_failure_code
           FROM experiments.l2f_experiment_jobs j
           JOIN experiments.l2f_experiment_plans p
             ON p.id = j.plan_id
@@ -101,10 +133,8 @@ def _closure_view() -> str:
             ON er.job_id = j.id
           LEFT JOIN experiments.l2f_execution_failures ef
             ON ef.job_id = j.id
-          LEFT JOIN evaluation.l2f_evaluation_results ev
-            ON ev.execution_result_id = er.id
-          LEFT JOIN evaluation.l2f_evaluation_failures evf
-            ON evf.execution_result_id = er.id
+          LEFT JOIN evaluation_terminal et
+            ON et.execution_result_id = er.id
          WHERE p.partition = '{_VALIDATION}'
            AND pm.partition = '{_VALIDATION}';
     """

@@ -87,23 +87,22 @@ def _row(
         "execution_failure_environment_hash": environment if execution_failure else None,
         "evaluation_id": None,
         "evaluation_hash": None,
-        "scoring_contract_hash": None,
+        "evaluation_scoring_contract_hash": None,
         "minos_score": None,
         "admitted": None,
         "admission_code": None,
         "evaluation_failure_id": None,
         "evaluation_failure_code": None,
-        "evaluation_failure_scoring_contract_hash": None,
     }
     if execution_failure is None:
         if evaluation_failure is not None:
             row["evaluation_failure_id"] = f"evalfail-{tag}"
             row["evaluation_failure_code"] = evaluation_failure
-            row["evaluation_failure_scoring_contract_hash"] = contract
+            row["evaluation_scoring_contract_hash"] = contract
         else:
             row["evaluation_id"] = f"eval-{tag}"
             row["evaluation_hash"] = f"vh{tag}".ljust(64, "c")
-            row["scoring_contract_hash"] = contract
+            row["evaluation_scoring_contract_hash"] = contract
             row["admitted"] = admitted
             row["minos_score"] = score if admitted else None
             row["admission_code"] = "ADMITTED" if admitted else "NONPOSITIVE_SCORE"
@@ -419,7 +418,7 @@ def test_a_missing_evaluation_is_neither_zero_nor_a_failure(authority: Any) -> N
         **rows[5],
         "evaluation_id": None,
         "evaluation_hash": None,
-        "scoring_contract_hash": None,
+        "evaluation_scoring_contract_hash": None,
         "admitted": None,
         "minos_score": None,
     }
@@ -563,3 +562,120 @@ def test_the_reader_refuses_an_authority_that_is_not_the_frozen_one(authority: A
     impostor = dataclasses.replace(authority, plan_hash="b" * 64)
     with pytest.raises(PhaseDClosureError, match="not the frozen Phase-D plan"):
         derive_phase_d_observations(_matrix(authority), authority=impostor)
+
+
+# --------------------------------------------------------------------------------------------
+# CORRECTIVE: runtime is measured, never invented
+#
+# ``0014`` exists because a missing runtime read as zero would make a candidate look infinitely
+# fast and win tie-break level two it never earned. The reader must match that invariant.
+# --------------------------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("mutate", "label"),
+    [
+        pytest.param(
+            lambda a: {**_row(a, member_index=2, config_index=1), "execution_runtime_ms": None},
+            "succeeded execution",
+            id="null-success-runtime",
+        ),
+        pytest.param(
+            lambda a: {
+                **_row(a, member_index=2, config_index=1, execution_failure="GATK_TIMEOUT"),
+                "execution_failure_runtime_ms": None,
+            },
+            "failed execution",
+            id="null-failure-runtime",
+        ),
+        pytest.param(
+            lambda a: {
+                **_row(a, member_index=2, config_index=1, evaluation_failure="HAPPY_TIMEOUT"),
+                "execution_runtime_ms": None,
+            },
+            "evaluation failure after successful GATK",
+            id="null-evalfail-runtime",
+        ),
+        pytest.param(
+            lambda a: {
+                **_row(a, member_index=2, config_index=1, admitted=False, score=None),
+                "execution_runtime_ms": None,
+            },
+            "non-admitted evaluated success",
+            id="null-nonadmitted-runtime",
+        ),
+    ],
+)
+def test_a_null_runtime_is_refused_rather_than_read_as_zero(
+    authority: Any, mutate: Any, label: str
+) -> None:
+    rows = _matrix(authority)
+    replacement = mutate(authority)
+    index = next(
+        i
+        for i, r in enumerate(rows)
+        if (r["member_index"], r["config_index"])
+        == (replacement["member_index"], replacement["config_index"])
+    )
+    rows[index] = replacement
+    with pytest.raises(Exception) as excinfo:
+        _closure(authority, rows)
+    message = str(excinfo.value)
+    assert "runtime" in message or "INFRASTRUCTURE_INCIDENT" in message, message
+    assert message != "0"
+
+
+def test_a_negative_or_boolean_runtime_is_refused(authority: Any) -> None:
+    for bad in (-1, True):
+        rows = _matrix(authority)
+        rows[9] = {**rows[9], "execution_runtime_ms": bad}
+        with pytest.raises(PhaseDClosureError, match="runtime"):
+            _closure(authority, rows)
+
+
+# --------------------------------------------------------------------------------------------
+# CORRECTIVE: the ONE environment must be the ACCEPTED environment
+# --------------------------------------------------------------------------------------------
+def test_a_uniformly_wrong_execution_environment_is_refused(authority: Any) -> None:
+    """Internally consistent and still not this campaign's results."""
+    rows = _matrix(authority, environment="e" * 64)
+    with pytest.raises(PhaseDClosureError, match="not this campaign's"):
+        _closure(authority, rows)
+
+
+def test_the_closure_binds_the_verified_environment_not_a_first_row_guess(
+    authority: Any,
+) -> None:
+    """A matrix decided entirely by execution FAILURES carries the environment on failure rows.
+
+    The previous implementation searched for the first row with a success environment, which
+    raises StopIteration on exactly this shape. Candidate failures are legitimate observations,
+    so this matrix must close.
+    """
+    rows = [
+        _row(authority, member_index=mi, config_index=ci, execution_failure="GATK_TIMEOUT")
+        for ci in range(4)
+        for mi in range(10)
+    ]
+    closure = _closure(authority, rows)
+    assert closure.execution_environment_hash == ACCEPTED_EXECUTION_ENVIRONMENT_HASH
+    assert all(c.candidate_failure_count == 10 for c in closure.candidates)
+    assert all(c.objective == pytest.approx(-1.0) for c in closure.candidates)
+
+
+# --------------------------------------------------------------------------------------------
+# CORRECTIVE: the authorities must AGREE before a closure exists
+# --------------------------------------------------------------------------------------------
+def test_a_protocol_hash_the_interpretation_does_not_cite_is_refused(authority: Any) -> None:
+    with pytest.raises(PhaseDClosureError, match="not the one the selection interpretation"):
+        build_phase_d_closure(
+            _matrix(authority), authority=authority, baseline_protocol_hash="a" * 64
+        )
+
+
+def test_a_perturbed_selection_interpretation_source_is_refused(
+    authority: Any, monkeypatch: Any
+) -> None:
+    from minos_engine.baseline import phase_d_observations as mod
+
+    monkeypatch.setattr(mod, "compute_selection_interpretation_hash", lambda: "b" * 64)
+    with pytest.raises(PhaseDClosureError, match="not the accepted"):
+        _closure(authority, _matrix(authority))

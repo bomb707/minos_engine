@@ -45,13 +45,14 @@ _EXPECTED_COLUMNS = [
     "execution_failure_environment_hash",
     "evaluation_id",
     "evaluation_hash",
-    "scoring_contract_hash",
+    # ONE canonical contract column: it names the contract of THIS terminal outcome, success or
+    # failure, so no reader ever has to guess which contract a column belongs to.
+    "evaluation_scoring_contract_hash",
     "minos_score",
     "admitted",
     "admission_code",
     "evaluation_failure_id",
     "evaluation_failure_code",
-    "evaluation_failure_scoring_contract_hash",
 ]
 
 
@@ -426,3 +427,183 @@ def test_each_revision_admits_exactly_one_boundary(
                         assert "revision" in reason.lower(), (label, reason)
         finally:
             engine.dispose()
+
+
+# --------------------------------------------------------------------------------------------
+# CORRECTIVE: foreign scoring contracts must not cross-contaminate
+#
+# The evaluation exclusivity invariant is on (execution_result_id, scoring_contract_hash), NOT on
+# execution_result_id alone. Independently joining the success and failure ledgers therefore
+# paired an accepted success with a foreign failure on one row -- and a reader preferring the
+# failure would let a foreign contract overwrite this campaign's result.
+#
+# These assert the ACTUAL SQL the view emits, not hand-built Python dictionaries.
+# --------------------------------------------------------------------------------------------
+_ACCEPTED_CONTRACT = "b24a07e208ce8e2fff6672102ae4e61aed93c6f352a5af46ba81c4789adb76d6"
+_FOREIGN_CONTRACT = "f" * 64
+
+
+def _view_rows(conn: Any, execution_result_id: str) -> list[dict]:
+    return [
+        dict(r)
+        for r in conn.execute(
+            text(
+                "SELECT evaluation_scoring_contract_hash, evaluation_id, evaluation_failure_id, "
+                "       minos_score, admitted, evaluation_failure_code "
+                f"  FROM {_VIEW} WHERE execution_result_id = :e "
+                " ORDER BY evaluation_scoring_contract_hash"
+            ),
+            {"e": execution_result_id},
+        ).mappings()
+    ]
+
+
+@pytest.fixture
+def crossed(isolated_pg_base_url: str, tmp_path: Any) -> Any:
+    """A scratch 0026 store with ONE execution, ready to receive terminal outcomes."""
+    from minos_engine.baseline.finalist_freeze import load_finalist_freeze
+    from minos_engine.baseline.phase_d import build_l2f2_phase_d_authority
+    from minos_engine.storage.l2f2_validation_prepare import (
+        ACCEPTED_FINALIST_FREEZE_SHA256,
+        ACCEPTED_PHASE_C_CLOSURE_SHA256,
+    )
+    from tests.integration.layer2_db.l2f2_phase_d_closure_seed import seed_single_execution
+    from tests.l2f2_phase_d_fixture import FIXTURE_FREEZE_PATH
+
+    authority = build_l2f2_phase_d_authority(
+        load_finalist_freeze(
+            FIXTURE_FREEZE_PATH,
+            expected_artifact_sha256=ACCEPTED_FINALIST_FREEZE_SHA256,
+            expected_phase_c_closure_sha256=ACCEPTED_PHASE_C_CLOSURE_SHA256,
+        )
+    )
+    with scratch_database(isolated_pg_base_url, _DB) as url:
+        alembic_upgrade(url, _HEAD)
+        engine = _engine(url)
+        try:
+            execution_id, registry_id = seed_single_execution(engine, authority, tmp_path)
+            yield engine, execution_id, registry_id
+        finally:
+            engine.dispose()
+
+
+def _add_success(
+    engine: Any, execution_id: str, registry_id: str, *, contract: str, score: float
+) -> None:
+    from tests.integration.layer2_db.l2f2_phase_d_closure_seed import add_evaluation_success
+
+    add_evaluation_success(engine, execution_id, registry_id, contract=contract, score=score)
+
+
+def _add_failure(
+    engine: Any, execution_id: str, registry_id: str, *, contract: str, code: str = "HAPPY_TIMEOUT"
+) -> None:
+    from tests.integration.layer2_db.l2f2_phase_d_closure_seed import add_evaluation_failure
+
+    add_evaluation_failure(engine, execution_id, registry_id, contract=contract, code=code)
+
+
+def test_case_a_accepted_success_beside_a_foreign_failure(crossed: Any) -> None:
+    """The pairing that previously let a foreign failure overwrite an accepted success."""
+    engine, execution_id, registry_id = crossed
+    _add_success(engine, execution_id, registry_id, contract=_ACCEPTED_CONTRACT, score=0.75)
+    _add_failure(engine, execution_id, registry_id, contract=_FOREIGN_CONTRACT)
+
+    with engine.connect() as conn:
+        rows = _view_rows(conn, execution_id)
+    assert len(rows) == 2, rows
+    accepted = [r for r in rows if r["evaluation_scoring_contract_hash"] == _ACCEPTED_CONTRACT]
+    foreign = [r for r in rows if r["evaluation_scoring_contract_hash"] == _FOREIGN_CONTRACT]
+    assert len(accepted) == 1 and len(foreign) == 1
+    # the accepted row is a pure success; no foreign failure leaked onto it
+    assert accepted[0]["evaluation_id"] is not None
+    assert accepted[0]["evaluation_failure_id"] is None
+    assert accepted[0]["evaluation_failure_code"] is None
+    assert float(accepted[0]["minos_score"]) == pytest.approx(0.75)
+    assert accepted[0]["admitted"] is True
+    # and the foreign row is a pure failure carrying no score
+    assert foreign[0]["evaluation_id"] is None
+    assert foreign[0]["minos_score"] is None
+    assert foreign[0]["evaluation_failure_id"] is not None
+
+
+def test_case_b_foreign_success_beside_an_accepted_failure(crossed: Any) -> None:
+    """The inverse pairing: a foreign success must not mask this campaign's failure."""
+    engine, execution_id, registry_id = crossed
+    _add_success(engine, execution_id, registry_id, contract=_FOREIGN_CONTRACT, score=0.99)
+    _add_failure(engine, execution_id, registry_id, contract=_ACCEPTED_CONTRACT)
+
+    with engine.connect() as conn:
+        rows = _view_rows(conn, execution_id)
+    assert len(rows) == 2, rows
+    accepted = next(r for r in rows if r["evaluation_scoring_contract_hash"] == _ACCEPTED_CONTRACT)
+    assert accepted["evaluation_failure_id"] is not None
+    assert accepted["evaluation_id"] is None
+    assert accepted["minos_score"] is None, "a foreign success leaked a score onto our failure"
+
+
+def test_case_c_an_accepted_success_alone(crossed: Any) -> None:
+    engine, execution_id, registry_id = crossed
+    _add_success(engine, execution_id, registry_id, contract=_ACCEPTED_CONTRACT, score=0.5)
+    with engine.connect() as conn:
+        rows = _view_rows(conn, execution_id)
+    assert len(rows) == 1
+    assert rows[0]["evaluation_scoring_contract_hash"] == _ACCEPTED_CONTRACT
+    assert rows[0]["evaluation_failure_id"] is None
+
+
+def test_case_d_an_accepted_failure_alone(crossed: Any) -> None:
+    engine, execution_id, registry_id = crossed
+    _add_failure(engine, execution_id, registry_id, contract=_ACCEPTED_CONTRACT)
+    with engine.connect() as conn:
+        rows = _view_rows(conn, execution_id)
+    assert len(rows) == 1
+    assert rows[0]["evaluation_id"] is None
+    assert rows[0]["evaluation_failure_id"] is not None
+
+
+def test_case_e_a_foreign_outcome_alone_leaves_the_pair_undecided(crossed: Any) -> None:
+    """A foreign terminal outcome is not evidence: the frozen pair is simply not decided."""
+    from minos_engine.baseline.finalist_freeze import load_finalist_freeze
+    from minos_engine.baseline.phase_d import build_l2f2_phase_d_authority
+    from minos_engine.baseline.phase_d_observations import (
+        PhaseDClosureError,
+        derive_phase_d_observations,
+    )
+    from minos_engine.storage.l2f2_validation_prepare import (
+        ACCEPTED_FINALIST_FREEZE_SHA256,
+        ACCEPTED_PHASE_C_CLOSURE_SHA256,
+    )
+    from tests.l2f2_phase_d_fixture import FIXTURE_FREEZE_PATH
+
+    engine, execution_id, registry_id = crossed
+    _add_success(engine, execution_id, registry_id, contract=_FOREIGN_CONTRACT, score=0.99)
+
+    authority = build_l2f2_phase_d_authority(
+        load_finalist_freeze(
+            FIXTURE_FREEZE_PATH,
+            expected_artifact_sha256=ACCEPTED_FINALIST_FREEZE_SHA256,
+            expected_phase_c_closure_sha256=ACCEPTED_PHASE_C_CLOSURE_SHA256,
+        )
+    )
+    with engine.connect() as conn:
+        rows = [dict(r) for r in conn.execute(text(f"SELECT * FROM {_VIEW}")).mappings()]
+    assert len(rows) == 1
+    assert rows[0]["evaluation_scoring_contract_hash"] == _FOREIGN_CONTRACT
+    with pytest.raises(PhaseDClosureError, match="frozen cross product"):
+        derive_phase_d_observations(rows, authority=authority)
+
+
+def test_no_row_ever_carries_both_a_success_and_a_failure(crossed: Any) -> None:
+    """The structural guarantee the UNION provides: exactly one side is populated per row."""
+    engine, execution_id, registry_id = crossed
+    _add_success(engine, execution_id, registry_id, contract=_ACCEPTED_CONTRACT, score=0.5)
+    _add_failure(engine, execution_id, registry_id, contract=_FOREIGN_CONTRACT)
+    with engine.connect() as conn:
+        both = conn.execute(
+            text(
+                f"SELECT count(*) FROM {_VIEW} "
+                " WHERE evaluation_id IS NOT NULL AND evaluation_failure_id IS NOT NULL"
+            )
+        ).scalar_one()
+    assert both == 0
