@@ -28,11 +28,18 @@ from minos_engine.baseline.baseline_selected import (
     verify_closure_artifact,
 )
 from minos_engine.gates.required_checks import required_checks_for
+from minos_engine.qualification.l2f2_baseline_qualified_contract import (
+    ACCEPTED_BCFTOOLS_DIGEST,
+    ACCEPTED_HAPPY_DIGEST,
+    HARNESS_READY_GATE_HASH,
+    HARNESS_READY_QUALIFICATION_HASH,
+    candidate_design_identity,
+    objective_identity,
+)
 from minos_engine.qualification.l2f2_baseline_qualified_runner import (
     BASELINE_QUALIFIED_GATE,
     BaselineQualifiedObservation,
     derive_checks,
-    verify_baseline_qualified_gate,
 )
 from minos_engine.qualification.l2f2_train_evidence import (
     TRAIN_CANDIDATE_FAILURE_COUNT,
@@ -46,6 +53,13 @@ from minos_engine.qualification.l2f2_train_evidence import (
 from tests.minos_scratch import CANONICAL_MINOS_ROOT
 
 _PROTOCOL = "c548e190571f5e964560cf30021a520ea8aad6674569fa3202af880d7dff77d1"
+_PROTOCOL_CONTENT = json.loads(
+    (Path(__file__).resolve().parents[3] / "manifests/l2f2_baseline_protocol_v1.json").read_text(
+        encoding="utf-8"
+    )
+)["content"]
+_OBJECTIVE_IDENTITY = objective_identity(_PROTOCOL_CONTENT)
+_DESIGN_IDENTITY = candidate_design_identity(_PROTOCOL_CONTENT)
 _INTERPRETATION = "4c169912f67877d6ba254fb280dbd2ff44aa4aaaf65bedfa1bca9975f1efebbd"
 #: the operator's real closure artifact, DISCOVERED rather than assumed. Every test that uses it
 #: is skipped when it is absent, so this suite stays portable to a machine that has no MINOS root.
@@ -87,8 +101,12 @@ def _observation(**overrides: Any) -> BaselineQualifiedObservation:
         "worktree_commit": "b" * 40,
         "worktree_tree": "t" * 40,
         "worktree_clean": True,
-        "harness_ready_gate_hash_prefix": "0e8411eb1234",
-        "harness_ready_qualification_hash_prefix": "b1d1cc5d1234",
+        "harness_ready_gate_hash": HARNESS_READY_GATE_HASH,
+        "harness_ready_qualification_hash": HARNESS_READY_QUALIFICATION_HASH,
+        "harness_ready_gate_verified": True,
+        "objective_identity": _OBJECTIVE_IDENTITY,
+        "candidate_design_identity": _DESIGN_IDENTITY,
+        "descends_closure_authority_source": True,
         "closure_artifact_verified": True,
         "closure_hash_recomputed": PHASE_D_CLOSURE_HASH,
         "baseline_selected_hash": compute_baseline_selected_hash(),
@@ -105,8 +123,8 @@ def _observation(**overrides: Any) -> BaselineQualifiedObservation:
         "seed_config_hash": SEED_CONFIG_HASH,
         "seed_rank": SEED_RANK,
         "scorer_source_identities_exact": True,
-        "happy_digest": "genonet/hap-py@sha256:" + "0" * 64,
-        "bcftools_digest": "quay.io/biocontainers/bcftools@sha256:" + "1" * 64,
+        "happy_digest": ACCEPTED_HAPPY_DIGEST,
+        "bcftools_digest": ACCEPTED_BCFTOOLS_DIGEST,
         "train": verify_train_evidence(_train_observed()),
         "test_untouched": True,
         "train_and_validation_identities_disjoint": True,
@@ -430,7 +448,7 @@ def test_a_clean_observation_satisfies_every_required_check() -> None:
             id="freeze",
         ),
         pytest.param(
-            {"harness_ready_gate_hash_prefix": "deadbeef12"},
+            {"harness_ready_gate_hash": "d" * 64},
             "harness_ready_gate_bound",
             id="harness-gate",
         ),
@@ -450,141 +468,6 @@ def test_a_seed_override_would_be_caught(monkeypatch: Any) -> None:
 
 def test_the_check_set_is_deterministic() -> None:
     assert derive_checks(_observation()) == derive_checks(_observation())
-
-
-# --------------------------------------------------------------------------------------------
-# the offline verifier
-# --------------------------------------------------------------------------------------------
-def _write_gate(tmp_path: Path, **overrides: Any) -> tuple[Path, Path]:
-    checks = derive_checks(_observation())
-    qualification = {
-        "gate_name": BASELINE_QUALIFIED_GATE,
-        "qualified_source_commit": "b" * 40,
-        "qualified_source_tree": "t" * 40,
-        "checks": checks,
-    }
-    gate = {
-        "gate_name": BASELINE_QUALIFIED_GATE,
-        "status": "PASS",
-        "qualified_source_commit": "b" * 40,
-        "qualified_source_tree": "t" * 40,
-        "baseline_selected_hash": compute_baseline_selected_hash(),
-    }
-    gate.update(overrides.pop("gate", {}))
-    qualification.update(overrides.pop("qualification", {}))
-    gate_path = tmp_path / "gate.json"
-    qual_path = tmp_path / "qualification.json"
-    gate_path.write_text(json.dumps(gate), encoding="utf-8")
-    qual_path.write_text(json.dumps(qualification), encoding="utf-8")
-    return gate_path, qual_path
-
-
-def test_a_complete_gate_verifies_offline(tmp_path: Path) -> None:
-    gate_path, qual_path = _write_gate(tmp_path)
-    result = verify_baseline_qualified_gate(
-        gate_path=gate_path, qualification_path=qual_path, root=_repo()
-    )
-    assert result["ok"] is True, result["reasons"]
-    assert result["required_check_count"] == 42
-
-
-def test_a_gate_missing_one_mandatory_check_fails(tmp_path: Path) -> None:
-    checks = derive_checks(_observation())
-    checks.pop("test_untouched")
-    gate_path, qual_path = _write_gate(tmp_path, qualification={"checks": checks})
-    result = verify_baseline_qualified_gate(
-        gate_path=gate_path, qualification_path=qual_path, root=_repo()
-    )
-    assert result["ok"] is False
-    assert any("missing mandatory checks" in r for r in result["reasons"])
-
-
-def test_a_gate_reporting_a_false_mandatory_check_fails(tmp_path: Path) -> None:
-    checks = derive_checks(_observation())
-    checks["no_seed_override"] = False
-    gate_path, qual_path = _write_gate(tmp_path, qualification={"checks": checks})
-    result = verify_baseline_qualified_gate(
-        gate_path=gate_path, qualification_path=qual_path, root=_repo()
-    )
-    assert result["ok"] is False
-    assert any("reported false" in r for r in result["reasons"])
-
-
-def test_a_gate_with_an_unregistered_check_fails(tmp_path: Path) -> None:
-    checks = derive_checks(_observation())
-    checks["looks_good_to_me"] = True
-    gate_path, qual_path = _write_gate(tmp_path, qualification={"checks": checks})
-    result = verify_baseline_qualified_gate(
-        gate_path=gate_path, qualification_path=qual_path, root=_repo()
-    )
-    assert result["ok"] is False
-    assert any("unregistered" in r for r in result["reasons"])
-
-
-def test_a_gate_naming_a_different_source_than_the_qualification_fails(tmp_path: Path) -> None:
-    gate_path, qual_path = _write_gate(tmp_path, gate={"qualified_source_commit": "z" * 40})
-    result = verify_baseline_qualified_gate(
-        gate_path=gate_path, qualification_path=qual_path, root=_repo()
-    )
-    assert result["ok"] is False
-    assert any("qualified_source_commit" in r for r in result["reasons"])
-
-
-def test_a_gate_with_a_forged_baseline_selected_hash_fails(tmp_path: Path) -> None:
-    gate_path, qual_path = _write_gate(tmp_path, gate={"baseline_selected_hash": "a" * 64})
-    result = verify_baseline_qualified_gate(
-        gate_path=gate_path, qualification_path=qual_path, root=_repo()
-    )
-    assert result["ok"] is False
-    assert any("baseline-selected" in r for r in result["reasons"])
-
-
-def test_a_non_pass_gate_fails(tmp_path: Path) -> None:
-    gate_path, qual_path = _write_gate(tmp_path, gate={"status": "FAIL"})
-    result = verify_baseline_qualified_gate(
-        gate_path=gate_path, qualification_path=qual_path, root=_repo()
-    )
-    assert result["ok"] is False
-
-
-def test_a_missing_artifact_fails_closed(tmp_path: Path) -> None:
-    gate_path, qual_path = _write_gate(tmp_path)
-    result = verify_baseline_qualified_gate(
-        gate_path=tmp_path / "absent.json", qualification_path=qual_path, root=_repo()
-    )
-    assert result["ok"] is False
-    assert any("missing or a symlink" in r for r in result["reasons"])
-
-
-def test_verification_needs_no_database_gatk_or_truth() -> None:
-    """Asserted on the CODE. The docstring legitimately names what it refuses to touch."""
-    import ast
-    import inspect
-
-    from minos_engine.qualification import l2f2_baseline_qualified_runner as mod
-
-    tree = ast.parse(inspect.getsource(mod.verify_baseline_qualified_gate))
-    body = ast.unparse(
-        ast.Module(
-            body=[
-                node
-                for node in ast.walk(tree)
-                if isinstance(node, ast.stmt) and not isinstance(node, ast.Expr | ast.FunctionDef)
-            ],
-            type_ignores=[],
-        )
-    ).lower()
-    for forbidden in (
-        "create_engine",
-        "create_db_engine",
-        "psycopg",
-        "subprocess",
-        "gatk",
-        "hap.py",
-        "truth",
-        "sqlalchemy",
-    ):
-        assert forbidden not in body, forbidden
 
 
 # --------------------------------------------------------------------------------------------

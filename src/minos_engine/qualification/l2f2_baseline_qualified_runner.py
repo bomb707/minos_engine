@@ -20,20 +20,37 @@ from typing import Any, Final
 from pydantic import BaseModel, ConfigDict, Field
 
 from minos_engine.common.errors import MinosEngineError
+from minos_engine.qualification.l2f2_baseline_qualified_contract import (
+    BaselineQualificationResult,
+)
 
 __all__ = [
     "BASELINE_QUALIFIED_GATE",
+    "BASELINE_QUALIFIED_GATE_PATH",
+    "BASELINE_QUALIFICATION_RESULT_PATH",
     "BaselineQualificationError",
     "BaselineQualifiedObservation",
+    "TrustedBaselineQualification",
+    "assemble_baseline_qualified_gate",
     "derive_checks",
+    "observation_from_result",
     "verify_baseline_qualified_gate",
+    "write_baseline_qualification_outputs",
 ]
 
 BASELINE_QUALIFIED_GATE: Final = "BASELINE-QUALIFIED"
 
-#: HARNESS-READY prerequisite identities, as recorded in section 13.
-HARNESS_READY_GATE_HASH: Final = "0e8411eb"
-HARNESS_READY_QUALIFICATION_HASH: Final = "b1d1cc5d"
+#: the accepted Phase-D closure authority source. A qualified source must descend it.
+CLOSURE_AUTHORITY_SOURCE: Final = "b61e2adfb3f871b4e0a1738ae12c1b9f0b7f9130"
+
+#: FULL prerequisite identities. The eight-character forms once used here were prefixes, not
+#: identities: any hash sharing those eight characters would have passed.
+from minos_engine.qualification.l2f2_baseline_qualified_contract import (  # noqa: E402
+    ACCEPTED_BCFTOOLS_DIGEST,
+    ACCEPTED_HAPPY_DIGEST,
+    HARNESS_READY_GATE_HASH,
+    HARNESS_READY_QUALIFICATION_HASH,
+)
 
 _STRICT = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -53,8 +70,12 @@ class BaselineQualifiedObservation(BaseModel):
     worktree_tree: str = Field(min_length=40, max_length=40)
     worktree_clean: bool
 
-    harness_ready_gate_hash_prefix: str = Field(min_length=8)
-    harness_ready_qualification_hash_prefix: str = Field(min_length=8)
+    harness_ready_gate_hash: str = Field(min_length=64, max_length=64)
+    harness_ready_qualification_hash: str = Field(min_length=64, max_length=64)
+    harness_ready_gate_verified: bool
+    objective_identity: str = Field(min_length=64, max_length=64)
+    candidate_design_identity: str = Field(min_length=64, max_length=64)
+    descends_closure_authority_source: bool
 
     closure_artifact_verified: bool
     closure_hash_recomputed: str = Field(min_length=64, max_length=64)
@@ -115,11 +136,17 @@ def derive_checks(observation: BaselineQualifiedObservation) -> dict[str, bool]:
         compute_protocol_hash,
         load_committed_protocol,
     )
+    from minos_engine.qualification.l2f2_baseline_qualified_contract import (
+        candidate_design_identity,
+        objective_identity,
+    )
 
     checks: dict[str, bool] = {}
 
     # ---- SOURCE ----------------------------------------------------------------------------
-    checks["qualified_source_present"] = bool(observation.qualified_source_commit)
+    checks["qualified_source_present"] = (
+        bool(observation.qualified_source_commit) and observation.descends_closure_authority_source
+    )
     checks["qualified_source_tree_matches"] = (
         observation.worktree_tree == observation.qualified_source_tree
     )
@@ -129,13 +156,13 @@ def derive_checks(observation: BaselineQualifiedObservation) -> dict[str, bool]:
     )
 
     # ---- PREREQUISITES ---------------------------------------------------------------------
-    checks["harness_ready_gate_bound"] = observation.harness_ready_gate_hash_prefix.startswith(
-        HARNESS_READY_GATE_HASH
+    # FULL equality, and the committed gate must actually have verified.
+    checks["harness_ready_gate_bound"] = (
+        observation.harness_ready_gate_hash == HARNESS_READY_GATE_HASH
+        and observation.harness_ready_gate_verified
     )
     checks["harness_ready_qualification_bound"] = (
-        observation.harness_ready_qualification_hash_prefix.startswith(
-            HARNESS_READY_QUALIFICATION_HASH
-        )
+        observation.harness_ready_qualification_hash == HARNESS_READY_QUALIFICATION_HASH
     )
     checks["phase_d_closure_artifact_bound"] = observation.closure_artifact_verified
     checks["baseline_selected_authority_bound"] = (
@@ -150,16 +177,21 @@ def derive_checks(observation: BaselineQualifiedObservation) -> dict[str, bool]:
         protocol_hash == BASELINE_PROTOCOL_HASH
         and compute_protocol_hash(build_baseline_protocol()) == BASELINE_PROTOCOL_HASH
     )
-    checks["objective_authority_exact"] = (
-        CVAR_ALPHA,
-        CVAR_WEIGHT,
-        FLOOR_WEIGHT,
-        MEAN_WEIGHT,
-        FAILURE_PENALTY,
-    ) == (0.25, 0.50, 0.30, 0.20, 1.00)
-    design = committed_protocol.get("content", {}).get("decisions", {})
+    # The objective identity is DERIVED from the exact frozen protocol sub-blocks that define
+    # it, then compared to what the observer derived. Constants alone would not notice a changed
+    # aggregation-utility rule, a changed failure denominator or a reordered tie-break.
+    protocol_content = dict(committed_protocol.get("content") or {})
+    checks["objective_authority_exact"] = observation.objective_identity == objective_identity(
+        protocol_content
+    ) and (CVAR_ALPHA, CVAR_WEIGHT, FLOOR_WEIGHT, MEAN_WEIGHT, FAILURE_PENALTY) == (
+        0.25,
+        0.50,
+        0.30,
+        0.20,
+        1.00,
+    )
     checks["candidate_design_authority_exact"] = (
-        design.get("D8_phase_b_design_family") == "DETERMINISTIC_MIXED_DOMAIN_LATIN_HYPERCUBE"
+        observation.candidate_design_identity == candidate_design_identity(protocol_content)
     )
     checks["selection_interpretation_exact"] = (
         compute_selection_interpretation_hash() == SELECTION_INTERPRETATION_HASH
@@ -178,8 +210,11 @@ def derive_checks(observation: BaselineQualifiedObservation) -> dict[str, bool]:
         observation.evidence_hashes.get("minos_subnet_sha") == MINOS_SUBNET_SHA
     )
     checks["scorer_source_identities_exact"] = observation.scorer_source_identities_exact
-    checks["happy_immutable_digest_exact"] = "@sha256:" in observation.happy_digest
-    checks["bcftools_immutable_digest_exact"] = "@sha256:" in observation.bcftools_digest
+    # the EXACT audited images. An arbitrary immutable-looking digest is not this scorer.
+    checks["happy_immutable_digest_exact"] = observation.happy_digest == ACCEPTED_HAPPY_DIGEST
+    checks["bcftools_immutable_digest_exact"] = (
+        observation.bcftools_digest == ACCEPTED_BCFTOOLS_DIGEST
+    )
 
     # ---- TRAIN EVIDENCE --------------------------------------------------------------------
     checks.update(observation.train)
@@ -240,59 +275,294 @@ def derive_checks(observation: BaselineQualifiedObservation) -> dict[str, bool]:
     return checks
 
 
+BASELINE_QUALIFIED_GATE_PATH: Final = "gates/baseline-qualified.json"
+BASELINE_QUALIFICATION_RESULT_PATH: Final = "reports/layer2/baseline-qualified-result.json"
+
+
+def observation_from_result(result: BaselineQualificationResult) -> BaselineQualifiedObservation:
+    """Project a VERIFIED qualification result onto the observation the checks read.
+
+    A pure projection: it adds nothing and decides nothing, so what the gate checks is exactly
+    what the qualifier measured.
+    """
+    from minos_engine.qualification.l2f2_train_evidence import verify_train_evidence
+
+    return BaselineQualifiedObservation(
+        qualified_source_commit=result.qualified_source_git_sha,
+        qualified_source_tree=result.qualified_source_tree_sha,
+        worktree_commit=result.qualified_source_git_sha,
+        worktree_tree=result.qualified_source_tree_sha,
+        worktree_clean=result.worktree_clean,
+        descends_closure_authority_source=result.descends_closure_authority_source,
+        harness_ready_gate_hash=result.harness_ready_gate_hash,
+        harness_ready_qualification_hash=result.harness_ready_qualification_hash,
+        harness_ready_gate_verified=result.harness_ready_gate_verified,
+        objective_identity=result.objective_identity,
+        candidate_design_identity=result.candidate_design_identity,
+        closure_artifact_verified=result.closure_artifact_verified,
+        closure_hash_recomputed=result.phase_d_closure_hash,
+        baseline_selected_hash=result.baseline_selected_hash,
+        baseline_selected_manifest_verified=result.baseline_selected_manifest_verified,
+        candidate_count=result.candidate_count,
+        member_count=result.member_count,
+        observation_count=result.observation_count,
+        all_candidates_complete=result.all_candidates_complete,
+        validation_infrastructure_incidents=result.validation_infrastructure_incidents,
+        selected_config_hash=result.selected_config_hash,
+        selected_rank=result.selected_rank,
+        selected_inherited_candidate_index=result.selected_inherited_candidate_index,
+        selected_statistics_agree=result.selected_statistics_verified,
+        seed_config_hash=result.seed_config_hash,
+        seed_rank=result.seed_rank,
+        scorer_source_identities_exact=result.scorer_source_identities_verified,
+        happy_digest=result.happy_resolved_digest,
+        bcftools_digest=result.bcftools_resolved_digest,
+        train=verify_train_evidence(result.train.as_observed()),
+        test_untouched=result.test_untouched,
+        train_and_validation_identities_disjoint=(result.train_and_validation_identities_disjoint),
+        evidence_hashes={
+            "scoring_contract_hash": result.scoring_contract_hash,
+            "minos_subnet_sha": result.minos_subnet_sha,
+            "execution_environment_hash": result.execution_environment_hash,
+            **result.evidence_sha256,
+        },
+    )
+
+
+class TrustedBaselineQualification:
+    """A qualification result the PRODUCTION qualifier verified. Only this may mint PASS.
+
+    Deliberately not a pydantic model and deliberately not constructible from data alone: it
+    carries a private marker the qualifier supplies. A caller can build a
+    :class:`BaselineQualifiedObservation` saying anything — useful for unit-testing
+    ``derive_checks`` — but it cannot wrap one in this and reach the assembler.
+    """
+
+    __slots__ = ("_marker", "result")
+
+    def __init__(self, result: BaselineQualificationResult, *, _marker: object) -> None:
+        if _marker is not _TRUST_MARKER:
+            raise BaselineQualificationError(
+                "TrustedBaselineQualification is minted by the production qualifier only; a "
+                "caller-constructed observation can never assemble a PASS gate"
+            )
+        self.result = result
+        self._marker = _marker
+
+
+_TRUST_MARKER: Final = object()
+
+
+def _mint_trusted(result: BaselineQualificationResult) -> TrustedBaselineQualification:
+    """The production qualifier's private door. Not exported."""
+    return TrustedBaselineQualification(result, _marker=_TRUST_MARKER)
+
+
+def assemble_baseline_qualified_gate(
+    trusted: TrustedBaselineQualification,
+    *,
+    created_at: str | None = None,
+    evidence: tuple[Any, ...] = (),
+) -> Any:
+    """Assemble the canonical :class:`GateArtifact`. Status and checks are derived, never given."""
+    from datetime import UTC, datetime
+
+    from minos_engine.gates.contracts import GateArtifact, GateStatus
+    from minos_engine.gates.required_checks import required_checks_for
+    from minos_engine.qualification.l2f2_baseline_qualified_contract import (
+        BASELINE_QUALIFICATION_TOOL_VERSION,
+        compute_baseline_qualification_hash,
+    )
+
+    if not isinstance(trusted, TrustedBaselineQualification):
+        raise BaselineQualificationError(
+            "only a TrustedBaselineQualification may assemble a BASELINE-QUALIFIED gate"
+        )
+    result = trusted.result
+    checks = derive_checks(observation_from_result(result))
+    required = required_checks_for(BASELINE_QUALIFIED_GATE)
+    if set(checks) != required:
+        raise BaselineQualificationError(
+            f"derived checks are not the registered set: "
+            f"missing {sorted(required - set(checks))}, extra {sorted(set(checks) - required)}"
+        )
+    status = GateStatus.PASS if all(checks.values()) else GateStatus.HOLD
+    return GateArtifact(
+        gate_name=BASELINE_QUALIFIED_GATE,
+        status=status,
+        engine_git_sha=result.qualified_source_git_sha,
+        qualified_source_git_sha=result.qualified_source_git_sha,
+        qualified_source_tree_sha=result.qualified_source_tree_sha,
+        qualification_tool_version=BASELINE_QUALIFICATION_TOOL_VERSION,
+        input_hashes={
+            "qualification_hash": compute_baseline_qualification_hash(result),
+            "baseline_selected_hash": result.baseline_selected_hash,
+            "phase_d_closure_hash": result.phase_d_closure_hash,
+            "baseline_protocol_hash": result.baseline_protocol_hash,
+            "selection_interpretation_hash": result.selection_interpretation_hash,
+            "scoring_contract_hash": result.scoring_contract_hash,
+            "objective_identity": result.objective_identity,
+            "candidate_design_identity": result.candidate_design_identity,
+        },
+        evidence=evidence,
+        mandatory_checks=checks,
+        created_at=created_at or datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    )
+
+
+def write_baseline_qualification_outputs(
+    gate: Any, result: BaselineQualificationResult, *, root: Path | None = None
+) -> tuple[Path, Path]:
+    """Write the gate and the canonical qualification bytes. The EVIDENCE step calls this."""
+
+    from minos_engine.gates.verifier import write_gate
+    from minos_engine.qualification.l2f2_baseline_qualified_contract import (
+        canonical_baseline_qualification_bytes,
+    )
+    from minos_engine.qualification.l2f_accepted_identities import repository_root
+
+    base = root or repository_root()
+    gate_path = write_gate(gate, base / BASELINE_QUALIFIED_GATE_PATH)
+    result_path = base / BASELINE_QUALIFICATION_RESULT_PATH
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.loads(canonical_baseline_qualification_bytes(result))
+    if result.created_at is not None:
+        payload["created_at"] = result.created_at
+    result_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return gate_path, result_path
+
+
 def verify_baseline_qualified_gate(
     *, gate_path: str | Path, qualification_path: str | Path, root: Path | None = None
 ) -> dict[str, Any]:
-    """Verify a published gate offline. No database, no GATK, no scorer, no truth.
+    """Verify a published gate offline through the canonical framework.
 
-    Fails closed on: a missing mandatory check, a mandatory check reported false, an unknown check
-    name, a qualified source that disagrees with the qualification, or a baseline-selected
-    identity that disagrees with the committed manifest.
+    No database, no GATK, no scorer, no truth. The stored qualification is parsed with its strict
+    model, its hash recomputed from its own bytes and matched to the gate's
+    ``input_hashes["qualification_hash"]``, and the 42 checks RE-DERIVED from it — a stored
+    ``checks`` dictionary is never treated as authority. Git provenance is proven with the
+    repository's own helpers rather than by inspecting the shape of a 40-character string.
     """
+
     from minos_engine.baseline.baseline_selected import (
         BaselineSelectedError,
         compute_baseline_selected_hash,
         load_committed_baseline_selected,
     )
+    from minos_engine.gates.contracts import GateStatus
     from minos_engine.gates.required_checks import required_checks_for
+    from minos_engine.gates.verifier import load_gate, verify_gate_integrity
+    from minos_engine.qualification import git_tree
+    from minos_engine.qualification.l2f2_baseline_qualified_contract import (
+        BASELINE_QUALIFICATION_TOOL_VERSION,
+        BaselineQualificationResult,
+        compute_baseline_qualification_hash,
+    )
+    from minos_engine.qualification.l2f_accepted_identities import repository_root
 
     reasons: list[str] = []
-    gate = _read_json(gate_path, label="gate", reasons=reasons)
-    qualification = _read_json(qualification_path, label="qualification", reasons=reasons)
-    if gate is None or qualification is None:
-        return {"gate_name": BASELINE_QUALIFIED_GATE, "ok": False, "reasons": reasons}
-
-    if gate.get("gate_name") != BASELINE_QUALIFIED_GATE:
-        reasons.append(f"gate names {gate.get('gate_name')!r}")
-    if gate.get("status") != "PASS":
-        reasons.append(f"gate status is {gate.get('status')!r}")
-
-    required = required_checks_for(BASELINE_QUALIFIED_GATE)
-    observed = dict(qualification.get("checks") or {})
-    missing = sorted(required - set(observed))
-    if missing:
-        reasons.append(f"missing mandatory checks: {missing}")
-    unknown = sorted(set(observed) - required)
-    if unknown:
-        reasons.append(f"unregistered checks present: {unknown}")
-    failed = sorted(name for name in required & set(observed) if not observed[name])
-    if failed:
-        reasons.append(f"mandatory checks reported false: {failed}")
-
-    # the gate must name the QUALIFIED SOURCE, never the evidence commit that carries it.
-    for field in ("qualified_source_commit", "qualified_source_tree"):
-        if gate.get(field) != qualification.get(field):
-            reasons.append(f"gate and qualification disagree on {field}")
+    base = root or repository_root()
 
     try:
-        committed = load_committed_baseline_selected(root)
+        gate = load_gate(gate_path)
+    except Exception as exc:
+        return {
+            "gate_name": BASELINE_QUALIFIED_GATE,
+            "ok": False,
+            "reasons": [f"gate artifact is unusable: {exc}"],
+        }
+    integrity = verify_gate_integrity(gate)
+    if not integrity.ok:
+        reasons.extend(str(r) for r in (integrity.reasons or ("gate integrity failed",)))
+    if gate.gate_name != BASELINE_QUALIFIED_GATE:
+        reasons.append(f"gate names {gate.gate_name!r}")
+    if gate.status is not GateStatus.PASS:
+        reasons.append(f"gate status is {gate.status}")
+    if gate.qualification_tool_version != BASELINE_QUALIFICATION_TOOL_VERSION:
+        reasons.append(f"qualification tool version is {gate.qualification_tool_version!r}")
+
+    target = Path(qualification_path)
+    if target.is_symlink() or not target.is_file():
+        reasons.append(f"qualification artifact {target} is missing or a symlink")
+        return {"gate_name": BASELINE_QUALIFIED_GATE, "ok": False, "reasons": reasons}
+    try:
+        stored = json.loads(target.read_text(encoding="utf-8"))
+        # the contract is strict and plan_hashes is a tuple; canonical JSON necessarily writes it
+        # as an array, so it is restored rather than the model loosened.
+        train = stored.get("train")
+        if isinstance(train, dict) and isinstance(train.get("plan_hashes"), list):
+            stored = {**stored, "train": {**train, "plan_hashes": tuple(train["plan_hashes"])}}
+        result = BaselineQualificationResult.model_validate(stored)
+    except Exception as exc:
+        reasons.append(f"qualification artifact is not a valid qualification result: {exc}")
+        return {"gate_name": BASELINE_QUALIFIED_GATE, "ok": False, "reasons": reasons}
+
+    recomputed = compute_baseline_qualification_hash(result)
+    if gate.input_hashes.get("qualification_hash") != recomputed:
+        reasons.append(
+            "gate qualification_hash does not match the qualification artifact's own bytes"
+        )
+
+    # RE-DERIVE. A stored checks dictionary is a convenience, never an authority.
+    required = required_checks_for(BASELINE_QUALIFIED_GATE)
+    derived = derive_checks(observation_from_result(result))
+    if set(derived) != required:
+        reasons.append("re-derived checks are not the registered set")
+    if derived != gate.mandatory_checks:
+        differing = sorted(
+            name
+            for name in set(derived) | set(gate.mandatory_checks)
+            if derived.get(name) != gate.mandatory_checks.get(name)
+        )
+        reasons.append(f"gate checks disagree with re-derived checks: {differing}")
+    failed = sorted(name for name, ok in derived.items() if not ok)
+    if failed:
+        reasons.append(f"mandatory checks derive false: {failed}")
+
+    for field, got, want in (
+        (
+            "qualified_source_git_sha",
+            gate.qualified_source_git_sha,
+            result.qualified_source_git_sha,
+        ),
+        (
+            "qualified_source_tree_sha",
+            gate.qualified_source_tree_sha,
+            result.qualified_source_tree_sha,
+        ),
+    ):
+        if got != want:
+            reasons.append(f"gate and qualification disagree on {field}")
+
+    # ---- real Git provenance, not string shape ---------------------------------------------
+    if git_tree.is_git_repo(base):
+        commit = gate.qualified_source_git_sha or ""
+        if not git_tree.is_commit(base, commit):
+            reasons.append(f"qualified source commit {commit} does not exist in this repository")
+        else:
+            actual_tree = git_tree.commit_tree_sha(base, commit)
+            if actual_tree != gate.qualified_source_tree_sha:
+                reasons.append(
+                    f"qualified source commit's actual tree is {actual_tree}, but the gate names "
+                    f"{gate.qualified_source_tree_sha}"
+                )
+            if not git_tree.is_ancestor(base, CLOSURE_AUTHORITY_SOURCE, commit):
+                reasons.append(
+                    "the qualified source does not descend the accepted Phase-D closure authority "
+                    f"source {CLOSURE_AUTHORITY_SOURCE}"
+                )
+    else:
+        reasons.append("git provenance could not be verified: not a git repository")
+
+    try:
+        committed = load_committed_baseline_selected(base)
     except BaselineSelectedError as exc:
         reasons.append(f"committed baseline-selected authority is unusable: {exc}")
     else:
         expected = compute_baseline_selected_hash()
         if committed.get("baseline_selected_hash") != expected:
             reasons.append("committed baseline-selected hash disagrees with source")
-        if gate.get("baseline_selected_hash") != expected:
+        if gate.input_hashes.get("baseline_selected_hash") != expected:
             reasons.append("gate baseline-selected hash disagrees with the committed authority")
 
     return {
@@ -301,16 +571,3 @@ def verify_baseline_qualified_gate(
         "reasons": reasons,
         "required_check_count": len(required),
     }
-
-
-def _read_json(path: str | Path, *, label: str, reasons: list[str]) -> dict[str, Any] | None:
-    target = Path(path)
-    if target.is_symlink() or not target.is_file():
-        reasons.append(f"{label} artifact {target} is missing or a symlink")
-        return None
-    try:
-        document: dict[str, Any] = json.loads(target.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        reasons.append(f"{label} artifact is not JSON: {exc}")
-        return None
-    return document
