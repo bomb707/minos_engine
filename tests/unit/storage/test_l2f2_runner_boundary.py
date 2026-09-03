@@ -140,11 +140,16 @@ def test_the_boundary_requires_the_baseline_database_and_revision() -> None:
     # Bumping this pin to match the head would make the boundary refuse the actual store — the
     # same "tidy the constant, break the evidence" trade ``0021`` already declined, inverted.
     #
-    # NOTE FOR THE OPERATOR: applying ``0025`` to the real validation store therefore requires
-    # deciding this pin at the same time. It is a live coupling, not an oversight.
+    # The head has since moved again to ``0026``, which adds the CLOSURE surface. The three
+    # boundaries now pin three consecutive revisions on purpose -- 0024 EXECUTE, 0025 EVALUATE,
+    # 0026 CLOSE -- and each older pin going stale is exactly what seals its phase.
+    #
+    # NOTE FOR THE OPERATOR: the real validation store is at ``0025``. Migrating it to ``0026``
+    # seals biological evaluation too, and is the operational decision that authorises closure.
     head = recompute_alembic_head()
-    assert head == "0025_l2f2_phase_d_eval_auth", head
+    assert head == "0026_l2f2_phase_d_closure", head
     assert head != l2f2_runner.VALIDATION_REVISION
+    assert l2f2_runner.VALIDATION_REVISION == "0024_l2f2_phase_d_anchor"
     assert l2f2_runner.BASELINE_REVISION != l2f2_runner.VALIDATION_REVISION
     assert l2f2_runner.BASELINE_DATABASE_NAME != l2f2_runner.VALIDATION_DATABASE_NAME
     # both public entries delegate to ONE body, so neither store can drift from the other's checks

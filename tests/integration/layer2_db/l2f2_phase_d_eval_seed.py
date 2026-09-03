@@ -119,7 +119,9 @@ def provision_reference_root(root: Path) -> dict[str, str]:
     return digests
 
 
-def seed_two_validation_campaigns(engine: Any, authority: Any, tmp_path: Path) -> dict[str, Any]:
+def seed_two_validation_campaigns(
+    engine: Any, authority: Any, tmp_path: Path, *, decide_one_job: bool = True
+) -> dict[str, Any]:
     """Build the genuine Phase-D campaign and a plan-identical impostor beside it."""
     members = authority.schedule.members
     configs = list(authority.ordered_config_hashes)
@@ -331,11 +333,14 @@ def seed_two_validation_campaigns(engine: Any, authority: Any, tmp_path: Path) -
                     "  feature_values_hash, member_index, source_matrix_member_index) "
                     "SELECT :p, psm.profile_snapshot_id, NULL, psm.id, NULL, psm.bam_profile_id, "
                     "       psm.dataset_registry_id, 'validation', psm.feature_values_hash, "
-                    "       row_number() OVER (ORDER BY psm.id) - 1, "
-                    "       row_number() OVER (ORDER BY psm.id) - 1 "
-                    "  FROM profiling.profile_snapshot_members psm"
+                    "       ord.position1 - 1, ord.position1 - 1 "
+                    "  FROM profiling.profile_snapshot_members psm "
+                    "  JOIN catalog.dataset_registry d ON d.id = psm.dataset_registry_id "
+                    "  JOIN unnest(CAST(:order AS text[])) "
+                    "       WITH ORDINALITY AS ord(dataset_id, position1) "
+                    "    ON ord.dataset_id = d.dataset_id"
                 ),
-                {"p": plan_id},
+                {"p": plan_id, "order": [m.dataset_id for m in members]},
             )
             for index, cfg in enumerate(configs):
                 conn.execute(
@@ -346,11 +351,14 @@ def seed_two_validation_campaigns(engine: Any, authority: Any, tmp_path: Path) -
                     ),
                     {"pl": plan_id, "pid": payloads[cfg], "h": cfg, "p": space, "i": index},
                 )
-            result_ids[label] = _seed_one_success(conn, plan_id, plan_hash, label, art, tmp_path)
+            if decide_one_job:
+                result_ids[label] = _seed_one_success(
+                    conn, plan_id, plan_hash, label, art, tmp_path
+                )
 
     return {
-        "genuine_execution_result_id": result_ids["genuine"],
-        "impostor_execution_result_id": result_ids["impostor"],
+        "genuine_execution_result_id": result_ids.get("genuine"),
+        "impostor_execution_result_id": result_ids.get("impostor"),
         "impostor_plan_hash": _IMPOSTOR_PLAN_HASH,
         "ordered_config_hashes": configs,
         "parameter_space_hash": space,

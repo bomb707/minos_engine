@@ -93,7 +93,16 @@ def test_lifecycle_0024_0025_0024_0025(isolated_pg_base_url: str) -> None:
             engine.dispose()
 
 
-def test_this_migration_is_the_head_and_its_name_fits(isolated_pg_base_url: str) -> None:
+def test_this_migration_sits_on_the_single_chain_and_its_name_fits(
+    isolated_pg_base_url: str,
+) -> None:
+    """0025 sits on one unbranched chain directly after 0024, with a name that fits.
+
+    This asserted 0025 was the HEAD until ``0026`` added the closure surface. Being last is a
+    fact about the newest migration, not a property of this one; continuing to assert it here
+    would make every future migration edit an accepted suite. ``0026``'s own suite asserts
+    that ``0026`` is the head.
+    """
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
@@ -101,7 +110,8 @@ def test_this_migration_is_the_head_and_its_name_fits(isolated_pg_base_url: str)
 
     script = ScriptDirectory.from_config(Config(str(REPO_ROOT / "alembic.ini")))
     heads = script.get_heads()
-    assert list(heads) == [_HEAD], heads
+    assert len(heads) == 1, heads  # the chain never branches
+    assert _HEAD in script.get_revisions(_HEAD)[0].revision, _HEAD
     # alembic_version.version_num is varchar(32); an exact-limit name is asking for truncation.
     assert len(_HEAD) < 32
     assert script.get_revision(_HEAD).down_revision == _PRIOR
