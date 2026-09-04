@@ -13,7 +13,6 @@ machines and its identity can be hashed.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Final
 
@@ -150,18 +149,35 @@ class ConfigEncoding:
 
 
 def build_config_encoding(root: Path | None = None) -> ConfigEncoding:
-    """Build the encoder from the committed parameter space, verifying its identity."""
-    from minos_engine.qualification.l2f_accepted_identities import repository_root
+    """Build the encoder from the ACCEPTED live parameter-space authority.
 
-    base = root or repository_root()
-    document = json.loads((base / PARAMETER_SPACE_MANIFEST).read_text(encoding="utf-8"))
-    content = document.get("content", document)
-    if content.get("parameter_space_hash") != PARAMETER_SPACE_HASH:
+    An earlier revision parsed the manifest directly and trusted its embedded
+    ``parameter_space_hash`` — so a document whose parameter CONTENT had been altered while that
+    field was left untouched would have been accepted. ``load_committed_live_gatk_parameter_space``
+    already proves the whole chain: strict JSON with duplicate-key rejection, the source
+    artifact's byte SHA, manifest/source agreement, the exact 25 names, types, defaults and
+    allowed values, and a RECOMPUTED parameter-space hash. The encoder is built from that object,
+    so the tamper case is refused before any encoding exists.
+    """
+    from minos_engine.experiments.gatk_live_space import (
+        load_committed_live_gatk_parameter_space,
+    )
+
+    _ = root  # the accepted loader reads only the two fixed committed paths
+    space = load_committed_live_gatk_parameter_space()
+    if space.parameter_space_hash != PARAMETER_SPACE_HASH:
         raise ConfigEncoderError(
-            f"parameter space is {content.get('parameter_space_hash')}, expected "
-            f"{PARAMETER_SPACE_HASH}"
+            f"parameter space is {space.parameter_space_hash}, expected {PARAMETER_SPACE_HASH}"
         )
-    parameters = tuple(content["parameters"])
+    parameters = tuple(
+        {
+            "name": p.name,
+            "type": p.type,
+            **({"allowed_values": list(p.allowed_values)} if p.allowed_values else {}),
+            **({"min": p.minimum, "max": p.maximum} if p.minimum is not None else {}),
+        }
+        for p in space.parameters
+    )
     if len(parameters) != 25:
         raise ConfigEncoderError(f"expected 25 frozen parameters, found {len(parameters)}")
     return ConfigEncoding(parameters)

@@ -25,6 +25,9 @@ dependencies = [
     "SQLAlchemy>=2,<3",
     "alembic>=1.13,<2",
     "psycopg[binary]>=3.1,<4",
+    # Layer 2 (L2-G) -- expected-score model training. CPU only: Ridge/LogisticRegression and
+    # the HistGradientBoosting pair all honour sample_weight, which EQUAL_BAM_TOTAL requires.
+    "scikit-learn>=1.5,<2",
 ]
 
 [project.optional-dependencies]

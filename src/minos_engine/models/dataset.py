@@ -24,10 +24,19 @@ from minos_engine.common.canonical_json import canonical_json_bytes
 from minos_engine.common.errors import MinosEngineError
 from minos_engine.common.hashing import sha256_hex
 from minos_engine.models.contract import (
+    BAMS_PER_CHROMOSOME,
     CANDIDATE_FAILURE_LABELS,
     CV_FOLD_CHROMOSOMES,
+    DEDUP_POLICY,
+    FEATURE_COLUMN_COUNT,
     FORBIDDEN_AT_INFERENCE,
+    FROZEN_FEATURE_SET_HASH,
+    OUTCOME_ADMITTED,
+    OUTCOME_CLASSES,
+    OUTCOME_EXECUTION_FAILURE,
+    OUTCOME_NON_ADMISSION,
     TRAIN_BAM_COUNT,
+    WEIGHTING_POLICY,
 )
 
 __all__ = [
@@ -39,10 +48,11 @@ __all__ = [
     "TrainingDataset",
     "TrainingDatasetError",
     "TrainingRow",
+    "BamFeatureBinding",
 ]
 
-TRAINING_DATASET_SCHEMA: Final = "l2g-training-dataset-v1"
-TRAINING_DATASET_DOMAIN: Final = "minos:l2g-training-dataset:v1\n"
+TRAINING_DATASET_SCHEMA: Final = "l2g-training-dataset-v2"
+TRAINING_DATASET_DOMAIN: Final = "minos:l2g-training-dataset:v2\n"
 CV_MANIFEST_SCHEMA: Final = "l2g-cv-manifest-v1"
 CV_MANIFEST_DOMAIN: Final = "minos:l2g-cv-manifest:v1\n"
 
@@ -53,21 +63,41 @@ class TrainingDatasetError(MinosEngineError):
     """The learning table violates the training contract."""
 
 
+class BamFeatureBinding(BaseModel):
+    """One BAM's row in the qualified production feature matrix, bound by VALUE identity.
+
+    Binding names alone would let a feature VALUE change without moving the dataset identity,
+    which is the whole point of having one.
+    """
+
+    model_config = _STRICT
+
+    dataset_id: str = Field(min_length=1)
+    vector_hash: str = Field(min_length=1)
+    feature_values_hash: str = Field(min_length=1)
+
+
 class TrainingRow(BaseModel):
-    """One (BAM, config) observation. Identity is metadata; it is never model input."""
+    """One (BAM, config) LEARNING EXAMPLE. Identity is metadata; it is never model input.
+
+    The outcome class is explicit because the three cases mean different things to the two model
+    components, and collapsing them was the v1 defect.
+    """
 
     model_config = _STRICT
 
     dataset_id: str = Field(min_length=1)
     chromosome: str = Field(min_length=1)
     config_hash: str = Field(min_length=64, max_length=64)
-    job_key: str = Field(min_length=64, max_length=64)
     partition: str = Field(min_length=1)
-    #: True when GATK produced a scored result; False for a bounded candidate failure.
-    succeeded: bool
-    #: present exactly when ``succeeded`` -- never fabricated for a failure.
-    minos_score: float | None = None
-    failure_code: str | None = None
+    outcome: str = Field(min_length=1)
+    #: present exactly when ADMITTED. Never fabricated, and never taken from a non-admission.
+    admitted_score: float | None = None
+    admission_code: str | None = None
+    execution_failure_code: str | None = None
+    #: every job that produced this scientific cell -- provenance, not extra loss weight.
+    source_job_keys: tuple[str, ...]
+    source_plan_hashes: tuple[str, ...]
 
     def model_post_init(self, _context: Any) -> None:
         if self.partition != "train":
@@ -75,35 +105,72 @@ class TrainingRow(BaseModel):
                 f"row {self.dataset_id} is partition {self.partition!r}; the L2-G learning table "
                 "is TRAIN only, and VALIDATION/TEST rows are refused rather than filtered"
             )
-        if self.succeeded:
-            if self.minos_score is None:
-                raise TrainingDatasetError("a succeeded row must carry a minos_score")
-            if self.failure_code is not None:
-                raise TrainingDatasetError("a succeeded row must not carry a failure_code")
-            if not 0.0 <= self.minos_score <= 1.0:
-                raise TrainingDatasetError(f"minos_score {self.minos_score} is outside [0, 1]")
-        else:
-            if self.minos_score is not None:
+        if self.outcome not in OUTCOME_CLASSES:
+            raise TrainingDatasetError(
+                f"{self.outcome!r} is not a decided outcome class; an infrastructure incident is "
+                "our defect and is never a training label"
+            )
+        if not self.source_job_keys:
+            raise TrainingDatasetError("a learning example must cite the evidence that produced it")
+
+        if self.outcome == OUTCOME_ADMITTED:
+            if self.admitted_score is None:
+                raise TrainingDatasetError("an ADMITTED example must carry its persisted score")
+            if not 0.0 <= self.admitted_score <= 1.0:
+                raise TrainingDatasetError(f"score {self.admitted_score} is outside [0, 1]")
+            if self.execution_failure_code is not None:
+                raise TrainingDatasetError("an ADMITTED example cannot carry a failure code")
+        elif self.outcome == OUTCOME_NON_ADMISSION:
+            if self.admitted_score is not None:
                 raise TrainingDatasetError(
-                    "a failed row must not carry a minos_score; a crashed run produced no score, "
-                    "and inventing 0.0 would teach the model that it produced a terrible one"
+                    "a non-admitted evaluation's minos_score is NOT utility evidence; the frozen "
+                    "objective refuses to consume it, so it must not become a regression label"
                 )
-            if self.failure_code not in CANDIDATE_FAILURE_LABELS:
+            if not self.admission_code or self.admission_code == "ADMITTED":
                 raise TrainingDatasetError(
-                    f"failure_code {self.failure_code!r} is not a bounded CANDIDATE failure; "
-                    "an infrastructure incident is our defect and is never a training label"
+                    "a non-admission must preserve the admission_code that explains it"
                 )
+            if self.execution_failure_code is not None:
+                raise TrainingDatasetError(
+                    "a non-admission is not a GATK crash; dressing it up as a bounded execution "
+                    "failure code would erase the distinction the objective depends on"
+                )
+        else:  # CANDIDATE_EXECUTION_FAILURE
+            if self.admitted_score is not None:
+                raise TrainingDatasetError(
+                    "a crashed run produced no score; inventing one teaches the model it produced "
+                    "a terrible one"
+                )
+            if self.execution_failure_code not in CANDIDATE_FAILURE_LABELS:
+                raise TrainingDatasetError(
+                    f"failure code {self.execution_failure_code!r} is not a bounded CANDIDATE "
+                    "failure; an infrastructure incident is never a training label"
+                )
+
+    @property
+    def admission_label(self) -> int:
+        """The admission model's target: 1 for ADMITTED, 0 for either kind of candidate failure."""
+        return 1 if self.outcome == OUTCOME_ADMITTED else 0
+
+    @property
+    def is_score_example(self) -> bool:
+        """Only ADMITTED examples train the biological score regressor."""
+        return self.outcome == OUTCOME_ADMITTED
 
     def identity(self) -> str:
         return sha256_hex(
             canonical_json_bytes(
                 {
+                    "admission_code": self.admission_code,
+                    "admitted_score": self.admitted_score,
+                    "chromosome": self.chromosome,
                     "config_hash": self.config_hash,
                     "dataset_id": self.dataset_id,
-                    "failure_code": self.failure_code,
-                    "job_key": self.job_key,
-                    "minos_score": self.minos_score,
-                    "succeeded": self.succeeded,
+                    "execution_failure_code": self.execution_failure_code,
+                    "outcome": self.outcome,
+                    # provenance is sorted so phase ORDER cannot move the scientific identity
+                    "source_job_keys": sorted(self.source_job_keys),
+                    "source_plan_hashes": sorted(set(self.source_plan_hashes)),
                 }
             )
         )
@@ -126,6 +193,14 @@ class CvManifest(BaseModel):
         unknown = sorted(set(self.bam_chromosome.values()) - set(CV_FOLD_CHROMOSOMES))
         if unknown:
             raise TrainingDatasetError(f"unknown fold chromosomes: {unknown}")
+        # "50 total" alone would admit 46/1/1/1/1, which is five folds in name only.
+        for chromosome in CV_FOLD_CHROMOSOMES:
+            count = sum(1 for c in self.bam_chromosome.values() if c == chromosome)
+            if count != BAMS_PER_CHROMOSOME:
+                raise TrainingDatasetError(
+                    f"{chromosome} holds {count} TRAIN BAMs, expected {BAMS_PER_CHROMOSOME}; a "
+                    "lopsided split is five folds in name only"
+                )
 
     def fold_of(self, dataset_id: str) -> int:
         """The held-out fold this BAM belongs to."""
@@ -175,6 +250,11 @@ class TrainingDataset(BaseModel):
     scoring_contract_hash: str = Field(min_length=64, max_length=64)
     execution_environment_hash: str = Field(min_length=64, max_length=64)
     train_plan_hashes: tuple[str, ...]
+    feature_set_hash: str = Field(min_length=64, max_length=64)
+    feature_matrix_hash: str = Field(min_length=64, max_length=64)
+    feature_matrix_artifact_sha256: str = Field(min_length=64, max_length=64)
+    #: the 50 TRAIN BAMs' feature VALUE identities. A changed value moves the dataset identity.
+    bam_features: tuple[BamFeatureBinding, ...]
     feature_names: tuple[str, ...]
     config_feature_names: tuple[str, ...]
     rows: tuple[TrainingRow, ...]
@@ -201,23 +281,110 @@ class TrainingDataset(BaseModel):
             raise TrainingDatasetError(
                 f"rows reference BAMs absent from the CV manifest: {missing}"
             )
+        if self.feature_set_hash != FROZEN_FEATURE_SET_HASH:
+            raise TrainingDatasetError(
+                f"feature_set_hash {self.feature_set_hash} is not the qualified production set "
+                f"{FROZEN_FEATURE_SET_HASH}; a feature promotion must re-qualify the matrix "
+                "before it can train a model"
+            )
+        if len(self.feature_names) != FEATURE_COLUMN_COUNT:
+            raise TrainingDatasetError(
+                f"{len(self.feature_names)} predictor columns are not the qualified "
+                f"{FEATURE_COLUMN_COUNT}; the registry's eligible field list is wider than the "
+                "matrix that was actually qualified for production"
+            )
+        if len(set(self.feature_names)) != len(self.feature_names):
+            raise TrainingDatasetError("a predictor column name appears twice")
+        bound: set[str] = set()
+        for binding in self.bam_features:
+            if binding.dataset_id in bound:
+                raise TrainingDatasetError(
+                    f"{binding.dataset_id} appears twice in the feature bindings"
+                )
+            bound.add(binding.dataset_id)
+        manifest_bams = set(self.cv_manifest.bam_chromosome)
+        if bound != manifest_bams:
+            raise TrainingDatasetError(
+                "the feature bindings and the CV manifest describe different BAM sets: "
+                f"{sorted(bound ^ manifest_bams)}"
+            )
+        uncovered = sorted(manifest_bams - bams)
+        if uncovered:
+            raise TrainingDatasetError(
+                f"manifest BAMs contribute no learning example: {uncovered}; a fold that holds "
+                "out a BAM with no rows measures nothing"
+            )
+        seen: set[tuple[str, str]] = set()
+        for row in self.rows:
+            pair = (row.dataset_id, row.config_hash)
+            if pair in seen:
+                raise TrainingDatasetError(
+                    f"the (BAM, config) cell {pair} appears more than once; the campaign "
+                    "scheduled some pairs repeatedly and a cell must not gain weight for that"
+                )
+            seen.add(pair)
 
     @property
-    def scored_rows(self) -> tuple[TrainingRow, ...]:
-        """Only these train the SCORE model. A failure has no score to learn from."""
-        return tuple(r for r in self.rows if r.succeeded)
+    def score_examples(self) -> tuple[TrainingRow, ...]:
+        """Only ADMITTED examples train the score regressor."""
+        return tuple(r for r in self.rows if r.is_score_example)
 
     @property
-    def decided_rows(self) -> tuple[TrainingRow, ...]:
-        """All of these train the FAILURE-RISK model: success and bounded failure alike."""
+    def admission_examples(self) -> tuple[TrainingRow, ...]:
+        """Every decided outcome trains the admission model, positive and negative alike."""
         return self.rows
+
+    def admission_weights(self) -> dict[str, float]:
+        """EQUAL_BAM_TOTAL: every BAM contributes the same total admission-loss weight.
+
+        Without this, the ten Phase-B BAMs (up to 80 examples each) would dominate the forty that
+        carry ten — the model would fit the BAMs that happened to be scheduled most, not the
+        population.
+        """
+        per_bam: dict[str, int] = {}
+        for row in self.rows:
+            per_bam[row.dataset_id] = per_bam.get(row.dataset_id, 0) + 1
+        return {r.identity(): 1.0 / per_bam[r.dataset_id] for r in self.rows}
+
+    def score_weights(self) -> dict[str, float]:
+        """EQUAL_BAM_TOTAL over ADMITTED examples only.
+
+        A BAM with no admitted example contributes nothing rather than dividing by zero, and is
+        reported by :meth:`bams_without_score_examples` rather than silently dropped.
+        """
+        per_bam: dict[str, int] = {}
+        for row in self.score_examples:
+            per_bam[row.dataset_id] = per_bam.get(row.dataset_id, 0) + 1
+        return {r.identity(): 1.0 / per_bam[r.dataset_id] for r in self.score_examples}
+
+    def bams_without_score_examples(self) -> tuple[str, ...]:
+        """BAMs the score regressor cannot learn from. Declared, never quietly ignored."""
+        with_scores = {r.dataset_id for r in self.score_examples}
+        return tuple(sorted(set(self.cv_manifest.bam_chromosome) - with_scores))
 
     def content(self) -> dict[str, Any]:
         return {
             "baseline_qualified_gate_hash": self.baseline_qualified_gate_hash,
             "baseline_selected_hash": self.baseline_selected_hash,
             "bam_count": len({r.dataset_id for r in self.rows}),
-            "candidate_failure_count": sum(1 for r in self.rows if not r.succeeded),
+            "admitted_example_count": len(self.score_examples),
+            "non_admission_example_count": sum(
+                1 for r in self.rows if r.outcome == OUTCOME_NON_ADMISSION
+            ),
+            "execution_failure_example_count": sum(
+                1 for r in self.rows if r.outcome == OUTCOME_EXECUTION_FAILURE
+            ),
+            "bams_without_score_examples": list(self.bams_without_score_examples()),
+            "dedup_policy": DEDUP_POLICY,
+            "weighting_policy": WEIGHTING_POLICY,
+            "feature_set_hash": self.feature_set_hash,
+            "feature_column_count": len(self.feature_names),
+            "feature_matrix_hash": self.feature_matrix_hash,
+            "feature_matrix_artifact_sha256": self.feature_matrix_artifact_sha256,
+            "bam_feature_bindings": [
+                b.model_dump(mode="json")
+                for b in sorted(self.bam_features, key=lambda x: x.dataset_id)
+            ],
             "config_count": len({r.config_hash for r in self.rows}),
             "config_encoding_identity": self.config_encoding_identity,
             "config_feature_names": list(self.config_feature_names),
@@ -230,9 +397,8 @@ class TrainingDataset(BaseModel):
             "row_identity_digest": sha256_hex(
                 ",".join(sorted(r.identity() for r in self.rows)).encode("utf-8")
             ),
-            "row_count": len(self.rows),
+            "learning_example_count": len(self.rows),
             "schema_version": self.schema_version,
-            "scored_row_count": len(self.scored_rows),
             "scoring_contract_hash": self.scoring_contract_hash,
             "train_plan_hashes": list(self.train_plan_hashes),
         }

@@ -18,28 +18,26 @@ does not restate or override them.
 
 | | |
 |---|---|
-| Architectural stage | **L2-F2 — baseline discovery + baseline qualification** |
-| Previous stage | L2-F1 — experiment harness — **CLOSED** at HARNESS-READY |
+| Architectural stage | **L2-G — expected-score model training** |
+| Previous stage | L2-F2 — baseline discovery + baseline qualification — **CLOSED** at BASELINE-QUALIFIED |
 | Current implementation HEAD | verify from Git (`git rev-parse HEAD`) — deliberately **not** embedded here |
 | Branch | `feature/L2-F` |
 | HARNESS evidence commit (immutable anchor) | `107a745f2530b841ee3b399c81f3b2385cb6de2b` |
 | L2-F2 pre-implementation-plan commit (immutable anchor) | `1536f73f0b0bbce0a514d56d2f47923945741762` |
 | HARNESS historical Alembic head | `0008_l2f_execution_results` (stage-scoped; the repository head advances independently) |
 | Operational DB revision | `0005_l2e_feature_view` |
-| Next gate | **BASELINE-QUALIFIED** (designed in `docs/layer2/BASELINE_QUALIFICATION.md`, not implemented) |
-| Current task | **L2-F2-E — PHASE-C CONTROL PLANE: SOURCE READY.** Phase B is COMPLETE (480/480, 0 infrastructure incidents) and promoted exactly ten. `0020` admits `PHASE_C` to the runner boundary with its own resolver and truth-free bootstrap; the confirmation's authority, plan, bounded materialization, racing and four-finalist promotion are ready. The tie-break index is resolved as the **inherited Phase-B design position**, not the promotion position. **No real Phase-C plan, job, GATK execution or score exists** |
-| Previous task | **L2-F2-E — PHASE-B RUNNER BOOTSTRAP: SOURCE READY.** The Phase-B runner entry no longer builds a `PhaseBAuthority`; `0019` gives it a truth-free ticket — the authorized plan hash and the completed Phase-A runtime — so it never reads the scientific ledger it is denied |
-| Previous task | **L2-F2-E — JVM DISPATCH CLOSURE: SOURCE READY.** GATK's launcher starts a bare `java`; the runner now proves that token resolves to the pinned `JAVA_HOME` JVM against the exact child environment, at preflight and before every scientific launch. No migration, no protocol change, execution-environment hash unchanged |
-| Real baseline | **`0019_l2f2_phase_b_bootstrap` (not yet migrated to `0020`). Phase A 195/195 COMPLETE. Phase B 480/480 COMPLETE — 450 executions, 30 execution failures, 308 admitted, 142 non-admissions, 0 infrastructure incidents — ten candidates promoted. **No Phase-C plan, job or score exists in it** |
-| Previous task | **L2-F2-E — EVALUATOR-OWNER CORRECTIVE: SOURCE READY.** `0018` finishes what `0017` began: the four `0009`/`0010` evaluator definers and their two outcome ledgers are re-owned to `minos_admin`. No superuser-owned definer remains on either the runner or the evaluator production path. **The active baseline is still at `0015`** |
-| Previous task | **L2-F2-E — PRIVILEGED-OWNER CORRECTIVE: SOURCE READY.** `0017` took SUPERUSER authority away from the two `0011` `SECURITY DEFINER` functions the runner calls |
-| Previous task | **L2-F2-E — PHASE-B EXECUTION AUTHORITY: SOURCE READY.** `0016` admits `PHASE_B` to the runner boundary and adds its own resolver; the Phase-B execution authority has a production control-plane boundary; the runner selects a resolver from the authority, never from a caller. Proven end-to-end on ephemeral PostgreSQL under a `minos_runner`-only principal. **No real Phase-B execution**: the active baseline is still at `0015` until a separate privileged environment migration |
-| Previous task | L2-F2-E — Phase-B control plane — design, persistence, materialization, racing and promotion, held at the `0011` `PHASE_A`-only boundary now corrected |
-| Source Alembic head | `0020_l2f2_phase_c_execution` (migrations `0001`–`0020`) |
-| Baseline DB revision required by the runner | `0020_l2f2_phase_c_execution` (exact; every other revision is refused, including `0019`) |
+| BASELINE-QUALIFIED evidence commit (immutable anchor) | `f01368d9f2a9850eae9c705eb8a63f968ca0684e` — 42/42 PASS, gate `b9436bf3…` |
+| Next gate | **MODELS-QUALIFIED** (designed in `docs/layer2/L2G_EXPECTED_SCORE_MODEL.md`; registry declared, **not issued**) |
+| Current task | **L2-G — TRAINING DATA + TARGET AUTHORITY.** The training contract is corrected to v2 (`35a9ac91…`): the model factorises over **ADMISSION**, not GATK exit status, so the 154 non-admitted evaluations train the admission head and never the score regressor. The learning table dedups 1175 terminal jobs to **1040** scientific (BAM, config) cells and weights every BAM equally. **No model has been fitted** |
+| Previous task | **L2-F2-G — BASELINE-QUALIFIED.** The real trusted qualification ran against an ephemeral TRAIN observer and returned 42/42 PASS; the observer was dropped and TRAIN proven unchanged |
+| Previous task | **L2-F2-F — PHASE-D VALIDATION CLOSURE.** All 40 real VALIDATION executions evaluated (0 failures) and closed under the pre-registered rule |
+| Selected baseline | `157d88d1587c13be395c62d60e27d1becdada78fad45e65d883bc1190e51acea` — rank 0, inherited design index 42, objective `0.6472585261839707`, CVaR `0.6323350350370124`. The SEED ranked **3 of 4** (last); the search found something the seed did not |
+| Source Alembic head | `0026_l2f2_phase_d_closure` (migrations `0001`–`0026`) |
+| TRAIN DB revision | `minos_l2f2_baseline` @ `0020_l2f2_phase_c_execution` — frozen; 1175 terminal jobs, 986 admitted / 154 non-admitted, 35 execution failures, 0 infrastructure incidents |
+| VALIDATION DB revision | `minos_l2f2_validation` @ `0026_l2f2_phase_d_closure` — 40/40 EVALUATED, closed. **Not consulted during L2-G TRAIN development** |
+| TEST | **SEALED until L2-I.** Never opened |
 | Production score authority | pinned `minos-protocol/minos_subnet` @ `649bb92c…` — executed, not reimplemented |
 | Scoring contract | `l2f2-minos-scoring-v2` (`b24a07e2…`); v1 `d6f29e11…` superseded, still recomputable |
-| Real baseline DB revision | `0019_l2f2_phase_b_bootstrap` — **not yet migrated to `0020`**; that is a separate privileged environment task. The CLEAN campaign now holds 2 plans and 675 jobs: Phase A 195/195 decided (190 execution results, 5 failures, 179 admitted, 16 candidate failures) and Phase B 480/480 decided (450 execution results, 30 failures, 308 admitted, 172 candidate failures), **0 infrastructure incidents** across both, one execution environment `71e14a49…`. No Phase-C plan and no Phase-C job exist in it |
 | Quarantined forensic DB | `minos_l2f2_baseline_tainted_20260826` at `0014_l2f2_exec_failure_runtime` — **DO NOT EXECUTE.** Retained as immutable evidence of the runtime defect |
 
 `select_config` remains deliberately blocked by `StageNotReadyError` and stays

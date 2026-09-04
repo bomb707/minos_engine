@@ -617,18 +617,26 @@ REQUIRED_CHECKS: dict[str, frozenset[str]] = {
         {
             # ENTRY
             "baseline_qualified_gate_exact",
-            "training_contract_hash_exact",
+            "training_contract_v2_hash_exact",
+            "training_protocol_hash_exact",
             # DATA
             "training_dataset_hash_exact",
             "train_partition_only",
             "no_test_row_present",
-            "feature_schema_production_eligible",
+            "feature_set_hash_is_the_qualified_129_column_set",
+            "feature_matrix_value_identity_bound",
             "no_forbidden_feature_in_predictor",
             "no_research_only_feature_in_predictor",
             "dataset_identity_not_a_predictor",
             "config_schema_exact",
+            "config_encoder_built_from_accepted_authority",
             "parameter_space_hash_exact",
             "group_assignments_exact",
+            "ten_bams_per_chromosome_exact",
+            "scientific_pair_dedup_exact",
+            "equal_bam_weighting_exact",
+            "admitted_target_semantics_exact",
+            "non_admission_not_a_score_label",
             # CV
             "cv_manifest_hash_exact",
             "chromosome_held_out_folds_exact",
@@ -649,6 +657,8 @@ REQUIRED_CHECKS: dict[str, frozenset[str]] = {
             "no_catastrophic_regression_vs_safe_baseline",
             # VALIDATION
             "candidate_specs_frozen_before_validation",
+            "finite_candidate_grid_no_adaptive_search",
+            "validation_not_consulted_during_train_development",
             "validation_used_only_for_selection",
             "no_adaptive_post_validation_tuning",
             "validation_label_domain_documented",
@@ -657,6 +667,8 @@ REQUIRED_CHECKS: dict[str, frozenset[str]] = {
             "select_config_still_blocked",
             # BUNDLE
             "selected_model_bundle_hash_exact",
+            "bundle_identity_host_independent",
+            "promotable_family_selected_not_a_reference",
         }
     ),
 }

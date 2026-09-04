@@ -15,6 +15,7 @@ contextual model has to beat.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Final
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -25,6 +26,8 @@ from minos_engine.common.hashing import sha256_hex
 
 __all__ = [
     "MODEL_BUNDLE_DOMAIN",
+    "PROMOTABLE_FAMILIES",
+    "REFERENCE_FAMILIES",
     "MODEL_BUNDLE_SCHEMA",
     "MODEL_FAMILIES",
     "MODEL_SPEC_DOMAIN",
@@ -41,16 +44,25 @@ MODEL_SPEC_DOMAIN: Final = "minos:l2g-model-spec:v1\n"
 MODEL_BUNDLE_SCHEMA: Final = "l2g-model-bundle-v1"
 MODEL_BUNDLE_DOMAIN: Final = "minos:l2g-model-bundle:v1\n"
 
-#: ordered by capacity, lowest first. The first three are references a contextual model must beat.
-MODEL_FAMILIES: Final[tuple[str, ...]] = (
+#: REFERENCE predictors. A reference exists to show whether the contextual model earned its
+#: place. It must never quietly BECOME the production model because the contextual candidates
+#: disappointed -- if none of them qualifies, MODELS-QUALIFIED holds and SAFE_BASELINE remains
+#: the downstream fallback, which is a different and honest outcome.
+REFERENCE_FAMILIES: Final[tuple[str, ...]] = (
     "CONSTANT_SAFE_BASELINE",
     "GLOBAL_MEAN",
     "CONFIG_ONLY",
     "BAM_FEATURES_ONLY",
+)
+
+#: PROMOTABLE contextual families, lowest capacity first.
+PROMOTABLE_FAMILIES: Final[tuple[str, ...]] = (
     "LINEAR_REGULARIZED",
     "TREE_ENSEMBLE",
     "COMPACT_MLP",
 )
+
+MODEL_FAMILIES: Final[tuple[str, ...]] = (*REFERENCE_FAMILIES, *PROMOTABLE_FAMILIES)
 
 #: frozen BEFORE any VALIDATION number is looked at.
 SELECTION_ORDER: Final[tuple[str, ...]] = (
@@ -64,6 +76,7 @@ SELECTION_ORDER: Final[tuple[str, ...]] = (
 )
 
 _STRICT = ConfigDict(extra="forbid", frozen=True, strict=True)
+_HEX64: Final = re.compile(r"[0-9a-f]{64}")
 
 
 class ModelSpecError(MinosEngineError):
@@ -71,14 +84,36 @@ class ModelSpecError(MinosEngineError):
 
 
 class ArtifactRef(BaseModel):
-    """One external artifact, identified by content rather than by filename."""
+    """One external artifact, identified by CONTENT rather than by location.
+
+    ``path`` is retained for retrieval but is deliberately excluded from
+    :meth:`scientific_identity`: the same bytes stored under two absolute directories are the same
+    artifact, and a bundle hash that moved when a file was relocated would be a statement about
+    the filesystem rather than about the science.
+    """
 
     model_config = _STRICT
 
+    role: str = Field(min_length=1)
     path: str = Field(min_length=1)
     sha256: str = Field(min_length=64, max_length=64)
     media_type: str = Field(min_length=1)
     size_bytes: int = Field(ge=0)
+
+    def model_post_init(self, _context: Any) -> None:
+        if not _HEX64.fullmatch(self.sha256):
+            raise ModelSpecError(
+                f"{self.role} sha256 {self.sha256!r} is not 64 lowercase hex characters"
+            )
+
+    def scientific_identity(self) -> dict[str, Any]:
+        """Role, content and shape. Never the path."""
+        return {
+            "media_type": self.media_type,
+            "role": self.role,
+            "sha256": self.sha256,
+            "size_bytes": self.size_bytes,
+        }
 
 
 class ModelSpec(BaseModel):
@@ -96,6 +131,8 @@ class ModelSpec(BaseModel):
     hyperparameters: dict[str, Any]
     random_seed: int
     loss: str = Field(min_length=1)
+    weighting_policy: str = Field(min_length=1)
+    dedup_policy: str = Field(min_length=1)
     failure_risk_formulation: str = Field(min_length=1)
     calibration_method: str = Field(min_length=1)
     ood_method: str = Field(min_length=1)
@@ -119,6 +156,7 @@ class ModelSpec(BaseModel):
             "feature_schema_hash": self.feature_schema_hash,
             "hyperparameters": self.hyperparameters,
             "implementation": self.implementation,
+            "dedup_policy": self.dedup_policy,
             "loss": self.loss,
             "ood_method": self.ood_method,
             "random_seed": self.random_seed,
@@ -126,6 +164,7 @@ class ModelSpec(BaseModel):
             "target_formulation": self.target_formulation,
             "training_dataset_hash": self.training_dataset_hash,
             "transform_specification": self.transform_specification,
+            "weighting_policy": self.weighting_policy,
         }
 
     def identity(self) -> str:
@@ -154,20 +193,20 @@ class ModelBundle(BaseModel):
     def content(self) -> dict[str, Any]:
         return {
             "baseline_qualified_gate_hash": self.baseline_qualified_gate_hash,
-            "calibration_artifact": self.calibration_artifact.model_dump(mode="json"),
+            "calibration_artifact": self.calibration_artifact.scientific_identity(),
             "cv_manifest_hash": self.cv_manifest_hash,
-            "cv_metric_artifact": self.cv_metric_artifact.model_dump(mode="json"),
-            "model_artifact": self.model_artifact.model_dump(mode="json"),
-            "oof_prediction_artifact": self.oof_prediction_artifact.model_dump(mode="json"),
+            "cv_metric_artifact": self.cv_metric_artifact.scientific_identity(),
+            "model_artifact": self.model_artifact.scientific_identity(),
+            "oof_prediction_artifact": self.oof_prediction_artifact.scientific_identity(),
             "ood_artifact": (
-                self.ood_artifact.model_dump(mode="json") if self.ood_artifact else None
+                self.ood_artifact.scientific_identity() if self.ood_artifact else None
             ),
             "runtime": dict(sorted(self.runtime.items())),
             "safe_baseline_config_hash": self.safe_baseline_config_hash,
             "schema_version": self.schema_version,
             "spec_hash": self.spec_hash,
             "training_dataset_hash": self.training_dataset_hash,
-            "transform_artifact": self.transform_artifact.model_dump(mode="json"),
+            "transform_artifact": self.transform_artifact.scientific_identity(),
         }
 
     def identity(self) -> str:

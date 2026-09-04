@@ -30,43 +30,66 @@ zero. A run that failed produced *no score at all*; training on a fabricated `0.
 model that such configurations produce genomically terrible calls, when in fact they produced
 none. The 35 `GATK_NONZERO_EXIT` rows are execution evidence, not biological evidence.
 
-v1 therefore freezes **formulation B, joint expected utility**:
+**v1 got the conditioning variable wrong, and v2 corrects it before any model was fitted.**
+v1 factorised over *GATK success*, which let all 1140 evaluated rows train the score regressor.
+But 154 of those evaluations were **NOT ADMITTED** — 150 `ZERO_INPUT_FINGERPRINT`, 4
+`NONPOSITIVE_SCORE` — and the frozen objective does not treat a non-admitted evaluation as
+utility. Roughly one in eight score-training rows would have carried a label the scoring authority
+refuses to call utility. GATK exiting zero is not the same event as the subnet admitting the
+result.
+
+v2 therefore freezes **formulation B, joint expected utility over ADMISSION**:
 
 ```
-P(success | X, theta)                 -- failure-risk model, all 1175 decided rows
-E[score | success, X, theta]          -- score model, the 1140 evaluated rows only
-E[utility] = P(success) * E[score | success] + (1 - P(success)) * 0.0
+P(admitted | X, theta)                -- admission model, every decided outcome
+E[score | admitted, X, theta]         -- score model, ADMITTED examples only
+E[utility] = P(admitted) * E[score | admitted] + (1 - P(admitted)) * 0.0
 ```
+
+Both a GATK crash and a non-admitted evaluation are admission-negatives contributing utility
+`0.0`; neither is ever a score-regression label. They keep distinct codes
+(`execution_failure_code` vs `admission_code`) because they are different physical events, and a
+non-admission may not be recorded as a crash.
 
 The `0.0` is taken from the frozen aggregation semantics, not invented here. Formulation A
 (score-only with a separate failure model) is B without the combination step, so B subsumes it and
 is what a controller actually needs. An `INFRASTRUCTURE_INCIDENT` is never a label in either
 component — it is our defect, and a model that learns from it learns about our infrastructure.
 
-`admitted` / `admission_code` are **not** a second training objective in v1: admission is already
-reflected in the persisted `minos_score`, and adding a second objective would change how the
-frozen scoring authority is consumed. They remain available as diagnostics.
+`admitted` is therefore the conditioning event itself, not a diagnostic. An
+`INFRASTRUCTURE_INCIDENT` remains a label in neither component — it is our defect, and a model
+that learns from it learns about our infrastructure.
 
 ## 3. Data reality — and why it constrains model capacity
 
 | quantity | value |
 |---|---|
 | TRAIN BAMs | 50 (10 per chromosome, chr18–chr22) |
-| observed rows | 1175 |
+| terminal job rows | 1175 |
+| **unique (BAM, config) cells** | **1040** |
+| repeated cells | 115 (95 twice, 20 three times) — 135 surplus rows |
 | unique configs | 80 |
 | full BAM×config matrix | 4000 cells |
-| **observed sparsity** | **70.6%** |
-| rows per BAM | 10 – 97 (mean 23.5) |
-| BAMs per config | 5 – 50 (mean 13.0) |
-| scored labels | 1140 |
-| candidate failures | 35 `GATK_NONZERO_EXIT`, across 10 BAMs and 3 configs |
+| **true observed sparsity** | **74.0%** (1040 / 4000) |
+| examples per BAM | 10 – 80 |
+| **admission-model examples** | **1040** = 861 ADMITTED + 149 NON_ADMISSION + 30 EXEC_FAILURE |
+| **score-model examples** | **861 ADMITTED only** |
+| BAMs with no ADMITTED example | **0** |
+| non-admissions (row level) | 154 = 150 `ZERO_INPUT_FINGERPRINT` + 4 `NONPOSITIVE_SCORE` |
+| execution failures (row level) | 35 `GATK_NONZERO_EXIT` |
 | between-BAM SD of mean score | **0.1909** |
 | between-config SD of mean score | **0.1663** |
 
 Two facts drive every design decision below.
 
-**1175 rows are not 1175 independent samples.** They come from 50 BAMs, and the campaign is
-heavily unbalanced: Phase-A's 5 BAMs saw 39 configs each, Phase-C's 50 saw 10.
+**1175 rows are not 1175 independent samples, and they are not even 1175 distinct cells.** The
+phases overlap: 115 (BAM, config) pairs were scheduled more than once, so the learning table
+collapses to **1040** cells under `ONE_EXAMPLE_PER_BAM_CONFIG_PAIR`. Collapsing is safe here
+because the repeats were checked and agree: 0 conflicting outcome class, 0 conflicting admitted
+score, 0 conflicting execution environment. Beyond dedup, the 1040 cells still come from only 50
+BAMs, heavily unbalanced — Phase-A's 5 BAMs carry up to 80 examples each, Phase-C's 50 carry ten
+— so `EQUAL_BAM_TOTAL` gives every BAM the same total loss weight. Without it the model would fit
+whichever BAMs the scheduler favoured, not the population.
 
 **The BAM matters more than the config.** Between-BAM spread (0.191) exceeds between-config
 spread (0.166). A model can score well by learning "which BAM is this" and never learning
@@ -90,9 +113,16 @@ own bounds**, which are a property of the search space rather than of the sample
 
 **BAM features** — production-eligible only, from feature registry
 `0d8612707c6673060546511d8f5e8d1ba47048ef440e6c2dcf238fdc297f6e0c`: 285 records, of which 147
-`ELIGIBLE` (141 production-eligible model features), 60 `CONDITIONAL`, 2 `RESEARCH_ONLY`, 76
-`FORBIDDEN` (including all 6 truth-derived). `FORBIDDEN` and `RESEARCH_ONLY` fields never enter
-the v1 predictor. `chromosome` stays METADATA for CV grouping — as a feature it is an invitation
+`ELIGIBLE`, 60 `CONDITIONAL`, 2 `RESEARCH_ONLY`, 76 `FORBIDDEN` (including all 6 truth-derived).
+The registry's 141 production-eligible fields are **not** the training matrix. The matrix that was
+actually built, qualified and persisted is the frozen **129-column** set
+`7e867dfa5633044b69869be8a87fac564431a73a183aa0ab0b1b13158a7c176f`
+(`EXPECTED_COLUMN_COUNT = 129`), and a dataset presenting 141 columns is refused. Promoting the
+extra 12 would be a feature-promotion event requiring the matrix to be re-qualified, not a
+training-time choice. `FORBIDDEN` and `RESEARCH_ONLY` fields never enter the predictor.
+
+Feature **values**, not just names, are bound: each of the 50 BAMs contributes a
+`BamFeatureBinding`, so a silently changed predictor value moves the dataset identity. `chromosome` stays METADATA for CV grouping — as a feature it is an invitation
 to memorise.
 
 **Config features** — encoder identity
@@ -116,7 +146,7 @@ report a flattering number. On a scientific tie the simpler qualified model wins
 
 Accuracy is diagnostic; **decision quality** is the target. `regret = oracle_utility −
 selected_utility`, lower is better — orientation frozen before any result exists. Regret considers
-only configs actually run for that BAM, because 70.6% of the matrix was never measured.
+only configs actually run for that BAM, because 74.0% of the matrix was never measured.
 
 Reported: MAE, RMSE, R², Spearman; BAM-grouped top-1 regret, oracle gap, worst-BAM regret,
 per-chromosome regret, fraction beating `SAFE_BASELINE`; downside as mean / max / CVaR-0.25
@@ -153,3 +183,37 @@ discovered), `l2g-model-bundle-v1` (every artifact by SHA-256 — no opaque pick
 VALIDATION / ISOLATION / BUNDLE. **Designed here, not issued.**
 
 TEST remains sealed until L2-I. `Layer2Service.select_config` remains blocked until L2-H.
+
+## 11. Training protocol authority — `l2g-model-training-protocol-v1`
+
+`src/minos_engine/models/protocol.py` freezes the decision procedure itself, hash
+`607aa46e864808c6c19a0cf7ec2b1e7b5c415f9080ce235c9e62c4b3da8f82d1`. It binds the training
+contract hash, the 129-column feature-set hash, the config encoding, the target formulation, the
+dedup and weighting policies, the CV rules, the candidate and reference sets, the metric
+definitions, the regret orientation (`ORACLE_MINUS_SELECTED_LOWER_IS_BETTER`), CVaR α = 0.25, the
+selection order, the VALIDATION limitation and the TEST lock.
+
+**The candidate set is finite and named before fitting.** Six specifications across the three
+promotable families, no adaptive search. With 50 independent BAMs, an open-ended hyperparameter
+search would find whatever the folds happened to reward.
+
+**Two-stage threshold rule.** Numeric promotion thresholds cannot honestly be fixed before any
+out-of-fold number exists, so the protocol freezes the *procedure* instead:
+
+- **Stage 1** — TRAIN OOF may derive the shortlist and thresholds, using only the predeclared
+  formula: shortlist = promotable specs whose OOF mean regret ≤ the best reference's mean regret
+  **and** whose OOF CVaR-0.25 regret ≤ the best reference's CVaR regret.
+- **Stage 2** — a separate source freeze binds the exact shortlisted `ModelSpec`s and the exact
+  resulting thresholds **before the first VALIDATION score is read**.
+
+The invariant is `VALIDATION_NEVER_CHOOSES_THE_RULES_USED_TO_JUDGE_IT`. TEST stays sealed
+until L2-I.
+
+**Backend.** scikit-learn `>=1.5,<2` (verified 1.9.0, Python 3.12, joblib), CPU only. It was
+chosen because `EQUAL_BAM_TOTAL` requires `sample_weight` to be genuinely honoured, which was
+verified empirically rather than assumed from the signature. No GPU stack is introduced for 50
+independent BAMs.
+
+**Bundle identity is host-independent.** `ArtifactRef.scientific_identity()` excludes the
+filesystem `path`: the same artifact bytes stored under two different absolute directories are
+the same scientific object.

@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -1022,8 +1023,11 @@ def test_no_db_v2_contract_symbol_exists() -> None:
 def _cli(*args: str) -> subprocess.CompletedProcess[str]:
     env = {**os.environ, "PYTHONPATH": str(_repo_root() / "src")}
     env.pop("MINOS_DATABASE_URL", None)
+    # sys.executable, not a bare "python": the interpreter running the suite is the one that
+    # has the dependencies, and on a machine whose PATH offers only "python3" a bare name is
+    # simply not found. Same portability class as the hard-coded-root defect.
     return subprocess.run(  # noqa: S603 - fixed argv, no shell
-        ["python", "-m", "minos_engine.cli.main", "layer2", "harness", *args],  # noqa: S607
+        [sys.executable, "-m", "minos_engine.cli.main", "layer2", "harness", *args],
         cwd=_repo_root(),
         capture_output=True,
         text=True,
