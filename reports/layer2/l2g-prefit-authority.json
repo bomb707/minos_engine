@@ -1,0 +1,173 @@
+{
+  "authorities": {
+    "baseline_protocol_hash": "c548e190571f5e964560cf30021a520ea8aad6674569fa3202af880d7dff77d1",
+    "baseline_qualification_hash": "afbcd418dee7f5521dc52b34e2c0b5d7bd31ea5f5d4ec3b1bf0768ab35babee8",
+    "baseline_qualified_gate_hash": "b9436bf3263925ebe187ed5550c7214cfa92bc75a0dd2607a7766103bfa6befa",
+    "baseline_selected_hash": "b13aef13fecf8e966184d03bad5ee0e6f096fb5649b30e336283e2f50f3eba38",
+    "config_encoding_identity": "3053fed09a1a7fdc9462a963871564275c88e4eca5fe3a898d2d6821c36b1fe4",
+    "execution_environment_hash": "71e14a49833ac77bb9dc576345fb89c4dd68f4a3ad3673eb098d38593c1ef4d3",
+    "feature_registry_hash": "0d8612707c6673060546511d8f5e8d1ba47048ef440e6c2dcf238fdc297f6e0c",
+    "feature_set_hash": "7e867dfa5633044b69869be8a87fac564431a73a183aa0ab0b1b13158a7c176f",
+    "observation_surface_body_sha256": "fb42335dd91472d40d671aa840492190be0b7ec84dffd17894ac594da9d33b50",
+    "parameter_space_hash": "b2d401918084d64023305d9262baf5011a89fe517bee4e0bd33af79fb14aee2e",
+    "safe_baseline_config_hash": "157d88d1587c13be395c62d60e27d1becdada78fad45e65d883bc1190e51acea",
+    "scoring_contract_hash": "b24a07e208ce8e2fff6672102ae4e61aed93c6f352a5af46ba81c4789adb76d6",
+    "train_plan_hashes": [
+      "03b846e735e5817a8df7d5c37ae15778a955828a56513b16cef8ff2193a0aa43",
+      "97ba598778a5fc634345ded0901e4975af9c6b875c5b70fc7e76f2ae482e1b9a",
+      "e80594043580334ddf2504577e2fa030dff0c1217ac334804d9304a0ec72596b"
+    ],
+    "train_schedule_hash": "ffdd31955a24147430156aff003248f8acb51c68514ca95c6fdbe75525328773",
+    "training_contract_hash": "35a9ac9139d880e236786461a29fd91610b04049cfba90f71af3d5b3a931c6b1",
+    "training_protocol_hash": "b13a408ad46ae120d776ccde075a4071c28692a1699b3bdf3241bbfbc6deb7cd",
+    "training_runtime_hash": "e710e426784aa64d4fc6f9e37f212e3951b3707f3c804b851652d0affe84d30b"
+  },
+  "bams_without_admitted_examples": 0,
+  "calibration_policy": {
+    "applied_to": "THE_HELD_OUT_CHROMOSOME",
+    "fitted_on": "INNER_OUT_OF_FOLD_PAIRS_FROM_THE_40_TRAINING_BAMS_ONLY",
+    "forbidden": "FITTING_CALIBRATION_ON_THE_OUTER_OOF_PAIRS_IT_IS_THEN_SCORED_AGAINST",
+    "inner_grouping": "BAM_GROUPED_LEAVE_ONE_CHROMOSOME_OUT_OVER_THE_40",
+    "method": "ISOTONIC",
+    "scheme": "NESTED_CROSS_FITTED_WITHIN_EACH_OUTER_FOLD",
+    "selection_metrics_use": "CALIBRATED_OUTER_PREDICTIONS_ONLY"
+  },
+  "candidate_spec_hashes": [
+    {
+      "family": "LINEAR_REGULARIZED",
+      "hyperparameters": {
+        "C": 1.0,
+        "alpha": 0.1
+      },
+      "implementation": "sklearn:Ridge+LogisticRegression",
+      "spec_hash": "3b9aeab5393841d91c39a90cb97ce47e91b247fa6ebee9ead82e11c355e9222b"
+    },
+    {
+      "family": "LINEAR_REGULARIZED",
+      "hyperparameters": {
+        "C": 1.0,
+        "alpha": 1.0
+      },
+      "implementation": "sklearn:Ridge+LogisticRegression",
+      "spec_hash": "09a2def89622019b662d108900f3b40bc85335cfe16dea182a98a611c5a25010"
+    },
+    {
+      "family": "LINEAR_REGULARIZED",
+      "hyperparameters": {
+        "C": 0.1,
+        "alpha": 10.0
+      },
+      "implementation": "sklearn:Ridge+LogisticRegression",
+      "spec_hash": "d690b3603ffe6c00b68dddeaceb6a57df19a3ca5bea0555c87473ea2ba0cf403"
+    },
+    {
+      "family": "TREE_ENSEMBLE",
+      "hyperparameters": {
+        "learning_rate": 0.05,
+        "max_depth": 3,
+        "max_iter": 200
+      },
+      "implementation": "sklearn:HistGradientBoostingRegressor+HistGradientBoostingClassifier",
+      "spec_hash": "13b47e155acc550ba79d4fc19788601c2a923381d72d9a1ac278ec87ee217cab"
+    },
+    {
+      "family": "TREE_ENSEMBLE",
+      "hyperparameters": {
+        "learning_rate": 0.1,
+        "max_depth": 2,
+        "max_iter": 100
+      },
+      "implementation": "sklearn:HistGradientBoostingRegressor+HistGradientBoostingClassifier",
+      "spec_hash": "24ca3b97fbe1dba96ae4e0453b9ff45a2c01d8e1a426d4ea870b0d0383494b32"
+    },
+    {
+      "family": "COMPACT_MLP",
+      "hyperparameters": {
+        "alpha": 1.0,
+        "hidden_layer_sizes": [
+          16
+        ],
+        "max_iter": 500
+      },
+      "implementation": "sklearn:MLPRegressor+MLPClassifier",
+      "spec_hash": "94ce1fe869b769e430432adba4bf5d2c45b6afed18fdf7b133501cf7983b58ce"
+    }
+  ],
+  "counts": {
+    "admitted": 861,
+    "bams": 50,
+    "execution_failure": 30,
+    "non_admission": 149,
+    "per_chromosome": {
+      "chr18": 10,
+      "chr19": 10,
+      "chr20": 10,
+      "chr21": 10,
+      "chr22": 10
+    },
+    "scientific_cells": 1040,
+    "unique_configs": 80
+  },
+  "cv_manifest_hash": "b441b15fdc185e62e243b93322d6c30d8787f49f9fafbb3dab6ac9371728d92f",
+  "dedup_policy": "ONE_EXAMPLE_PER_BAM_CONFIG_PAIR",
+  "external_artifacts": [
+    {
+      "name": "training_examples.json",
+      "octal_mode": "0o640",
+      "sha256": "7e214c55bc017f2a18f48a28c8daf60f1bf514ec06e1071ae3ce1df584451646",
+      "size_bytes": 761754
+    },
+    {
+      "name": "config_table.json",
+      "octal_mode": "0o640",
+      "sha256": "0eb1cc09454f7cfdafc03bcd971dcb1fbd5a0c0e98034369294d6758447e7305",
+      "size_bytes": 7016
+    },
+    {
+      "name": "bam_feature_bindings.json",
+      "octal_mode": "0o640",
+      "sha256": "5295d18096dc6431b8ead1d4e0461404e79ba82e85ae5ddf49d15822f8112ccd",
+      "size_bytes": 12383
+    }
+  ],
+  "external_manifest_sha256": "994e6515c03200707d7ec4cfdd5bc456b7ac9832a9a498c38a72bdd7ed9ac2fb",
+  "models_qualified_issued": false,
+  "no_model_fitted": true,
+  "note": "Hashes and counts only. The learning table itself lives outside Git under /home/hr/bittensor/minos_l2g_training and is referenced here by identity.",
+  "reference_spec_hashes": [
+    {
+      "family": "CONSTANT_SAFE_BASELINE",
+      "implementation": "minos_engine.models.references.ConstantSafeBaseline",
+      "spec_hash": "081771e0604bca3d663b75e37e950c9ece7c1670e9442743b194e4cb945c21eb"
+    },
+    {
+      "family": "GLOBAL_MEAN",
+      "implementation": "minos_engine.models.references.GlobalMean",
+      "spec_hash": "711e8ccba99fe1ad79e83a8d6a729f46827311af22da907b7628cb4718bbd140"
+    },
+    {
+      "family": "CONFIG_ONLY",
+      "implementation": "minos_engine.models.references.ConfigOnlyRidge",
+      "spec_hash": "6137b44856849fc3f6fcaa3a43eacc4870dd4a87caf068b6aa35bb45d0854ed6"
+    },
+    {
+      "family": "BAM_FEATURES_ONLY",
+      "implementation": "minos_engine.models.references.BamFeaturesOnlyRidge",
+      "spec_hash": "1391aa781453c5214a8ccd487c32726a17234847a7a56d06fa378e01f425c8af"
+    }
+  ],
+  "runtime": {
+    "joblib": "1.6.0",
+    "numpy": "2.5.2",
+    "python": "3.12.3",
+    "scikit-learn": "1.9.0",
+    "scipy": "1.18.1"
+  },
+  "schema_version": "l2g-prefit-authority-v1",
+  "target_formulation": "B_JOINT_EXPECTED_UTILITY_OVER_ADMISSION",
+  "test_sealed_until": "L2-I",
+  "training_dataset_hash": "d031758c58358270843b9b417ea034d1181a6aaafc1c94af000279c26dc62fcc",
+  "training_dataset_schema": "l2g-training-dataset-v3",
+  "validation_consulted": false,
+  "weighting_policy": "EQUAL_BAM_TOTAL"
+}

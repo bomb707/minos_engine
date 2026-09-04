@@ -28,6 +28,8 @@ __all__ = [
     "MODEL_BUNDLE_DOMAIN",
     "PROMOTABLE_FAMILIES",
     "REFERENCE_FAMILIES",
+    "SUPERSEDED_BUNDLE_V1",
+    "SUPERSEDED_SPEC_V1",
     "MODEL_BUNDLE_SCHEMA",
     "MODEL_FAMILIES",
     "MODEL_SPEC_DOMAIN",
@@ -39,10 +41,16 @@ __all__ = [
     "ModelSpecError",
 ]
 
-MODEL_SPEC_SCHEMA: Final = "l2g-model-spec-v1"
-MODEL_SPEC_DOMAIN: Final = "minos:l2g-model-spec:v1\n"
-MODEL_BUNDLE_SCHEMA: Final = "l2g-model-bundle-v1"
-MODEL_BUNDLE_DOMAIN: Final = "minos:l2g-model-bundle:v1\n"
+MODEL_SPEC_SCHEMA: Final = "l2g-model-spec-v2"
+MODEL_SPEC_DOMAIN: Final = "minos:l2g-model-spec:v2\n"
+MODEL_BUNDLE_SCHEMA: Final = "l2g-model-bundle-v2"
+MODEL_BUNDLE_DOMAIN: Final = "minos:l2g-model-bundle:v2\n"
+#: v1 carried different ModelSpec semantics and a ModelBundle whose scientific identity
+#: included the filesystem path. Both meanings changed materially; no model artifact was ever
+#: produced under v1, so it is superseded rather than migrated. Two different meanings must
+#: not share one schema string.
+SUPERSEDED_SPEC_V1: Final = "SUPERSEDED_BEFORE_FIRST_MODEL_FIT"
+SUPERSEDED_BUNDLE_V1: Final = "SUPERSEDED_BEFORE_FIRST_MODEL_FIT"
 
 #: REFERENCE predictors. A reference exists to show whether the contextual model earned its
 #: place. It must never quietly BECOME the production model because the contextual candidates
@@ -140,6 +148,15 @@ class ModelSpec(BaseModel):
     cv_manifest_hash: str = Field(min_length=64, max_length=64)
 
     def model_post_init(self, _context: Any) -> None:
+        for field in (
+            "feature_schema_hash",
+            "config_schema_hash",
+            "training_dataset_hash",
+            "cv_manifest_hash",
+        ):
+            value = getattr(self, field)
+            if not _HEX64.fullmatch(value):
+                raise ModelSpecError(f"{field} must be a lowercase 64-hex SHA-256, got {value!r}")
         if self.family not in MODEL_FAMILIES:
             raise ModelSpecError(
                 f"{self.family!r} is not a frozen model family; the candidate set is decided "
@@ -189,6 +206,18 @@ class ModelBundle(BaseModel):
     calibration_artifact: ArtifactRef
     ood_artifact: ArtifactRef | None = None
     runtime: dict[str, str]
+
+    def model_post_init(self, _context: Any) -> None:
+        for field in (
+            "spec_hash",
+            "baseline_qualified_gate_hash",
+            "safe_baseline_config_hash",
+            "training_dataset_hash",
+            "cv_manifest_hash",
+        ):
+            value = getattr(self, field)
+            if not _HEX64.fullmatch(value):
+                raise ModelSpecError(f"{field} must be a lowercase 64-hex SHA-256, got {value!r}")
 
     def content(self) -> dict[str, Any]:
         return {

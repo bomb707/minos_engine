@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from minos_engine.gates.required_checks import required_checks_for
+from minos_engine.layer2.features.contracts import AUTHORITATIVE_COLUMNS
 from minos_engine.models.config_encoder import ConfigEncoderError, build_config_encoding
 from minos_engine.models.contract import (
     BAMS_PER_CHROMOSOME,
@@ -73,13 +74,28 @@ def _repo() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+def _frozen() -> tuple[tuple[str, str], ...]:
+    """The real frozen fifty. Synthetic ids no longer instantiate a dataset, by design."""
+    from minos_engine.baseline.schedule import build_train_schedule
+
+    return tuple((m.dataset_id, m.chromosome) for m in build_train_schedule().members)
+
+
 def _bam(i: int) -> str:
-    return f"minos-{CV_FOLD_CHROMOSOMES[i % 5]}-{i:02d}"
+    return _frozen()[i][0]
+
+
+def _chromosome(i: int) -> str:
+    return _frozen()[i][1]
+
+
+def _hex(seed: int) -> str:
+    return f"{seed:064x}"
 
 
 def _manifest(counts: dict[str, int] | None = None) -> CvManifest:
     if counts is None:
-        return CvManifest(bam_chromosome={_bam(i): CV_FOLD_CHROMOSOMES[i % 5] for i in range(50)})
+        return CvManifest(bam_chromosome=dict(_frozen()))
     mapping: dict[str, str] = {}
     index = 0
     for chromosome, count in counts.items():
@@ -91,7 +107,9 @@ def _manifest(counts: dict[str, int] | None = None) -> CvManifest:
 
 def _features(n: int = 50) -> tuple[BamFeatureBinding, ...]:
     return tuple(
-        BamFeatureBinding(dataset_id=_bam(i), vector_hash=f"v{i}", feature_values_hash=f"f{i}")
+        BamFeatureBinding(
+            dataset_id=_bam(i), vector_hash=_hex(1000 + i), feature_values_hash=_hex(2000 + i)
+        )
         for i in range(n)
     )
 
@@ -99,14 +117,14 @@ def _features(n: int = 50) -> tuple[BamFeatureBinding, ...]:
 def _row(**over: Any) -> TrainingRow:
     fields: dict[str, Any] = {
         "dataset_id": _bam(0),
-        "chromosome": "chr18",
-        "config_hash": "c" * 64,
+        "chromosome": _chromosome(0),
+        "config_hash": _hex(31337),
         "partition": "train",
         "outcome": OUTCOME_ADMITTED,
         "admitted_score": 0.7,
         "admission_code": "ADMITTED",
-        "source_job_keys": ("j" * 64,),
-        "source_plan_hashes": ("p" * 64,),
+        "source_job_keys": (_hex(9001),),
+        "source_plan_hashes": (_hex(8001),),
     }
     fields.update(over)
     return TrainingRow(**fields)
@@ -114,8 +132,7 @@ def _row(**over: Any) -> TrainingRow:
 
 def _cover_all_bams() -> tuple[TrainingRow, ...]:
     return tuple(
-        _row(dataset_id=_bam(i), chromosome=CV_FOLD_CHROMOSOMES[i % 5], config_hash=f"{i:064d}")
-        for i in range(50)
+        _row(dataset_id=_bam(i), chromosome=_chromosome(i), config_hash=_hex(i)) for i in range(50)
     )
 
 
@@ -128,12 +145,15 @@ def _dataset(rows: tuple[TrainingRow, ...] | None = None, **over: Any) -> Traini
         "parameter_space_hash": _H,
         "scoring_contract_hash": _H,
         "execution_environment_hash": _H,
-        "train_plan_hashes": ("p" * 64,),
+        "train_plan_hashes": (_hex(7001),),
+        "training_contract_hash": compute_training_contract_hash(),
+        "training_protocol_hash": compute_training_protocol_hash(),
+        "train_schedule_hash": _hex(4242),
         "feature_set_hash": FROZEN_FEATURE_SET_HASH,
         "feature_matrix_hash": _H,
         "feature_matrix_artifact_sha256": _H,
         "bam_features": _features(),
-        "feature_names": tuple(f"feat.{i:03d}" for i in range(FEATURE_COLUMN_COUNT)),
+        "feature_names": tuple(AUTHORITATIVE_COLUMNS),
         "config_feature_names": ("cfg.min_base_quality_score",),
         "rows": rows if rows is not None else _cover_all_bams(),
         "cv_manifest": _manifest(),
@@ -292,7 +312,7 @@ def test_one_feature_value_change_moves_the_dataset_identity() -> None:
     moved = list(_features())
     moved[7] = BamFeatureBinding(
         dataset_id=moved[7].dataset_id,
-        vector_hash="CHANGED",
+        vector_hash=_hex(555555),
         feature_values_hash=moved[7].feature_values_hash,
     )
     assert _dataset(bam_features=tuple(moved)).identity() != baseline
@@ -325,8 +345,7 @@ def test_phase_order_does_not_change_a_learning_example_identity() -> None:
 def test_each_bam_carries_equal_total_admission_weight() -> None:
     """The unbalanced campaign gives some BAMs 10 examples and others 80."""
     rows = [
-        _row(dataset_id=_bam(i), chromosome=CV_FOLD_CHROMOSOMES[i % 5], config_hash=f"{i:064d}")
-        for i in range(50)
+        _row(dataset_id=_bam(i), chromosome=_chromosome(i), config_hash=_hex(i)) for i in range(50)
     ]
     # give BAM 0 four extra examples, as Phase-B BAMs really do have
     rows += [
@@ -344,8 +363,7 @@ def test_each_bam_carries_equal_total_admission_weight() -> None:
 
 def test_each_bam_with_scores_carries_equal_total_score_weight() -> None:
     rows = [
-        _row(dataset_id=_bam(i), chromosome=CV_FOLD_CHROMOSOMES[i % 5], config_hash=f"{i:064d}")
-        for i in range(50)
+        _row(dataset_id=_bam(i), chromosome=_chromosome(i), config_hash=_hex(i)) for i in range(50)
     ]
     rows += [
         _row(dataset_id=_bam(1), chromosome="chr19", config_hash=f"{800 + k:064d}")
@@ -528,9 +546,9 @@ def test_references_and_promotable_families_are_distinct() -> None:
 
 def test_the_backend_is_pinned_and_declared() -> None:
     assert MODEL_BACKEND["library"] == "scikit-learn"
-    assert MODEL_BACKEND["constraint"] == ">=1.5,<2"
+    assert MODEL_BACKEND["constraint"] == "==1.9.0"
     pyproject = (_repo() / "pyproject.toml").read_text(encoding="utf-8")
-    assert "scikit-learn>=1.5,<2" in pyproject
+    assert "scikit-learn==1.9.0" in pyproject
 
 
 def test_the_candidate_grid_is_finite_and_predeclared() -> None:
@@ -675,7 +693,7 @@ def test_spearman_and_calibration_behave() -> None:
 # --------------------------------------------------------------------------------------------
 def test_the_models_qualified_gate_covers_the_corrected_semantics() -> None:
     required = required_checks_for("MODELS-QUALIFIED")
-    assert len(required) == 46
+    assert len(required) == 59
     for expected in (
         "training_contract_v2_hash_exact",
         "training_protocol_hash_exact",

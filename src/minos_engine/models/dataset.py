@@ -16,6 +16,7 @@ filter.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Final
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -23,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from minos_engine.common.canonical_json import canonical_json_bytes
 from minos_engine.common.errors import MinosEngineError
 from minos_engine.common.hashing import sha256_hex
+from minos_engine.layer2.features.contracts import AUTHORITATIVE_COLUMNS
 from minos_engine.models.contract import (
     BAMS_PER_CHROMOSOME,
     CANDIDATE_FAILURE_LABELS,
@@ -37,7 +39,9 @@ from minos_engine.models.contract import (
     OUTCOME_NON_ADMISSION,
     TRAIN_BAM_COUNT,
     WEIGHTING_POLICY,
+    compute_training_contract_hash,
 )
+from minos_engine.models.protocol import compute_training_protocol_hash
 
 __all__ = [
     "CV_MANIFEST_DOMAIN",
@@ -49,14 +53,27 @@ __all__ = [
     "TrainingDatasetError",
     "TrainingRow",
     "BamFeatureBinding",
+    "SUPERSEDED_DATASET_V2",
 ]
 
-TRAINING_DATASET_SCHEMA: Final = "l2g-training-dataset-v2"
-TRAINING_DATASET_DOMAIN: Final = "minos:l2g-training-dataset:v2\n"
+TRAINING_DATASET_SCHEMA: Final = "l2g-training-dataset-v3"
+TRAINING_DATASET_DOMAIN: Final = "minos:l2g-training-dataset:v3\n"
+#: v2 bound feature COUNT rather than the exact qualified column tuple, accepted loose hash
+#: strings, and left the training contract out of its own identity. No dataset was ever
+#: materialized under it.
+SUPERSEDED_DATASET_V2: Final = "SUPERSEDED_BEFORE_FIRST_DATASET_FREEZE"
 CV_MANIFEST_SCHEMA: Final = "l2g-cv-manifest-v1"
 CV_MANIFEST_DOMAIN: Final = "minos:l2g-cv-manifest:v1\n"
 
 _STRICT = ConfigDict(extra="forbid", frozen=True, strict=True)
+#: lowercase SHA-256 only. An arbitrary 64-character string is not an identity.
+_HEX64: Final = re.compile(r"[0-9a-f]{64}")
+
+
+def _require_hex(field: str, value: str) -> str:
+    if not _HEX64.fullmatch(value):
+        raise TrainingDatasetError(f"{field} must be a lowercase 64-hex SHA-256, got {value!r}")
+    return value
 
 
 class TrainingDatasetError(MinosEngineError):
@@ -73,8 +90,12 @@ class BamFeatureBinding(BaseModel):
     model_config = _STRICT
 
     dataset_id: str = Field(min_length=1)
-    vector_hash: str = Field(min_length=1)
-    feature_values_hash: str = Field(min_length=1)
+    vector_hash: str = Field(min_length=64, max_length=64)
+    feature_values_hash: str = Field(min_length=64, max_length=64)
+
+    def model_post_init(self, _context: Any) -> None:
+        _require_hex("vector_hash", self.vector_hash)
+        _require_hex("feature_values_hash", self.feature_values_hash)
 
 
 class TrainingRow(BaseModel):
@@ -250,6 +271,11 @@ class TrainingDataset(BaseModel):
     scoring_contract_hash: str = Field(min_length=64, max_length=64)
     execution_environment_hash: str = Field(min_length=64, max_length=64)
     train_plan_hashes: tuple[str, ...]
+    #: the contract and protocol this table was built under, bound INTO its identity
+    training_contract_hash: str = Field(min_length=64, max_length=64)
+    training_protocol_hash: str = Field(min_length=64, max_length=64)
+    #: the frozen TRAIN split authority the 50 members must come from
+    train_schedule_hash: str = Field(min_length=64, max_length=64)
     feature_set_hash: str = Field(min_length=64, max_length=64)
     feature_matrix_hash: str = Field(min_length=64, max_length=64)
     feature_matrix_artifact_sha256: str = Field(min_length=64, max_length=64)
@@ -281,6 +307,33 @@ class TrainingDataset(BaseModel):
             raise TrainingDatasetError(
                 f"rows reference BAMs absent from the CV manifest: {missing}"
             )
+        for field in (
+            "baseline_qualified_gate_hash",
+            "baseline_selected_hash",
+            "feature_registry_hash",
+            "config_encoding_identity",
+            "parameter_space_hash",
+            "scoring_contract_hash",
+            "execution_environment_hash",
+            "feature_set_hash",
+            "feature_matrix_hash",
+            "feature_matrix_artifact_sha256",
+            "training_contract_hash",
+            "training_protocol_hash",
+            "train_schedule_hash",
+        ):
+            _require_hex(field, getattr(self, field))
+        for plan_hash in self.train_plan_hashes:
+            _require_hex("train_plan_hash", plan_hash)
+        if self.training_contract_hash != compute_training_contract_hash():
+            raise TrainingDatasetError(
+                "training_contract_hash is not the frozen l2g-training-contract-v2; a dataset "
+                "must carry the contract it was built under, not merely 64 hex characters"
+            )
+        if self.training_protocol_hash != compute_training_protocol_hash():
+            raise TrainingDatasetError(
+                "training_protocol_hash is not the frozen l2g-model-training-protocol-v1"
+            )
         if self.feature_set_hash != FROZEN_FEATURE_SET_HASH:
             raise TrainingDatasetError(
                 f"feature_set_hash {self.feature_set_hash} is not the qualified production set "
@@ -295,6 +348,24 @@ class TrainingDataset(BaseModel):
             )
         if len(set(self.feature_names)) != len(self.feature_names):
             raise TrainingDatasetError("a predictor column name appears twice")
+        # The COUNT is not the authority. 129 invented names carrying the correct feature_set
+        # hash would otherwise instantiate a dataset that shares no column with the qualified
+        # matrix, so the exact tuple and its exact order are required.
+        if tuple(self.feature_names) != tuple(AUTHORITATIVE_COLUMNS):
+            first = next(
+                (
+                    (i, a, b)
+                    for i, (a, b) in enumerate(
+                        zip(self.feature_names, AUTHORITATIVE_COLUMNS, strict=False)
+                    )
+                    if a != b
+                ),
+                None,
+            )
+            raise TrainingDatasetError(
+                "feature_names are not the qualified production columns in their qualified "
+                f"order; first divergence {first}"
+            )
         bound: set[str] = set()
         for binding in self.bam_features:
             if binding.dataset_id in bound:
@@ -314,6 +385,13 @@ class TrainingDataset(BaseModel):
                 f"manifest BAMs contribute no learning example: {uncovered}; a fold that holds "
                 "out a BAM with no rows measures nothing"
             )
+        for row in self.rows:
+            expected = self.cv_manifest.bam_chromosome[row.dataset_id]
+            if row.chromosome != expected:
+                raise TrainingDatasetError(
+                    f"{row.dataset_id} is a {expected} BAM but the row claims {row.chromosome!r}; "
+                    "a row that disagrees with the fold manifest can land in the wrong fold"
+                )
         seen: set[tuple[str, str]] = set()
         for row in self.rows:
             pair = (row.dataset_id, row.config_hash)
@@ -357,6 +435,13 @@ class TrainingDataset(BaseModel):
             per_bam[row.dataset_id] = per_bam.get(row.dataset_id, 0) + 1
         return {r.identity(): 1.0 / per_bam[r.dataset_id] for r in self.score_examples}
 
+    def weighting_policy_name(self) -> str:
+        """The policy this table was actually built under, from its own content."""
+        return str(self.content()["weighting_policy"])
+
+    def dedup_policy_name(self) -> str:
+        return str(self.content()["dedup_policy"])
+
     def bams_without_score_examples(self) -> tuple[str, ...]:
         """BAMs the score regressor cannot learn from. Declared, never quietly ignored."""
         with_scores = {r.dataset_id for r in self.score_examples}
@@ -365,6 +450,9 @@ class TrainingDataset(BaseModel):
     def content(self) -> dict[str, Any]:
         return {
             "baseline_qualified_gate_hash": self.baseline_qualified_gate_hash,
+            "training_contract_hash": self.training_contract_hash,
+            "training_protocol_hash": self.training_protocol_hash,
+            "train_schedule_hash": self.train_schedule_hash,
             "baseline_selected_hash": self.baseline_selected_hash,
             "bam_count": len({r.dataset_id for r in self.rows}),
             "admitted_example_count": len(self.score_examples),

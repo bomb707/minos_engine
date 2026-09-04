@@ -27,6 +27,7 @@ from minos_engine.models.contract import (
     WEIGHTING_POLICY,
     compute_training_contract_hash,
 )
+from minos_engine.models.runtime import compute_training_runtime_hash
 from minos_engine.models.spec import (
     PROMOTABLE_FAMILIES,
     REFERENCE_FAMILIES,
@@ -51,13 +52,37 @@ TRAINING_PROTOCOL_DOMAIN: Final = "minos:l2g-model-training-protocol:v1\n"
 #: EQUAL_BAM_TOTAL weighting requires. No GPU stack is introduced for 50 independent BAMs.
 MODEL_BACKEND: Final[dict[str, str]] = {
     "library": "scikit-learn",
-    "constraint": ">=1.5,<2",
+    "constraint": "==1.9.0",
     "verified_version": "1.9.0",
     "python": "3.12",
     "serialization": "joblib",
 }
 
 CVAR_ALPHA: Final = 0.25
+
+#: NESTED, because the obvious procedure leaks.
+#:
+#: "Fit isotonic on the outer OOF predictions, then report regret and calibration error on those
+#: same calibrated pairs" uses each held-out chromosome's own labels to build the mapping that is
+#: then scored against those labels. The calibrator has seen the answer; the reported calibration
+#: error is optimistic by construction and the selection metric is contaminated.
+#:
+#: So calibration is cross-fitted INSIDE each outer fold: hold one chromosome out, and within the
+#: remaining 40 BAMs run an inner BAM-grouped split to produce inner out-of-fold probabilities.
+#: The isotonic mapping is fitted on those INNER pairs only, then applied to the untouched outer
+#: chromosome. No held-out label ever enters the mapping applied to it.
+#:
+#: Frozen here, before any out-of-fold number exists, precisely so it cannot be chosen after
+#: seeing which variant scores better.
+CALIBRATION_POLICY: Final[dict[str, Any]] = {
+    "method": "ISOTONIC",
+    "scheme": "NESTED_CROSS_FITTED_WITHIN_EACH_OUTER_FOLD",
+    "fitted_on": "INNER_OUT_OF_FOLD_PAIRS_FROM_THE_40_TRAINING_BAMS_ONLY",
+    "applied_to": "THE_HELD_OUT_CHROMOSOME",
+    "inner_grouping": "BAM_GROUPED_LEAVE_ONE_CHROMOSOME_OUT_OVER_THE_40",
+    "forbidden": "FITTING_CALIBRATION_ON_THE_OUTER_OOF_PAIRS_IT_IS_THEN_SCORED_AGAINST",
+    "selection_metrics_use": "CALIBRATED_OUTER_PREDICTIONS_ONLY",
+}
 
 #: The finite grid. Every entry becomes a hashed ModelSpec before it is fitted; there is no
 #: adaptive search. ``COMPACT_MLP`` is present because the backend was verified to honour sample
@@ -109,7 +134,8 @@ def training_protocol_content() -> dict[str, Any]:
     """Exactly what ``training_protocol_hash`` covers."""
     return {
         "backend": dict(sorted(MODEL_BACKEND.items())),
-        "calibration": "ISOTONIC_ON_TRAIN_OOF_ONLY",
+        "training_runtime_hash": compute_training_runtime_hash(),
+        "calibration": CALIBRATION_POLICY,
         "candidate_grid": [dict(sorted(c.items())) for c in CANDIDATE_GRID],
         "cvar_alpha": CVAR_ALPHA,
         "dedup_policy": DEDUP_POLICY,

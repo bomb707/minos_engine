@@ -217,3 +217,64 @@ independent BAMs.
 **Bundle identity is host-independent.** `ArtifactRef.scientific_identity()` excludes the
 filesystem `path`: the same artifact bytes stored under two different absolute directories are
 the same scientific object.
+
+## 12. Pre-fit authority closure
+
+`TrainingDataset` is a strict type, and a strict type is not an authority: a caller could hand it
+an internally consistent set of hashes, fifty plausible BAM ids and 1040 well-formed rows and get
+back a scientifically foreign table that validated perfectly. Four things closed that.
+
+**One accepted builder.** `models/training_data_authority.py` derives the science; the caller
+supplies only an authenticated TRAIN connection and an operational engine. It nominates no
+outcome, score, weight, column, member, plan or config payload.
+
+**The exact columns, not the count.** A dataset must present `AUTHORITATIVE_COLUMNS` in its
+qualified order. 129 invented names carrying the correct `feature_set_hash` are refused — that
+hole was real and is now a regression test.
+
+**The frozen fifty, not a valid shape.** The CV manifest is bound to `build_train_schedule()`.
+Synthetic BAM ids in a perfect 10/10/10/10/10 shape are refused, and every row's chromosome must
+agree with the manifest.
+
+**Dedup derived, not audited.** The builder starts from all 1175 terminal evidence rows, groups by
+`(dataset_id, config_hash)` and requires repeats to agree on outcome, admission code, admitted
+score, execution environment and parameter space before collapsing. There is no newest-row rule,
+no phase preference and no averaging: a genuine conflict means two runs of one cell disagree, and
+the honest response is to stop.
+
+### The real freeze
+
+| | |
+|---|---|
+| dataset schema / hash | `l2g-training-dataset-v3` / `d031758c58358270843b9b417ea034d1181a6aaafc1c94af000279c26dc62fcc` |
+| CV manifest hash | `b441b15fdc185e62e243b93322d6c30d8787f49f9fafbb3dab6ac9371728d92f` |
+| scientific cells | **1040** from 1175 terminal jobs (925×1, 95×2, 20×3 → 135 surplus) |
+| outcome classes | 861 ADMITTED, 149 NON_ADMISSION, 30 EXEC_FAILURE |
+| configs / BAMs | 80 / 50 (10 per chromosome), 0 BAMs without an admitted example |
+| conflicts | **0** — every repeated cell agreed on all five fields |
+
+TRAIN was read once through an ephemeral SECURITY DEFINER surface, which was then dropped; the
+scientific state and the privilege set were proven identical before and after.
+
+### Versioning, honestly
+
+`l2g-model-spec-v1` and `l2g-model-bundle-v1` carried materially different semantics (the bundle's
+identity once included the filesystem path). No artifact was ever produced under them, so both are
+`SUPERSEDED_BEFORE_FIRST_MODEL_FIT` rather than migrated; the same applies to the training dataset
+schema, which is now v3. Two different meanings must not share one schema string.
+
+### Runtime
+
+`scikit-learn==1.9.0` exactly, with numpy 2.5.2, scipy 1.18.1, joblib 1.6.0 on Python 3.12.3. A
+range is not a scientific runtime — a model fitted under 1.5.0 and one fitted under 1.9.0 are not
+the same experiment — and `models/runtime.py` refuses to fit under anything else.
+
+### Calibration
+
+`ISOTONIC_ON_TRAIN_OOF_ONLY` was under-specified in a way that leaks. Fitting isotonic on the
+outer OOF pairs and then reporting calibration and regret on those same pairs uses each held-out
+chromosome's own labels to build the mapping it is scored against. Calibration is therefore
+**nested**: within each outer fold, inner BAM-grouped out-of-fold pairs are drawn from the 40
+training BAMs, the mapping is fitted on those only, and it is applied to the untouched held-out
+chromosome. Frozen before any OOF number exists, so it cannot be chosen after seeing which variant
+scores better.

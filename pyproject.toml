@@ -27,7 +27,9 @@ dependencies = [
     "psycopg[binary]>=3.1,<4",
     # Layer 2 (L2-G) -- expected-score model training. CPU only: Ridge/LogisticRegression and
     # the HistGradientBoosting pair all honour sample_weight, which EQUAL_BAM_TOTAL requires.
-    "scikit-learn>=1.5,<2",
+    # EXACT, not a range. A model fitted under 1.5.0 and one fitted under 1.9.0 are not the
+    # same experiment; minos_engine.models.runtime verifies this before the first fit.
+    "scikit-learn==1.9.0",
 ]
 
 [project.optional-dependencies]
@@ -81,7 +83,7 @@ packages = ["minos_engine"]
 exclude = ['(^|/)(\.venv|build|dist)(/|$)']
 
 [[tool.mypy.overrides]]
-module = ["yaml", "jsonschema", "jsonschema.*", "pysam", "pysam.*", "pyarrow", "pyarrow.*", "numpy", "numpy.*", "alembic", "alembic.*"]
+module = ["yaml", "jsonschema", "jsonschema.*", "pysam", "pysam.*", "pyarrow", "pyarrow.*", "numpy", "numpy.*", "alembic", "alembic.*", "sklearn", "sklearn.*", "scipy", "scipy.*", "joblib", "joblib.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
