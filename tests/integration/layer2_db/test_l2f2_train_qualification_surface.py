@@ -335,3 +335,132 @@ def test_the_alembic_grant_is_taken_and_returned(train_store: Any) -> None:
             ).scalar_one()
             is False
         ), "the temporary grant outlived the surface"
+
+
+# --------------------------------------------------------------------------------------------
+# candidate-set / parameter-space agreement and EXACT per-phase shapes
+#
+# 195 + 480 + 500 = 1175 also holds for shapes that are wrong phase by phase, so the aggregate
+# is not a substitute for asserting each one.
+# --------------------------------------------------------------------------------------------
+def _observe(engine: Any) -> dict:
+    with engine.connect() as conn, conn.begin():
+        install_train_qualification_surface(conn)
+    with engine.connect() as conn:
+        return observe(conn)
+
+
+def test_a_correctly_seeded_authority_set_is_accepted(train_store: Any) -> None:
+    from tests.integration.layer2_db.l2f2_train_authority_seed import (
+        FROZEN_SHAPES,
+        seed_train_authorities,
+    )
+
+    seed_train_authorities(train_store)
+    observed = _observe(train_store)
+    assert observed["authority_count"] == 3
+    shapes = observed["phase_shapes"]
+    for phase, (plan_hash, members, candidates, logical) in FROZEN_SHAPES.items():
+        assert observed["phase_plan_map"][phase] == plan_hash
+        assert shapes[phase]["members"] == members
+        assert shapes[phase]["candidates"] == candidates
+        assert shapes[phase]["logical_jobs"] == logical
+        assert shapes[phase]["parameter_space_hash"] == (
+            "b2d401918084d64023305d9262baf5011a89fe517bee4e0bd33af79fb14aee2e"
+        )
+
+
+@pytest.mark.parametrize(
+    ("authority_overrides", "plan_overrides", "label"),
+    [
+        pytest.param(
+            {"PHASE_A": {"candidate_set_hash": "a" * 64}},
+            {},
+            "candidate-set disagreement",
+            id="candidate-set",
+        ),
+        pytest.param(
+            {"PHASE_B": {"parameter_space_hash": "b" * 64}},
+            {},
+            "parameter-space disagreement",
+            id="parameter-space",
+        ),
+    ],
+)
+def test_an_authority_disagreeing_with_its_plan_is_refused(
+    train_store: Any, authority_overrides: dict, plan_overrides: dict, label: str
+) -> None:
+    """§2 -- 0020 binds both hashes into the authority; the surface must require them too."""
+    from tests.integration.layer2_db.l2f2_train_authority_seed import seed_train_authorities
+
+    seed_train_authorities(
+        train_store, authority_overrides=authority_overrides, plan_overrides=plan_overrides
+    )
+    with pytest.raises(Exception, match="authority-bound TRAIN campaigns"):
+        _observe(train_store)
+
+
+@pytest.mark.parametrize(
+    ("phase", "members", "candidates", "logical"),
+    [
+        pytest.param("PHASE_A", 6, 39, 234, id="phase-a-members"),
+        pytest.param("PHASE_B", 10, 47, 470, id="phase-b-candidates"),
+        pytest.param("PHASE_C", 50, 9, 450, id="phase-c-candidates"),
+    ],
+)
+def test_a_wrong_phase_shape_is_refused_even_when_the_plan_agrees(
+    train_store: Any, phase: str, members: int, candidates: int, logical: int
+) -> None:
+    """Both sides moved together, so pairwise agreement holds -- the FROZEN shape does not.
+
+    ``ck_l2f_plans_job_count_consistent`` forces ``logical = members * candidates``, so these are
+    internally VALID plans. Nothing but the frozen per-phase shape can reject them.
+    """
+    from tests.integration.layer2_db.l2f2_train_authority_seed import seed_train_authorities
+
+    shape = {"member_count": members, "candidate_count": candidates, "logical_job_count": logical}
+    plan_shape = {
+        "train_member_count": members,
+        "candidate_count": candidates,
+        "logical_job_count": logical,
+    }
+    seed_train_authorities(
+        train_store,
+        authority_overrides={phase: shape},
+        plan_overrides={phase: plan_shape},
+    )
+    with pytest.raises(Exception, match="authority-bound TRAIN campaigns"):
+        _observe(train_store)
+
+
+def test_shapes_that_still_total_1175_are_refused(train_store: Any) -> None:
+    """The decisive one: move work between phases and the aggregate never notices.
+
+    PHASE_B 10x49=490 and PHASE_C 49x10=490 are each internally consistent, and
+    195 + 490 + 490 is still 1175. Only the per-phase frozen shapes catch it.
+    """
+    from tests.integration.layer2_db.l2f2_train_authority_seed import seed_train_authorities
+
+    assert 195 + 490 + 490 == 1175
+    b = {"member_count": 10, "candidate_count": 49, "logical_job_count": 490}
+    c = {"member_count": 49, "candidate_count": 10, "logical_job_count": 490}
+    seed_train_authorities(
+        train_store,
+        authority_overrides={"PHASE_B": b, "PHASE_C": c},
+        plan_overrides={
+            "PHASE_B": {"train_member_count": 10, "candidate_count": 49, "logical_job_count": 490},
+            "PHASE_C": {"train_member_count": 49, "candidate_count": 10, "logical_job_count": 490},
+        },
+    )
+    with pytest.raises(Exception, match="authority-bound TRAIN campaigns"):
+        _observe(train_store)
+
+
+def test_the_body_requires_both_identity_hashes_and_each_phase_shape() -> None:
+    from minos_engine.qualification import l2f2_train_qualification_surface as mod
+
+    body = mod._body()
+    assert "a.candidate_set_hash = p.candidate_set_hash" in body
+    assert "a.parameter_space_hash = p.parameter_space_hash" in body
+    for shape in ("5, 39, 195", "10, 48, 480", "50, 10, 500"):
+        assert shape in body, shape

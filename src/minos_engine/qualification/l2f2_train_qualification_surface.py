@@ -113,23 +113,30 @@ BEGIN
         RAISE EXCEPTION 'train store revision is %, expected {TRAIN_REVISION}', v_revision;
     END IF;
 
-    -- exactly three TRAIN campaigns, each proven through the execution authority
+    -- exactly three TRAIN campaigns, each proven through the execution authority.
+    -- The per-phase shape is asserted individually: 195 + 480 + 500 = 1175 also holds for
+    -- shapes that are wrong phase-by-phase, so an aggregate check would hide a mutation.
+    -- candidate_set_hash and parameter_space_hash are part of 0020's authority binding and are
+    -- required to agree too; without them an authority could cite a different candidate set.
     SELECT pg_catalog.count(*) INTO v_authorities
       FROM experiments.l2f2_execution_authorities a
       JOIN experiments.l2f_experiment_plans p ON p.id = a.plan_id
      WHERE a.baseline_protocol_hash = '{BASELINE_PROTOCOL_HASH}'
        AND p.partition = 'train'
        AND a.plan_hash = p.plan_hash
-       AND (a.phase, a.plan_hash) IN (
-             ('PHASE_A', '{TRAIN_PLAN_HASHES[0]}'),
-             ('PHASE_B', '{TRAIN_PLAN_HASHES[1]}'),
-             ('PHASE_C', '{TRAIN_PLAN_HASHES[2]}'))
+       AND a.candidate_set_hash = p.candidate_set_hash
+       AND a.parameter_space_hash = p.parameter_space_hash
        AND a.member_count = p.train_member_count
        AND a.candidate_count = p.candidate_count
-       AND a.logical_job_count = p.logical_job_count;
+       AND a.logical_job_count = p.logical_job_count
+       AND (a.phase, a.plan_hash, a.member_count, a.candidate_count, a.logical_job_count) IN (
+             ('PHASE_A', '{TRAIN_PLAN_HASHES[0]}', 5, 39, 195),
+             ('PHASE_B', '{TRAIN_PLAN_HASHES[1]}', 10, 48, 480),
+             ('PHASE_C', '{TRAIN_PLAN_HASHES[2]}', 50, 10, 500));
     IF v_authorities <> 3 THEN
         RAISE EXCEPTION
-            'expected 3 authority-bound TRAIN campaigns, found %', v_authorities;
+            'expected 3 authority-bound TRAIN campaigns with their exact frozen phase shapes, '
+            'found %', v_authorities;
     END IF;
 
     IF (SELECT pg_catalog.count(*) FROM experiments.l2f2_execution_authorities) <> 3 THEN
@@ -154,6 +161,14 @@ BEGIN
         'plan_hashes', pg_catalog.to_jsonb(v_plans),
         'phase_plan_map', (
             SELECT coalesce(pg_catalog.jsonb_object_agg(a.phase, a.plan_hash), '{{}}'::jsonb)
+              FROM experiments.l2f2_execution_authorities a),
+        'phase_shapes', (
+            SELECT coalesce(pg_catalog.jsonb_object_agg(a.phase, pg_catalog.jsonb_build_object(
+                       'members', a.member_count,
+                       'candidates', a.candidate_count,
+                       'logical_jobs', a.logical_job_count,
+                       'candidate_set_hash', a.candidate_set_hash,
+                       'parameter_space_hash', a.parameter_space_hash)), '{{}}'::jsonb)
               FROM experiments.l2f2_execution_authorities a),
         'logical_job_count', (
             SELECT pg_catalog.sum(p.logical_job_count)
