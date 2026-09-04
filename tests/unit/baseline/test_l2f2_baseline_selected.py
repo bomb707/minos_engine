@@ -471,8 +471,17 @@ def test_the_check_set_is_deterministic() -> None:
 # --------------------------------------------------------------------------------------------
 # no PASS gate has been issued yet
 # --------------------------------------------------------------------------------------------
-def test_no_baseline_qualified_gate_artifact_exists_yet() -> None:
-    """Section 19: this is source machinery only. The evidence commit comes later."""
-    gates = _repo() / "gates"
-    assert not list(gates.glob("*BASELINE-QUALIFIED*")), "a PASS gate was published too early"
-    assert not list(gates.glob("*baseline-qualified*"))
+def test_the_baseline_qualified_gate_is_published_and_names_this_freeze() -> None:
+    """This asserted the gate did NOT exist, which was right while publication was forbidden.
+
+    L2-F2-G has since published it, so the invariant worth guarding changed: the gate must exist,
+    PASS, and bind the same baseline-selected identity this module freezes. Continuing to assert
+    its absence would fail for the one reason we most wanted to be true.
+    """
+    gate_path = _repo() / "gates/baseline-qualified.json"
+    assert gate_path.is_file(), "the published BASELINE-QUALIFIED gate is missing"
+    gate = json.loads(gate_path.read_text(encoding="utf-8"))
+    assert gate["gate_name"] == "BASELINE-QUALIFIED"
+    assert gate["status"] == "PASS"
+    assert gate["input_hashes"]["baseline_selected_hash"] == compute_baseline_selected_hash()
+    assert gate["input_hashes"]["phase_d_closure_hash"] == PHASE_D_CLOSURE_HASH

@@ -503,10 +503,26 @@ def test_the_writer_emits_a_gate_and_canonical_qualification_bytes(tmp_path: Pat
     assert outcome["ok"] is True, outcome["reasons"]
 
 
-def test_no_real_pass_gate_or_qualification_is_committed() -> None:
-    """Source only. The evidence commit comes next, not now."""
-    assert not (_repo() / "gates/baseline-qualified.json").exists()
-    assert not (_repo() / "reports/layer2/baseline-qualified-result.json").exists()
+def test_the_published_gate_and_qualification_verify_together() -> None:
+    """This asserted neither artifact existed -- correct while publication was forbidden.
+
+    Both are now published, so the guard becomes the stronger one: the committed pair must
+    actually verify offline against this source.
+    """
+    gate_path = _repo() / "gates/baseline-qualified.json"
+    result_path = _repo() / "reports/layer2/baseline-qualified-result.json"
+    assert gate_path.is_file() and result_path.is_file()
+    outcome = verify_baseline_qualified_gate(
+        gate_path=gate_path, qualification_path=result_path, root=_repo()
+    )
+    assert outcome["ok"] is True, outcome["reasons"]
+    assert outcome["required_check_count"] == 42
+
+
+def test_no_models_qualified_gate_is_issued_yet() -> None:
+    """L2-G is source-only: its exit gate is designed, never published here."""
+    assert not (_repo() / "gates/models-qualified.json").exists()
+    assert not list((_repo() / "gates").glob("*MODELS-QUALIFIED*"))
 
 
 def test_the_verifier_needs_no_database_gatk_or_truth() -> None:

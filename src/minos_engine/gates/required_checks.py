@@ -612,6 +612,53 @@ REQUIRED_CHECKS: dict[str, frozenset[str]] = {
             "evidence_hashes_complete",
         }
     ),
+    # MODELS-QUALIFIED -- L2-G exit. DESIGNED here; not issued until the training campaign runs.
+    "MODELS-QUALIFIED": frozenset(
+        {
+            # ENTRY
+            "baseline_qualified_gate_exact",
+            "training_contract_hash_exact",
+            # DATA
+            "training_dataset_hash_exact",
+            "train_partition_only",
+            "no_test_row_present",
+            "feature_schema_production_eligible",
+            "no_forbidden_feature_in_predictor",
+            "no_research_only_feature_in_predictor",
+            "dataset_identity_not_a_predictor",
+            "config_schema_exact",
+            "parameter_space_hash_exact",
+            "group_assignments_exact",
+            # CV
+            "cv_manifest_hash_exact",
+            "chromosome_held_out_folds_exact",
+            "every_oof_prediction_out_of_group",
+            "transforms_fitted_fold_local",
+            "no_bam_on_both_sides_of_a_fold",
+            # MODEL
+            "model_spec_frozen_before_fit",
+            "model_artifacts_hash_verified",
+            "training_reproducible",
+            "random_seed_recorded",
+            # PERFORMANCE
+            "calibration_reported",
+            "downside_reported",
+            "bam_grouped_regret_reported",
+            "safe_baseline_comparison_reported",
+            "beats_trivial_references",
+            "no_catastrophic_regression_vs_safe_baseline",
+            # VALIDATION
+            "candidate_specs_frozen_before_validation",
+            "validation_used_only_for_selection",
+            "no_adaptive_post_validation_tuning",
+            "validation_label_domain_documented",
+            # ISOLATION
+            "test_untouched",
+            "select_config_still_blocked",
+            # BUNDLE
+            "selected_model_bundle_hash_exact",
+        }
+    ),
 }
 
 
