@@ -30,7 +30,7 @@ from minos_engine.qualification.l2f2_baseline_qualified_qualifier import (
     observe_scorer_authority,
     observe_source_provenance,
     observe_test_seal,
-    observe_train_evidence,
+    observe_train_bundle,
     observe_train_validation_disjointness,
     run_baseline_qualified_qualification,
 )
@@ -298,39 +298,49 @@ def test_a_tampered_closure_artifact_is_refused_by_the_observer(tmp_path: Path) 
 # --------------------------------------------------------------------------------------------
 # §7/§8 — the TRAIN authority gap, reported rather than invented
 # --------------------------------------------------------------------------------------------
-def test_the_train_observer_requires_a_connection_and_never_guesses() -> None:
-    """It observes through the authenticated surface, or it refuses. It never invents."""
-    with pytest.raises(BaselineQualificationObservationError, match="does not guess one"):
-        observe_train_evidence()
-
-
 def test_the_train_observer_reads_no_experiments_table_itself() -> None:
-    """§10 -- the evaluator-side observer must go through the function, never the raw ledger."""
-    source = inspect.getsource(observe_train_evidence)
+    """§10 -- the evaluator-side observer goes through the function, never the raw ledger."""
+    source = inspect.getsource(observe_train_bundle)
     for forbidden in (
         "experiments.l2f_experiment_plans",
         "experiments.l2f_experiment_jobs",
         "experiments.l2f_execution_results",
         "experiments.l2f_execution_failures",
+        "l2f2_execution_authorities",
     ):
         assert forbidden not in source, forbidden
 
 
-def test_the_production_entry_cannot_complete_while_train_is_unobservable(
+def test_the_production_qualification_observes_the_surface_exactly_once() -> None:
+    """§7 -- two calls could describe two different snapshots of the store."""
+    source = inspect.getsource(qualifier.run_baseline_qualified_qualification)
+    assert source.count("observe_train_bundle(") == 1
+    assert "observe_train_dataset_ids" not in source
+    assert "observe_train_evidence(" not in source
+    # and the bundle itself calls the surface once
+    assert inspect.getsource(observe_train_bundle).count("observe(conn)") == 1
+
+
+def test_the_production_entry_fails_closed_on_a_bad_closure_artifact(
     tmp_path: Path,
 ) -> None:
-    """The whole qualification fails closed on the gap; it does not mint a partial trust."""
+    """It never mints a partial trust: a failing observer aborts the whole qualification."""
     artifact = tmp_path / "closure.json"
     artifact.write_text("{}", encoding="utf-8")
-    with pytest.raises(BaselineQualificationObservationError):
+    from minos_engine.baseline.baseline_selected import BaselineSelectedError
+
+    with pytest.raises(BaselineSelectedError):
         run_baseline_qualified_qualification(
-            root=_repo(), closure_artifact=artifact, evidence_paths={}
+            root=_repo(),
+            closure_artifact=artifact,
+            evidence_paths={},
+            train_database_url="postgresql+psycopg://nobody@/nowhere",
         )
 
 
 def test_the_train_observer_never_reads_train_truth() -> None:
-    """It cannot yet read anything; when it can, it must still not reach truth or write."""
-    source = inspect.getsource(observe_train_evidence)
+    """It observes through the surface, and must never reach truth or write."""
+    source = inspect.getsource(observe_train_bundle)
     for forbidden in (
         "truth_vcf",
         "mutations_vcf",

@@ -40,13 +40,12 @@ from minos_engine.qualification.l2f2_baseline_qualified_contract import (
 __all__ = [
     "CLOSURE_AUTHORITY_SOURCE",
     "BaselineQualificationObservationError",
-    "TrainEvidenceAuthorityMissing",
     "TrustedBaselineQualification",
     "observe_evidence_hashes",
     "observe_harness_prerequisite",
     "observe_source_provenance",
     "observe_test_seal",
-    "observe_train_evidence",
+    "observe_train_bundle",
     "run_baseline_qualified_qualification",
 ]
 
@@ -84,15 +83,6 @@ ACCEPTED_EVIDENCE_SHA256: Final[dict[str, str]] = {
 
 class BaselineQualificationObservationError(MinosEngineError):
     """The production observer could not establish something it is required to observe."""
-
-
-class TrainEvidenceAuthorityMissing(BaselineQualificationObservationError):
-    """No accepted read-only boundary can derive the TRAIN evidence summary.
-
-    Raised rather than worked around. Widening ``experiments.*`` for the evaluator, or migrating
-    the scientifically closed TRAIN store, are both decisions for the owner — and §8 requires the
-    gap be reported before either is taken.
-    """
 
 
 # --------------------------------------------------------------------------------------------
@@ -367,17 +357,17 @@ def observe_evidence_hashes(evidence_paths: dict[str, Path]) -> dict[str, str]:
     return observed
 
 
-def observe_train_evidence(*, database_url: str | None = None) -> TrainEvidenceSummary:
-    """Derive the TRAIN evidence summary through the AUTHENTICATED observation surface.
+def observe_train_bundle(*, database_url: str) -> tuple[TrainEvidenceSummary, frozenset[str]]:
+    """ONE authenticated observation, from which BOTH derived facts come.
 
-    The evaluator never touches an ``experiments.*`` table here — it cannot, and a spy test proves
-    this function issues no such statement. It calls one argument-free ``SECURITY DEFINER``
-    function whose schema, arity, owner, definer flag, volatility, language, ``search_path``, ACL
-    and body digest are all verified against the source-controlled definition before execution.
+    Calling the surface twice would let the evidence summary and the disjointness proof describe
+    two different snapshots of the store. They now come from a single payload, so they cannot
+    disagree.
 
-    The function returns SOURCE FACTS; the canonical set digests are computed here in Python so
-    the identity in the qualification hash is produced by the same algorithm everywhere else uses,
-    not by a SQL re-implementation of it.
+    The evaluator never touches an ``experiments.*`` table here — a test asserts this function
+    issues no such statement. The surface returns SOURCE FACTS; the canonical set digests are
+    computed in Python so the identity that enters the qualification hash is produced by the same
+    algorithm as everywhere else, not by a SQL re-implementation of it.
     """
     from sqlalchemy import create_engine, text
 
@@ -388,11 +378,11 @@ def observe_train_evidence(*, database_url: str | None = None) -> TrainEvidenceS
         observe,
     )
 
-    if database_url is None:
-        raise BaselineQualificationObservationError(
-            "a TRAIN observation connection is required; the qualifier does not guess one"
-        )
-    engine = create_engine(database_url)
+    # one snapshot, one read transaction. Set on the connection rather than as a statement:
+    # SET TRANSACTION must precede every query, and the database check has to happen too.
+    engine = create_engine(database_url).execution_options(
+        isolation_level="REPEATABLE READ", postgresql_readonly=True
+    )
     try:
         with engine.connect() as conn:
             database = str(conn.execute(text("SELECT current_database()")).scalar_one())
@@ -414,6 +404,10 @@ def observe_train_evidence(*, database_url: str | None = None) -> TrainEvidenceS
         raise BaselineQualificationObservationError(
             f"TRAIN revision is {observed.get('revision')!r}, expected {TRAIN_REVISION!r}"
         )
+    if int(observed.get("authority_count", 0)) != 3:
+        raise BaselineQualificationObservationError(
+            f"TRAIN binds {observed.get('authority_count')} execution authorities, expected 3"
+        )
 
     contracts = list(observed.get("scoring_contract_hashes") or ())
     environments = list(observed.get("execution_environment_hashes") or ())
@@ -422,6 +416,18 @@ def observe_train_evidence(*, database_url: str | None = None) -> TrainEvidenceS
             f"TRAIN binds {len(contracts)} scoring contracts and {len(environments)} execution "
             "environments; exactly one of each is required"
         )
+    # every terminal outcome, success AND failure, must carry the environment
+    outcomes = int(observed.get("execution_environment_outcome_count", -1))
+    nulls = int(observed.get("execution_environment_null_count", -1))
+    expected_outcomes = int(observed["execution_result_count"]) + int(
+        observed["execution_failure_count"]
+    )
+    if nulls != 0 or outcomes != expected_outcomes:
+        raise BaselineQualificationObservationError(
+            f"{outcomes} of {expected_outcomes} terminal outcomes carry an execution environment "
+            f"({nulls} null); a failure without one is not evidence of the environment it ran in"
+        )
+
     summary = TrainEvidenceSummary(
         revision=str(observed["revision"]),
         plan_hashes=tuple(str(h) for h in observed["plan_hashes"]),
@@ -451,30 +457,13 @@ def observe_train_evidence(*, database_url: str | None = None) -> TrainEvidenceS
             f"the observed TRAIN evidence fails {failed}; a qualification never proceeds on "
             "evidence it could not verify"
         )
-    return summary
 
-
-def observe_train_dataset_ids(*, database_url: str) -> frozenset[str]:
-    """The 50 Phase-C TRAIN member ids, used transiently to prove disjointness.
-
-    They are never persisted into the qualification: only the derived boolean is.
-    """
-    from sqlalchemy import create_engine
-
-    from minos_engine.qualification.l2f2_train_qualification_surface import observe
-
-    engine = create_engine(database_url)
-    try:
-        with engine.connect() as conn:
-            observed = observe(conn)
-    finally:
-        engine.dispose()
     identities = frozenset(str(d) for d in observed.get("phase_c_dataset_ids") or ())
     if len(identities) != 50:
         raise BaselineQualificationObservationError(
             f"the Phase-C TRAIN membership holds {len(identities)} identities, expected 50"
         )
-    return identities
+    return summary, identities
 
 
 def _set_digest(values: Any) -> str:
@@ -520,9 +509,9 @@ def run_baseline_qualified_qualification(
     observed.update(observe_test_seal(base))
     observed["evidence_sha256"] = observe_evidence_hashes(evidence_paths)
 
-    # the TRAIN side, through the authenticated ephemeral surface
-    observed["train"] = observe_train_evidence(database_url=train_database_url)
-    train_ids = observe_train_dataset_ids(database_url=train_database_url)
+    # the TRAIN side: ONE authenticated observation, both facts from the same snapshot
+    train_summary, train_ids = observe_train_bundle(database_url=train_database_url)
+    observed["train"] = train_summary
     observed["train_and_validation_identities_disjoint"] = observe_train_validation_disjointness(
         train_dataset_ids=train_ids, closure_content=closure_content
     )

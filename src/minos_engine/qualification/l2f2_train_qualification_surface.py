@@ -69,6 +69,8 @@ TRAIN_PLAN_HASHES: Final[tuple[str, ...]] = (
     "03b846e735e5817a8df7d5c37ae15778a955828a56513b16cef8ff2193a0aa43",
 )
 PHASE_C_PLAN_HASH: Final = TRAIN_PLAN_HASHES[2]
+BASELINE_PROTOCOL_HASH: Final = "c548e190571f5e964560cf30021a520ea8aad6674569fa3202af880d7dff77d1"
+SCORING_CONTRACT_HASH: Final = "b24a07e208ce8e2fff6672102ae4e61aed93c6f352a5af46ba81c4789adb76d6"
 
 
 class TrainQualificationSurfaceError(MinosEngineError):
@@ -76,13 +78,29 @@ class TrainQualificationSurfaceError(MinosEngineError):
 
 
 def _body() -> str:
-    """THE source-controlled function body. Its digest is the surface's identity."""
-    plans = ", ".join(f"'{h}'" for h in TRAIN_PLAN_HASHES)
+    """THE source-controlled function body. Its digest is the surface's identity.
+
+    Campaigns are derived through ``experiments.l2f2_execution_authorities`` — the accepted
+    execution authority that ``0020`` itself treats as authoritative — not by discovering plan
+    rows that happen to carry the right hashes. Exactly one authority per phase, each under the
+    frozen baseline protocol, each agreeing with its persisted plan on id, hash, partition and
+    scientific shape.
+
+    Every fact is then scoped to those three authorised ``plan_id`` values. Whole-database counts
+    would silently absorb any row that appeared beside the campaign.
+
+    The execution environment is taken from BOTH terminal ledgers. ``0015`` stores
+    ``execution_environment_hash`` on results AND failures precisely because a campaign's terminal
+    outcomes are both; reading only the results would leave the 35 execution failures unchecked,
+    and a divergent environment on one of them would pass unnoticed.
+    """
     return f"""
 DECLARE
     v_database text;
     v_revision text;
+    v_plan_ids uuid[];
     v_plans text[];
+    v_authorities int;
     v_result jsonb;
 BEGIN
     SELECT pg_catalog.current_database() INTO v_database;
@@ -95,69 +113,144 @@ BEGIN
         RAISE EXCEPTION 'train store revision is %, expected {TRAIN_REVISION}', v_revision;
     END IF;
 
-    SELECT pg_catalog.array_agg(p.plan_hash ORDER BY p.created_at) INTO v_plans
-      FROM experiments.l2f_experiment_plans p
-     WHERE p.plan_hash = ANY (ARRAY[{plans}]) AND p.partition = 'train';
-    IF v_plans IS NULL OR pg_catalog.array_length(v_plans, 1) <> 3 THEN
-        RAISE EXCEPTION 'the three frozen TRAIN plans are not all present as train plans';
+    -- exactly three TRAIN campaigns, each proven through the execution authority
+    SELECT pg_catalog.count(*) INTO v_authorities
+      FROM experiments.l2f2_execution_authorities a
+      JOIN experiments.l2f_experiment_plans p ON p.id = a.plan_id
+     WHERE a.baseline_protocol_hash = '{BASELINE_PROTOCOL_HASH}'
+       AND p.partition = 'train'
+       AND a.plan_hash = p.plan_hash
+       AND (a.phase, a.plan_hash) IN (
+             ('PHASE_A', '{TRAIN_PLAN_HASHES[0]}'),
+             ('PHASE_B', '{TRAIN_PLAN_HASHES[1]}'),
+             ('PHASE_C', '{TRAIN_PLAN_HASHES[2]}'))
+       AND a.member_count = p.train_member_count
+       AND a.candidate_count = p.candidate_count
+       AND a.logical_job_count = p.logical_job_count;
+    IF v_authorities <> 3 THEN
+        RAISE EXCEPTION
+            'expected 3 authority-bound TRAIN campaigns, found %', v_authorities;
     END IF;
+
+    IF (SELECT pg_catalog.count(*) FROM experiments.l2f2_execution_authorities) <> 3 THEN
+        RAISE EXCEPTION 'the TRAIN store carries an unexpected execution authority';
+    END IF;
+    IF (SELECT pg_catalog.count(*) FROM experiments.l2f_experiment_plans
+         WHERE partition = 'train') <> 3 THEN
+        RAISE EXCEPTION 'the TRAIN store carries an unexpected TRAIN plan';
+    END IF;
+
+    SELECT pg_catalog.array_agg(a.plan_id ORDER BY a.phase),
+           pg_catalog.array_agg(a.plan_hash ORDER BY a.phase)
+      INTO v_plan_ids, v_plans
+      FROM experiments.l2f2_execution_authorities a
+     WHERE a.baseline_protocol_hash = '{BASELINE_PROTOCOL_HASH}';
 
     SELECT pg_catalog.jsonb_build_object(
         'schema_version', '{TRAIN_SURFACE_SCHEMA_VERSION}',
         'database_name', v_database,
         'revision', v_revision,
+        'authority_count', v_authorities,
         'plan_hashes', pg_catalog.to_jsonb(v_plans),
+        'phase_plan_map', (
+            SELECT coalesce(pg_catalog.jsonb_object_agg(a.phase, a.plan_hash), '{{}}'::jsonb)
+              FROM experiments.l2f2_execution_authorities a),
         'logical_job_count', (
             SELECT pg_catalog.sum(p.logical_job_count)
-              FROM experiments.l2f_experiment_plans p
-             WHERE p.plan_hash = ANY (v_plans)),
+              FROM experiments.l2f_experiment_plans p WHERE p.id = ANY (v_plan_ids)),
         'terminal_job_count', (
             SELECT pg_catalog.count(*) FROM experiments.l2f_experiment_jobs j
-              JOIN experiments.l2f_experiment_plans p ON p.id = j.plan_id
-             WHERE p.plan_hash = ANY (v_plans) AND j.status IN ('SUCCEEDED', 'FAILED')),
+             WHERE j.plan_id = ANY (v_plan_ids) AND j.status IN ('SUCCEEDED', 'FAILED')),
         'nonterminal_job_count', (
             SELECT pg_catalog.count(*) FROM experiments.l2f_experiment_jobs j
-              JOIN experiments.l2f_experiment_plans p ON p.id = j.plan_id
-             WHERE p.plan_hash = ANY (v_plans) AND j.status NOT IN ('SUCCEEDED', 'FAILED')),
+             WHERE j.plan_id = ANY (v_plan_ids) AND j.status NOT IN ('SUCCEEDED', 'FAILED')),
+        'execution_result_count', (
+            SELECT pg_catalog.count(*) FROM experiments.l2f_execution_results r
+             WHERE r.plan_id = ANY (v_plan_ids)),
+        'execution_failure_count', (
+            SELECT pg_catalog.count(*) FROM experiments.l2f_execution_failures f
+             WHERE f.plan_id = ANY (v_plan_ids)),
+        -- a SUCCEEDED execution with no evaluation UNDER THE FROZEN CONTRACT. An evaluation
+        -- under some other contract must not satisfy this.
         'succeeded_without_evaluation', (
             SELECT pg_catalog.count(*) FROM experiments.l2f_execution_results r
-             WHERE NOT EXISTS (
+             WHERE r.plan_id = ANY (v_plan_ids)
+               AND NOT EXISTS (
                  SELECT 1 FROM evaluation.l2f_evaluation_results v
-                  WHERE v.execution_result_id = r.id)),
+                  WHERE v.execution_result_id = r.id
+                    AND v.scoring_contract_hash = '{SCORING_CONTRACT_HASH}')),
         'evaluation_count', (
-            SELECT pg_catalog.count(*) FROM evaluation.l2f_evaluation_results),
+            SELECT pg_catalog.count(*) FROM evaluation.l2f_evaluation_results v
+              JOIN experiments.l2f_execution_results r ON r.id = v.execution_result_id
+             WHERE r.plan_id = ANY (v_plan_ids)),
         'evaluation_failure_count', (
-            SELECT pg_catalog.count(*) FROM evaluation.l2f_evaluation_failures),
+            SELECT pg_catalog.count(*) FROM evaluation.l2f_evaluation_failures e
+              JOIN experiments.l2f_execution_results r ON r.id = e.execution_result_id
+             WHERE r.plan_id = ANY (v_plan_ids)),
         'evaluation_hashes', (
             SELECT coalesce(
-                pg_catalog.jsonb_agg(x.evaluation_hash ORDER BY x.evaluation_hash),
-                '[]'::jsonb)
-              FROM (SELECT v.evaluation_hash FROM evaluation.l2f_evaluation_results v) x),
+                pg_catalog.jsonb_agg(x.h ORDER BY x.h), '[]'::jsonb)
+              FROM (SELECT v.evaluation_hash AS h
+                      FROM evaluation.l2f_evaluation_results v
+                      JOIN experiments.l2f_execution_results r
+                        ON r.id = v.execution_result_id
+                     WHERE r.plan_id = ANY (v_plan_ids)) x),
         'execution_failure_job_keys', (
-            SELECT coalesce(
-                pg_catalog.jsonb_agg(x.job_key ORDER BY x.job_key), '[]'::jsonb)
-              FROM (SELECT f.job_key FROM experiments.l2f_execution_failures f) x),
+            SELECT coalesce(pg_catalog.jsonb_agg(x.k ORDER BY x.k), '[]'::jsonb)
+              FROM (SELECT f.job_key AS k FROM experiments.l2f_execution_failures f
+                     WHERE f.plan_id = ANY (v_plan_ids)) x),
         'execution_failure_codes', (
-            SELECT coalesce(pg_catalog.jsonb_object_agg(x.failure_code, x.n),
-                                       '{{}}'::jsonb)
+            SELECT coalesce(pg_catalog.jsonb_object_agg(x.failure_code, x.n), '{{}}'::jsonb)
               FROM (SELECT f.failure_code, pg_catalog.count(*) AS n
                       FROM experiments.l2f_execution_failures f
+                     WHERE f.plan_id = ANY (v_plan_ids)
                      GROUP BY f.failure_code) x),
         'scoring_contract_hashes', (
             SELECT coalesce(pg_catalog.jsonb_agg(x.h ORDER BY x.h), '[]'::jsonb)
               FROM (SELECT DISTINCT v.scoring_contract_hash AS h
-                      FROM evaluation.l2f_evaluation_results v) x),
+                      FROM evaluation.l2f_evaluation_results v
+                      JOIN experiments.l2f_execution_results r
+                        ON r.id = v.execution_result_id
+                     WHERE r.plan_id = ANY (v_plan_ids)) x),
+        -- BOTH terminal ledgers. 0015 stores the environment on results and failures alike.
+        'execution_environment_outcome_count', (
+            SELECT pg_catalog.count(*) FROM (
+                SELECT r.execution_environment_hash AS h
+                  FROM experiments.l2f_execution_results r
+                 WHERE r.plan_id = ANY (v_plan_ids)
+                UNION ALL
+                SELECT f.execution_environment_hash
+                  FROM experiments.l2f_execution_failures f
+                 WHERE f.plan_id = ANY (v_plan_ids)) u
+             WHERE u.h IS NOT NULL),
+        'execution_environment_null_count', (
+            SELECT pg_catalog.count(*) FROM (
+                SELECT r.execution_environment_hash AS h
+                  FROM experiments.l2f_execution_results r
+                 WHERE r.plan_id = ANY (v_plan_ids)
+                UNION ALL
+                SELECT f.execution_environment_hash
+                  FROM experiments.l2f_execution_failures f
+                 WHERE f.plan_id = ANY (v_plan_ids)) u
+             WHERE u.h IS NULL),
         'execution_environment_hashes', (
             SELECT coalesce(pg_catalog.jsonb_agg(x.h ORDER BY x.h), '[]'::jsonb)
-              FROM (SELECT DISTINCT r.execution_environment_hash AS h
-                      FROM experiments.l2f_execution_results r) x),
+              FROM (SELECT DISTINCT u.h FROM (
+                        SELECT r.execution_environment_hash AS h
+                          FROM experiments.l2f_execution_results r
+                         WHERE r.plan_id = ANY (v_plan_ids)
+                        UNION ALL
+                        SELECT f.execution_environment_hash
+                          FROM experiments.l2f_execution_failures f
+                         WHERE f.plan_id = ANY (v_plan_ids)) u
+                     WHERE u.h IS NOT NULL) x),
         'phase_c_dataset_ids', (
             SELECT coalesce(pg_catalog.jsonb_agg(x.d ORDER BY x.d), '[]'::jsonb)
               FROM (SELECT DISTINCT g.dataset_id AS d
                       FROM experiments.l2f_experiment_plan_members m
-                      JOIN experiments.l2f_experiment_plans p ON p.id = m.plan_id
+                      JOIN experiments.l2f2_execution_authorities a ON a.plan_id = m.plan_id
                       JOIN catalog.dataset_registry g ON g.id = m.dataset_registry_id
-                     WHERE p.plan_hash = '{PHASE_C_PLAN_HASH}' AND m.partition = 'train') x)
+                     WHERE a.phase = 'PHASE_C' AND m.partition = 'train') x)
     ) INTO v_result;
 
     RETURN v_result;
@@ -194,6 +287,20 @@ def install_train_qualification_surface(conn: Any) -> dict[str, Any]:
         raise TrainQualificationSurfaceError(
             f"TRAIN store revision is {revision!r}, expected {TRAIN_REVISION!r}"
         )
+    # The temporary grant below must not silently remove a PRE-EXISTING privilege on drop.
+    # If minos_admin already holds it, something granted it for a reason this provisioner does
+    # not know, and guessing why is worse than stopping.
+    already = bool(
+        conn.execute(
+            text("SELECT has_table_privilege(:r, 'public.alembic_version', 'SELECT')"),
+            {"r": _CONTROL_PLANE},
+        ).scalar_one()
+    )
+    if already:
+        raise TrainQualificationSurfaceError(
+            f"{_CONTROL_PLANE} already holds SELECT on public.alembic_version; this provisioner "
+            "grants it only temporarily and would revoke a privilege it did not create"
+        )
     before = snapshot_train_state(conn)
 
     conn.execute(text(f"DROP FUNCTION IF EXISTS {TRAIN_SURFACE_FUNCTION}()"))
@@ -227,6 +334,16 @@ def drop_train_qualification_surface(conn: Any) -> dict[str, Any]:
     before = snapshot_train_state(conn)
     conn.execute(text(f"DROP FUNCTION IF EXISTS {TRAIN_SURFACE_FUNCTION}()"))
     conn.execute(text(f"REVOKE SELECT ON public.alembic_version FROM {_CONTROL_PLANE}"))
+    restored = bool(
+        conn.execute(
+            text("SELECT has_table_privilege(:r, 'public.alembic_version', 'SELECT')"),
+            {"r": _CONTROL_PLANE},
+        ).scalar_one()
+    )
+    if restored:
+        raise TrainQualificationSurfaceError(
+            f"{_CONTROL_PLANE} still holds SELECT on public.alembic_version after the drop"
+        )
     after = snapshot_train_state(conn)
     if before != after:
         raise TrainQualificationSurfaceError(

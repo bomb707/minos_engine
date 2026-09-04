@@ -194,15 +194,21 @@ def test_a_surface_taking_an_argument_is_refused(train_store: Any) -> None:
         verify_train_qualification_surface(conn)
 
 
-def test_the_surface_refuses_when_the_frozen_plans_are_absent(train_store: Any) -> None:
+def test_the_surface_refuses_when_the_campaign_authorities_are_absent(
+    train_store: Any,
+) -> None:
     """A bare 0020 store carries no campaign, and the surface says so rather than returning zeros.
 
     This is the shape that matters: an empty result would be an internally consistent summary of
-    nothing, and would have hashed cleanly into a qualification.
+    nothing and would have hashed cleanly into a qualification. It also proves the campaigns are
+    derived through l2f2_execution_authorities rather than from whatever plan rows happen to exist.
     """
     with train_store.connect() as conn, conn.begin():
         install_train_qualification_surface(conn)
-    with train_store.connect() as conn, pytest.raises(Exception, match="three frozen TRAIN plans"):
+    with (
+        train_store.connect() as conn,
+        pytest.raises(Exception, match="authority-bound TRAIN campaigns"),
+    ):
         observe(conn)
 
 
@@ -222,3 +228,110 @@ def test_the_surface_exposes_no_truth_config_or_test_content() -> None:
         "'validation'",
     ):
         assert forbidden not in body, forbidden
+
+
+# --------------------------------------------------------------------------------------------
+# authority binding and the environment union
+#
+# These are the two defects this corrective exists for. The campaign must come from
+# l2f2_execution_authorities, and the environment must come from BOTH terminal ledgers.
+# --------------------------------------------------------------------------------------------
+_PROTOCOL = "c548e190571f5e964560cf30021a520ea8aad6674569fa3202af880d7dff77d1"
+_ENV = "71e14a49833ac77bb9dc576345fb89c4dd68f4a3ad3673eb098d38593c1ef4d3"
+
+
+def test_the_body_derives_campaigns_through_the_execution_authority() -> None:
+    """Not from plan rows that merely carry the right hashes."""
+    from minos_engine.qualification import l2f2_train_qualification_surface as mod
+
+    body = mod._body()
+    assert "experiments.l2f2_execution_authorities" in body
+    assert "'PHASE_A'" in body and "'PHASE_B'" in body and "'PHASE_C'" in body
+    assert _PROTOCOL in body
+    # exact shape agreement between authority and persisted plan
+    for agreement in (
+        "a.member_count = p.train_member_count",
+        "a.candidate_count = p.candidate_count",
+        "a.logical_job_count = p.logical_job_count",
+        "a.plan_hash = p.plan_hash",
+    ):
+        assert agreement in body, agreement
+    # an unexpected fourth authority or plan is refused
+    assert "unexpected execution authority" in body
+    assert "unexpected TRAIN plan" in body
+
+
+def test_the_body_takes_the_environment_from_both_terminal_ledgers() -> None:
+    """0015 stores it on results AND failures; reading only results leaves 35 unchecked."""
+    from minos_engine.qualification import l2f2_train_qualification_surface as mod
+
+    body = mod._body()
+    environment_block = body[body.index("'execution_environment_outcome_count'") :]
+    assert "experiments.l2f_execution_results" in environment_block
+    assert "experiments.l2f_execution_failures" in environment_block
+    assert "execution_environment_null_count" in body
+
+
+def test_every_fact_is_scoped_to_the_authorized_plans() -> None:
+    """Whole-database counts would absorb any row appearing beside the campaign."""
+    from minos_engine.qualification import l2f2_train_qualification_surface as mod
+
+    body = mod._body()
+    # each scientific aggregate references the authorised plan id array
+    assert body.count("v_plan_ids") >= 12
+    # succeeded_without_evaluation must be contract-scoped, not merely "has any evaluation"
+    swe = body[body.index("'succeeded_without_evaluation'") :]
+    swe = swe[: swe.index("'evaluation_count'")]
+    assert "scoring_contract_hash = " in swe
+
+
+def test_a_foreign_contract_evaluation_does_not_satisfy_the_requirement() -> None:
+    """An evaluation under some other contract must leave the execution unevaluated."""
+    from minos_engine.qualification import l2f2_train_qualification_surface as mod
+
+    swe = mod._body()
+    swe = swe[swe.index("'succeeded_without_evaluation'") :]
+    swe = swe[: swe.index("'evaluation_count'")]
+    assert "b24a07e208ce8e2fff6672102ae4e61aed93c6f352a5af46ba81c4789adb76d6" in swe
+
+
+def test_the_provisioner_refuses_a_preexisting_alembic_grant(train_store: Any) -> None:
+    """§9 -- it must never revoke a privilege it did not create."""
+    with train_store.connect() as conn, conn.begin():
+        conn.execute(text("GRANT SELECT ON public.alembic_version TO minos_admin"))
+    try:
+        with (
+            train_store.connect() as conn,
+            conn.begin(),
+            pytest.raises(TrainQualificationSurfaceError, match="already holds SELECT"),
+        ):
+            install_train_qualification_surface(conn)
+    finally:
+        with train_store.connect() as conn, conn.begin():
+            conn.execute(text("REVOKE SELECT ON public.alembic_version FROM minos_admin"))
+
+
+def test_the_alembic_grant_is_taken_and_returned(train_store: Any) -> None:
+    with train_store.connect() as conn:
+        before = conn.execute(
+            text("SELECT has_table_privilege('minos_admin','public.alembic_version','SELECT')")
+        ).scalar_one()
+    assert before is False
+    with train_store.connect() as conn, conn.begin():
+        install_train_qualification_surface(conn)
+    with train_store.connect() as conn:
+        assert (
+            conn.execute(
+                text("SELECT has_table_privilege('minos_admin','public.alembic_version','SELECT')")
+            ).scalar_one()
+            is True
+        )
+    with train_store.connect() as conn, conn.begin():
+        drop_train_qualification_surface(conn)
+    with train_store.connect() as conn:
+        assert (
+            conn.execute(
+                text("SELECT has_table_privilege('minos_admin','public.alembic_version','SELECT')")
+            ).scalar_one()
+            is False
+        ), "the temporary grant outlived the surface"
