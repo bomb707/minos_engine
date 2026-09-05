@@ -389,3 +389,54 @@ rather than skipped, and prediction — not just fitting — runs inside the sin
 The campaign result schema is `l2g-train-oof-campaign-result-v2`; v1 is
 `SUPERSEDED_BEFORE_FIRST_CAMPAIGN`, since binding per-spec completeness materially changed what an
 accepted campaign asserts.
+
+## 15. The sealed campaign authority
+
+`run_l2g_train_oof_campaign` was a configurable core wearing a production name. It accepted the
+dataset, the design matrix, both spec sets and both fit callables, so it could not promise which
+experiment had run — a caller with those parameters can supply a different one.
+
+The injectable function is now `_run_l2g_train_oof_core`, kept private because dependency
+injection is what makes the structural properties testable on a small synthetic grid. The
+production entry is `run_real_l2g_train_oof_campaign`, whose entire signature is four operational
+handles: `feature_matrix_artifact_path`, `workspace`, `config_payload_root`, `root`. Each is
+verified against an identity the caller does not control, so pointing at the wrong file fails
+rather than substitutes. It derives the authority, dataset, matrix values, config vectors, design
+matrix, both spec sets and the runtime itself, and uses the committed `fit_fold_estimators` and
+`fit_reference_fold`.
+
+**Exact identities, not counts.** The ten spec hashes are required to be exactly the accepted
+ones, in order, each under its expected family, and to match what the committed authority records.
+Six foreign specs, a correct count with one wrong hash, a duplicate, a reordering, or a correct
+hash under the wrong family are all refused.
+
+**The exact cell set.** Counting 1040 records cannot detect one frozen cell missing and one
+foreign cell substituted — the total is unchanged. Completeness now compares the predicted
+`(dataset_id, config_hash)` set against the frozen one, and `exact_cell_set_verified` is part of
+what COMPLETE means.
+
+**Thread evidence is observed, not accepted.** The boundary takes its own reading from the loaded
+pools under the enforced context and refuses if nothing is observable or any pool is unlimited. A
+caller-supplied `thread_report` is not evidence and is no longer accepted.
+
+### Campaign result v2, which now binds what it claims
+
+The schema said it bound per-spec completeness; the canonical content did not serialize it. It now
+carries, for each of the ten specs: hash, family, role, status, expected and successful fold
+counts, failed folds, expected and observed record counts, unique BAM count, duplicate cell count,
+`exact_cell_set_verified`, training failures, and — only when COMPLETE — the OOF and metric
+artifact hashes. Campaign-level it binds the authority identities, source commit and tree read
+from Git, reference completeness, threshold availability, the eligible/ineligible partition, both
+reference thresholds, the shortlist, the thread report, and `validation_read` / `test_accessed`.
+
+`build_campaign_result` derives every field from the verified closure — the operator supplies no
+shortlist, threshold, eligibility or status — and `verify_campaign_result` checks the document
+against itself: COMPLETE implies five folds, 1040 records, 50 BAMs, no duplicates, a verified cell
+set and both artifact hashes; a failed spec cannot carry a scientific artifact or be shortlisted;
+a shortlist cannot exist unless all four references completed.
+
+On swaps, precisely: duplicated artifact hashes are caught by the verifier, and an exchanged
+*metric* hash is caught at build time because the identity binds the spec and is recomputed from
+that spec's own metrics. An OOF hash exchanged inside an already-built result cannot be re-derived
+from content alone — the records are not in the document — so what protects it is the
+domain-separated result identity, which moves on any edit.

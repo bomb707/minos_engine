@@ -768,10 +768,10 @@ def test_the_best_reference_is_the_bar_not_the_average() -> None:
 
 
 def test_a_campaign_result_must_bind_all_ten_spec_hashes() -> None:
-    from minos_engine.models.shortlist import train_campaign_result_content
+    from minos_engine.models.shortlist import _train_campaign_result_content
 
     with pytest.raises(ShortlistError, match="ten model-spec hashes"):
-        train_campaign_result_content(
+        _train_campaign_result_content(
             source_commit="a" * 40,
             source_tree="b" * 40,
             prefit_authority_sha256="c" * 64,

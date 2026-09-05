@@ -21,8 +21,8 @@ from minos_engine.models.campaign import (
     STATUS_TRAINING_FAILURE,
     CampaignError,
     ReferenceThresholdUnavailable,
+    _run_l2g_train_oof_core,
     assess_completeness,
-    run_l2g_train_oof_campaign,
 )
 from minos_engine.models.contract import CV_FOLD_CHROMOSOMES, SAFE_BASELINE_CONFIG_HASH
 from minos_engine.models.design_matrix import DesignMatrix
@@ -572,7 +572,7 @@ def _synthetic_campaign() -> tuple[Any, Any, tuple[Any, ...], tuple[Any, ...]]:
 
 def test_the_orchestrator_runs_all_ten_specs_and_reports_completeness() -> None:
     dataset, design, candidates, references = _synthetic_campaign()
-    result = run_l2g_train_oof_campaign(
+    result = _run_l2g_train_oof_core(
         dataset=dataset,
         design=design,
         candidate_specs=candidates,
@@ -599,7 +599,7 @@ def test_a_failed_reference_holds_the_whole_campaign() -> None:
         raise RuntimeError("deliberate reference failure")
 
     with pytest.raises(ReferenceThresholdUnavailable, match="never fully observed"):
-        run_l2g_train_oof_campaign(
+        _run_l2g_train_oof_core(
             dataset=dataset,
             design=design,
             candidate_specs=candidates,
@@ -619,7 +619,7 @@ def test_a_failed_candidate_is_recorded_but_never_shortlisted() -> None:
             raise TrainingFailure("deliberate candidate fold failure")
         return fit_fold_estimators(**kwargs)
 
-    result = run_l2g_train_oof_campaign(
+    result = _run_l2g_train_oof_core(
         dataset=dataset,
         design=design,
         candidate_specs=candidates,
@@ -638,7 +638,7 @@ def test_a_failed_candidate_is_recorded_but_never_shortlisted() -> None:
 def test_the_orchestrator_refuses_a_wrong_sized_spec_set() -> None:
     dataset, design, candidates, references = _synthetic_campaign()
     with pytest.raises(CampaignError, match="expected the frozen 6"):
-        run_l2g_train_oof_campaign(
+        _run_l2g_train_oof_core(
             dataset=dataset,
             design=design,
             candidate_specs=candidates[:3],
@@ -647,7 +647,7 @@ def test_the_orchestrator_refuses_a_wrong_sized_spec_set() -> None:
             fit_reference=fit_reference_fold,
         )
     with pytest.raises(CampaignError, match="expected the frozen 4"):
-        run_l2g_train_oof_campaign(
+        _run_l2g_train_oof_core(
             dataset=dataset,
             design=design,
             candidate_specs=candidates,
@@ -659,7 +659,7 @@ def test_the_orchestrator_refuses_a_wrong_sized_spec_set() -> None:
 
 def test_the_safe_baseline_reference_selects_its_config_in_a_real_campaign_run() -> None:
     dataset, design, candidates, references = _synthetic_campaign()
-    result = run_l2g_train_oof_campaign(
+    result = _run_l2g_train_oof_core(
         dataset=dataset,
         design=design,
         candidate_specs=candidates,

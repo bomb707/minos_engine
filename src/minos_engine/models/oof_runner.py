@@ -29,6 +29,7 @@ __all__ = [
     "OofRecord",
     "OofRunnerError",
     "TrainingFailure",
+    "metric_artifact_identity",
     "oof_artifact_identity",
     "run_outer_oof",
 ]
@@ -242,3 +243,27 @@ def run_outer_oof(
                 )
             )
     return records, failures
+
+
+def metric_artifact_identity(metrics: dict[str, Any], *, spec_hash: str) -> str:
+    """Identity of one spec's metric artifact, BOUND to the spec it describes.
+
+    Binding the spec hash is what makes a swap detectable: two artifacts exchanged between specs
+    keep their values and their uniqueness, so only an identity that depends on WHOSE artifact it
+    is can catch the exchange.
+    """
+    return sha256_hex(
+        b"minos:l2g-metric-artifact:v1\n"
+        + canonical_json_bytes({"metrics": _jsonable(metrics), "model_spec_hash": spec_hash})
+    )
+
+
+def _jsonable(value: Any) -> Any:
+    """Canonical JSON cannot carry NaN; a missing diagnostic is recorded as absent, not as 0."""
+    if isinstance(value, dict):
+        return {k: _jsonable(v) for k, v in sorted(value.items())}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    if isinstance(value, float) and value != value:
+        return None
+    return value

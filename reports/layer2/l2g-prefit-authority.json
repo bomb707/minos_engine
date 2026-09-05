@@ -32,6 +32,8 @@
     "scheme": "NESTED_CROSS_FITTED_WITHIN_EACH_OUTER_FOLD",
     "selection_metrics_use": "CALIBRATED_OUTER_PREDICTIONS_ONLY"
   },
+  "campaign_result_builder": "minos_engine.models.shortlist.build_campaign_result",
+  "campaign_result_verifier": "minos_engine.models.shortlist.verify_campaign_result",
   "candidate_spec_hashes": [
     {
       "admission_hyperparameters": {
@@ -124,6 +126,7 @@
   ],
   "completeness_rule": {
     "complete_requires": "ALL_FOLDS_SUCCEEDED_AND_EVERY_CELL_PREDICTED_EXACTLY_ONCE",
+    "exact_cell_set_required": true,
     "expected_bams": 50,
     "expected_oof_records_per_spec": 1040,
     "expected_outer_folds": 5,
@@ -169,12 +172,16 @@
     }
   ],
   "external_manifest_sha256": "994e6515c03200707d7ec4cfdd5bc456b7ac9832a9a498c38a72bdd7ed9ac2fb",
+  "injectable_core": "minos_engine.models.campaign._run_l2g_train_oof_core (tests only)",
+  "metric_artifact_domain": "minos:l2g-metric-artifact:v1 (bound to model_spec_hash)",
   "model_bundle_schema": "l2g-model-bundle-v2",
   "model_spec_schema": "l2g-model-spec-v3",
   "models_qualified_issued": false,
   "no_model_fitted": true,
   "note": "Hashes and counts only. The learning table itself lives outside Git under /home/hr/bittensor/minos_l2g_training and is referenced here by identity.",
+  "oof_artifact_domain": "minos:l2g-oof-artifact:v1",
   "oof_record_schema": "l2g-oof-record-v1",
+  "production_campaign_entry": "minos_engine.models.campaign.run_real_l2g_train_oof_campaign",
   "reference_spec_hashes": [
     {
       "admission_model_implementation": "minos_engine.models.references.ConstantSafeBaseline",
@@ -228,6 +235,7 @@
   },
   "target_formulation": "B_JOINT_EXPECTED_UTILITY_OVER_ADMISSION",
   "test_sealed_until": "L2-I",
+  "thread_policy": "SINGLE_THREADED_DETERMINISTIC",
   "train_campaign_result_schema": "l2g-train-oof-campaign-result-v2",
   "train_oof_campaign_executed": false,
   "training_dataset_hash": "d031758c58358270843b9b417ea034d1181a6aaafc1c94af000279c26dc62fcc",
