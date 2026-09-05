@@ -473,7 +473,7 @@ def test_the_reference_specs_are_frozen_and_hashed() -> None:
     for recipe in REFERENCE_RECIPES:
         assert recipe["tie_break"], "a reference with no tie-break is not reproducible"
         assert recipe["score_fit_data"]
-        assert recipe["admission_component"]
+        assert recipe["score_implementation"] and recipe["admission_implementation"]
 
 
 def test_a_reference_is_never_produced_as_a_candidate() -> None:
@@ -481,12 +481,18 @@ def test_a_reference_is_never_produced_as_a_candidate() -> None:
     assert not ({c.family for c in candidates} & set(REFERENCE_FAMILIES))
 
 
-def test_the_spec_and_bundle_are_versioned_v2() -> None:
-    assert MODEL_SPEC_SCHEMA == "l2g-model-spec-v2"
+def test_the_spec_is_v3_and_the_bundle_v2() -> None:
+    """The spec moved again when the admission heads were made truthful; nothing was fitted."""
+    assert MODEL_SPEC_SCHEMA == "l2g-model-spec-v3"
     assert MODEL_BUNDLE_SCHEMA == "l2g-model-bundle-v2"
-    from minos_engine.models.spec import SUPERSEDED_BUNDLE_V1, SUPERSEDED_SPEC_V1
+    from minos_engine.models.spec import (
+        SUPERSEDED_BUNDLE_V1,
+        SUPERSEDED_SPEC_V1,
+        SUPERSEDED_SPEC_V2,
+    )
 
     assert SUPERSEDED_SPEC_V1 == SUPERSEDED_BUNDLE_V1 == "SUPERSEDED_BEFORE_FIRST_MODEL_FIT"
+    assert SUPERSEDED_SPEC_V2 == "SUPERSEDED_BEFORE_FIRST_MODEL_FIT"
 
 
 @pytest.mark.parametrize("bad", ["A" * 64, "nope"])
@@ -563,14 +569,22 @@ def test_the_calibration_fold_partition_never_shares_a_bam() -> None:
 # ---------------------------------------------------------------------------------------- #
 # stage locks
 # ---------------------------------------------------------------------------------------- #
-def test_no_model_is_fitted_in_this_task() -> None:
-    from pathlib import Path
+def test_no_real_campaign_was_executed_in_this_task() -> None:
+    """The trainer source now legitimately fits; what must not exist is a REAL result."""
 
-    root = Path(__file__).resolve().parents[3] / "src/minos_engine/models"
-    for path in root.glob("*.py"):
-        source = path.read_text(encoding="utf-8")
-        assert ".fit(" not in source, f"{path.name} fits a model"
-        assert "predict(" not in source, f"{path.name} predicts"
+    from tests.minos_scratch import CANONICAL_MINOS_ROOT
+
+    workspace = CANONICAL_MINOS_ROOT / "minos_l2g_training"
+    for forbidden in (
+        "oof_predictions.json",
+        "train_oof_campaign_result.json",
+        "metrics.json",
+        "model_bundle.joblib",
+    ):
+        assert not (workspace / forbidden).exists(), f"a real campaign artifact exists: {forbidden}"
+    authority = _authority()
+    assert authority["no_model_fitted"] is True
+    assert authority["train_oof_campaign_executed"] is False
 
 
 def test_no_models_qualified_gate_is_issued() -> None:

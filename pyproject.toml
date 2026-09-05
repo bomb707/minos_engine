@@ -30,6 +30,9 @@ dependencies = [
     # EXACT, not a range. A model fitted under 1.5.0 and one fitted under 1.9.0 are not the
     # same experiment; minos_engine.models.runtime verifies this before the first fit.
     "scikit-learn==1.9.0",
+    # relied on DIRECTLY to enforce SINGLE_THREADED_DETERMINISTIC during fits;
+    # it arrives with scikit-learn but a transitive pin is not a guarantee.
+    "threadpoolctl>=3.5,<4",
 ]
 
 [project.optional-dependencies]
@@ -83,7 +86,7 @@ packages = ["minos_engine"]
 exclude = ['(^|/)(\.venv|build|dist)(/|$)']
 
 [[tool.mypy.overrides]]
-module = ["yaml", "jsonschema", "jsonschema.*", "pysam", "pysam.*", "pyarrow", "pyarrow.*", "numpy", "numpy.*", "alembic", "alembic.*", "sklearn", "sklearn.*", "scipy", "scipy.*", "joblib", "joblib.*"]
+module = ["yaml", "jsonschema", "jsonschema.*", "pysam", "pysam.*", "pyarrow", "pyarrow.*", "numpy", "numpy.*", "alembic", "alembic.*", "sklearn", "sklearn.*", "scipy", "scipy.*", "joblib", "joblib.*", "threadpoolctl", "threadpoolctl.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

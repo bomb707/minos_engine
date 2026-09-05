@@ -278,3 +278,65 @@ chromosome's own labels to build the mapping it is scored against. Calibration i
 training BAMs, the mapping is fitted on those only, and it is applied to the untouched held-out
 chromosome. Frozen before any OOF number exists, so it cannot be chosen after seeing which variant
 scores better.
+
+## 13. The TRAIN OOF runner
+
+### ModelSpec v3 — the confirmed misdescription
+
+v2 recorded `failure_risk_formulation = "LOGISTIC_P_ADMISSION"` for all six candidates, but the
+frozen grid names a classifier per family: `LogisticRegression` for the linear candidates,
+`HistGradientBoostingClassifier` for the trees, `MLPClassifier` for the neural one. Four of the
+six specs described an estimator they would never fit. v3 gives the two heads separate fields —
+`score_model_implementation` / `admission_model_implementation`, with their own hyperparameters
+and losses — so a spec can no longer hide two estimators inside one string. The scientific event
+is unchanged: still `P(ADMITTED | X_BAM, theta)`. Nothing was fitted under v1 or v2; both are
+`SUPERSEDED_BEFORE_FIRST_MODEL_FIT`.
+
+### Bounded output
+
+The admitted score lives in [0, 1]; Ridge and MLP regression do not. `score_output_postprocess =
+CLIP_TO_0_1` is frozen on every spec **before** any out-of-fold number exists, so it cannot be
+chosen after seeing which variant scores better. Utility is then `p * s` with both factors in
+[0, 1], because `FAILURE_UTILITY` is 0.
+
+### Nested calibration, concretely
+
+Per outer fold: hold one chromosome (10 BAMs) out; within the remaining 40, run four inner
+BAM-grouped folds to produce inner out-of-fold admission probabilities; fit isotonic on **those**
+pairs only; fit the base admission estimator on all 40; predict raw `P(A)` on the held-out
+chromosome; apply the inner-fitted mapping. The held-out chromosome's labels never reach the
+calibrator applied to them, and every emitted record carries the calibration BAM-set identity so
+the claim is checkable rather than asserted. Score regression is not calibrated at all.
+
+### Failure policy
+
+A convergence warning, a numerical exception, a non-finite prediction, a single-class admission
+fold or a degenerate calibration are each `TRAINING_FAILURE` for that spec and fold, recorded as
+campaign evidence. They are never reinterpreted as genomic candidate failures, and a candidate
+must not win a comparison by having fewer folds counted against it.
+
+### Enforcement, not declaration
+
+The runtime content has always said `SINGLE_THREADED_DETERMINISTIC`. Setting `OMP_NUM_THREADS`
+after numpy and scikit-learn are imported changes nothing — on this machine both report 16 threads
+at import. Fits now run inside a `threadpoolctl` context that re-limits the loaded pools to 1 and
+observes the result; outside it the verifier refuses. The runtime hash is unchanged because the
+claim was already part of its content; only the implementation caught up.
+
+### What the bundle must earn
+
+Before an estimator sees a number: the four bundle files are hashed from their own bytes, the
+`TrainingDataset` is reconstructed and required to hash to `d031758c…` (the hash written inside
+the manifest is never the authority), the qualified matrix parquet is re-hashed and its 129
+columns checked in their qualified order, and all 80 config payloads must hash to the names they
+are stored under before being encoded through the accepted encoder.
+
+### Selection
+
+Regret is `oracle − selected` over configs **actually observed for that BAM**, lower better, with
+the BAM as the unit of selection. Ties are broken by the lowest config hash lexicographically,
+never by dict, database, phase or runtime order. The shortlist rule is the already-frozen one: a
+promotable spec enters iff its OOF mean regret **and** CVaR-0.25 regret are both no worse than the
+best reference's. If nothing clears both bars the shortlist is empty, MODELS-QUALIFIED holds, and
+SAFE_BASELINE remains the fallback — promoting the least-bad contextual model would be choosing a
+threshold after the fact.

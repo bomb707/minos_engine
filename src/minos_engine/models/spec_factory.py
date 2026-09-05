@@ -35,8 +35,11 @@ from minos_engine.models.protocol import (
 )
 from minos_engine.models.runtime import verify_training_runtime
 from minos_engine.models.spec import (
+    ADMISSION_TRAINING_POPULATION,
     PROMOTABLE_FAMILIES,
     REFERENCE_FAMILIES,
+    SCORE_OUTPUT_POSTPROCESS,
+    SCORE_TRAINING_POPULATION,
     ModelSpec,
 )
 
@@ -48,7 +51,39 @@ __all__ = [
 ]
 
 _OOD_METHOD: Final = "STANDARDIZED_FEATURE_DISTANCE"
-_FAILURE_RISK: Final = "LOGISTIC_P_ADMISSION"
+
+#: The frozen grid names a classifier PER FAMILY. v2 recorded "LOGISTIC_P_ADMISSION" for all six,
+#: which was simply untrue for the tree and MLP candidates. The scientific event is still
+#: P(ADMITTED | X, theta); only the estimator family is now recorded truthfully.
+_IMPLEMENTATIONS: Final[dict[str, str]] = {
+    "Ridge": "sklearn.linear_model.Ridge",
+    "LogisticRegression": "sklearn.linear_model.LogisticRegression",
+    "HistGradientBoostingRegressor": "sklearn.ensemble.HistGradientBoostingRegressor",
+    "HistGradientBoostingClassifier": "sklearn.ensemble.HistGradientBoostingClassifier",
+    "MLPRegressor": "sklearn.neural_network.MLPRegressor",
+    "MLPClassifier": "sklearn.neural_network.MLPClassifier",
+}
+
+#: which frozen grid hyperparameters belong to which head. ``alpha`` means Ridge penalty for the
+#: linear family and MLP weight decay for the neural one; ``C`` is the logistic penalty. Splitting
+#: them is what lets each head be constructed without guessing.
+_LINEAR_SCORE_KEYS: Final = frozenset({"alpha"})
+_LINEAR_ADMISSION_KEYS: Final = frozenset({"C"})
+
+
+def _split_hyperparameters(
+    family: str, hyperparameters: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if family == "LINEAR_REGULARIZED":
+        score = {k: v for k, v in hyperparameters.items() if k in _LINEAR_SCORE_KEYS}
+        admission = {k: v for k, v in hyperparameters.items() if k in _LINEAR_ADMISSION_KEYS}
+        unknown = set(hyperparameters) - _LINEAR_SCORE_KEYS - _LINEAR_ADMISSION_KEYS
+        if unknown:
+            raise ModelSpecFactoryError(f"unassignable linear hyperparameters {sorted(unknown)}")
+        return dict(sorted(score.items())), dict(sorted(admission.items()))
+    # tree and MLP recipes describe both heads with the same structural parameters
+    shared = dict(sorted(hyperparameters.items()))
+    return shared, dict(shared)
 
 
 class ModelSpecFactoryError(MinosEngineError):
@@ -61,45 +96,57 @@ class ModelSpecFactoryError(MinosEngineError):
 REFERENCE_RECIPES: Final[tuple[dict[str, Any], ...]] = (
     {
         "family": "CONSTANT_SAFE_BASELINE",
-        "implementation": "minos_engine.models.references.ConstantSafeBaseline",
+        "score_implementation": "minos_engine.models.references.ConstantSafeBaseline",
+        "admission_implementation": "minos_engine.models.references.ConstantSafeBaseline",
+        "score_hyperparameters": {},
+        "admission_hyperparameters": {},
+        "score_loss": "NONE_CONSTANT",
+        "admission_loss": "NONE_CONSTANT",
         "predicts": "THE_SAFE_BASELINE_CONFIG_FOR_EVERY_BAM",
-        "score_fit_data": "NONE_IT_IS_CONSTANT",
-        "admission_component": "CONSTANT_EMPIRICAL_ADMISSION_RATE_OF_THE_SAFE_BASELINE_ON_TRAIN",
+        "score_fit_data": "THE_SAFE_BASELINE_CONFIG_ROWS_IN_THE_FOLD_TRAINING_BAMS",
         "tie_break": "NOT_APPLICABLE_SINGLE_CONFIG",
         "transform_specification": {},
-        "loss": "NONE",
     },
     {
         "family": "GLOBAL_MEAN",
-        "implementation": "minos_engine.models.references.GlobalMean",
+        "score_implementation": "minos_engine.models.references.GlobalMean",
+        "admission_implementation": "minos_engine.models.references.GlobalMean",
+        "score_hyperparameters": {},
+        "admission_hyperparameters": {},
+        "score_loss": "NONE_CONSTANT",
+        "admission_loss": "NONE_CONSTANT",
         "predicts": "THE_EQUAL_BAM_WEIGHTED_MEAN_ADMITTED_SCORE_FOR_EVERY_CELL",
         "score_fit_data": "ADMITTED_EXAMPLES_IN_THE_FOLD_TRAINING_BAMS",
-        "admission_component": "EQUAL_BAM_WEIGHTED_ADMISSION_RATE_IN_THE_FOLD_TRAINING_BAMS",
-        # every config scores identically, so the choice must not depend on dict ordering
+        # every config scores identically, so selection must not depend on iteration order
         "tie_break": "LOWEST_CONFIG_HASH_LEXICOGRAPHIC",
         "transform_specification": {},
-        "loss": "NONE",
     },
     {
         "family": "CONFIG_ONLY",
-        "implementation": "minos_engine.models.references.ConfigOnlyRidge",
+        "score_implementation": "minos_engine.models.references.ConfigOnlyRidge",
+        "admission_implementation": "minos_engine.models.references.ConfigOnlyRidge",
+        "score_hyperparameters": {"alpha": 1.0},
+        "admission_hyperparameters": {"max_iter": 1000},
+        "score_loss": "squared_error",
+        "admission_loss": "log_loss",
         "predicts": "E[S|A] AND P(A) FROM THE 28 CONFIG COLUMNS ALONE",
         "score_fit_data": "ADMITTED_EXAMPLES_IN_THE_FOLD_TRAINING_BAMS",
-        "admission_component": "LOGISTIC_ON_CONFIG_COLUMNS_ONLY",
         "tie_break": "LOWEST_CONFIG_HASH_LEXICOGRAPHIC",
-        "transform_specification": {"standardize": True, "columns": "CONFIG_ONLY"},
-        "loss": "squared_error",
+        "transform_specification": {"standardize": True, "columns": "CONFIG_ONLY_28"},
     },
     {
         "family": "BAM_FEATURES_ONLY",
-        "implementation": "minos_engine.models.references.BamFeaturesOnlyRidge",
+        "score_implementation": "minos_engine.models.references.BamFeaturesOnlyRidge",
+        "admission_implementation": "minos_engine.models.references.BamFeaturesOnlyRidge",
+        "score_hyperparameters": {"alpha": 1.0},
+        "admission_hyperparameters": {"max_iter": 1000},
+        "score_loss": "squared_error",
+        "admission_loss": "log_loss",
+        # blind to the config on purpose: it measures how much of the score is just "which BAM"
         "predicts": "E[S|A] AND P(A) FROM THE 129 BAM COLUMNS ALONE",
-        # deliberately blind to the config: it measures how much of the score is just "which BAM"
         "score_fit_data": "ADMITTED_EXAMPLES_IN_THE_FOLD_TRAINING_BAMS",
-        "admission_component": "LOGISTIC_ON_BAM_COLUMNS_ONLY",
         "tie_break": "LOWEST_CONFIG_HASH_LEXICOGRAPHIC",
-        "transform_specification": {"standardize": True, "columns": "BAM_FEATURES_ONLY"},
-        "loss": "squared_error",
+        "transform_specification": {"standardize": True, "columns": "BAM_FEATURES_ONLY_129"},
     },
 )
 
@@ -112,8 +159,10 @@ def _fixed_scientific_fields(dataset: TrainingDataset) -> dict[str, Any]:
         "config_schema_hash": build_config_encoding().identity(),
         "weighting_policy": WEIGHTING_POLICY,
         "dedup_policy": DEDUP_POLICY,
-        "failure_risk_formulation": _FAILURE_RISK,
-        "calibration_method": CALIBRATION_POLICY["scheme"],
+        "score_training_population": SCORE_TRAINING_POPULATION,
+        "admission_training_population": ADMISSION_TRAINING_POPULATION,
+        "score_output_postprocess": SCORE_OUTPUT_POSTPROCESS,
+        "admission_probability_calibration": CALIBRATION_POLICY["scheme"],
         "ood_method": _OOD_METHOD,
         "random_seed": RANDOM_SEED,
         "training_dataset_hash": dataset.identity(),
@@ -140,17 +189,24 @@ def build_accepted_l2g_model_specs(dataset: TrainingDataset) -> tuple[ModelSpec,
     fixed = _fixed_scientific_fields(dataset)
     specs = []
     for recipe in CANDIDATE_GRID:
-        if recipe["family"] not in PROMOTABLE_FAMILIES:
+        family = str(recipe["family"])
+        if family not in PROMOTABLE_FAMILIES:
             raise ModelSpecFactoryError(
-                f"{recipe['family']!r} is not promotable; a reference cannot be a candidate"
+                f"{family!r} is not promotable; a reference cannot be a candidate"
             )
+        score_name = _IMPLEMENTATIONS[str(recipe["score"])]
+        admission_name = _IMPLEMENTATIONS[str(recipe["admission"])]
+        score_hp, admission_hp = _split_hyperparameters(family, dict(recipe["hyperparameters"]))
         specs.append(
             ModelSpec(
-                family=str(recipe["family"]),
-                implementation=f"sklearn:{recipe['score']}+{recipe['admission']}",
-                transform_specification={"standardize": True, "columns": "ALL"},
-                hyperparameters=dict(sorted(dict(recipe["hyperparameters"]).items())),
-                loss="squared_error",
+                family=family,
+                score_model_implementation=score_name,
+                admission_model_implementation=admission_name,
+                score_hyperparameters=score_hp,
+                admission_hyperparameters=admission_hp,
+                score_loss="squared_error",
+                admission_loss="log_loss",
+                transform_specification={"standardize": True, "columns": "CONTEXTUAL_157"},
                 **fixed,
             )
         )
@@ -165,25 +221,28 @@ def build_accepted_l2g_reference_specs(dataset: TrainingDataset) -> tuple[ModelS
     fixed = _fixed_scientific_fields(dataset)
     specs = []
     for recipe in REFERENCE_RECIPES:
-        if recipe["family"] not in REFERENCE_FAMILIES:
-            raise ModelSpecFactoryError(f"{recipe['family']!r} is not a reference family")
+        family = str(recipe["family"])
+        if family not in REFERENCE_FAMILIES:
+            raise ModelSpecFactoryError(f"{family!r} is not a reference family")
         overrides = dict(fixed)
-        overrides["failure_risk_formulation"] = str(recipe["admission_component"])
-        # a constant reference has nothing to calibrate; saying ISOTONIC would be a fiction
-        if recipe["family"] == "CONSTANT_SAFE_BASELINE":
-            overrides["calibration_method"] = "NONE_CONSTANT_PREDICTOR"
+        # a constant predictor has nothing to calibrate; claiming ISOTONIC would be a fiction
+        if family in ("CONSTANT_SAFE_BASELINE", "GLOBAL_MEAN"):
+            overrides["admission_probability_calibration"] = "NONE_CONSTANT_PREDICTOR"
         specs.append(
             ModelSpec(
-                family=str(recipe["family"]),
-                implementation=str(recipe["implementation"]),
+                family=family,
+                score_model_implementation=str(recipe["score_implementation"]),
+                admission_model_implementation=str(recipe["admission_implementation"]),
+                score_hyperparameters=dict(recipe["score_hyperparameters"]),
+                admission_hyperparameters=dict(recipe["admission_hyperparameters"]),
+                score_loss=str(recipe["score_loss"]),
+                admission_loss=str(recipe["admission_loss"]),
                 transform_specification={
                     **dict(recipe["transform_specification"]),
                     "predicts": recipe["predicts"],
                     "score_fit_data": recipe["score_fit_data"],
                     "tie_break": recipe["tie_break"],
                 },
-                hyperparameters={},
-                loss=str(recipe["loss"]),
                 **overrides,
             )
         )

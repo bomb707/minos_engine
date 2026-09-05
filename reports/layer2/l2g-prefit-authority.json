@@ -34,63 +34,92 @@
   },
   "candidate_spec_hashes": [
     {
+      "admission_hyperparameters": {
+        "C": 1.0
+      },
+      "admission_model_implementation": "sklearn.linear_model.LogisticRegression",
       "family": "LINEAR_REGULARIZED",
-      "hyperparameters": {
-        "C": 1.0,
+      "score_hyperparameters": {
         "alpha": 0.1
       },
-      "implementation": "sklearn:Ridge+LogisticRegression",
-      "spec_hash": "3b9aeab5393841d91c39a90cb97ce47e91b247fa6ebee9ead82e11c355e9222b"
+      "score_model_implementation": "sklearn.linear_model.Ridge",
+      "spec_hash": "e962fb55c99b8a866f2f808febae95d4d407008ea4af6a8d4aa05ecec5d1003f"
     },
     {
+      "admission_hyperparameters": {
+        "C": 1.0
+      },
+      "admission_model_implementation": "sklearn.linear_model.LogisticRegression",
       "family": "LINEAR_REGULARIZED",
-      "hyperparameters": {
-        "C": 1.0,
+      "score_hyperparameters": {
         "alpha": 1.0
       },
-      "implementation": "sklearn:Ridge+LogisticRegression",
-      "spec_hash": "09a2def89622019b662d108900f3b40bc85335cfe16dea182a98a611c5a25010"
+      "score_model_implementation": "sklearn.linear_model.Ridge",
+      "spec_hash": "c8ff4aa819e6efa6de5e4d94bee35579e1c9029a12431a5f12e28d8a88546db2"
     },
     {
+      "admission_hyperparameters": {
+        "C": 0.1
+      },
+      "admission_model_implementation": "sklearn.linear_model.LogisticRegression",
       "family": "LINEAR_REGULARIZED",
-      "hyperparameters": {
-        "C": 0.1,
+      "score_hyperparameters": {
         "alpha": 10.0
       },
-      "implementation": "sklearn:Ridge+LogisticRegression",
-      "spec_hash": "d690b3603ffe6c00b68dddeaceb6a57df19a3ca5bea0555c87473ea2ba0cf403"
+      "score_model_implementation": "sklearn.linear_model.Ridge",
+      "spec_hash": "2328e0c11652d8c57c0f48997ab9c4e2b3c0395bb0f30563d9475e9d7f37be4c"
     },
     {
-      "family": "TREE_ENSEMBLE",
-      "hyperparameters": {
+      "admission_hyperparameters": {
         "learning_rate": 0.05,
         "max_depth": 3,
         "max_iter": 200
       },
-      "implementation": "sklearn:HistGradientBoostingRegressor+HistGradientBoostingClassifier",
-      "spec_hash": "13b47e155acc550ba79d4fc19788601c2a923381d72d9a1ac278ec87ee217cab"
+      "admission_model_implementation": "sklearn.ensemble.HistGradientBoostingClassifier",
+      "family": "TREE_ENSEMBLE",
+      "score_hyperparameters": {
+        "learning_rate": 0.05,
+        "max_depth": 3,
+        "max_iter": 200
+      },
+      "score_model_implementation": "sklearn.ensemble.HistGradientBoostingRegressor",
+      "spec_hash": "5e8f905c16aede23d00ee924fd42900512aa5cb890243dba50001cb19577d92e"
     },
     {
-      "family": "TREE_ENSEMBLE",
-      "hyperparameters": {
+      "admission_hyperparameters": {
         "learning_rate": 0.1,
         "max_depth": 2,
         "max_iter": 100
       },
-      "implementation": "sklearn:HistGradientBoostingRegressor+HistGradientBoostingClassifier",
-      "spec_hash": "24ca3b97fbe1dba96ae4e0453b9ff45a2c01d8e1a426d4ea870b0d0383494b32"
+      "admission_model_implementation": "sklearn.ensemble.HistGradientBoostingClassifier",
+      "family": "TREE_ENSEMBLE",
+      "score_hyperparameters": {
+        "learning_rate": 0.1,
+        "max_depth": 2,
+        "max_iter": 100
+      },
+      "score_model_implementation": "sklearn.ensemble.HistGradientBoostingRegressor",
+      "spec_hash": "32539b329d4721a8fd2e7aa9065009e94e074b0a849367632020b30e83a7183c"
     },
     {
-      "family": "COMPACT_MLP",
-      "hyperparameters": {
+      "admission_hyperparameters": {
         "alpha": 1.0,
         "hidden_layer_sizes": [
           16
         ],
         "max_iter": 500
       },
-      "implementation": "sklearn:MLPRegressor+MLPClassifier",
-      "spec_hash": "94ce1fe869b769e430432adba4bf5d2c45b6afed18fdf7b133501cf7983b58ce"
+      "admission_model_implementation": "sklearn.neural_network.MLPClassifier",
+      "family": "COMPACT_MLP",
+      "score_hyperparameters": {
+        "alpha": 1.0,
+        "hidden_layer_sizes": [
+          16
+        ],
+        "max_iter": 500
+      },
+      "score_model_implementation": "sklearn.neural_network.MLPRegressor",
+      "spec_hash": "4e7f488e5de5633e4479c7d0a268b0ead9a23bf202683e0f77536bf3b80fd195"
     }
   ],
   "counts": {
@@ -131,29 +160,36 @@
     }
   ],
   "external_manifest_sha256": "994e6515c03200707d7ec4cfdd5bc456b7ac9832a9a498c38a72bdd7ed9ac2fb",
+  "model_bundle_schema": "l2g-model-bundle-v2",
+  "model_spec_schema": "l2g-model-spec-v3",
   "models_qualified_issued": false,
   "no_model_fitted": true,
   "note": "Hashes and counts only. The learning table itself lives outside Git under /home/hr/bittensor/minos_l2g_training and is referenced here by identity.",
+  "oof_record_schema": "l2g-oof-record-v1",
   "reference_spec_hashes": [
     {
+      "admission_model_implementation": "minos_engine.models.references.ConstantSafeBaseline",
       "family": "CONSTANT_SAFE_BASELINE",
-      "implementation": "minos_engine.models.references.ConstantSafeBaseline",
-      "spec_hash": "081771e0604bca3d663b75e37e950c9ece7c1670e9442743b194e4cb945c21eb"
+      "score_model_implementation": "minos_engine.models.references.ConstantSafeBaseline",
+      "spec_hash": "9a70ae658498db5c4347ce2203c879698d7b4739a54c406532d4bf1e2b26fe70"
     },
     {
+      "admission_model_implementation": "minos_engine.models.references.GlobalMean",
       "family": "GLOBAL_MEAN",
-      "implementation": "minos_engine.models.references.GlobalMean",
-      "spec_hash": "711e8ccba99fe1ad79e83a8d6a729f46827311af22da907b7628cb4718bbd140"
+      "score_model_implementation": "minos_engine.models.references.GlobalMean",
+      "spec_hash": "7cb963c0d503d107e3a5eda4e0e0fbba0dadf8dd7835f04c4bacdc90e32780b2"
     },
     {
+      "admission_model_implementation": "minos_engine.models.references.ConfigOnlyRidge",
       "family": "CONFIG_ONLY",
-      "implementation": "minos_engine.models.references.ConfigOnlyRidge",
-      "spec_hash": "6137b44856849fc3f6fcaa3a43eacc4870dd4a87caf068b6aa35bb45d0854ed6"
+      "score_model_implementation": "minos_engine.models.references.ConfigOnlyRidge",
+      "spec_hash": "b3be5e5c5c3e1fa10f2e42ae31a7260b3292050fd012330bcb3e6d87a2e1b826"
     },
     {
+      "admission_model_implementation": "minos_engine.models.references.BamFeaturesOnlyRidge",
       "family": "BAM_FEATURES_ONLY",
-      "implementation": "minos_engine.models.references.BamFeaturesOnlyRidge",
-      "spec_hash": "1391aa781453c5214a8ccd487c32726a17234847a7a56d06fa378e01f425c8af"
+      "score_model_implementation": "minos_engine.models.references.BamFeaturesOnlyRidge",
+      "spec_hash": "0e3342455c6868189830b5dc736b827eeb48e70ef8ffe5b74467a29e27cf54eb"
     }
   ],
   "runtime": {
@@ -164,8 +200,15 @@
     "scipy": "1.18.1"
   },
   "schema_version": "l2g-prefit-authority-v1",
+  "score_output_postprocess": "CLIP_TO_0_1",
+  "superseded_model_spec_schemas": {
+    "l2g-model-spec-v1": "SUPERSEDED_BEFORE_FIRST_MODEL_FIT",
+    "l2g-model-spec-v2": "SUPERSEDED_BEFORE_FIRST_MODEL_FIT"
+  },
   "target_formulation": "B_JOINT_EXPECTED_UTILITY_OVER_ADMISSION",
   "test_sealed_until": "L2-I",
+  "train_campaign_result_schema": "l2g-train-oof-campaign-result-v1",
+  "train_oof_campaign_executed": false,
   "training_dataset_hash": "d031758c58358270843b9b417ea034d1181a6aaafc1c94af000279c26dc62fcc",
   "training_dataset_schema": "l2g-training-dataset-v3",
   "validation_consulted": false,

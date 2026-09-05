@@ -572,18 +572,20 @@ def test_the_protocol_hash_is_deterministic() -> None:
 def _spec(**over: Any) -> ModelSpec:
     fields: dict[str, Any] = {
         "family": "LINEAR_REGULARIZED",
-        "implementation": "sklearn.linear_model.Ridge",
+        "score_model_implementation": "sklearn.linear_model.Ridge",
+        "admission_model_implementation": "sklearn.linear_model.LogisticRegression",
+        "score_hyperparameters": {"alpha": 1.0},
+        "admission_hyperparameters": {"C": 1.0},
+        "score_loss": "squared_error",
+        "admission_loss": "log_loss",
         "target_formulation": TARGET_FORMULATION,
         "feature_schema_hash": _H,
         "config_schema_hash": _H,
         "transform_specification": {"standardize": True},
-        "hyperparameters": {"alpha": 1.0},
         "random_seed": 20260904,
-        "loss": "squared_error",
         "weighting_policy": WEIGHTING_POLICY,
         "dedup_policy": DEDUP_POLICY,
-        "failure_risk_formulation": "LOGISTIC_P_ADMISSION",
-        "calibration_method": "ISOTONIC_ON_OOF",
+        "admission_probability_calibration": "NESTED_CROSS_FITTED_WITHIN_EACH_OUTER_FOLD",
         "ood_method": "STANDARDIZED_FEATURE_DISTANCE",
         "training_dataset_hash": _H,
         "cv_manifest_hash": _H,
@@ -600,7 +602,8 @@ def test_an_unfrozen_model_family_is_refused() -> None:
 def test_the_spec_hash_covers_seed_hyperparameters_and_policies() -> None:
     baseline = _spec().identity()
     assert _spec(random_seed=1).identity() != baseline
-    assert _spec(hyperparameters={"alpha": 2.0}).identity() != baseline
+    assert _spec(score_hyperparameters={"alpha": 2.0}).identity() != baseline
+    assert _spec(admission_hyperparameters={"C": 9.0}).identity() != baseline
     assert _spec(weighting_policy="PER_ROW").identity() != baseline
     assert _spec(dedup_policy="NONE").identity() != baseline
 

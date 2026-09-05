@@ -29,7 +29,11 @@ __all__ = [
     "PROMOTABLE_FAMILIES",
     "REFERENCE_FAMILIES",
     "SUPERSEDED_BUNDLE_V1",
+    "ADMISSION_TRAINING_POPULATION",
+    "SCORE_OUTPUT_POSTPROCESS",
+    "SCORE_TRAINING_POPULATION",
     "SUPERSEDED_SPEC_V1",
+    "SUPERSEDED_SPEC_V2",
     "MODEL_BUNDLE_SCHEMA",
     "MODEL_FAMILIES",
     "MODEL_SPEC_DOMAIN",
@@ -41,8 +45,8 @@ __all__ = [
     "ModelSpecError",
 ]
 
-MODEL_SPEC_SCHEMA: Final = "l2g-model-spec-v2"
-MODEL_SPEC_DOMAIN: Final = "minos:l2g-model-spec:v2\n"
+MODEL_SPEC_SCHEMA: Final = "l2g-model-spec-v3"
+MODEL_SPEC_DOMAIN: Final = "minos:l2g-model-spec:v3\n"
 MODEL_BUNDLE_SCHEMA: Final = "l2g-model-bundle-v2"
 MODEL_BUNDLE_DOMAIN: Final = "minos:l2g-model-bundle:v2\n"
 #: v1 carried different ModelSpec semantics and a ModelBundle whose scientific identity
@@ -50,6 +54,10 @@ MODEL_BUNDLE_DOMAIN: Final = "minos:l2g-model-bundle:v2\n"
 #: produced under v1, so it is superseded rather than migrated. Two different meanings must
 #: not share one schema string.
 SUPERSEDED_SPEC_V1: Final = "SUPERSEDED_BEFORE_FIRST_MODEL_FIT"
+#: v2 hid two estimators inside one implementation string and described EVERY admission head
+#: as LOGISTIC_P_ADMISSION -- untrue for the tree and MLP candidates, whose admission heads
+#: are HistGradientBoostingClassifier and MLPClassifier. Nothing was fitted under it.
+SUPERSEDED_SPEC_V2: Final = "SUPERSEDED_BEFORE_FIRST_MODEL_FIT"
 SUPERSEDED_BUNDLE_V1: Final = "SUPERSEDED_BEFORE_FIRST_MODEL_FIT"
 
 #: REFERENCE predictors. A reference exists to show whether the contextual model earned its
@@ -85,6 +93,11 @@ SELECTION_ORDER: Final[tuple[str, ...]] = (
 
 _STRICT = ConfigDict(extra="forbid", frozen=True, strict=True)
 _HEX64: Final = re.compile(r"[0-9a-f]{64}")
+
+#: frozen population rules, asserted on every spec rather than left to the caller
+SCORE_TRAINING_POPULATION: Final = "ADMITTED_ONLY"
+ADMISSION_TRAINING_POPULATION: Final = "EVERY_DECIDED_OUTCOME"
+SCORE_OUTPUT_POSTPROCESS: Final = "CLIP_TO_0_1"
 
 
 class ModelSpecError(MinosEngineError):
@@ -125,24 +138,43 @@ class ArtifactRef(BaseModel):
 
 
 class ModelSpec(BaseModel):
-    """A candidate model, fully described and hashed BEFORE it is fitted."""
+    """A candidate model, fully EXECUTABLE and hashed BEFORE it is fitted.
+
+    v2 carried one ``implementation`` string and a single ``failure_risk_formulation`` reading
+    ``LOGISTIC_P_ADMISSION`` for all six candidates. That was simply false for the tree and MLP
+    families, whose admission heads are gradient-boosted and neural. A spec that misdescribes the
+    estimator it will fit is not a specification, so the two heads are now separate, named fields.
+    """
 
     model_config = _STRICT
 
     schema_version: str = MODEL_SPEC_SCHEMA
     family: str = Field(min_length=1)
-    implementation: str = Field(min_length=1)
     target_formulation: str = Field(min_length=1)
+
+    #: the two estimators, named independently. Never one ambiguous string.
+    score_model_implementation: str = Field(min_length=1)
+    admission_model_implementation: str = Field(min_length=1)
+    score_hyperparameters: dict[str, Any]
+    admission_hyperparameters: dict[str, Any]
+    score_loss: str = Field(min_length=1)
+    admission_loss: str = Field(min_length=1)
+
+    #: which examples each head may see. The v1 defect in one field.
+    score_training_population: str = SCORE_TRAINING_POPULATION
+    admission_training_population: str = ADMISSION_TRAINING_POPULATION
+
+    #: Ridge and MLP regression emit values outside [0, 1]; the admitted score is bounded.
+    #: Frozen here, before any out-of-fold number exists.
+    score_output_postprocess: str = SCORE_OUTPUT_POSTPROCESS
+    admission_probability_calibration: str = Field(min_length=1)
+
     feature_schema_hash: str = Field(min_length=64, max_length=64)
     config_schema_hash: str = Field(min_length=64, max_length=64)
     transform_specification: dict[str, Any]
-    hyperparameters: dict[str, Any]
     random_seed: int
-    loss: str = Field(min_length=1)
     weighting_policy: str = Field(min_length=1)
     dedup_policy: str = Field(min_length=1)
-    failure_risk_formulation: str = Field(min_length=1)
-    calibration_method: str = Field(min_length=1)
     ood_method: str = Field(min_length=1)
     training_dataset_hash: str = Field(min_length=64, max_length=64)
     cv_manifest_hash: str = Field(min_length=64, max_length=64)
@@ -162,22 +194,38 @@ class ModelSpec(BaseModel):
                 f"{self.family!r} is not a frozen model family; the candidate set is decided "
                 f"before fitting, not discovered during it. Known: {list(MODEL_FAMILIES)}"
             )
+        if self.score_training_population != SCORE_TRAINING_POPULATION:
+            raise ModelSpecError(
+                "the score head trains on ADMITTED examples only; anything else reintroduces the "
+                "v1 defect"
+            )
+        if self.admission_training_population != ADMISSION_TRAINING_POPULATION:
+            raise ModelSpecError("the admission head trains on every decided outcome")
+        if self.score_output_postprocess != SCORE_OUTPUT_POSTPROCESS:
+            raise ModelSpecError(
+                f"score_output_postprocess is frozen at {SCORE_OUTPUT_POSTPROCESS}"
+            )
 
     def content(self) -> dict[str, Any]:
         return {
-            "calibration_method": self.calibration_method,
+            "admission_hyperparameters": self.admission_hyperparameters,
+            "admission_loss": self.admission_loss,
+            "admission_model_implementation": self.admission_model_implementation,
+            "admission_probability_calibration": self.admission_probability_calibration,
+            "admission_training_population": self.admission_training_population,
             "config_schema_hash": self.config_schema_hash,
             "cv_manifest_hash": self.cv_manifest_hash,
-            "failure_risk_formulation": self.failure_risk_formulation,
+            "dedup_policy": self.dedup_policy,
             "family": self.family,
             "feature_schema_hash": self.feature_schema_hash,
-            "hyperparameters": self.hyperparameters,
-            "implementation": self.implementation,
-            "dedup_policy": self.dedup_policy,
-            "loss": self.loss,
             "ood_method": self.ood_method,
             "random_seed": self.random_seed,
             "schema_version": self.schema_version,
+            "score_hyperparameters": self.score_hyperparameters,
+            "score_loss": self.score_loss,
+            "score_model_implementation": self.score_model_implementation,
+            "score_output_postprocess": self.score_output_postprocess,
+            "score_training_population": self.score_training_population,
             "target_formulation": self.target_formulation,
             "training_dataset_hash": self.training_dataset_hash,
             "transform_specification": self.transform_specification,
