@@ -430,10 +430,23 @@ def test_the_real_safe_baseline_is_observed_for_every_bam() -> None:
     assert len(bams) == 50
 
 
-def test_no_real_campaign_output_exists() -> None:
+def test_the_published_campaign_tree_is_the_authorized_v1_campaign() -> None:
+    """Inverted, not deleted.
+
+    This guard required the campaign tree to be ABSENT, which was correct while the real campaign
+    was still forbidden. The authorized v1 campaign has since run, so the honest assertion is that
+    whatever is there is that campaign and still verifies -- not that nothing is there.
+    """
+    from minos_engine.models.campaign_evidence import verify_published_l2g_train_campaign
     from tests.minos_scratch import CANONICAL_MINOS_ROOT
 
-    assert not (CANONICAL_MINOS_ROOT / OUTPUT_LAYOUT["root"]).exists()
+    root = CANONICAL_MINOS_ROOT / OUTPUT_LAYOUT["root"]
+    if not root.is_dir():
+        pytest.skip("the published campaign tree is not present on this machine")
+    report = verify_published_l2g_train_campaign(root, repository_root=repository_root())
+    assert report["ok"] is True
+    assert report["complete_spec_count"] == 10
+    assert report["shortlist_size"] == 0
 
 
 def test_models_qualified_absent_and_select_config_blocked() -> None:

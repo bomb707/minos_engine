@@ -530,3 +530,65 @@ tree — a half-published campaign is worse than none, because it looks like evi
 Records are snapshotted by value at mint and handed out as deep copies, so mutating what an
 accessor returned cannot reach the trusted state. Identity continuity is then checked explicitly:
 the retained records must still hash to what the campaign core earned, before anything is written.
+
+## 18. Campaign v1 — the first real TRAIN OOF result
+
+The first real campaign ran at commit `c9618bcda752cb2e1c7faa4d5fced92c62db326f`, tree
+`30ef183f7a8a0ecc435d189d6bf6f9b745bb1648`. Fitting took 21 seconds; publication 2 seconds. All
+ten specs COMPLETE: 5/5 folds, 1040/1040 cells, 50 BAMs, no duplicates, exact cell set verified,
+zero training failures. Campaign result `eddc30a1…` (file `4ac6500f…`, 12031 bytes), whole-tree
+verifier PASS.
+
+### The bar, and who set it
+
+| reference | mean regret | CVaR-0.25 regret |
+|---|---|---|
+| **CONSTANT_SAFE_BASELINE** | **0.022133686444521378** | **0.07825312618460009** |
+| CONFIG_ONLY | 0.11766491271393287 | 0.2566942527744037 |
+| GLOBAL_MEAN | 0.18289165873748922 | 0.485555374714231 |
+| BAM_FEATURES_ONLY | 0.18289165873748922 | 0.485555374714231 |
+
+Both bars were set by `CONSTANT_SAFE_BASELINE` — the fallback the campaign existed to beat turned
+out to be the hardest thing in the field. `GLOBAL_MEAN` and `BAM_FEATURES_ONLY` tie exactly,
+which is what the frozen semantics predict: neither can distinguish configs, so both fall back to
+the same lexicographic tie-break and select the same config for every BAM.
+
+### The candidates
+
+| family | spec | mean regret | CVaR regret | shortlisted |
+|---|---|---|---|---|
+| TREE_ENSEMBLE | `5e8f905c…` | 0.03060170417930549 | 0.10655015138878801 | no |
+| TREE_ENSEMBLE | `32539b32…` | 0.03465081169910364 | 0.12073428266941989 | no |
+| LINEAR_REGULARIZED | `2328e0c1…` | 0.1018574215044056 | 0.23280747766230175 | no |
+| LINEAR_REGULARIZED | `c8ff4aa8…` | 0.11729779935954486 | 0.28416294949094595 | no |
+| LINEAR_REGULARIZED | `e962fb55…` | 0.11756632226573807 | 0.28416294949094595 | no |
+| COMPACT_MLP | `4e7f488e…` | 0.172966229632268 | 0.4796503886113579 | no |
+
+**Shortlist: empty.** All six were eligible; none cleared either bar.
+
+The gap is not a modelling accident worth explaining away. The best candidate,
+`5e8f905c…`, has genuinely the strongest diagnostics in the field — R² 0.499, Spearman 0.693,
+Brier 0.0039, 56% zero-regret BAMs, 2 catastrophic regressions against the safe baseline's 0 — and
+still selects a worse config than "always use the qualified baseline" often enough to lose on both
+bars. Predicting the score well is not the same as choosing the right config, and this campaign is
+the first evidence of how far apart those two things are here.
+
+### What this is, and what it is not
+
+The frozen outcome is `NO_CONTEXTUAL_MODEL_QUALIFIED_ON_TRAIN`, deliberately not
+`MODEL_TRAINING_FAILED`. Training did not fail; every model fitted, every fold completed, every
+cell was predicted exactly once. The promotion *hypothesis* failed under the criterion frozen
+before any number existed.
+
+Because the shortlist is empty there is no frozen contextual candidate for VALIDATION to select
+among, so `validation_authorized_for_campaign_v1 = false`: opening VALIDATION now could only serve
+to rescue a model the TRAIN criterion rejected. SAFE_BASELINE remains the fallback and
+MODELS-QUALIFIED holds at `HOLD_NO_TRAIN_PROMOTABLE_MODEL`.
+
+The record is frozen at `reports/layer2/l2g-train-oof-campaign-freeze-v1.json`, identity
+`1c2039dec2f3fbb51a8058c947bbf8de9f9c6d235a133b5948aa6b33ac516673`.
+
+Continuing under campaign v1 is not available: it is complete and frozen. The decision is either
+to accept SAFE_BASELINE and stop contextual-model promotion, or to authorize a new versioned
+TRAIN-only research protocol — which would be a fresh frozen campaign, not an adaptive
+continuation of this one.
