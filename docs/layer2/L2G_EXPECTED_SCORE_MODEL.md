@@ -340,3 +340,52 @@ promotable spec enters iff its OOF mean regret **and** CVaR-0.25 regret are both
 best reference's. If nothing clears both bars the shortlist is empty, MODELS-QUALIFIED holds, and
 SAFE_BASELINE remains the fallback — promoting the least-bad contextual model would be choosing a
 threshold after the fact.
+
+## 14. Execution semantics — four defects that could have moved the shortlist
+
+Each of these left every individual component looking correct while changing which candidates
+could be promoted. All ten ModelSpec hashes and the four protected identities are unchanged: this
+was implementation catching up with semantics that were already frozen.
+
+**CVaR took the wrong tail.** The metric used `round(alpha * N)`. Python's banker's rounding turns
+`0.25 * 50 = 12.5` into **12**, so the "CVaR-0.25 regret" averaged the 12 worst BAMs while the
+frozen baseline objective's CVaR takes `ceil(alpha * N)` — **13**. A robustness measure that
+quietly takes a smaller tail is a different measure wearing the same name.
+
+**The safe baseline selected the wrong config.** Selection was "highest predicted utility, ties to
+the lowest config hash". `CONSTANT_SAFE_BASELINE` predicts the same value for every config, so it
+tied everywhere and selected the *lexicographically lowest* config — not `157d88d1…`. That is a
+different model, and it was the promotion bar. Selection is now bound per family:
+`CONSTANT_SAFE_BASELINE` always returns its own config (and the campaign holds if that config was
+never observed for a held-out BAM); `GLOBAL_MEAN` and `BAM_FEATURES_ONLY`, which genuinely cannot
+distinguish configs, keep the lexicographic tie-break; everything else selects on predicted
+utility. Policy is never inferred from prediction equality.
+
+**Two references contradicted their own specs.** `CONFIG_ONLY` and `BAM_FEATURES_ONLY` are hashed
+under `admission_probability_calibration = NESTED_CROSS_FITTED_WITHIN_EACH_OUTER_FOLD` but
+returned raw `predict_proba`. The implementation now performs the nested calibration its spec
+declares — the alternative, editing the specs to say "no calibration", would have moved a frozen
+hash to match a convenient implementation. They also hard-coded `random_state=0` against a spec
+carrying the frozen campaign seed; they now use `RANDOM_SEED`.
+
+**Incomplete models were metricised.** A failed fold was recorded and the run continued, so a
+four-fold candidate could be compared against five-fold references. A spec is now COMPLETE only
+when all five outer folds succeeded and every one of the 1040 cells was predicted exactly once
+across all 50 BAMs. An incomplete candidate is recorded as evidence and is INELIGIBLE; an
+incomplete *reference* means the promotion bar was never fully observed, which raises
+`ReferenceThresholdUnavailable` and holds the campaign. Dropping the failed reference and taking
+the best of the rest would silently lower the bar — the one direction a threshold must never move
+by accident.
+
+### The campaign boundary
+
+`run_l2g_train_oof_campaign` is the single production entry point: it verifies the authority, the
+bundle, the matrix bytes, the config payloads and the runtime; derives the ten frozen specs;
+proves completeness; and derives the shortlist only from complete promotable candidates against a
+fully observed reference set. The caller nominates no spec subset, fold subset, metric, threshold,
+exclusion or shortlist. Inner single-class folds and empty inner folds are now `TRAINING_FAILURE`
+rather than skipped, and prediction — not just fitting — runs inside the single-threaded context.
+
+The campaign result schema is `l2g-train-oof-campaign-result-v2`; v1 is
+`SUPERSEDED_BEFORE_FIRST_CAMPAIGN`, since binding per-spec completeness materially changed what an
+accepted campaign asserts.

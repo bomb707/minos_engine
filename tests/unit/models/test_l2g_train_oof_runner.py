@@ -711,7 +711,9 @@ def test_a_prediction_tie_is_broken_by_the_lowest_config_hash() -> None:
             self.expected_utility_prediction = 0.5
             self.actual_utility = 0.1
 
-    result = bam_selection_regret([R("ff" * 32), R("00" * 32), R("aa" * 32)])
+    result = bam_selection_regret(
+        [R("ff" * 32), R("00" * 32), R("aa" * 32)], family="LINEAR_REGULARIZED"
+    )
     assert result["selected_config"]["bam-a"] == "00" * 32
 
 
@@ -721,7 +723,9 @@ def test_regret_is_oracle_minus_selected_over_observed_configs_only() -> None:
             self.dataset_id, self.config_hash = "bam-a", config
             self.expected_utility_prediction, self.actual_utility = predicted, actual
 
-    result = bam_selection_regret([R("a" * 64, 0.9, 0.2), R("b" * 64, 0.1, 0.8)])
+    result = bam_selection_regret(
+        [R("a" * 64, 0.9, 0.2), R("b" * 64, 0.1, 0.8)], family="LINEAR_REGULARIZED"
+    )
     assert result["per_bam_regret"]["bam-a"] == pytest.approx(0.6)
     assert summarise_oof(result)["mean_regret"] == pytest.approx(0.6)
 
@@ -839,8 +843,17 @@ def test_the_block_references_see_only_their_own_columns() -> None:
         }
         for i in range(24)
     ]
-    config_only = ConfigOnlyRidge.fit(rng.normal(size=(24, 28)), meta)
-    bam_only = BamFeaturesOnlyRidge.fit(rng.normal(size=(24, 129)), meta)
+    inner = [
+        (frozenset({"b0", "b1", "b2", "b3"}) - frozenset({f"b{i}"}), frozenset({f"b{i}"}))
+        for i in range(4)
+    ]
+    held = frozenset({"b9"})
+    config_only = ConfigOnlyRidge.fit(
+        rng.normal(size=(24, 28)), meta, inner_folds=inner, outer_heldout_bams=held
+    )
+    bam_only = BamFeaturesOnlyRidge.fit(
+        rng.normal(size=(24, 129)), meta, inner_folds=inner, outer_heldout_bams=held
+    )
     assert config_only.family == "CONFIG_ONLY"
     assert bam_only.family == "BAM_FEATURES_ONLY"
     assert bam_only.choose_config(["f" * 64, "1" * 64]) == "1" * 64

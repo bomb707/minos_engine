@@ -122,6 +122,14 @@
       "spec_hash": "4e7f488e5de5633e4479c7d0a268b0ead9a23bf202683e0f77536bf3b80fd195"
     }
   ],
+  "completeness_rule": {
+    "complete_requires": "ALL_FOLDS_SUCCEEDED_AND_EVERY_CELL_PREDICTED_EXACTLY_ONCE",
+    "expected_bams": 50,
+    "expected_oof_records_per_spec": 1040,
+    "expected_outer_folds": 5,
+    "incomplete_candidate": "INELIGIBLE_FOR_SHORTLIST",
+    "incomplete_reference": "REFERENCE_THRESHOLD_UNAVAILABLE_CAMPAIGN_HOLDS"
+  },
   "counts": {
     "admitted": 861,
     "bams": 50,
@@ -138,6 +146,7 @@
     "unique_configs": 80
   },
   "cv_manifest_hash": "b441b15fdc185e62e243b93322d6c30d8787f49f9fafbb3dab6ac9371728d92f",
+  "cvar_tail_rule": "CEIL_ALPHA_TIMES_N_WORST_REGRETS (alpha=0.25, N=50 -> 13)",
   "dedup_policy": "ONE_EXAMPLE_PER_BAM_CONFIG_PAIR",
   "external_artifacts": [
     {
@@ -201,13 +210,25 @@
   },
   "schema_version": "l2g-prefit-authority-v1",
   "score_output_postprocess": "CLIP_TO_0_1",
+  "selection_policy": {
+    "BAM_FEATURES_ONLY": "LOWEST_CONFIG_HASH_LEXICOGRAPHIC",
+    "COMPACT_MLP": "HIGHEST_PREDICTED_UTILITY_THEN_LOWEST_CONFIG_HASH",
+    "CONFIG_ONLY": "HIGHEST_PREDICTED_UTILITY_THEN_LOWEST_CONFIG_HASH",
+    "CONSTANT_SAFE_BASELINE": "ALWAYS_THE_QUALIFIED_SAFE_BASELINE_CONFIG",
+    "GLOBAL_MEAN": "LOWEST_CONFIG_HASH_LEXICOGRAPHIC",
+    "LINEAR_REGULARIZED": "HIGHEST_PREDICTED_UTILITY_THEN_LOWEST_CONFIG_HASH",
+    "TREE_ENSEMBLE": "HIGHEST_PREDICTED_UTILITY_THEN_LOWEST_CONFIG_HASH"
+  },
+  "superseded_campaign_result_schemas": {
+    "l2g-train-oof-campaign-result-v1": "SUPERSEDED_BEFORE_FIRST_CAMPAIGN"
+  },
   "superseded_model_spec_schemas": {
     "l2g-model-spec-v1": "SUPERSEDED_BEFORE_FIRST_MODEL_FIT",
     "l2g-model-spec-v2": "SUPERSEDED_BEFORE_FIRST_MODEL_FIT"
   },
   "target_formulation": "B_JOINT_EXPECTED_UTILITY_OVER_ADMISSION",
   "test_sealed_until": "L2-I",
-  "train_campaign_result_schema": "l2g-train-oof-campaign-result-v1",
+  "train_campaign_result_schema": "l2g-train-oof-campaign-result-v2",
   "train_oof_campaign_executed": false,
   "training_dataset_hash": "d031758c58358270843b9b417ea034d1181a6aaafc1c94af000279c26dc62fcc",
   "training_dataset_schema": "l2g-training-dataset-v3",

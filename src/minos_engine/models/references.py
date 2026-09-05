@@ -20,6 +20,7 @@ from typing import Any, Final
 
 from minos_engine.common.errors import MinosEngineError
 from minos_engine.models.contract import SAFE_BASELINE_CONFIG_HASH
+from minos_engine.models.protocol import RANDOM_SEED
 
 __all__ = [
     "BamFeaturesOnlyRidge",
@@ -172,55 +173,120 @@ class GlobalMean(_Reference):
 
 
 class _LinearBlockReference(_Reference):
-    """Ridge score head + logistic admission head over ONE block of columns.
+    """Ridge score head + NESTED-CALIBRATED logistic admission head over ONE block of columns.
 
-    The scaler is fold-local by construction: it is fitted inside :meth:`fit`, which only ever
-    receives the fold's training rows.
+    Their frozen ModelSpecs carry
+    ``admission_probability_calibration = NESTED_CROSS_FITTED_WITHIN_EACH_OUTER_FOLD``, so
+    returning raw ``predict_proba`` would make the implementation contradict the specification it
+    is hashed under. The calibration is therefore built the same way the candidates' is: inner
+    BAM-grouped folds over the outer-training BAMs only, isotonic fitted on those inner pairs, and
+    the mapping applied to the untouched outer fold.
+
+    Every scaler is fold-local by construction -- each is fitted inside a method that only ever
+    receives that fold's training rows.
     """
 
     family = "BLOCK"
     tie_break: Final = "LOWEST_CONFIG_HASH_LEXICOGRAPHIC"
 
     def __init__(
-        self, scaler: Any, score_head: Any, admission_head: Any, constant_rate: float | None
+        self,
+        scaler: Any,
+        score_head: Any,
+        admission_head: Any,
+        calibrator: Any,
+        calibration_bams: frozenset[str],
     ) -> None:
         self._scaler = scaler
         self._score = score_head
         self._admission = admission_head
-        self._constant_rate = constant_rate
+        self._calibrator = calibrator
+        self.calibration_bams = calibration_bams
 
     @classmethod
-    def fit(cls, x: Any, meta: Any) -> _LinearBlockReference:
+    def fit(
+        cls,
+        x: Any,
+        meta: Any,
+        *,
+        inner_folds: list[tuple[frozenset[str], frozenset[str]]],
+        outer_heldout_bams: frozenset[str],
+    ) -> _LinearBlockReference:
         import numpy as np
         from sklearn.linear_model import LogisticRegression, Ridge
         from sklearn.preprocessing import StandardScaler
 
+        from minos_engine.models.calibration import (
+            CalibrationError,
+            fit_nested_admission_calibrator,
+        )
+        from minos_engine.models.oof_runner import TrainingFailure
+
         rows = list(meta)
         if len(rows) != len(x):
             raise ReferenceError("predictor rows and metadata disagree in length")
-        scaler = StandardScaler().fit(np.asarray(x, dtype=float))
-        scaled = scaler.transform(np.asarray(x, dtype=float))
-
+        x = np.asarray(x, dtype=float)
         labels = np.asarray([m["admission_label"] for m in rows], dtype=int)
-        weights = _equal_bam_weights([m["dataset_id"] for m in rows])
         if len(np.unique(labels)) < 2:
-            admission_head, constant_rate = None, float(labels.mean())
-        else:
-            admission_head = LogisticRegression(max_iter=1000, random_state=0)
-            admission_head.fit(scaled, labels, sample_weight=weights)
-            constant_rate = None
+            raise TrainingFailure("the reference admission fold carries a single class")
+
+        scaler = StandardScaler().fit(x)
+        scaled = scaler.transform(x)
+        weights = _equal_bam_weights([m["dataset_id"] for m in rows])
+
+        admission_head = LogisticRegression(max_iter=1000, random_state=RANDOM_SEED)
+        admission_head.fit(scaled, labels, sample_weight=weights)
+
+        # --- nested calibration over the OUTER-TRAINING BAMs only ------------------------- #
+        inner_probabilities: list[float] = []
+        inner_labels: list[int] = []
+        calibration_bams: set[str] = set()
+        for inner_train, inner_held in inner_folds:
+            fit_idx = [i for i, m in enumerate(rows) if m["dataset_id"] in inner_train]
+            held_idx = [i for i, m in enumerate(rows) if m["dataset_id"] in inner_held]
+            if not fit_idx or not held_idx:
+                raise TrainingFailure("a reference inner fold is empty")
+            inner_y = labels[fit_idx]
+            if len(np.unique(inner_y)) < 2:
+                raise TrainingFailure(
+                    "a reference inner admission fold carries a single class; nested calibration "
+                    "cannot be executed under the frozen protocol"
+                )
+            inner_scaler = StandardScaler().fit(x[fit_idx])
+            inner_head = LogisticRegression(max_iter=1000, random_state=RANDOM_SEED)
+            inner_head.fit(
+                inner_scaler.transform(x[fit_idx]),
+                inner_y,
+                sample_weight=_equal_bam_weights([rows[i]["dataset_id"] for i in fit_idx]),
+            )
+            probabilities = inner_head.predict_proba(inner_scaler.transform(x[held_idx]))[:, 1]
+            if not np.all(np.isfinite(probabilities)):
+                raise TrainingFailure("a reference inner fold produced non-finite probabilities")
+            inner_probabilities.extend(float(v) for v in probabilities)
+            inner_labels.extend(int(labels[i]) for i in held_idx)
+            calibration_bams.update(inner_train)
+
+        try:
+            calibrator = fit_nested_admission_calibrator(
+                inner_probabilities=inner_probabilities,
+                inner_labels=inner_labels,
+                calibration_bams=frozenset(calibration_bams),
+                outer_heldout_bams=outer_heldout_bams,
+                inner_folds=len(inner_folds),
+            )
+        except CalibrationError as exc:
+            raise TrainingFailure(f"reference nested calibration failed: {exc}") from exc
 
         admitted_idx = [i for i, m in enumerate(rows) if m["admitted_score"] is not None]
         if not admitted_idx:
-            raise ReferenceError("no admitted example to fit the score head on")
-        aw = _equal_bam_weights([rows[i]["dataset_id"] for i in admitted_idx])
-        score_head = Ridge(alpha=1.0, random_state=None)
+            raise TrainingFailure("no admitted example to fit the reference score head on")
+        score_head = Ridge(alpha=1.0, random_state=RANDOM_SEED)
         score_head.fit(
             scaled[admitted_idx],
             np.asarray([rows[i]["admitted_score"] for i in admitted_idx], dtype=float),
-            sample_weight=aw,
+            sample_weight=_equal_bam_weights([rows[i]["dataset_id"] for i in admitted_idx]),
         )
-        return cls(scaler, score_head, admission_head, constant_rate)
+        return cls(scaler, score_head, admission_head, calibrator, frozenset(calibration_bams))
 
     def _scaled(self, x: Any) -> Any:
         import numpy as np
@@ -228,11 +294,14 @@ class _LinearBlockReference(_Reference):
         return self._scaler.transform(np.asarray(x, dtype=float))
 
     def predict_admission_probability(self, meta: Any, x: Any = None) -> Any:
-        import numpy as np
+        """CALIBRATED, as the frozen spec says. Raw predict_proba would contradict it."""
+        raw = self._admission.predict_proba(self._scaled(x))[:, 1]
+        return self._calibrator.apply(raw)
 
-        if self._admission is None:
-            return np.full(len(list(meta)), float(self._constant_rate or 0.0), dtype=float)
-        return self._admission.predict_proba(self._scaled(x))[:, 1]
+    def raw_admission_probability(self, x: Any) -> Any:
+        """The uncalibrated probability, kept for the OOF record's raw column."""
+        probabilities = self._admission.predict_proba(self._scaled(x))[:, 1]
+        return probabilities
 
     def predict_admitted_score(self, meta: Any, x: Any = None) -> Any:
         import numpy as np
@@ -263,14 +332,29 @@ class BamFeaturesOnlyRidge(_LinearBlockReference):
     family = "BAM_FEATURES_ONLY"
 
 
-def build_reference_model(family: str, *, x: Any, meta: Any) -> Any:
-    """Fit one frozen reference on FOLD-TRAINING evidence only."""
+def build_reference_model(
+    family: str,
+    *,
+    x: Any,
+    meta: Any,
+    inner_folds: list[tuple[frozenset[str], frozenset[str]]] | None = None,
+    outer_heldout_bams: frozenset[str] | None = None,
+) -> Any:
+    """Fit one frozen reference on FOLD-TRAINING evidence only.
+
+    The two constant references take no calibration, exactly as their frozen specs say; the two
+    block references take the nested calibrator theirs demand, which is why they require the inner
+    folds and the outer fold identity.
+    """
     if family == "CONSTANT_SAFE_BASELINE":
         return ConstantSafeBaseline.fit(meta)
     if family == "GLOBAL_MEAN":
         return GlobalMean.fit(meta)
-    if family == "CONFIG_ONLY":
-        return ConfigOnlyRidge.fit(x, meta)
-    if family == "BAM_FEATURES_ONLY":
-        return BamFeaturesOnlyRidge.fit(x, meta)
+    if family in ("CONFIG_ONLY", "BAM_FEATURES_ONLY"):
+        if inner_folds is None or outer_heldout_bams is None:
+            raise ReferenceError(
+                f"{family} is nested-calibrated and cannot be fitted without its inner folds"
+            )
+        cls = ConfigOnlyRidge if family == "CONFIG_ONLY" else BamFeaturesOnlyRidge
+        return cls.fit(x, meta, inner_folds=inner_folds, outer_heldout_bams=outer_heldout_bams)
     raise ReferenceError(f"{family!r} is not a frozen reference family")

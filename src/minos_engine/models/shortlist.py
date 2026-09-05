@@ -19,11 +19,15 @@ __all__ = [
     "SHORTLIST_RESULT_SCHEMA",
     "ShortlistError",
     "derive_train_shortlist",
+    "derive_verified_train_shortlist",
     "train_campaign_result_content",
 ]
 
-SHORTLIST_RESULT_SCHEMA: Final = "l2g-train-oof-campaign-result-v1"
-SHORTLIST_RESULT_DOMAIN: Final = "minos:l2g-train-oof-campaign-result:v1\n"
+#: v2: the result now binds per-spec COMPLETENESS and the reference-threshold availability, which
+#: materially changes what an accepted campaign asserts. No real result existed under v1.
+SHORTLIST_RESULT_SCHEMA: Final = "l2g-train-oof-campaign-result-v2"
+SHORTLIST_RESULT_DOMAIN: Final = "minos:l2g-train-oof-campaign-result:v2\n"
+SUPERSEDED_RESULT_V1: Final = "SUPERSEDED_BEFORE_FIRST_CAMPAIGN"
 
 
 class ShortlistError(MinosEngineError):
@@ -108,3 +112,54 @@ def train_campaign_result_content(
 
 def train_campaign_result_identity(content: dict[str, Any]) -> str:
     return sha256_hex(SHORTLIST_RESULT_DOMAIN.encode("utf-8") + canonical_json_bytes(content))
+
+
+def derive_verified_train_shortlist(
+    *,
+    reference_metrics: dict[str, dict[str, float]],
+    candidate_metrics: dict[str, dict[str, float]],
+    reference_spec_hashes: tuple[str, ...],
+    candidate_spec_hashes: tuple[str, ...],
+    ineligible_candidate_hashes: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """FAIL-CLOSED wrapper. A partial dictionary must not be mistaken for a whole campaign.
+
+    The pure helper below is happy to compare whatever it is handed; that is exactly why it must
+    not be the production entry point. Here the reference set must be complete and exact, every
+    candidate must be a known frozen spec, and an ineligible candidate can never appear.
+    """
+    if len(reference_spec_hashes) != 4:
+        raise ShortlistError(
+            f"{len(reference_spec_hashes)} reference specs; the promotion bar is defined by "
+            "exactly the frozen four"
+        )
+    if len(set(reference_spec_hashes)) != 4:
+        raise ShortlistError("a reference spec hash appears twice")
+    missing = sorted(set(reference_spec_hashes) - set(reference_metrics))
+    if missing:
+        raise ShortlistError(
+            f"reference metrics are missing for {missing}; the bar was never fully observed"
+        )
+    extra = sorted(set(reference_metrics) - set(reference_spec_hashes))
+    if extra:
+        raise ShortlistError(f"unknown reference spec(s) {extra}")
+
+    known = set(candidate_spec_hashes)
+    if len(known) != len(candidate_spec_hashes):
+        raise ShortlistError("a candidate spec hash appears twice")
+    unknown = sorted(set(candidate_metrics) - known)
+    if unknown:
+        raise ShortlistError(f"metrics supplied for unknown candidate spec(s) {unknown}")
+    smuggled = sorted(set(candidate_metrics) & set(ineligible_candidate_hashes))
+    if smuggled:
+        raise ShortlistError(
+            f"candidate(s) {smuggled} did not complete and cannot carry a promotable metric"
+        )
+
+    result = derive_train_shortlist(
+        reference_metrics=reference_metrics, candidate_metrics=candidate_metrics
+    )
+    result["evaluated_candidate_count"] = len(candidate_metrics)
+    result["ineligible_candidate_count"] = len(ineligible_candidate_hashes)
+    result["reference_threshold_available"] = True
+    return result
