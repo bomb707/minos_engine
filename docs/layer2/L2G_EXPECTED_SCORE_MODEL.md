@@ -592,3 +592,82 @@ Continuing under campaign v1 is not available: it is complete and frozen. The de
 to accept SAFE_BASELINE and stop contextual-model promotion, or to authorize a new versioned
 TRAIN-only research protocol — which would be a fresh frozen campaign, not an adaptive
 continuation of this one.
+
+## 19. L2-G v2 — relative advantage over the four finalists
+
+Campaign v1 is closed. v2 is a NEW research protocol, not a continuation: nothing here relaxes a
+v1 threshold, and v1's best tree model is motivation, not a qualified result.
+
+### The hypothesis
+
+v1 asked each model to predict `U(BAM, config)` for any of 80 configs and pick the best. It
+predicted the score creditably and still chose worse configs than the safe baseline. Most of the
+signal in `U` is BAM difficulty, which is common to every config and cancels in the decision. So
+v2 learns the quantity the decision actually turns on:
+
+```
+DELTA(i, theta) = U(i, theta) - U(i, theta_safe)
+```
+
+A model that predicts BAM difficulty perfectly and advantage not at all now scores zero.
+
+### Why exactly four configs
+
+The VALIDATION cohort carries outcome labels for exactly the four Phase-D finalists on its ten
+BAMs. A policy free to select any of the 80 TRAIN configs could never be checked end-to-end
+without running new VALIDATION executions. Restricting the action domain is what makes the later
+one-shot VALIDATION evaluation honest. The four were re-derived through the accepted Phase-C
+finalist freeze (`540aeca0…`), not copied.
+
+### The feasibility audit — TRAIN only, before any v2 fit
+
+The four-finalist slice of TRAIN is **completely dense**: 200/200 cells, all ADMITTED, no
+execution failures and no non-admissions. So there is no missing-data policy to argue about.
+
+| | |
+|---|---|
+| ORACLE4 mean gain over safe baseline | **0.014976328450755626** |
+| median gain | 0.0 |
+| max gain | 0.18246926709464156 |
+| safe-baseline four-domain CVaR-0.25 regret | 0.05608717452333845 |
+| zero-regret fraction | 0.68 |
+| safe baseline strictly best | **34 / 50 BAMs** |
+| another finalist better | 16 / 50 |
+
+| alternative | win/tie/loss | mean DELTA | mean when winning | mean when losing |
+|---|---|---|---|---|
+| `0972930f…` | 8/0/42 | −0.1038 | +0.0611 | −0.1352 |
+| `22a1f1fd…` | 5/0/45 | −0.0530 | +0.0104 | −0.0601 |
+| `4251cb85…` | 6/0/44 | −0.0944 | +0.0353 | −0.1120 |
+
+**This is the number that matters: a perfect oracle over these four configs would gain 0.0150 mean
+utility.** That is the entire ceiling. Switching is right on only 19 of 150 opportunities, and the
+average loss when wrong is several times the average gain when right. A policy that switches on
+prediction noise is strictly worse than never switching.
+
+The audit is descriptive TRAIN evidence. It does not set a promotion threshold, and no threshold
+was derived from it.
+
+### What is frozen
+
+The switch rule is one family, chosen before any fit: switch to the highest predicted advantage
+**only if it exceeds a margin**, where the margin is the `margin_quantile`-th quantile of the
+model's own inner out-of-fold `|residual|`, fitted on outer-training BAMs only and applied
+untouched to the held-out chromosome. The safe baseline is always available and no policy is ever
+forced to switch. "Switch whenever predicted advantage is positive" was considered and rejected on
+the audit above — with this loss asymmetry it would switch on noise.
+
+Four candidate specs: Ridge and HistGB over `[X_BAM(129) | encode(theta) − encode(theta_safe)(28)]`,
+each at margin quantiles 0.75 and 0.90. No MLP, no deep model, no HPO library — v1's failure was a
+decision failure, not an accuracy failure, and 50 BAMs do not support more capacity.
+
+The promotion bar is `ALWAYS_SAFE_BASELINE`, a deployable reference: mean regret **and** CVaR-0.25
+regret must both be no worse. `ORACLE4` is recorded as an upper bound only — it needs the held-out
+answer and can never be deployed, so promoting against it would measure against something nobody
+can run.
+
+Because v2's design was informed by v1 TRAIN evidence, its own TRAIN OOF is declared
+`DEVELOPMENT_EVIDENCE_FOR_THIS_PROTOCOL` — not an untouched estimate of how well the protocol
+design generalises. VALIDATION stays unread unless v2 freezes at least one promotable selector.
+
+Contract `dd5aca80…`, dataset `4a8f2777…`, protocol `835d7acf…`, domain `11f71243…`.
