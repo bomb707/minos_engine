@@ -61,6 +61,24 @@ STATUS_TRAINING_FAILURE: Final = "TRAINING_FAILURE"
 _MINT_TOKEN: Final = object()
 
 
+class _FrozenRecord:
+    """An OOF record snapshotted by value, so retained evidence cannot be edited in place."""
+
+    __slots__ = ("_content",)
+
+    def __init__(self, content: dict[str, Any]) -> None:
+        object.__setattr__(self, "_content", dict(content))
+
+    def content(self) -> dict[str, Any]:
+        return dict(self._content)
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self._content[name]
+        except KeyError:
+            raise AttributeError(name) from None
+
+
 class TrustedL2GTrainCampaign:
     """A campaign that ACTUALLY ran under the sealed authority, with its evidence retained.
 
@@ -72,7 +90,18 @@ class TrustedL2GTrainCampaign:
     publishable no matter how well-formed it looks.
     """
 
-    __slots__ = ("_closure", "_failures", "_metrics", "_records")
+    __slots__ = (
+        "_closure",
+        "_failures",
+        "_metrics",
+        "_records",
+        "execution_source_commit",
+        "execution_source_tree",
+    )
+
+    #: the checkout that ACTUALLY fitted the models, captured before the first fit
+    execution_source_commit: str
+    execution_source_tree: str
 
     def __init__(
         self,
@@ -82,16 +111,26 @@ class TrustedL2GTrainCampaign:
         records: dict[str, list[Any]],
         metrics: dict[str, dict[str, Any]],
         failures: dict[str, list[dict[str, Any]]],
+        execution_source_commit: str = "",
+        execution_source_tree: str = "",
     ) -> None:
+        import copy as _copy
+
         if token is not _MINT_TOKEN:
             raise CampaignError(
                 "a trusted campaign may only be minted by the sealed production entry; a "
                 "caller-built object is not evidence that a campaign ran"
             )
-        self._closure = closure
-        self._records = records
-        self._metrics = metrics
-        self._failures = failures
+        # Snapshotted BY VALUE at mint. A caller who later mutates what it passed in -- or a
+        # record handed back by an accessor -- cannot reach the retained evidence.
+        self._closure = _copy.deepcopy(closure)
+        self._records = {
+            spec: [_FrozenRecord(r.content()) for r in rows] for spec, rows in records.items()
+        }
+        self._metrics = _copy.deepcopy(metrics)
+        self._failures = _copy.deepcopy(failures)
+        self.execution_source_commit = execution_source_commit
+        self.execution_source_tree = execution_source_tree
 
     @property
     def closure(self) -> dict[str, Any]:
@@ -104,22 +143,32 @@ class TrustedL2GTrainCampaign:
         return tuple(sorted(self._records))
 
     def records_for(self, spec_hash: str) -> list[Any]:
+        """Deep copies: mutating a returned record cannot reach the retained evidence."""
+        import copy as _copy
+
         try:
-            return list(self._records[spec_hash])
+            rows = self._records[spec_hash]
         except KeyError:
             raise CampaignError(f"{spec_hash} did not complete; it has no OOF evidence") from None
+        return [_FrozenRecord(_copy.deepcopy(r.content())) for r in rows]
 
     def metrics_for(self, spec_hash: str) -> dict[str, Any]:
+        import copy as _copy
+
         try:
-            return dict(self._metrics[spec_hash])
+            return _copy.deepcopy(self._metrics[spec_hash])
         except KeyError:
             raise CampaignError(f"{spec_hash} did not complete; it has no metrics") from None
 
     def failures_for(self, spec_hash: str) -> list[dict[str, Any]]:
-        return [dict(f) for f in self._failures.get(spec_hash, ())]
+        import copy as _copy
+
+        return _copy.deepcopy(list(self._failures.get(spec_hash, ())))
 
     def spec_entry(self, spec_hash: str) -> dict[str, Any]:
-        return dict(self._closure["per_spec"][spec_hash])
+        import copy as _copy
+
+        return _copy.deepcopy(self._closure["per_spec"][spec_hash])
 
 
 class CampaignError(MinosEngineError):
@@ -482,6 +531,26 @@ def run_real_l2g_train_oof_campaign(
         build_accepted_l2g_reference_specs,
     )
     from minos_engine.models.threading_control import observe_thread_pools, single_threaded
+    from minos_engine.qualification.git_tree import commit_tree_sha, is_commit
+
+    # 0: the source that is ABOUT to fit the models, captured now. Reading Git at publication
+    # time instead would let a later checkout be relabelled as the one that produced the result.
+    from minos_engine.qualification.l2f_accepted_identities import repository_root
+    from minos_engine.qualification.provenance import read_provenance
+
+    source_root = Path(root) if root is not None else repository_root()
+    provenance = read_provenance(source_root)
+    if not provenance.head_sha or not provenance.tree_sha:
+        raise CampaignError("the execution source provenance could not be read from Git")
+    if not is_commit(source_root, provenance.head_sha):
+        raise CampaignError(f"HEAD {provenance.head_sha} is not a commit in this repository")
+    if commit_tree_sha(source_root, provenance.head_sha) != provenance.tree_sha:
+        raise CampaignError("HEAD's recorded tree is not its actual tree")
+    if not provenance.worktree_clean:
+        raise CampaignError(
+            "the worktree is dirty; a campaign fitted from uncommitted source cannot name the "
+            "commit that produced it"
+        )
 
     # 1-2: the committed authority, with its recomputable identities re-derived
     authority = load_accepted_prefit_authority(root)
@@ -624,7 +693,13 @@ def run_real_l2g_train_oof_campaign(
         if not spec_records:
             raise CampaignError(f"{spec_hash} is COMPLETE but retained no OOF records")
     return TrustedL2GTrainCampaign(
-        _MINT_TOKEN, closure=result, records=records, metrics=metrics, failures=failures
+        _MINT_TOKEN,
+        closure=result,
+        records=records,
+        metrics=metrics,
+        failures=failures,
+        execution_source_commit=provenance.head_sha,
+        execution_source_tree=provenance.tree_sha,
     )
 
 

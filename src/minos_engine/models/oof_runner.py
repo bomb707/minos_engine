@@ -80,8 +80,13 @@ def _bam_set_identity(bams: frozenset[str]) -> str:
     return sha256_hex(canonical_json_bytes(sorted(bams)))
 
 
-def oof_artifact_identity(records: list[OofRecord]) -> str:
-    """Deterministic identity of a whole OOF artifact, order-independent."""
+def oof_artifact_identity(records: list[Any]) -> str:
+    """THE scientific identity of an OOF record set. Order-independent.
+
+    Typed on ``content()`` rather than the concrete class so an offline verifier can replay
+    records parsed out of a published file through the SAME one definition. Two lookalike
+    functions would mean "the OOF identity" depends on who is asking.
+    """
     digests = sorted(sha256_hex(canonical_json_bytes(r.content())) for r in records)
     return sha256_hex(b"minos:l2g-oof-artifact:v1\n" + canonical_json_bytes({"records": digests}))
 

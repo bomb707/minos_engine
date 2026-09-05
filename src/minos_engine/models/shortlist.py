@@ -30,6 +30,8 @@ __all__ = [
     "build_campaign_result",
     "verify_campaign_result",
     "verify_campaign_result_source",
+    "verify_prefit_authority_bytes",
+    "ACCEPTED_PREFIT_AUTHORITY_SHA256",
 ]
 
 #: v2: the result now binds per-spec COMPLETENESS and the reference-threshold availability, which
@@ -39,6 +41,11 @@ SHORTLIST_RESULT_DOMAIN: Final = "minos:l2g-train-oof-campaign-result:v2\n"
 SUPERSEDED_RESULT_V1: Final = "SUPERSEDED_BEFORE_FIRST_CAMPAIGN"
 
 _HEX64: Final = re.compile(r"[0-9a-f]{64}")
+
+#: the byte identity of the frozen committed reports/layer2/l2g-prefit-authority.json
+ACCEPTED_PREFIT_AUTHORITY_SHA256: Final = (
+    "61d8b33432202c1813a3d64d37bb727f8f1b8012ef1af23c7bf7af0ef8356000"
+)
 
 #: the EXACT accepted upstream identities a real campaign result must carry
 ACCEPTED_AUTHORITIES: Final[dict[str, str]] = {
@@ -212,9 +219,7 @@ _REQUIRED_PER_SPEC_FIELDS: Final[tuple[str, ...]] = (
 )
 
 
-def build_campaign_result(
-    *, trusted: Any, published: dict[str, dict[str, Any]], root: Any = None
-) -> dict[str, Any]:
+def build_campaign_result(*, trusted: Any, published: Any, root: Any = None) -> dict[str, Any]:
     """Derive the canonical v2 content from a TRUSTED campaign and its PUBLISHED bytes.
 
     ``trusted`` cannot be a dictionary: only the sealed production entry can mint one, so this
@@ -222,23 +227,29 @@ def build_campaign_result(
     supplies no shortlist, threshold, eligibility, status or hash; each is read out of the
     campaign that ran, and the artifact hashes come from files that were actually written.
     """
-    from pathlib import Path as _Path
 
     from minos_engine.models.campaign import TrustedL2GTrainCampaign
-    from minos_engine.qualification.l2f_accepted_identities import repository_root
-    from minos_engine.qualification.provenance import read_provenance
+    from minos_engine.models.campaign_evidence import TrustedL2GPublishedEvidence
 
     if not isinstance(trusted, TrustedL2GTrainCampaign):
         raise ShortlistError(
             "a campaign result may only be built from a trusted campaign minted by the sealed "
             "production entry; a dictionary is whatever its author typed"
         )
+    if not isinstance(published, TrustedL2GPublishedEvidence):
+        raise ShortlistError(
+            "published evidence must be the capability minted by the write/readback boundary; a "
+            "dictionary of file hashes is not proof that anything reached disk"
+        )
+    evidence = published.entries()
     campaign = trusted.closure
 
-    base = _Path(root) if root is not None else repository_root()
-    provenance = read_provenance(base)
-    if not provenance.head_sha or not provenance.tree_sha:
-        raise ShortlistError("the source commit/tree could not be read from Git")
+    # captured BEFORE the first fit, so the result names the checkout that actually ran the
+    # models rather than whatever happens to be checked out at publication time
+    execution_commit = trusted.execution_source_commit
+    execution_tree = trusted.execution_source_tree
+    if not execution_commit or not execution_tree:
+        raise ShortlistError("the campaign did not capture its execution source provenance")
 
     per_spec_in = campaign.get("per_spec")
     if not isinstance(per_spec_in, dict) or len(per_spec_in) != 10:
@@ -251,31 +262,31 @@ def build_campaign_result(
             raise ShortlistError(f"{spec_hash} is missing completeness fields {missing}")
         record = {field: entry[field] for field in _REQUIRED_PER_SPEC_FIELDS}
         if entry["status"] == "COMPLETE":
-            evidence = published.get(spec_hash)
-            if evidence is None:
+            published_entry = evidence.get(spec_hash)
+            if published_entry is None:
                 raise ShortlistError(f"{spec_hash} is COMPLETE but nothing was published for it")
             metrics = trusted.metrics_for(spec_hash)
             expected = metric_artifact_identity(metrics, spec_hash=spec_hash)
-            if evidence["metric_scientific_hash"] != expected:
+            if published_entry["metric_scientific_hash"] != expected:
                 raise ShortlistError(
                     f"{spec_hash} carries a metric identity that does not describe its own "
                     "metrics; the artifacts were swapped or edited"
                 )
             promotion = {name: float(metrics[name]) for name in ("mean_regret", "cvar_regret")}
-            if evidence["promotion_metrics"] != promotion:
+            if published_entry["promotion_metrics"] != promotion:
                 raise ShortlistError(f"{spec_hash} published promotion metrics that differ")
             record.update(
-                oof_scientific_hash=evidence["oof_scientific_hash"],
-                oof_file_sha256=evidence["oof_file_sha256"],
-                oof_size_bytes=evidence["oof_size_bytes"],
-                metric_scientific_hash=evidence["metric_scientific_hash"],
-                metric_file_sha256=evidence["metric_file_sha256"],
-                metric_size_bytes=evidence["metric_size_bytes"],
-                media_type=evidence["media_type"],
+                oof_scientific_hash=published_entry["oof_scientific_hash"],
+                oof_file_sha256=published_entry["oof_file_sha256"],
+                oof_size_bytes=published_entry["oof_size_bytes"],
+                metric_scientific_hash=published_entry["metric_scientific_hash"],
+                metric_file_sha256=published_entry["metric_file_sha256"],
+                metric_size_bytes=published_entry["metric_size_bytes"],
+                media_type=published_entry["media_type"],
                 # bound so an offline verifier can RE-DERIVE the shortlist rather than trust it
                 promotion_metrics=promotion,
             )
-        elif spec_hash in published:
+        elif spec_hash in evidence:
             raise ShortlistError(
                 f"{spec_hash} did not complete but a scientific artifact was published for it"
             )
@@ -283,8 +294,8 @@ def build_campaign_result(
 
     content = {
         "schema_version": SHORTLIST_RESULT_SCHEMA,
-        "source_commit": provenance.head_sha,
-        "source_tree": provenance.tree_sha,
+        "source_commit": execution_commit,
+        "source_tree": execution_tree,
         **dict(sorted(campaign["authority"].items())),
         "candidate_spec_hashes": list(campaign["candidate_spec_hashes"]),
         "reference_spec_hashes": list(campaign["reference_spec_hashes"]),
@@ -345,10 +356,12 @@ def verify_campaign_result(content: dict[str, Any]) -> dict[str, Any]:
             value == expected,
             f"{field} is {value!r}, but the accepted authority is {expected}",
         )
-    prefit = content.get("prefit_authority_sha256")
+    # EXACT, not merely well-formed: another valid 64-hex value would name a different pre-fit
+    # authority, and the whole campaign is scoped by the one that was frozen.
     _require(
-        isinstance(prefit, str) and _HEX64.fullmatch(prefit) is not None,
-        "prefit_authority_sha256 is not a lowercase 64-hex identity",
+        content.get("prefit_authority_sha256") == ACCEPTED_PREFIT_AUTHORITY_SHA256,
+        f"prefit_authority_sha256 is {content.get('prefit_authority_sha256')!r}, but the accepted "
+        f"frozen authority is {ACCEPTED_PREFIT_AUTHORITY_SHA256}",
     )
 
     raw_per_spec = content.get("per_spec")
@@ -547,3 +560,21 @@ def verify_campaign_result_source(content: dict[str, Any], *, root: Any = None) 
             f"source_commit {commit} has tree {actual}, but the result records {tree}"
         )
     return {"ok": True, "source_commit": commit, "source_tree": tree}
+
+
+def verify_prefit_authority_bytes(root: Any = None) -> str:
+    """Hash the committed pre-fit authority from disk and require the accepted identity."""
+    import hashlib
+    from pathlib import Path as _Path
+
+    from minos_engine.models.prefit_loader import PREFIT_AUTHORITY_PATH
+    from minos_engine.qualification.l2f_accepted_identities import repository_root
+
+    base = _Path(root) if root is not None else repository_root()
+    actual = hashlib.sha256((base / PREFIT_AUTHORITY_PATH).read_bytes()).hexdigest()
+    if actual != ACCEPTED_PREFIT_AUTHORITY_SHA256:
+        raise ShortlistError(
+            f"the committed pre-fit authority now hashes to {actual}, not the accepted "
+            f"{ACCEPTED_PREFIT_AUTHORITY_SHA256}"
+        )
+    return actual

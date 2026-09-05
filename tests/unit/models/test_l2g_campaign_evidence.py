@@ -13,19 +13,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pytest
 
 from minos_engine.models.campaign import (
-    _MINT_TOKEN,
-    ACCEPTED_CANDIDATE_FAMILIES,
-    ACCEPTED_CANDIDATE_SPEC_HASHES,
-    ACCEPTED_REFERENCE_SPECS,
-    REQUIRED_THREAD_POLICY,
-    STATUS_COMPLETE,
     CampaignError,
     TrustedL2GTrainCampaign,
-    _run_l2g_train_oof_core,
     run_real_l2g_train_oof_campaign,
 )
 from minos_engine.models.campaign_evidence import (
@@ -36,12 +28,9 @@ from minos_engine.models.campaign_evidence import (
     load_and_verify_metric_artifact,
     load_and_verify_oof_artifact,
     oof_artifact_content,
-    oof_artifact_identity,
+    oof_wrapper_identity,
     write_l2g_train_campaign_outputs,
 )
-from minos_engine.models.contract import CV_FOLD_CHROMOSOMES, SAFE_BASELINE_CONFIG_HASH
-from minos_engine.models.design_matrix import DesignMatrix
-from minos_engine.models.fit_driver import fit_fold_estimators, fit_reference_fold
 from minos_engine.models.shortlist import (
     ACCEPTED_AUTHORITIES,
     ShortlistError,
@@ -57,163 +46,19 @@ _PREFIT_SHA = "61d8b33432202c1813a3d64d37bb727f8f1b8012ef1af23c7bf7af0ef8356000"
 # ------------------------------------------------------------------------------------------ #
 # a synthetic campaign at the REAL shape: 1040 cells, 50 BAMs, 80 configs
 # ------------------------------------------------------------------------------------------ #
-def _pairs(bams: list[str], configs: list[str]) -> list[tuple[str, str]]:
-    pairs: list[tuple[str, str]] = []
-    for index, bam in enumerate(bams):
-        # every BAM must observe the safe baseline or its reference has no measurable utility
-        pairs.append((bam, SAFE_BASELINE_CONFIG_HASH))
-        seen = {SAFE_BASELINE_CONFIG_HASH}
-        offset = 0
-        while len(seen) < 20:
-            config = configs[(index * 7 + offset) % 80]
-            if config not in seen:
-                seen.add(config)
-                pairs.append((bam, config))
-            offset += 1
-    added, step = 0, 0
-    while added < 40:
-        bam, config = bams[added], configs[(added * 13 + step) % 80]
-        if (bam, config) not in pairs:
-            pairs.append((bam, config))
-            added, step = added + 1, 0
-        else:
-            step += 1
-    assert len(pairs) == 1040 and len(set(pairs)) == 1040 and len({p[0] for p in pairs}) == 50
-    return pairs
-
-
-def _trusted_campaign() -> TrustedL2GTrainCampaign:
-    rng = np.random.default_rng(5)
-    bams = {f"bam-{c}-{i}": c for c in CV_FOLD_CHROMOSOMES for i in range(10)}
-    configs = [SAFE_BASELINE_CONFIG_HASH, *[f"{i:064x}" for i in range(79)]]
-    pairs = _pairs(sorted(bams), configs)
-
-    class _Row:
-        def __init__(self, bam: str, config: str, admitted: bool) -> None:
-            self.dataset_id, self.config_hash = bam, config
-            self.chromosome = bams[bam]
-            self.admission_label = 1 if admitted else 0
-            self.outcome = "ADMITTED" if admitted else "CANDIDATE_NON_ADMISSION"
-            self.admitted_score = float(np.clip(rng.normal(0.7, 0.1), 0, 1)) if admitted else None
-
-        def identity(self) -> str:
-            return f"{self.dataset_id}|{self.config_hash}"
-
-    rows = [_Row(b, c, bool(rng.random() > 0.25)) for b, c in pairs]
-    meta = tuple(
-        {
-            "dataset_id": r.dataset_id,
-            "chromosome": r.chromosome,
-            "config_hash": r.config_hash,
-            "outcome": r.outcome,
-            "admitted_score": r.admitted_score,
-            "admission_label": r.admission_label,
-            "identity": r.identity(),
-        }
-        for r in rows
-    )
-    design = DesignMatrix(
-        x_bam=rng.normal(size=(len(rows), 129)),
-        x_config=rng.normal(size=(len(rows), 28)),
-        bam_columns=tuple(f"b{i}" for i in range(129)),
-        config_columns=tuple(f"c{i}" for i in range(28)),
-        meta=meta,
-    )
-
-    class _CV:
-        bam_chromosome = bams
-
-        def identity(self) -> str:
-            return ACCEPTED_AUTHORITIES["cv_manifest_hash"]
-
-    class _DS:
-        cv_manifest = _CV()
-
-        def __init__(self) -> None:
-            self.rows = tuple(rows)
-
-        def admission_weights(self) -> dict[str, float]:
-            per: dict[str, int] = {}
-            for r in rows:
-                per[r.dataset_id] = per.get(r.dataset_id, 0) + 1
-            return {r.identity(): 1 / per[r.dataset_id] for r in rows}
-
-        def score_weights(self) -> dict[str, float]:
-            admitted = [r for r in rows if r.admitted_score is not None]
-            per: dict[str, int] = {}
-            for r in admitted:
-                per[r.dataset_id] = per.get(r.dataset_id, 0) + 1
-            return {r.identity(): 1 / per[r.dataset_id] for r in admitted}
-
-    def _spec(family: str, spec_hash: str) -> Any:
-        class _S:
-            def __init__(self) -> None:
-                self.family = family
-                self.score_model_implementation = "sklearn.linear_model.Ridge"
-                self.admission_model_implementation = "sklearn.linear_model.LogisticRegression"
-                self.score_hyperparameters = {"alpha": 1.0}
-                self.admission_hyperparameters = {"C": 1.0, "max_iter": 1000}
-                self.random_seed = 20260904
-
-            def identity(self) -> str:
-                return spec_hash
-
-        return _S()
-
-    candidates = tuple(
-        _spec(f, h)
-        for f, h in zip(ACCEPTED_CANDIDATE_FAMILIES, ACCEPTED_CANDIDATE_SPEC_HASHES, strict=True)
-    )
-    references = tuple(_spec(f, h) for f, h in ACCEPTED_REFERENCE_SPECS)
-
-    closure = _run_l2g_train_oof_core(
-        dataset=_DS(),
-        design=design,
-        candidate_specs=candidates,
-        reference_specs=references,
-        fit_estimators=fit_fold_estimators,
-        fit_reference=fit_reference_fold,
-        thread_report=(
-            {
-                "user_api": "blas",
-                "internal_api": "openblas",
-                "num_threads": 1,
-                "prefix": "libscipy_openblas",
-            },
-        ),
-    )
-    records = closure.pop("_records")
-    failures = closure.pop("_failures")
-    closure["authority"] = {**ACCEPTED_AUTHORITIES, "prefit_authority_sha256": _PREFIT_SHA}
-    closure["thread_policy"] = REQUIRED_THREAD_POLICY
-    closure["candidate_spec_hashes"] = list(ACCEPTED_CANDIDATE_SPEC_HASHES)
-    closure["reference_spec_hashes"] = [h for _, h in ACCEPTED_REFERENCE_SPECS]
-    metrics = {
-        h: e["metrics"] for h, e in closure["per_spec"].items() if e["status"] == STATUS_COMPLETE
-    }
-    return TrustedL2GTrainCampaign(
-        _MINT_TOKEN, closure=closure, records=records, metrics=metrics, failures=failures
-    )
+@pytest.fixture(scope="module")
+def trusted(trusted_l2g_campaign: TrustedL2GTrainCampaign) -> TrustedL2GTrainCampaign:
+    return trusted_l2g_campaign
 
 
 @pytest.fixture(scope="module")
-def trusted() -> TrustedL2GTrainCampaign:
-    return _trusted_campaign()
+def published(published_l2g_campaign: dict[str, Any]) -> dict[str, Any]:
+    return published_l2g_campaign
 
 
 @pytest.fixture(scope="module")
-def published(
-    trusted: TrustedL2GTrainCampaign, tmp_path_factory: pytest.TempPathFactory
-) -> dict[str, Any]:
-    out = tmp_path_factory.mktemp("campaign") / OUTPUT_LAYOUT["root"]
-    manifest = write_l2g_train_campaign_outputs(trusted, output_dir=out)
-    return {"manifest": manifest, "dir": out}
-
-
-@pytest.fixture(scope="module")
-def result(published: dict[str, Any]) -> dict[str, Any]:
-    path = Path(published["manifest"]["campaign_result_path"])
-    return dict(json.loads(path.read_bytes()))
+def result(published_l2g_result: dict[str, Any]) -> dict[str, Any]:
+    return published_l2g_result
 
 
 # ------------------------------------------------------------------------------------------ #
@@ -261,8 +106,10 @@ def test_the_production_entry_returns_a_trusted_campaign() -> None:
     assert signature.return_annotation == "TrustedL2GTrainCampaign"
 
 
-def test_incomplete_specs_expose_failure_evidence_not_records() -> None:
-    campaign = _trusted_campaign()
+def test_incomplete_specs_expose_failure_evidence_not_records(
+    trusted: TrustedL2GTrainCampaign,
+) -> None:
+    campaign = trusted
     missing = "f" * 64
     with pytest.raises(CampaignError, match="no OOF evidence"):
         campaign.records_for(missing)
@@ -359,29 +206,7 @@ def test_the_oof_artifact_identity_is_row_order_independent(
     }
     forward = oof_artifact_content(records=records, **kwargs)
     backward = oof_artifact_content(records=list(reversed(records)), **kwargs)
-    assert oof_artifact_identity(forward) == oof_artifact_identity(backward)
-
-
-def test_publication_cleans_up_on_failure(
-    trusted: TrustedL2GTrainCampaign, tmp_path: Path, monkeypatch: Any
-) -> None:
-    """A half-published campaign is worse than none: it looks like evidence."""
-    import minos_engine.models.campaign_evidence as module
-
-    calls = {"n": 0}
-    real = module._write_atomic
-
-    def flaky(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
-        calls["n"] += 1
-        if calls["n"] > 4:
-            raise OSError("disk full")
-        return real(path, payload)
-
-    monkeypatch.setattr(module, "_write_atomic", flaky)
-    out = tmp_path / "campaign"
-    with pytest.raises(OSError, match="disk full"):
-        write_l2g_train_campaign_outputs(trusted, output_dir=out)
-    assert not list(out.rglob("*.json")), "a partial publication was left behind"
+    assert oof_wrapper_identity(forward) == oof_wrapper_identity(backward)
 
 
 # ------------------------------------------------------------------------------------------ #

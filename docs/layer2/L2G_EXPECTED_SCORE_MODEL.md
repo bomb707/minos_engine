@@ -481,3 +481,52 @@ makes a file swap detectable offline.
   metrics/<spec_hash>.json             0640
   failures/<spec_hash>.json            0640   (only when a spec failed)
 ```
+
+## 17. Pre-execution publication integrity
+
+Four things could still have gone wrong between fitting the models and having evidence anyone
+could check.
+
+**The pre-fit authority was only checked for shape.** `prefit_authority_sha256` had to be
+lowercase 64-hex, which any other authority also is. It is now required to equal
+`61d8b33432202c1813a3d64d37bb727f8f1b8012ef1af23c7bf7af0ef8356000` exactly, and
+`verify_prefit_authority_bytes` re-hashes the committed file so a campaign cannot cite an
+authority whose bytes have since moved.
+
+**Provenance was read too late.** `build_campaign_result` called Git at publication time, so a
+later checkout could be relabelled as the one that fitted the models. `run_real_l2g_train_oof_campaign`
+now captures HEAD and its tree *before the first fit* — requiring the commit to exist, its tree to
+match, and the worktree to be clean — and stores them in the trusted campaign. Publication re-reads
+Git and refuses if the checkout moved.
+
+**Published evidence was still a plain dictionary.** A caller holding a real trusted campaign could
+hand the builder any file hashes it liked. `TrustedL2GPublishedEvidence` is now minted only by the
+write/readback boundary, with its own module-private token, and `build_campaign_result` refuses
+anything else.
+
+**Two functions shared one identity domain.** `oof_runner.oof_artifact_identity` (the record set)
+and the file-wrapper hash both used `minos:l2g-oof-artifact:v1`, so "the OOF identity" meant
+whichever function you happened to be reading. The record-set function keeps the frozen domain and
+remains THE scientific identity; the wrapper moved to `minos:l2g-oof-evidence-wrapper:v1` and
+carries the scientific hash as `scientific_oof_hash`. The offline verifier replays the published
+records through the same one definition, so core, file and reload agree by construction.
+
+### Write, then read back
+
+`_write_atomic` now re-opens the final path and hashes what is actually there. Hashing the
+in-memory buffer proved only what was intended to be written; everything downstream treats that
+SHA as a fact about the file.
+
+### Staged publication
+
+Evidence is written to `minos_l2g_train_oof.tmp.<pid>.<nonce>`, every file is read back and
+semantically verified, the result is built, re-read and re-verified, the whole tree is checked by
+`verify_published_l2g_train_campaign`, and only then is the staging directory renamed into place.
+An existing final target is refused rather than overwritten, and any failure removes the staging
+tree — a half-published campaign is worse than none, because it looks like evidence.
+
+### Immutable retained evidence
+
+Records are snapshotted by value at mint and handed out as deep copies, so mutating what an
+accessor returned cannot reach the trusted state. Identity continuity is then checked explicitly:
+the retained records must still hash to what the campaign core earned, before anything is written.
