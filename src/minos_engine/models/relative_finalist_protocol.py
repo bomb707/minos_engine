@@ -36,6 +36,13 @@ from minos_engine.models.relative_finalist_contract import (
 from minos_engine.models.runtime import compute_training_runtime_hash
 
 __all__ = [
+    "FINAL_TRAIN_BUNDLE_RULE",
+    "FUTURE_VALIDATION_RULE",
+    "HARMFUL_SWITCH_DEFINITION",
+    "NUMPY_QUANTILE_METHOD",
+    "QUANTILE_METHOD",
+    "TRANSFORM_POLICY",
+    "WEIGHTING_POLICY",
     "RELATIVE_PROTOCOL_DOMAIN",
     "RELATIVE_PROTOCOL_SCHEMA",
     "SWITCH_RULE",
@@ -45,8 +52,16 @@ __all__ = [
     "relative_protocol_content",
 ]
 
-RELATIVE_PROTOCOL_SCHEMA: Final = "l2g-relative-finalist-protocol-v1"
-RELATIVE_PROTOCOL_DOMAIN: Final = "minos:l2g-relative-finalist-protocol:v1\n"
+RELATIVE_PROTOCOL_SCHEMA: Final = "l2g-relative-finalist-protocol-v2"
+RELATIVE_PROTOCOL_DOMAIN: Final = "minos:l2g-relative-finalist-protocol:v2\n"
+SPEC_SCHEMA: Final = "l2g-relative-finalist-spec-v2"
+SPEC_DOMAIN: Final = "minos:l2g-relative-finalist-spec:v2\n"
+#: v1 named INNER_OOF_RESIDUAL_MARGIN but did not pin the inner folds, the residual pool, the
+#: quantile algorithm, the per-family transforms or the strictness of the switch comparison --
+#: enough freedom that two faithful implementations could produce different margins. Nothing was
+#: ever fitted under it.
+SUPERSEDED_PROTOCOL_V1: Final = "SUPERSEDED_BEFORE_FIRST_V2_MODEL_FIT"
+SUPERSEDED_SPEC_V1: Final = "SUPERSEDED_BEFORE_FIRST_V2_MODEL_FIT"
 
 RANDOM_SEED: Final = 20260904
 CVAR_ALPHA: Final = 0.25
@@ -55,8 +70,37 @@ CVAR_TAIL_RULE: Final = "CEIL_ALPHA_TIMES_N"
 
 #: ONE policy family, chosen before any v2 fit. The margin is learned inside outer-training data
 #: and applied untouched to the held-out chromosome; the quantile is predeclared, not tuned.
+#: ``higher``, not the default interpolation. The margin is a safety threshold under strongly
+#: asymmetric switch losses, so it takes the next OBSERVED residual rather than interpolating
+#: downward between two of them. (layer1/coverage.py uses ``linear`` for descriptive coverage
+#: percentiles; that is a summary statistic, not a threshold, so the two do not conflict.)
+QUANTILE_METHOD: Final = "HIGHER"
+NUMPY_QUANTILE_METHOD: Final = "higher"
+
+INNER_FOLD_COUNT: Final = 4
+OUTER_TRAINING_BAMS: Final = 40
+OUTER_HELD_BAMS: Final = 10
+INNER_RESIDUAL_COUNT: Final = OUTER_TRAINING_BAMS * 3
+OUTER_TRAINING_ROWS: Final = OUTER_TRAINING_BAMS * 3
+OUTER_HELD_ROWS: Final = OUTER_HELD_BAMS * 3
+
 SWITCH_RULE: Final[dict[str, Any]] = {
     "family": "INNER_OOF_RESIDUAL_MARGIN",
+    "inner_cv": (
+        "leave-one-remaining-chromosome-out over the four chromosomes left in the outer "
+        "training side; every one of the 40 outer-training BAMs is predicted exactly once by an "
+        "inner model that did not train on it"
+    ),
+    "inner_fold_count": INNER_FOLD_COUNT,
+    "inner_residual_count": INNER_RESIDUAL_COUNT,
+    "residual": "abs(predicted_delta - actual_delta)",
+    "residual_pool": "ALL_40_OUTER_TRAINING_BAMS_X_ALL_THREE_ALTERNATIVES",
+    "not_pooled_per_config": True,
+    "not_pooled_per_bam": True,
+    "not_positive_only": True,
+    "margins_per_spec": "ONE_SCALAR_PER_OUTER_FOLD",
+    "quantile_method": QUANTILE_METHOD,
+    "comparison": "STRICT_GREATER_THAN",
     "action_domain": "THE_FOUR_FROZEN_FINALISTS",
     "default_action": "SAFE_BASELINE",
     "rule": (
@@ -72,6 +116,46 @@ SWITCH_RULE: Final[dict[str, Any]] = {
     "tie_break": "LOWEST_CONFIG_HASH_LEXICOGRAPHIC",
     "safe_baseline_always_available": True,
     "never_forced_to_switch": True,
+    # equality keeps the baseline: at the margin the evidence does not distinguish the actions,
+    # and the asymmetry of switch losses makes the fallback the right side of a tie
+    "predicted_equal_to_margin_keeps_safe_baseline": True,
+}
+
+#: per-family, because standardisation helps a linear model and does nothing for a tree
+TRANSFORM_POLICY: Final[dict[str, Any]] = {
+    "RELATIVE_RIDGE_SHARED": {
+        "transform": "STANDARD_SCALER",
+        "columns": "ALL_157",
+        "fitted_on": "THE_CURRENT_TRAINING_SIDE_ONLY",
+        "inner_fits_on": "INNER_TRAINING_ROWS_ONLY",
+        "outer_fits_on": "OUTER_TRAINING_ROWS_ONLY",
+        "deployment_fits_on": "ALL_150_TRAIN_ROWS",
+    },
+    "RELATIVE_HISTGB_SHARED": {
+        "transform": "NONE",
+        "columns": "ALL_157",
+        "rationale": "a histogram-binned tree is invariant to monotone rescaling",
+    },
+}
+
+WEIGHTING_POLICY: Final[dict[str, Any]] = {
+    "policy": "EQUAL_BAM_TOTAL",
+    "row_weight": 1.0 / 3.0,
+    "bam_total_weight": 1.0,
+    "applies_to": "EVERY_INNER_FIT_EVERY_OUTER_FIT_AND_THE_DEPLOYMENT_FIT",
+    "sample_weight_required": True,
+}
+
+#: v1's oof_metrics carries CATASTROPHIC_MARGIN = 0.05. It is NOT reused here: that number was
+#: chosen without independent justification, and inventing a severity threshold merely to have a
+#: metric would be worse than counting the thing that is actually defined. A harmful switch is a
+#: switch whose realised advantage is negative; severity stays continuous.
+HARMFUL_SWITCH_DEFINITION: Final[dict[str, Any]] = {
+    "harmful_switch": "a switch whose ACTUAL delta for the selected finalist is < 0",
+    "count_metric": "harmful_switch_count",
+    "severity_metrics": ["mean_loss_on_harmful_switch", "worst_switch_delta"],
+    "catastrophic_threshold_invented": False,
+    "v1_catastrophic_margin_reused": False,
 }
 
 #: two low-capacity families x two predeclared margins. No adaptive search, no HPO library.
@@ -150,9 +234,53 @@ V2_METRICS: Final[tuple[str, ...]] = (
     "switch_fraction",
     "switch_precision",
     "mean_gain_on_switch",
-    "catastrophic_switch_count",
+    "mean_loss_on_harmful_switch",
+    "harmful_switch_count",
+    "worst_switch_delta",
 )
 V2_DIAGNOSTICS: Final[tuple[str, ...]] = ("delta_mae", "delta_rmse", "delta_r2", "delta_spearman")
+
+#: how a TRAIN-shortlisted spec becomes a deployable model. Frozen BEFORE any OOF result, so the
+#: deployment margin cannot be chosen once the numbers are visible.
+FINAL_TRAIN_BUNDLE_RULE: Final[dict[str, Any]] = {
+    "applies_to": "EVERY_SPEC_IN_THE_FROZEN_TRAIN_SHORTLIST",
+    "step_1": "generate the full five-fold TRAIN OOF delta predictions over all 150 rows",
+    "step_2": (
+        "derive ONE deployment margin from those 150 OOF absolute residuals using the spec's "
+        "frozen margin_quantile and the frozen quantile method"
+    ),
+    "step_3": "fit the final estimator on all 50 BAMs / 150 relative rows",
+    "step_4": "fit the final transform, where the family has one, on all 150 TRAIN rows",
+    "step_5": "persist estimator, transform, margin, domain, schemas, runtime and identities",
+    "validation_labels_in_bundle": False,
+}
+
+#: frozen now, while VALIDATION is still unread, so the bar cannot be set to fit the result.
+FUTURE_VALIDATION_RULE: Final[dict[str, Any]] = {
+    "precondition": "A_NON_EMPTY_FROZEN_TRAIN_SHORTLIST",
+    "action_domain": "THE_SAME_FOUR_FINALISTS",
+    "labels": "EXISTING_PHASE_D_OUTCOMES_10_BAMS_X_4_FINALISTS",
+    "new_gatk_execution_authorized": False,
+    "inference": "USE_THE_FINAL_TRAIN_BUNDLE_UNCHANGED",
+    "refit_on_validation": False,
+    "recalibrate_margin_on_validation": False,
+    "cvar_alpha": CVAR_ALPHA,
+    "cvar_tail_count_n10": 3,
+    "bar": (
+        "validation mean_regret <= validation ALWAYS_SAFE_BASELINE mean_regret AND validation "
+        "cvar_regret <= validation ALWAYS_SAFE_BASELINE cvar_regret"
+    ),
+    "ties_admitted": True,
+    "no_rescue_by_secondary_diagnostics": True,
+    "tie_break_order": [
+        "LOWER_VALIDATION_MEAN_REGRET",
+        "LOWER_VALIDATION_CVAR_REGRET",
+        "LOWER_TRAIN_MEAN_REGRET",
+        "LOWER_TRAIN_CVAR_REGRET",
+        "LEXICAL_MODEL_SPEC_HASH",
+    ],
+    "if_none_clear_both_bars": "MODELS_QUALIFIED_REMAINS_HOLD",
+}
 
 
 def relative_protocol_content() -> dict[str, Any]:
@@ -168,6 +296,20 @@ def relative_protocol_content() -> dict[str, Any]:
         "references": [dict(sorted(r.items())) for r in V2_REFERENCES],
         "switch_rule": dict(sorted(SWITCH_RULE.items())),
         "promotion_rule": dict(sorted(PROMOTION_RULE.items())),
+        "quantile_method": QUANTILE_METHOD,
+        "inner_fold_count": INNER_FOLD_COUNT,
+        "inner_residual_count": INNER_RESIDUAL_COUNT,
+        "outer_training_bams": OUTER_TRAINING_BAMS,
+        "outer_held_bams": OUTER_HELD_BAMS,
+        "outer_training_rows": OUTER_TRAINING_ROWS,
+        "outer_held_rows": OUTER_HELD_ROWS,
+        "transform_policy": {
+            k: dict(sorted(v.items())) for k, v in sorted(TRANSFORM_POLICY.items())
+        },
+        "weighting_policy": dict(sorted(WEIGHTING_POLICY.items())),
+        "harmful_switch_definition": dict(sorted(HARMFUL_SWITCH_DEFINITION.items())),
+        "final_train_bundle_rule": dict(sorted(FINAL_TRAIN_BUNDLE_RULE.items())),
+        "future_validation_rule": dict(sorted(FUTURE_VALIDATION_RULE.items())),
         "metrics": list(V2_METRICS),
         "diagnostics": list(V2_DIAGNOSTICS),
         "cv_outer_folds": list(CV_FOLD_CHROMOSOMES),
@@ -201,8 +343,9 @@ def compute_relative_protocol_hash() -> str:
 
 def build_v2_spec_content(recipe: dict[str, Any], *, dataset_identity: str) -> dict[str, Any]:
     """One frozen v2 candidate specification, bound to the v2 dataset."""
+    family = str(recipe["family"])
     return {
-        "schema_version": "l2g-relative-finalist-spec-v1",
+        "schema_version": SPEC_SCHEMA,
         "family": str(recipe["family"]),
         "implementation": str(recipe["implementation"]),
         "hyperparameters": dict(sorted(dict(recipe["hyperparameters"]).items())),
@@ -213,8 +356,15 @@ def build_v2_spec_content(recipe: dict[str, Any], *, dataset_identity: str) -> d
         "config_delta_representation": "ENCODE(theta) - ENCODE(theta_safe)",
         "switch_rule_family": SWITCH_RULE["family"],
         "margin_quantile": float(recipe["margin_quantile"]),
+        "quantile_method": QUANTILE_METHOD,
+        "inner_cv": SWITCH_RULE["inner_cv"],
+        "inner_fold_count": INNER_FOLD_COUNT,
+        "inner_residual_count": INNER_RESIDUAL_COUNT,
+        "residual_pool": SWITCH_RULE["residual_pool"],
+        "comparison": SWITCH_RULE["comparison"],
+        "transform_policy": dict(sorted(TRANSFORM_POLICY[family].items())),
         "random_seed": RANDOM_SEED,
-        "weighting_policy": "EQUAL_BAM_TOTAL",
+        "weighting_policy": dict(sorted(WEIGHTING_POLICY.items())),
         "cv_protocol": "BAM_GROUPED_CHROMOSOME_HELD_OUT_FIVE_FOLDS",
         "training_runtime_hash": compute_training_runtime_hash(),
         "training_dataset_hash": dataset_identity,
@@ -226,7 +376,7 @@ def build_v2_spec_hashes(dataset_identity: str) -> tuple[str, ...]:
     """The four candidate identities, all of which exist BEFORE any v2 fit."""
     return tuple(
         sha256_hex(
-            b"minos:l2g-relative-finalist-spec:v1\n"
+            SPEC_DOMAIN.encode("utf-8")
             + canonical_json_bytes(build_v2_spec_content(r, dataset_identity=dataset_identity))
         )
         for r in V2_CANDIDATE_GRID

@@ -671,3 +671,56 @@ Because v2's design was informed by v1 TRAIN evidence, its own TRAIN OOF is decl
 design generalises. VALIDATION stays unread unless v2 freezes at least one promotable selector.
 
 Contract `dd5aca80…`, dataset `4a8f2777…`, protocol `835d7acf…`, domain `11f71243…`.
+
+## 20. v2 executable authority — closing the margin ambiguity
+
+The pushed v2 protocol said `INNER_OOF_RESIDUAL_MARGIN` and stopped there. It did not pin the
+inner folds, the residual pool, the quantile algorithm, the per-family transforms or the
+strictness of the switch comparison — enough freedom that two faithful implementations could
+produce different margins, and therefore different rates of deviation from the safe baseline.
+Nothing had been fitted, so the protocol and spec schemas move honestly to **v2**; v1 is
+`SUPERSEDED_BEFORE_FIRST_V2_MODEL_FIT`. The relative contract `dd5aca80…` and dataset `4a8f2777…`
+did not move: the science did not change, only its executable procedure.
+
+**Folds.** Five outer folds, one per chromosome: 40 training BAMs (120 rows) against 10 held (30
+rows). Within each, four inner folds — leave one remaining chromosome out — so every one of the 40
+training BAMs is predicted exactly once by an inner model that never saw it. That yields exactly
+**120 inner residuals**, and the runner refuses any other count.
+
+**Margin.** `|predicted − actual|`, pooled across all 40 BAMs and all three alternatives — not per
+config, not per BAM, not positive-only — then `numpy.quantile(..., method="higher")`. `higher`
+because the margin is a safety threshold: it takes the next *observed* error rather than
+interpolating downward between two of them. (`layer1/coverage.py` uses `linear` for descriptive
+coverage percentiles; a summary statistic is not a threshold, so there is no conflict.) One scalar
+per outer fold per spec.
+
+**Switch.** Strictly `predicted > margin`. At equality the evidence does not distinguish the
+actions, and with switching right on only 19 of 150 opportunities the fallback is the right side of
+a tie. Prediction ties break on the lowest config hash.
+
+**Transforms and weights.** Ridge standardises all 157 columns, fitted on the current training
+side only; HistGB does not standardise at all, since a histogram-binned tree is invariant to
+monotone rescaling. Every BAM contributes three rows at weight ⅓, so each BAM carries total loss
+weight exactly 1.0, and an estimator that cannot take `sample_weight` is refused.
+
+**Harmful, not "catastrophic".** v1's `CATASTROPHIC_MARGIN = 0.05` is deliberately not carried
+over — that number had no independent justification, and inventing a severity threshold merely to
+have a metric is worse than counting what is actually defined. v2 counts harmful switches
+(realised advantage < 0) and reports severity continuously.
+
+### The future rules, frozen while VALIDATION is still unread
+
+A TRAIN-shortlisted spec becomes deployable by: generating all 150 OOF predictions, deriving **one**
+deployment margin from those 150 residuals under its own frozen quantile, then fitting the
+estimator and transform on all 50 BAMs. The margin cannot be chosen once the campaign's numbers
+are visible, and the builder refuses a margin that is not that quantile.
+
+VALIDATION may be read only with a non-empty frozen TRAIN shortlist — with nothing shortlisted,
+opening it could only rescue a model the TRAIN criterion rejected, and the evaluator refuses to run
+at all. Then: same four finalists, existing Phase-D labels, no new GATK run, no refit, no margin
+recalibration, CVaR tail `ceil(0.25 × 10) = 3`. A selector qualifies only if it is no worse than
+`ALWAYS_SAFE_BASELINE` on **both** mean and CVaR regret; ties go to a frozen five-level
+deterministic order ending in the lexical spec hash.
+
+Protocol v2 `3108985a9aebdb3ece8536c30286e13652597d7fd02e580e8a991982b03a22a8`; the four spec-v2
+hashes and the whole procedure are bound in `reports/layer2/l2g-v2-prefit-authority.json`.
