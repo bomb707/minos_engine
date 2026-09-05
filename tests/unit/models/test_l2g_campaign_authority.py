@@ -432,6 +432,12 @@ def _synthetic_closure() -> dict[str, Any]:
         ),
         "a" * 64,
     )
+    from minos_engine.models.shortlist import ACCEPTED_AUTHORITIES
+
+    campaign["authority"] = {
+        **ACCEPTED_AUTHORITIES,
+        "prefit_authority_sha256": "61d8b33432202c1813a3d64d37bb727f8f1b8012ef1af23c7bf7af0ef8356000",
+    }
     campaign["thread_policy"] = REQUIRED_THREAD_POLICY
     campaign["candidate_spec_hashes"] = list(ACCEPTED_CANDIDATE_SPEC_HASHES)
     campaign["reference_spec_hashes"] = [h for _, h in ACCEPTED_REFERENCE_SPECS]
@@ -447,9 +453,44 @@ def closure() -> dict[str, Any]:
     return _synthetic_closure()
 
 
+def _mint(closure: dict[str, Any]) -> Any:
+    """Mint a trusted campaign the way the sealed entry does, for result-level tests."""
+    from minos_engine.models.campaign import _MINT_TOKEN, TrustedL2GTrainCampaign
+
+    working = copy.deepcopy(closure)
+    records = working.pop("_records", {})
+    failures = working.pop("_failures", {})
+    metrics = {h: e["metrics"] for h, e in working["per_spec"].items() if e["status"] == "COMPLETE"}
+    return TrustedL2GTrainCampaign(
+        _MINT_TOKEN, closure=working, records=records, metrics=metrics, failures=failures
+    )
+
+
+def _published_for(trusted: Any) -> dict[str, dict[str, Any]]:
+    """The evidence map the publisher would produce, without writing files."""
+    published = {}
+    for spec_hash in trusted.complete_spec_hashes():
+        metrics = trusted.metrics_for(spec_hash)
+        published[spec_hash] = {
+            "oof_scientific_hash": f"{abs(hash(spec_hash)) % (16**64):064x}",
+            "oof_file_sha256": f"{(abs(hash(spec_hash)) + 1) % (16**64):064x}",
+            "oof_size_bytes": 1,
+            "metric_scientific_hash": metric_artifact_identity(metrics, spec_hash=spec_hash),
+            "metric_file_sha256": f"{(abs(hash(spec_hash)) + 2) % (16**64):064x}",
+            "metric_size_bytes": 1,
+            "media_type": "application/json",
+            "promotion_metrics": {
+                "mean_regret": float(metrics["mean_regret"]),
+                "cvar_regret": float(metrics["cvar_regret"]),
+            },
+        }
+    return published
+
+
 @pytest.fixture(scope="module")
 def result(closure: dict[str, Any]) -> dict[str, Any]:
-    return build_campaign_result(campaign=copy.deepcopy(closure))
+    trusted = _mint(closure)
+    return build_campaign_result(trusted=trusted, published=_published_for(trusted))
 
 
 def test_the_canonical_result_binds_per_spec_completeness(result: dict[str, Any]) -> None:
@@ -500,7 +541,7 @@ def test_the_source_provenance_comes_from_git_not_the_caller() -> None:
     source = inspect.getsource(build_campaign_result)
     assert "read_provenance(" in source
     parameters = set(inspect.signature(build_campaign_result).parameters)
-    assert parameters == {"campaign", "root"}
+    assert parameters == {"trusted", "published", "root"}
     assert not (parameters & {"source_commit", "source_tree", "shortlist", "per_spec"})
 
 
@@ -532,7 +573,7 @@ def test_a_fabricated_complete_status_is_refused(
 def test_a_failed_spec_carrying_a_scientific_artifact_is_refused(result: dict[str, Any]) -> None:
     tampered = copy.deepcopy(result)
     tampered["per_spec"][0]["status"] = "TRAINING_FAILURE"
-    with pytest.raises(ShortlistError, match="carries a scientific artifact hash"):
+    with pytest.raises(ShortlistError, match="failed but carries"):
         verify_campaign_result(tampered)
 
 
@@ -542,9 +583,15 @@ def test_a_reference_failure_with_threshold_available_true_is_refused(
     tampered = copy.deepcopy(result)
     reference = next(e for e in tampered["per_spec"] if e["role"] == "REFERENCE")
     reference["status"] = "TRAINING_FAILURE"
-    reference.pop("oof_artifact_hash", None)
-    reference.pop("metric_artifact_hash", None)
-    with pytest.raises(ShortlistError, match="reference"):
+    for field in (
+        "oof_scientific_hash",
+        "metric_scientific_hash",
+        "oof_file_sha256",
+        "metric_file_sha256",
+        "promotion_metrics",
+    ):
+        reference.pop(field, None)
+    with pytest.raises(ShortlistError, match="reference|threshold"):
         verify_campaign_result(tampered)
 
 
@@ -556,9 +603,9 @@ def test_a_shortlisted_candidate_that_did_not_complete_is_refused(result: dict[s
         verify_campaign_result(tampered)
 
 
-def test_a_duplicated_oof_artifact_hash_is_refused(result: dict[str, Any]) -> None:
+def test_a_duplicated_oof_scientific_hash_is_refused(result: dict[str, Any]) -> None:
     tampered = copy.deepcopy(result)
-    tampered["per_spec"][0]["oof_artifact_hash"] = tampered["per_spec"][1]["oof_artifact_hash"]
+    tampered["per_spec"][0]["oof_scientific_hash"] = tampered["per_spec"][1]["oof_scientific_hash"]
     with pytest.raises(ShortlistError, match="share an OOF artifact hash"):
         verify_campaign_result(tampered)
 
@@ -567,16 +614,16 @@ def test_an_exchanged_metric_artifact_hash_is_refused_at_build_time(
     closure: dict[str, Any],
 ) -> None:
     """An exchange preserves uniqueness, so only recomputation catches it."""
-    tampered = copy.deepcopy(closure)
-    hashes = [(h, e) for h, e in tampered["per_spec"].items() if e["status"] == "COMPLETE"]
-    (h0, e0), (h1, e1) = hashes[0], hashes[1]
-    e0["metric_artifact_hash"], e1["metric_artifact_hash"] = (
-        e1["metric_artifact_hash"],
-        e0["metric_artifact_hash"],
+    trusted = _mint(closure)
+    published = _published_for(trusted)
+    first, second = sorted(published)[:2]
+    published[first]["metric_scientific_hash"], published[second]["metric_scientific_hash"] = (
+        published[second]["metric_scientific_hash"],
+        published[first]["metric_scientific_hash"],
     )
-    assert h0 != h1
+    assert first != second
     with pytest.raises(ShortlistError, match="does not describe its own"):
-        build_campaign_result(campaign=tampered)
+        build_campaign_result(trusted=trusted, published=published)
 
 
 def test_the_metric_artifact_identity_is_bound_to_its_spec() -> None:
@@ -617,8 +664,9 @@ def test_a_test_access_is_refused(result: dict[str, Any]) -> None:
 def test_the_builder_refuses_a_closure_missing_specs(closure: dict[str, Any]) -> None:
     tampered = copy.deepcopy(closure)
     tampered["per_spec"].pop(next(iter(tampered["per_spec"])))
+    trusted = _mint(tampered)
     with pytest.raises(ShortlistError, match="all ten frozen specs"):
-        build_campaign_result(campaign=tampered)
+        build_campaign_result(trusted=trusted, published={})
 
 
 # ------------------------------------------------------------------------------------------ #

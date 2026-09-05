@@ -43,6 +43,7 @@ __all__ = [
     "STATUS_TRAINING_FAILURE",
     "CampaignError",
     "ReferenceThresholdUnavailable",
+    "TrustedL2GTrainCampaign",
     "assess_completeness",
     "run_real_l2g_train_oof_campaign",
 ]
@@ -53,6 +54,72 @@ EXPECTED_BAM_COUNT: Final = 50
 
 STATUS_COMPLETE: Final = "COMPLETE"
 STATUS_TRAINING_FAILURE: Final = "TRAINING_FAILURE"
+
+
+#: Nobody outside this module holds it, so nobody outside this module can mint a trusted
+#: campaign. A dict is evidence of nothing: it is whatever its author typed.
+_MINT_TOKEN: Final = object()
+
+
+class TrustedL2GTrainCampaign:
+    """A campaign that ACTUALLY ran under the sealed authority, with its evidence retained.
+
+    The OOF records are held here rather than in the small canonical result: 10 x 1040 records do
+    not belong in a summary document, but discarding them after hashing would leave an
+    ``oof_artifact_hash`` with nothing behind it -- a claim about evidence that no longer exists.
+
+    Construction requires a private token, so a caller-built dictionary can never become
+    publishable no matter how well-formed it looks.
+    """
+
+    __slots__ = ("_closure", "_failures", "_metrics", "_records")
+
+    def __init__(
+        self,
+        token: object,
+        *,
+        closure: dict[str, Any],
+        records: dict[str, list[Any]],
+        metrics: dict[str, dict[str, Any]],
+        failures: dict[str, list[dict[str, Any]]],
+    ) -> None:
+        if token is not _MINT_TOKEN:
+            raise CampaignError(
+                "a trusted campaign may only be minted by the sealed production entry; a "
+                "caller-built object is not evidence that a campaign ran"
+            )
+        self._closure = closure
+        self._records = records
+        self._metrics = metrics
+        self._failures = failures
+
+    @property
+    def closure(self) -> dict[str, Any]:
+        """A defensive copy: the trusted state is not editable through its accessor."""
+        import copy
+
+        return copy.deepcopy(self._closure)
+
+    def complete_spec_hashes(self) -> tuple[str, ...]:
+        return tuple(sorted(self._records))
+
+    def records_for(self, spec_hash: str) -> list[Any]:
+        try:
+            return list(self._records[spec_hash])
+        except KeyError:
+            raise CampaignError(f"{spec_hash} did not complete; it has no OOF evidence") from None
+
+    def metrics_for(self, spec_hash: str) -> dict[str, Any]:
+        try:
+            return dict(self._metrics[spec_hash])
+        except KeyError:
+            raise CampaignError(f"{spec_hash} did not complete; it has no metrics") from None
+
+    def failures_for(self, spec_hash: str) -> list[dict[str, Any]]:
+        return [dict(f) for f in self._failures.get(spec_hash, ())]
+
+    def spec_entry(self, spec_hash: str) -> dict[str, Any]:
+        return dict(self._closure["per_spec"][spec_hash])
 
 
 class CampaignError(MinosEngineError):
@@ -201,6 +268,8 @@ def _run_l2g_train_oof_core(
 
     per_spec: dict[str, dict[str, Any]] = {}
     complete_metrics: dict[str, dict[str, Any]] = {}
+    retained_records: dict[str, list[Any]] = {}
+    retained_failures: dict[str, list[dict[str, Any]]] = {}
 
     for spec, is_reference in [(s, False) for s in candidate_specs] + [
         (s, True) for s in reference_specs
@@ -249,6 +318,10 @@ def _run_l2g_train_oof_core(
                 )
                 entry["metrics"] = metrics
                 complete_metrics[spec.identity()] = metrics
+                # the ACTUAL records are kept until publication succeeds
+                retained_records[spec.identity()] = list(records)
+        if failures:
+            retained_failures[spec.identity()] = list(failures)
         per_spec[spec.identity()] = entry
 
     reference_entries = {s.identity(): per_spec[s.identity()] for s in reference_specs}
@@ -260,7 +333,11 @@ def _run_l2g_train_oof_core(
     all_references_complete = not incomplete_references
 
     result: dict[str, Any] = {
+        "_records": retained_records,
+        "_failures": retained_failures,
         "per_spec": per_spec,
+        # the publisher re-checks every artifact against this, so it travels with the closure
+        "expected_cell_set": sorted(expected_cell_set),
         "all_required_references_complete": all_references_complete,
         "reference_threshold_available": all_references_complete,
         "expected_oof_record_count": expected_cells,
@@ -372,7 +449,7 @@ def run_real_l2g_train_oof_campaign(
     workspace: Any = None,
     config_payload_root: Any = None,
     root: Any = None,
-) -> dict[str, Any]:
+) -> TrustedL2GTrainCampaign:
     """THE trusted production entry for the real TRAIN OOF campaign.
 
     It accepts no dataset, no design matrix, no spec, no fit callable, no metric, no threshold,
@@ -529,7 +606,26 @@ def run_real_l2g_train_oof_campaign(
     result["thread_policy"] = REQUIRED_THREAD_POLICY
     result["candidate_spec_hashes"] = list(ACCEPTED_CANDIDATE_SPEC_HASHES)
     result["reference_spec_hashes"] = [h for _, h in ACCEPTED_REFERENCE_SPECS]
-    return result
+
+    # the retained evidence is lifted out of the closure and into the trusted object; a summary
+    # dictionary is not the place for 10 x 1040 records
+    records = result.pop("_records")
+    failures = result.pop("_failures")
+    metrics = {
+        spec_hash: entry["metrics"]
+        for spec_hash, entry in result["per_spec"].items()
+        if entry["status"] == STATUS_COMPLETE
+    }
+    if set(records) != set(metrics):
+        raise CampaignError(
+            "the retained OOF evidence and the metric set disagree about which specs completed"
+        )
+    for spec_hash, spec_records in records.items():
+        if not spec_records:
+            raise CampaignError(f"{spec_hash} is COMPLETE but retained no OOF records")
+    return TrustedL2GTrainCampaign(
+        _MINT_TOKEN, closure=result, records=records, metrics=metrics, failures=failures
+    )
 
 
 def _prefit_authority_sha256(root: Any = None) -> str:

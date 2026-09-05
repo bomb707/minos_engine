@@ -9,11 +9,17 @@ choosing a threshold after the fact.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Final
 
 from minos_engine.common.canonical_json import canonical_json_bytes
 from minos_engine.common.errors import MinosEngineError
 from minos_engine.common.hashing import sha256_hex
+from minos_engine.models.campaign import (
+    ACCEPTED_CANDIDATE_FAMILIES,
+    ACCEPTED_CANDIDATE_SPEC_HASHES,
+    ACCEPTED_REFERENCE_SPECS,
+)
 from minos_engine.models.oof_runner import metric_artifact_identity
 
 __all__ = [
@@ -23,6 +29,7 @@ __all__ = [
     "derive_verified_train_shortlist",
     "build_campaign_result",
     "verify_campaign_result",
+    "verify_campaign_result_source",
 ]
 
 #: v2: the result now binds per-spec COMPLETENESS and the reference-threshold availability, which
@@ -30,6 +37,20 @@ __all__ = [
 SHORTLIST_RESULT_SCHEMA: Final = "l2g-train-oof-campaign-result-v2"
 SHORTLIST_RESULT_DOMAIN: Final = "minos:l2g-train-oof-campaign-result:v2\n"
 SUPERSEDED_RESULT_V1: Final = "SUPERSEDED_BEFORE_FIRST_CAMPAIGN"
+
+_HEX64: Final = re.compile(r"[0-9a-f]{64}")
+
+#: the EXACT accepted upstream identities a real campaign result must carry
+ACCEPTED_AUTHORITIES: Final[dict[str, str]] = {
+    "training_contract_hash": "35a9ac9139d880e236786461a29fd91610b04049cfba90f71af3d5b3a931c6b1",
+    "training_dataset_hash": "d031758c58358270843b9b417ea034d1181a6aaafc1c94af000279c26dc62fcc",
+    "cv_manifest_hash": "b441b15fdc185e62e243b93322d6c30d8787f49f9fafbb3dab6ac9371728d92f",
+    "training_protocol_hash": "b13a408ad46ae120d776ccde075a4071c28692a1699b3bdf3241bbfbc6deb7cd",
+    "training_runtime_hash": "e710e426784aa64d4fc6f9e37f212e3951b3707f3c804b851652d0affe84d30b",
+    "feature_matrix_hash": "c6a8db848318e5c78839474fa62a4e8e408157a1e6f5cb1bdd18c9cd3d0118b2",
+    "feature_matrix_artifact_sha256": "0396cb07734a18df803ac813d9d1224ecdc3ec9901d7b8a202ac8c6538f3c243",
+    "config_encoding_identity": "3053fed09a1a7fdc9462a963871564275c88e4eca5fe3a898d2d6821c36b1fe4",
+}
 
 
 class ShortlistError(MinosEngineError):
@@ -191,19 +212,30 @@ _REQUIRED_PER_SPEC_FIELDS: Final[tuple[str, ...]] = (
 )
 
 
-def build_campaign_result(*, campaign: dict[str, Any], root: Any = None) -> dict[str, Any]:
-    """Derive the canonical v2 content FROM the verified campaign closure.
+def build_campaign_result(
+    *, trusted: Any, published: dict[str, dict[str, Any]], root: Any = None
+) -> dict[str, Any]:
+    """Derive the canonical v2 content from a TRUSTED campaign and its PUBLISHED bytes.
 
-    The operator supplies no shortlist, no threshold, no eligibility and no per-spec status: each
-    is read out of the campaign the code actually ran. Source provenance comes from Git rather
-    than from a string someone typed, and the artifact hashes must belong to specs that completed.
+    ``trusted`` cannot be a dictionary: only the sealed production entry can mint one, so this
+    function has no path by which an operator-authored campaign becomes publishable. The operator
+    supplies no shortlist, threshold, eligibility, status or hash; each is read out of the
+    campaign that ran, and the artifact hashes come from files that were actually written.
     """
-    from pathlib import Path
+    from pathlib import Path as _Path
 
+    from minos_engine.models.campaign import TrustedL2GTrainCampaign
     from minos_engine.qualification.l2f_accepted_identities import repository_root
     from minos_engine.qualification.provenance import read_provenance
 
-    base = Path(root) if root is not None else repository_root()
+    if not isinstance(trusted, TrustedL2GTrainCampaign):
+        raise ShortlistError(
+            "a campaign result may only be built from a trusted campaign minted by the sealed "
+            "production entry; a dictionary is whatever its author typed"
+        )
+    campaign = trusted.closure
+
+    base = _Path(root) if root is not None else repository_root()
     provenance = read_provenance(base)
     if not provenance.head_sha or not provenance.tree_sha:
         raise ShortlistError("the source commit/tree could not be read from Git")
@@ -219,26 +251,33 @@ def build_campaign_result(*, campaign: dict[str, Any], root: Any = None) -> dict
             raise ShortlistError(f"{spec_hash} is missing completeness fields {missing}")
         record = {field: entry[field] for field in _REQUIRED_PER_SPEC_FIELDS}
         if entry["status"] == "COMPLETE":
-            for name in ("oof_artifact_hash", "metric_artifact_hash"):
-                value = entry.get(name)
-                if not value:
-                    raise ShortlistError(f"{spec_hash} is COMPLETE but has no {name}")
-                record[name] = value
-            # RECOMPUTED from this spec's own metrics: an artifact swapped with another spec
-            # keeps its value and its uniqueness, so only recomputation catches the exchange.
-            metrics = entry.get("metrics")
-            if metrics is None:
-                raise ShortlistError(f"{spec_hash} is COMPLETE but carries no metrics")
+            evidence = published.get(spec_hash)
+            if evidence is None:
+                raise ShortlistError(f"{spec_hash} is COMPLETE but nothing was published for it")
+            metrics = trusted.metrics_for(spec_hash)
             expected = metric_artifact_identity(metrics, spec_hash=spec_hash)
-            if record["metric_artifact_hash"] != expected:
+            if evidence["metric_scientific_hash"] != expected:
                 raise ShortlistError(
-                    f"{spec_hash} carries a metric artifact hash that does not describe its own "
+                    f"{spec_hash} carries a metric identity that does not describe its own "
                     "metrics; the artifacts were swapped or edited"
                 )
-        # a failed spec must not carry an artifact that could be mistaken for a comparable one
-        elif entry.get("oof_artifact_hash") or entry.get("metric_artifact_hash"):
+            promotion = {name: float(metrics[name]) for name in ("mean_regret", "cvar_regret")}
+            if evidence["promotion_metrics"] != promotion:
+                raise ShortlistError(f"{spec_hash} published promotion metrics that differ")
+            record.update(
+                oof_scientific_hash=evidence["oof_scientific_hash"],
+                oof_file_sha256=evidence["oof_file_sha256"],
+                oof_size_bytes=evidence["oof_size_bytes"],
+                metric_scientific_hash=evidence["metric_scientific_hash"],
+                metric_file_sha256=evidence["metric_file_sha256"],
+                metric_size_bytes=evidence["metric_size_bytes"],
+                media_type=evidence["media_type"],
+                # bound so an offline verifier can RE-DERIVE the shortlist rather than trust it
+                promotion_metrics=promotion,
+            )
+        elif spec_hash in published:
             raise ShortlistError(
-                f"{spec_hash} did not complete but carries a scientific artifact hash"
+                f"{spec_hash} did not complete but a scientific artifact was published for it"
             )
         per_spec.append(record)
 
@@ -298,22 +337,19 @@ def verify_campaign_result(content: dict[str, Any]) -> dict[str, Any]:
     )
     for field in ("source_commit", "source_tree"):
         _require(bool(content.get(field)), f"{field} is missing")
-    for field in (
-        "training_dataset_hash",
-        "cv_manifest_hash",
-        "training_protocol_hash",
-        "training_runtime_hash",
-        "feature_matrix_hash",
-        "feature_matrix_artifact_sha256",
-        "config_encoding_identity",
-        "training_contract_hash",
-        "prefit_authority_sha256",
-    ):
+    # EXACT accepted authorities, not merely well-formed strings. A foreign campaign whose
+    # hashes are all 64 lowercase hex characters is precisely what this must refuse.
+    for field, expected in ACCEPTED_AUTHORITIES.items():
         value = content.get(field)
         _require(
-            isinstance(value, str) and len(value) == 64 and value == value.lower(),
-            f"{field} is not a lowercase 64-hex identity",
+            value == expected,
+            f"{field} is {value!r}, but the accepted authority is {expected}",
         )
+    prefit = content.get("prefit_authority_sha256")
+    _require(
+        isinstance(prefit, str) and _HEX64.fullmatch(prefit) is not None,
+        "prefit_authority_sha256 is not a lowercase 64-hex identity",
+    )
 
     raw_per_spec = content.get("per_spec")
     _require(
@@ -327,6 +363,18 @@ def verify_campaign_result(content: dict[str, Any]) -> dict[str, Any]:
     references = list(content["reference_spec_hashes"])
     _require(len(candidates) == 6 and len(references) == 4, "expected six candidates, four refs")
     _require(
+        tuple(candidates) == ACCEPTED_CANDIDATE_SPEC_HASHES,
+        "the candidate spec identities are not the accepted frozen six",
+    )
+    _require(
+        tuple(references) == tuple(h for _, h in ACCEPTED_REFERENCE_SPECS),
+        "the reference spec identities are not the accepted frozen four",
+    )
+    expected_family = {
+        **dict(zip(ACCEPTED_CANDIDATE_SPEC_HASHES, ACCEPTED_CANDIDATE_FAMILIES, strict=True)),
+        **{h: f for f, h in ACCEPTED_REFERENCE_SPECS},
+    }
+    _require(
         set(candidates) | set(references) == set(by_hash),
         "the per-spec records do not describe exactly the ten declared specs",
     )
@@ -335,6 +383,10 @@ def verify_campaign_result(content: dict[str, Any]) -> dict[str, Any]:
     for spec_hash, entry in by_hash.items():
         role = "REFERENCE" if spec_hash in references else "CANDIDATE"
         _require(entry["role"] == role, f"{spec_hash} is recorded as {entry['role']}, not {role}")
+        _require(
+            entry["family"] == expected_family[spec_hash],
+            f"{spec_hash} is recorded as {entry['family']}, not {expected_family[spec_hash]}",
+        )
         _require(entry["expected_outer_fold_count"] == 5, f"{spec_hash} expects != 5 folds")
         _require(
             entry["expected_oof_record_count"] == 1040,
@@ -364,27 +416,36 @@ def verify_campaign_result(content: dict[str, Any]) -> dict[str, Any]:
                 not entry["training_failures"],
                 f"{spec_hash} claims COMPLETE with training failures",
             )
+            for name in (
+                "oof_scientific_hash",
+                "oof_file_sha256",
+                "metric_scientific_hash",
+                "metric_file_sha256",
+            ):
+                _require(bool(entry.get(name)), f"{spec_hash} is COMPLETE with no {name}")
+            promotion = entry.get("promotion_metrics")
             _require(
-                bool(entry.get("oof_artifact_hash")), f"{spec_hash} is COMPLETE with no OOF hash"
-            )
-            _require(
-                bool(entry.get("metric_artifact_hash")),
-                f"{spec_hash} is COMPLETE with no metric artifact hash",
+                isinstance(promotion, dict) and set(promotion) == {"mean_regret", "cvar_regret"},
+                f"{spec_hash} is COMPLETE without its promotion metrics",
             )
             complete.add(spec_hash)
         else:
             _require(entry["status"] == "TRAINING_FAILURE", f"{spec_hash} has an unknown status")
-            _require(
-                "oof_artifact_hash" not in entry and "metric_artifact_hash" not in entry,
-                f"{spec_hash} failed but carries a scientific artifact hash",
-            )
+            for name in (
+                "oof_scientific_hash",
+                "metric_scientific_hash",
+                "oof_file_sha256",
+                "metric_file_sha256",
+                "promotion_metrics",
+            ):
+                _require(name not in entry, f"{spec_hash} failed but carries {name}")
 
-    artifact_hashes = [e["oof_artifact_hash"] for e in per_spec if "oof_artifact_hash" in e]
+    artifact_hashes = [e["oof_scientific_hash"] for e in per_spec if "oof_scientific_hash" in e]
     _require(
         len(set(artifact_hashes)) == len(artifact_hashes),
         "two specs share an OOF artifact hash; the artifacts were swapped or reused",
     )
-    metric_hashes = [e["metric_artifact_hash"] for e in per_spec if "metric_artifact_hash" in e]
+    metric_hashes = [e["metric_scientific_hash"] for e in per_spec if "metric_scientific_hash" in e]
     _require(
         len(set(metric_hashes)) == len(metric_hashes), "two specs share a metric artifact hash"
     )
@@ -411,6 +472,78 @@ def verify_campaign_result(content: dict[str, Any]) -> dict[str, Any]:
         bool(content["shortlist_empty"]) == (not shortlist),
         "shortlist_empty disagrees with the shortlist",
     )
+    # --- INDEPENDENT shortlist re-derivation ------------------------------------------- #
+    # Recording a shortlist and asserting it was derived correctly proves nothing; the bound
+    # promotion metrics let the frozen rule be run again here, from the document itself.
+    if references_complete:
+        reference_metrics = {
+            h: by_hash[h]["promotion_metrics"] for h in references if h in complete
+        }
+        candidate_metrics = {
+            h: by_hash[h]["promotion_metrics"] for h in candidates if h in complete
+        }
+        best_mean = min(m["mean_regret"] for m in reference_metrics.values())
+        best_cvar = min(m["cvar_regret"] for m in reference_metrics.values())
+        _require(
+            content["best_reference_mean_regret"] == best_mean,
+            f"best_reference_mean_regret is {content['best_reference_mean_regret']}, but the "
+            f"bound reference metrics give {best_mean}",
+        )
+        _require(
+            content["best_reference_cvar_regret"] == best_cvar,
+            f"best_reference_cvar_regret is {content['best_reference_cvar_regret']}, but the "
+            f"bound reference metrics give {best_cvar}",
+        )
+        rederived = sorted(
+            h
+            for h, m in candidate_metrics.items()
+            if m["mean_regret"] <= best_mean and m["cvar_regret"] <= best_cvar
+        )
+        _require(
+            sorted(shortlist) == rederived,
+            f"the recorded shortlist {sorted(shortlist)} is not what the frozen two-bar rule "
+            f"derives from the bound metrics: {rederived}",
+        )
+        _require(
+            sorted(eligible) == sorted(candidate_metrics),
+            "the eligible set does not match the COMPLETE candidates carrying metrics",
+        )
+
+    _require(
+        content["thread_policy"] == "SINGLE_THREADED_DETERMINISTIC",
+        f"thread_policy is {content.get('thread_policy')!r}",
+    )
+    report = content.get("thread_report")
+    _require(isinstance(report, list) and bool(report), "the thread report is empty")
+    for pool in report or []:
+        _require(
+            int(pool.get("num_threads", -1)) == 1,
+            f"a recorded pool ran with {pool.get('num_threads')} threads",
+        )
     _require(content["validation_read"] is False, "the result records a VALIDATION read")
     _require(content["test_accessed"] is False, "the result records a TEST access")
     return {"ok": True, "complete_spec_count": len(complete), "shortlist_size": len(shortlist)}
+
+
+def verify_campaign_result_source(content: dict[str, Any], *, root: Any = None) -> dict[str, Any]:
+    """Prove the recorded commit EXISTS and its real tree is the recorded one.
+
+    Two non-empty strings prove nothing; a commit that Git does not have, or whose tree differs,
+    means the result does not describe the source that produced it.
+    """
+    from pathlib import Path as _Path
+
+    from minos_engine.qualification.git_tree import commit_tree_sha, is_commit
+    from minos_engine.qualification.l2f_accepted_identities import repository_root
+
+    base = _Path(root) if root is not None else repository_root()
+    commit = str(content["source_commit"])
+    tree = str(content["source_tree"])
+    if not is_commit(base, commit):
+        raise ShortlistError(f"source_commit {commit} is not a commit in this repository")
+    actual = commit_tree_sha(base, commit)
+    if actual != tree:
+        raise ShortlistError(
+            f"source_commit {commit} has tree {actual}, but the result records {tree}"
+        )
+    return {"ok": True, "source_commit": commit, "source_tree": tree}

@@ -440,3 +440,44 @@ On swaps, precisely: duplicated artifact hashes are caught by the verifier, and 
 that spec's own metrics. An OOF hash exchanged inside an already-built result cannot be re-derived
 from content alone — the records are not in the document — so what protects it is the
 domain-separated result identity, which moves on any edit.
+
+## 16. Campaign evidence: retained, published, re-derivable
+
+The campaign hashed its OOF records and then discarded them, leaving an `oof_artifact_hash` with
+nothing behind it — a claim about evidence that no longer existed. And `build_campaign_result`
+took a plain dictionary, so an operator-authored campaign was publishable.
+
+**The evidence survives.** `TrustedL2GTrainCampaign` holds the actual `OofRecord` collection and
+metrics for every COMPLETE spec until publication succeeds. It is minted with a module-private
+token, so only `run_real_l2g_train_oof_campaign` can create one; a dictionary is whatever its
+author typed and can never become publishable. The production entry now returns this object rather
+than a naked mutable dict, and `closure` hands out a defensive copy.
+
+**Publication derives everything.** `write_l2g_train_campaign_outputs(trusted, *, output_dir)`
+writes one `l2g-oof-artifact-v1` and one `l2g-metric-artifact-v1` per COMPLETE spec, atomically
+through temp files at `0640` under a `0750` directory, then computes every recorded hash from the
+bytes that were actually written. A failed publish deletes what it wrote: a half-published
+campaign is worse than none, because it looks like evidence. Failed specs get failure evidence and
+no scientific artifact.
+
+Two identities are kept distinct: the domain-separated SCIENTIFIC identity is what makes an
+artifact *the* artifact; the FILE SHA-256 is what makes those particular bytes the published ones.
+
+**The result can be checked by someone who trusts nobody.** It binds per-spec `promotion_metrics`,
+so `verify_campaign_result` re-runs the frozen two-bar rule from the document itself rather than
+believing a recorded shortlist — a shortlist edit fails even after the identity is recomputed. It
+requires the *exact* accepted authorities and the *exact* ten spec identities and families, not
+merely well-formed 64-hex strings. `verify_campaign_result_source` asks Git whether the recorded
+commit exists and whether its real tree is the recorded one. `load_and_verify_oof_artifact` and
+`load_and_verify_metric_artifact` re-derive each artifact's identity from its bytes, which is what
+makes a file swap detectable offline.
+
+### Frozen output layout
+
+```
+<minos root>/minos_l2g_train_oof/      0750
+  campaign-result.json                 0640
+  oof/<spec_hash>.json                 0640
+  metrics/<spec_hash>.json             0640
+  failures/<spec_hash>.json            0640   (only when a spec failed)
+```
