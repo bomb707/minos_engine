@@ -40,7 +40,7 @@ __all__ = [
     "V2_OUTPUT_ROOT",
     "RelativeAuthorityError",
     "TrustedRelativeTrainingData",
-    "build_final_train_bundle_content",
+    "build_trusted_final_train_bundle",
     "evaluate_future_validation",
     "load_trusted_relative_training_data",
     "select_validation_winner",
@@ -61,6 +61,18 @@ ACCEPTED_RELATIVE_CONTRACT_HASH: Final = (
 FEASIBILITY_PATH: Final = "reports/layer2/l2g-v2-relative-finalist-feasibility.json"
 ACCEPTED_FEASIBILITY_SHA256: Final = (
     "7b269c015ec6414beba6643864b6cb48a04f52ce61e6e2687cd67069afd3cfdf"
+)
+ACCEPTED_FEATURE_SET_HASH: Final = (
+    "7e867dfa5633044b69869be8a87fac564431a73a183aa0ab0b1b13158a7c176f"
+)
+ACCEPTED_FEATURE_MATRIX_HASH: Final = (
+    "c6a8db848318e5c78839474fa62a4e8e408157a1e6f5cb1bdd18c9cd3d0118b2"
+)
+ACCEPTED_CONFIG_ENCODING_IDENTITY: Final = (
+    "3053fed09a1a7fdc9462a963871564275c88e4eca5fe3a898d2d6821c36b1fe4"
+)
+PARENT_V1_CAMPAIGN_FREEZE: Final = (
+    "1c2039dec2f3fbb51a8058c947bbf8de9f9c6d235a133b5948aa6b33ac516673"
 )
 V2_OUTPUT_ROOT: Final = "minos_l2g_v2_train_oof"
 
@@ -226,17 +238,47 @@ def run_real_l2g_v2_train_oof_campaign(
     workspace: Any = None,
     config_payload_root: Any = None,
     root: Any = None,
-) -> dict[str, Any]:
+) -> Any:
     """THE sealed v2 production boundary. Operational handles only; nothing scientific.
+
+    Returns a ``TrustedL2GV2TrainCampaign``: a mutable dictionary could be edited between running
+    and publishing, which is exactly the gap the v1 architecture closed. Provenance is captured
+    BEFORE the first estimator fit so the result names the checkout that actually ran the models.
 
     Not executed on real data in this task.
     """
+    import hashlib
+
+    from minos_engine.models.relative_finalist_evidence import (
+        _CAMPAIGN_TOKEN,
+        mint_trusted_v2_campaign,
+    )
     from minos_engine.models.relative_finalist_runner import (
         reference_decisions,
         run_relative_outer_oof,
     )
     from minos_engine.models.runtime import verify_training_runtime
     from minos_engine.models.threading_control import observe_thread_pools, single_threaded
+    from minos_engine.qualification.git_tree import commit_tree_sha, is_commit
+    from minos_engine.qualification.l2f_accepted_identities import repository_root
+    from minos_engine.qualification.provenance import read_provenance
+
+    # captured BEFORE the first fit, so a later checkout cannot be relabelled as the one that ran
+    source_root = Path(root) if root is not None else repository_root()
+    provenance = read_provenance(source_root)
+    _require(
+        bool(provenance.head_sha) and bool(provenance.tree_sha),
+        "the execution source provenance could not be read from Git",
+    )
+    _require(is_commit(source_root, str(provenance.head_sha)), "HEAD is not a commit")
+    _require(
+        commit_tree_sha(source_root, str(provenance.head_sha)) == provenance.tree_sha,
+        "HEAD's recorded tree is not its actual tree",
+    )
+    _require(provenance.worktree_clean, "the worktree is dirty; the campaign cannot name a commit")
+    authority_path = source_root / "reports/layer2/l2g-v2-prefit-authority.json"
+    _require(authority_path.is_file(), "the v2 prefit authority is missing")
+    prefit_sha = hashlib.sha256(authority_path.read_bytes()).hexdigest()
 
     trusted = load_trusted_relative_training_data(
         feature_matrix_artifact_path=feature_matrix_artifact_path,
@@ -290,30 +332,53 @@ def run_real_l2g_v2_train_oof_campaign(
         references[name] = {"decisions": decisions, "metrics": policy_metrics(decisions)}
 
     bar: dict[str, Any] = references["ALWAYS_SAFE_BASELINE"]["metrics"]
+    from minos_engine.models.relative_finalist_protocol import qualifies_against_bar
+
     shortlist = sorted(
         h
         for h, r in per_spec.items()
-        if r["metrics"]["mean_regret"] <= bar["mean_regret"]
-        and r["metrics"]["cvar_regret"] <= bar["cvar_regret"]
+        if qualifies_against_bar(
+            mean_regret=float(r["metrics"]["mean_regret"]),
+            cvar_regret=float(r["metrics"]["cvar_regret"]),
+            bar_mean=float(bar["mean_regret"]),
+            bar_cvar=float(bar["cvar_regret"]),
+        )
     )
-    return {
+    campaign_authority = {
+        "execution_source_commit": str(provenance.head_sha),
+        "execution_source_tree": str(provenance.tree_sha),
+        "prefit_authority_sha256": prefit_sha,
+        "parent_campaign_freeze_identity": PARENT_V1_CAMPAIGN_FREEZE,
         "relative_dataset_identity": dataset.identity(),
         "relative_protocol_hash": compute_relative_protocol_hash(),
         "relative_contract_hash": compute_relative_contract_hash(),
         "finalist_domain_hash": compute_finalist_domain_hash(),
+        "feature_set_hash": ACCEPTED_FEATURE_SET_HASH,
+        "feature_matrix_hash": ACCEPTED_FEATURE_MATRIX_HASH,
+        "config_encoding_identity": ACCEPTED_CONFIG_ENCODING_IDENTITY,
         "training_runtime_hash": runtime["runtime_hash"],
+        "candidate_spec_hashes": list(trusted.spec_hashes),
         "thread_report": [dict(sorted(p.items())) for p in pools],
-        "per_spec": per_spec,
-        "references": references,
-        "safe_baseline_bar": bar,
-        "shortlist": shortlist,
-        "shortlist_empty": not shortlist,
-        "validation_read": False,
-        "test_accessed": False,
     }
+    expected_cells = [[r.dataset_id, r.config_hash] for r in rows]
+    for entry in per_spec.values():
+        entry["expected_cell_set"] = expected_cells
+        entry["records"] = [r.content() for r in entry["records"]]
+        entry["decisions"] = [d.content() for d in entry["decisions"]]
+        entry["training_failures"] = []
+    return mint_trusted_v2_campaign(
+        _CAMPAIGN_TOKEN,
+        authority=campaign_authority,
+        per_spec=per_spec,
+        references={
+            name: {"metrics": r["metrics"], "decision_count": len(r["decisions"])}
+            for name, r in references.items()
+        },
+        shortlist=tuple(shortlist),
+    )
 
 
-def build_final_train_bundle_content(
+def _build_final_train_bundle_content(
     *,
     spec_hash: str,
     spec: dict[str, Any],
@@ -325,7 +390,11 @@ def build_final_train_bundle_content(
     source_commit: str,
     source_tree: str,
 ) -> dict[str, Any]:
-    """The FUTURE deployable bundle for a TRAIN-shortlisted spec. Not fitted in this task.
+    """PRIVATE pure helper, retained for tests only.
+
+    It accepts a caller-supplied residual set, which is exactly why it is not the production
+    boundary: whoever chooses the residuals chooses the deployment margin.
+    :func:`build_trusted_final_train_bundle` derives them from verified campaign evidence.
 
     The deployment margin is derived from all 150 TRAIN out-of-fold residuals under the spec's own
     frozen quantile, so it cannot be tuned once the campaign's numbers are visible. No VALIDATION
@@ -354,7 +423,11 @@ def build_final_train_bundle_content(
         "relative_dataset_identity": ACCEPTED_RELATIVE_DATASET_IDENTITY,
         "finalist_domain_hash": ACCEPTED_FINALIST_DOMAIN_HASH,
         "safe_baseline_config_hash": SAFE_BASELINE_CONFIG_HASH,
-        "feature_schema_hash": spec["finalist_domain_hash"],
+        # the finalist DECISION domain is not the BAM feature schema; v2 wrote one into the
+        # other, which would have made a bundle claim a feature identity it never had
+        "feature_set_hash": ACCEPTED_FEATURE_SET_HASH,
+        "feature_matrix_hash": ACCEPTED_FEATURE_MATRIX_HASH,
+        "config_encoding_identity": ACCEPTED_CONFIG_ENCODING_IDENTITY,
         "config_delta_representation": spec["config_delta_representation"],
         "deployment_margin": float(deployment_margin),
         "margin_quantile": float(spec["margin_quantile"]),
@@ -393,10 +466,19 @@ def evaluate_future_validation(
     _require(not unknown, f"metrics supplied for non-shortlisted selectors {unknown}")
     bar_mean = float(safe_baseline_metrics["mean_regret"])
     bar_cvar = float(safe_baseline_metrics["cvar_regret"])
+    from minos_engine.models.relative_finalist_protocol import qualifies_against_bar
+
+    # the SAME three-part rule TRAIN uses. A selector that only ever keeps the safe baseline ties
+    # both bars, and tying both is not evidence of contextual value.
     qualified = sorted(
         h
         for h, m in selector_metrics.items()
-        if float(m["mean_regret"]) <= bar_mean and float(m["cvar_regret"]) <= bar_cvar
+        if qualifies_against_bar(
+            mean_regret=float(m["mean_regret"]),
+            cvar_regret=float(m["cvar_regret"]),
+            bar_mean=bar_mean,
+            bar_cvar=bar_cvar,
+        )
     )
     return {
         "rule": FUTURE_VALIDATION_RULE["bar"],
@@ -429,3 +511,65 @@ def select_validation_winner(
         ),
     )
     return ordered[0]
+
+
+def build_trusted_final_train_bundle(
+    *,
+    trusted_campaign: Any,
+    spec_hash: str,
+    estimator_artifact_sha256: str,
+    transform_artifact_sha256: str | None,
+) -> dict[str, Any]:
+    """THE authoritative future bundle builder. Derives its own residuals from the campaign.
+
+    Whoever chooses the residual set chooses the deployment margin, so the caller does not get to
+    supply either. The spec must actually be in the campaign's frozen shortlist: a bundle for a
+    model the TRAIN criterion rejected is not a deployment candidate.
+    """
+    from minos_engine.models.relative_finalist_evidence import TrustedL2GV2TrainCampaign
+    from minos_engine.models.relative_finalist_protocol import (
+        V2_CANDIDATE_GRID,
+        build_v2_spec_content,
+        build_v2_spec_hashes,
+    )
+
+    _require(
+        isinstance(trusted_campaign, TrustedL2GV2TrainCampaign),
+        "a deployment bundle may only be built from a trusted v2 campaign",
+    )
+    _require(
+        spec_hash in trusted_campaign.shortlist,
+        f"{spec_hash} is not in the frozen TRAIN shortlist; a rejected model is not deployable",
+    )
+    authority = trusted_campaign.authority
+    entry = trusted_campaign.spec(spec_hash)
+    hashes = build_v2_spec_hashes(authority["relative_dataset_identity"])
+    index = list(hashes).index(spec_hash)
+    spec = build_v2_spec_content(
+        V2_CANDIDATE_GRID[index], dataset_identity=authority["relative_dataset_identity"]
+    )
+
+    residuals = [
+        abs(float(r["predicted_delta"]) - float(r["actual_delta"])) for r in entry["records"]
+    ]
+    import numpy as np
+
+    margin = float(
+        np.quantile(
+            np.asarray(residuals, dtype=float),
+            float(spec["margin_quantile"]),
+            method=NUMPY_QUANTILE_METHOD,
+        )
+    )
+    content = _build_final_train_bundle_content(
+        spec_hash=spec_hash,
+        spec=spec,
+        oof_residuals=residuals,
+        deployment_margin=margin,
+        estimator_artifact_sha256=estimator_artifact_sha256,
+        transform_artifact_sha256=transform_artifact_sha256,
+        train_oof_evidence_identity=entry.get("oof_scientific_hash", "0" * 64),
+        source_commit=authority["execution_source_commit"],
+        source_tree=authority["execution_source_tree"],
+    )
+    return content

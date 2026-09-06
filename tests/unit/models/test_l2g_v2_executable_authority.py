@@ -24,7 +24,7 @@ from minos_engine.models.relative_finalist_authority import (
     V2_OUTPUT_ROOT,
     RelativeAuthorityError,
     TrustedRelativeTrainingData,
-    build_final_train_bundle_content,
+    _build_final_train_bundle_content,
     evaluate_future_validation,
     load_trusted_relative_training_data,
     run_real_l2g_v2_train_oof_campaign,
@@ -99,8 +99,8 @@ def synthetic() -> dict[str, Any]:
 # honest versioning
 # ---------------------------------------------------------------------------------------- #
 def test_the_protocol_and_spec_are_versioned_v2() -> None:
-    assert RELATIVE_PROTOCOL_SCHEMA == "l2g-relative-finalist-protocol-v2"
-    assert SPEC_SCHEMA == "l2g-relative-finalist-spec-v2"
+    assert RELATIVE_PROTOCOL_SCHEMA == "l2g-relative-finalist-protocol-v3"
+    assert SPEC_SCHEMA == "l2g-relative-finalist-spec-v3"
     assert SUPERSEDED_PROTOCOL_V1 == "SUPERSEDED_BEFORE_FIRST_V2_MODEL_FIT"
 
 
@@ -424,7 +424,7 @@ def test_the_deployment_margin_must_be_the_frozen_quantile_of_all_150_residuals(
     spec = build_v2_spec_content(V2_CANDIDATE_GRID[0], dataset_identity="d" * 64)
     residuals = np.linspace(0.0, 1.0, 150)
     correct = float(np.quantile(residuals, 0.75, method="higher"))
-    content = build_final_train_bundle_content(
+    content = _build_final_train_bundle_content(
         spec_hash="s" * 64,
         spec=spec,
         oof_residuals=residuals,
@@ -437,8 +437,10 @@ def test_the_deployment_margin_must_be_the_frozen_quantile_of_all_150_residuals(
     )
     assert content["deployment_margin"] == correct
     assert content["validation_labels_used"] is False
+    # the FEATURE authorities are bound separately from the decision-domain hash
+    assert content["feature_set_hash"] != content["finalist_domain_hash"]
     with pytest.raises(RelativeAuthorityError, match="not the frozen quantile"):
-        build_final_train_bundle_content(
+        _build_final_train_bundle_content(
             spec_hash="s" * 64,
             spec=spec,
             oof_residuals=residuals,
@@ -454,7 +456,7 @@ def test_the_deployment_margin_must_be_the_frozen_quantile_of_all_150_residuals(
 def test_the_bundle_refuses_a_partial_residual_set() -> None:
     spec = build_v2_spec_content(V2_CANDIDATE_GRID[0], dataset_identity="d" * 64)
     with pytest.raises(RelativeAuthorityError, match="expected all 150"):
-        build_final_train_bundle_content(
+        _build_final_train_bundle_content(
             spec_hash="s" * 64,
             spec=spec,
             oof_residuals=np.zeros(149),
@@ -550,6 +552,7 @@ def test_the_v2_prefit_authority_binds_the_frozen_procedure(authority: dict[str,
     dataset = build_relative_finalist_dataset(load_verified_training_dataset())
     assert authority["relative_dataset_identity"] == ACCEPTED_RELATIVE_DATASET_IDENTITY
     assert authority["protocol_hash"] == compute_relative_protocol_hash()
+    assert authority["schema_version"] == "l2g-v2-prefit-authority-v2"
     assert [e["spec_hash"] for e in authority["candidate_spec_hashes"]] == list(
         build_v2_spec_hashes(dataset.identity())
     )

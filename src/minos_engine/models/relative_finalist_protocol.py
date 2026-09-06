@@ -36,6 +36,10 @@ from minos_engine.models.relative_finalist_contract import (
 from minos_engine.models.runtime import compute_training_runtime_hash
 
 __all__ = [
+    "PROMOTION_RULE",
+    "SUPERSEDED_PROTOCOL_V2",
+    "SUPERSEDED_SPEC_V2",
+    "qualifies_against_bar",
     "FINAL_TRAIN_BUNDLE_RULE",
     "FUTURE_VALIDATION_RULE",
     "HARMFUL_SWITCH_DEFINITION",
@@ -52,10 +56,15 @@ __all__ = [
     "relative_protocol_content",
 ]
 
-RELATIVE_PROTOCOL_SCHEMA: Final = "l2g-relative-finalist-protocol-v2"
-RELATIVE_PROTOCOL_DOMAIN: Final = "minos:l2g-relative-finalist-protocol:v2\n"
-SPEC_SCHEMA: Final = "l2g-relative-finalist-spec-v2"
-SPEC_DOMAIN: Final = "minos:l2g-relative-finalist-spec:v2\n"
+RELATIVE_PROTOCOL_SCHEMA: Final = "l2g-relative-finalist-protocol-v3"
+RELATIVE_PROTOCOL_DOMAIN: Final = "minos:l2g-relative-finalist-protocol:v3\n"
+SPEC_SCHEMA: Final = "l2g-relative-finalist-spec-v3"
+SPEC_DOMAIN: Final = "minos:l2g-relative-finalist-spec:v3\n"
+#: v2 admitted ties on BOTH bars, so a selector that never switches -- which every v2 policy can
+#: do simply by learning a large margin -- would reproduce ALWAYS_SAFE_BASELINE exactly and be
+#: promoted for demonstrating no contextual value at all. Nothing was fitted under it.
+SUPERSEDED_PROTOCOL_V2: Final = "SUPERSEDED_BEFORE_FIRST_V2_MODEL_FIT"
+SUPERSEDED_SPEC_V2: Final = "SUPERSEDED_BEFORE_FIRST_V2_MODEL_FIT"
 #: v1 named INNER_OOF_RESIDUAL_MARGIN but did not pin the inner folds, the residual pool, the
 #: quantile algorithm, the per-family transforms or the strictness of the switch comparison --
 #: enough freedom that two faithful implementations could produce different margins. Nothing was
@@ -175,13 +184,29 @@ V2_CANDIDATE_GRID: Final[tuple[dict[str, Any], ...]] = (
     {
         "family": "RELATIVE_HISTGB_SHARED",
         "implementation": "sklearn.ensemble.HistGradientBoostingRegressor",
-        "hyperparameters": {"max_depth": 2, "max_iter": 100, "learning_rate": 0.05},
+        # early_stopping OFF: an internal validation split would sit outside the grouped
+        # outer/inner evaluation design and silently hold out rows this protocol never chose
+        "hyperparameters": {
+            "early_stopping": False,
+            "learning_rate": 0.05,
+            "loss": "squared_error",
+            "max_depth": 2,
+            "max_iter": 100,
+        },
         "margin_quantile": 0.75,
     },
     {
         "family": "RELATIVE_HISTGB_SHARED",
         "implementation": "sklearn.ensemble.HistGradientBoostingRegressor",
-        "hyperparameters": {"max_depth": 2, "max_iter": 100, "learning_rate": 0.05},
+        # early_stopping OFF: an internal validation split would sit outside the grouped
+        # outer/inner evaluation design and silently hold out rows this protocol never chose
+        "hyperparameters": {
+            "early_stopping": False,
+            "learning_rate": 0.05,
+            "loss": "squared_error",
+            "max_depth": 2,
+            "max_iter": 100,
+        },
         "margin_quantile": 0.90,
     },
 )
@@ -210,18 +235,38 @@ V2_REFERENCES: Final[tuple[dict[str, Any], ...]] = (
     },
 )
 
+#: THREE parts, because two were not enough. Every v2 policy can fall back to SAFE_BASELINE on
+#: every BAM simply by learning a large margin, which reproduces ALWAYS_SAFE_BASELINE exactly and
+#: ties it on both bars. Admitting that tie would promote a selector for demonstrating no
+#: contextual value whatsoever. So: no worse on either safety bar, AND strictly better on at
+#: least one decision bar. Exact full-precision comparisons, no epsilon and no tolerance.
 PROMOTION_RULE: Final[dict[str, Any]] = {
     "bar": "ALWAYS_SAFE_BASELINE",
     "rule": (
-        "mean_regret <= ALWAYS_SAFE_BASELINE mean_regret AND cvar_regret <= "
-        "ALWAYS_SAFE_BASELINE cvar_regret"
+        "mean_regret <= SAFE mean_regret AND cvar_regret <= SAFE cvar_regret AND "
+        "(mean_regret < SAFE mean_regret OR cvar_regret < SAFE cvar_regret)"
     ),
     "orientation": "ORACLE4_MINUS_SELECTED_LOWER_IS_BETTER",
-    "ties_admitted": True,
+    "no_worse_on_either_bar": True,
+    "strictly_better_on_at_least_one_bar": True,
+    "tie_on_both_bars_qualifies": False,
+    "no_op_selector_can_qualify": False,
+    "epsilon": None,
+    "comparison": "EXACT_FULL_PRECISION",
     "not_weakened_because_v1_failed": True,
     "empty_shortlist_is_valid": True,
     "fallback_if_empty": "SAFE_BASELINE_REMAINS_AND_MODELS_QUALIFIED_HOLDS",
 }
+
+
+def qualifies_against_bar(
+    *, mean_regret: float, cvar_regret: float, bar_mean: float, bar_cvar: float
+) -> bool:
+    """THE frozen three-part rule. One definition, used by TRAIN and by VALIDATION alike."""
+    no_worse = mean_regret <= bar_mean and cvar_regret <= bar_cvar
+    strictly_better = mean_regret < bar_mean or cvar_regret < bar_cvar
+    return no_worse and strictly_better
+
 
 #: decision metrics first; prediction accuracy is a diagnostic. A model that predicts advantage
 #: well and switches badly is not qualified -- that is precisely v1's lesson.
@@ -267,10 +312,14 @@ FUTURE_VALIDATION_RULE: Final[dict[str, Any]] = {
     "cvar_alpha": CVAR_ALPHA,
     "cvar_tail_count_n10": 3,
     "bar": (
-        "validation mean_regret <= validation ALWAYS_SAFE_BASELINE mean_regret AND validation "
-        "cvar_regret <= validation ALWAYS_SAFE_BASELINE cvar_regret"
+        "validation mean_regret <= validation SAFE mean_regret AND validation cvar_regret <= "
+        "validation SAFE cvar_regret AND (validation mean_regret < validation SAFE mean_regret "
+        "OR validation cvar_regret < validation SAFE cvar_regret)"
     ),
-    "ties_admitted": True,
+    # the same loophole existed here: a bundle that always keeps SAFE would tie both bars
+    "tie_on_one_bar_allowed_if_other_strictly_better": True,
+    "tie_on_both_bars_qualifies": False,
+    "no_op_selector_can_qualify": False,
     "no_rescue_by_secondary_diagnostics": True,
     "tie_break_order": [
         "LOWER_VALIDATION_MEAN_REGRET",

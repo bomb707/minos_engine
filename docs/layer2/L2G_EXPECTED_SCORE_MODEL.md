@@ -724,3 +724,42 @@ deterministic order ending in the lexical spec hash.
 
 Protocol v2 `3108985a9aebdb3ece8536c30286e13652597d7fd02e580e8a991982b03a22a8`; the four spec-v2
 hashes and the whole procedure are bound in `reports/layer2/l2g-v2-prefit-authority.json`.
+
+## 21. v2 real-campaign authority — closing the no-op loophole
+
+**The rule promoted doing nothing.** Every v2 policy can fall back to SAFE_BASELINE on every BAM
+simply by learning a large margin. Such a selector reproduces `ALWAYS_SAFE_BASELINE` *exactly* —
+identical mean regret, identical CVaR regret — and the two-part rule admitted ties on both, so it
+would have been shortlisted for demonstrating no contextual value whatsoever. On a problem whose
+whole oracle headroom is 0.0150, that is not a hypothetical.
+
+The rule is now three parts: no worse on either safety bar, **and strictly better on at least
+one** decision bar. Exact full-precision comparison, no epsilon. Tying one bar is still fine if
+the other strictly improves; tying both is not. `qualifies_against_bar` is the single definition,
+used by TRAIN and by the future VALIDATION rule alike — the same loophole existed there, where a
+bundle that always kept SAFE would have tied its way to MODELS-QUALIFIED.
+
+Protocol and spec move to **v3** (`d2b275c0…`); v2 is `SUPERSEDED_BEFORE_FIRST_V2_MODEL_FIT`. The
+relative contract and dataset did not move.
+
+**HistGB is explicit now.** `early_stopping=False`, `loss="squared_error"`, depth 2, 100
+iterations, lr 0.05, seed 20260904. Left to the default, the estimator would carve its own internal
+validation split — a held-out set this protocol never chose, sitting outside the grouped
+outer/inner design.
+
+**Trusted evidence.** The sealed runner returned a mutable dict, which could be edited between
+running and publishing. It now returns `TrustedL2GV2TrainCampaign`, minted only inside the sealed
+entry, capturing Git provenance before the first fit and retaining records by value. Publication
+stages, fsyncs, reads back, verifies and atomically promotes, and the offline verifier
+**re-derives** the shortlist from bound metrics under the three-part rule — so a shortlist edit
+fails even when the result is rehashed.
+
+**The bundle bound the wrong authority.** It wrote `feature_schema_hash = finalist_domain_hash`:
+the four-config decision domain is not the BAM feature schema. The bundle now binds
+`feature_set_hash`, `feature_matrix_hash`, `config_encoding_identity` and `finalist_domain_hash`
+separately. It also derives its own deployment margin from the campaign's own 150 residuals —
+whoever chooses the residual set chooses the margin — and refuses a spec that is not in the frozen
+shortlist.
+
+Authority `reports/layer2/l2g-v2-prefit-authority.json` (`l2g-v2-prefit-authority-v2`),
+SHA `0d5b578e12972b7959389e1d4028e07d783d4f22579ecd69aec4deaa9d829fd6`.
