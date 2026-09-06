@@ -658,10 +658,41 @@ def test_the_bundle_never_falls_back_to_a_zero_evidence_identity() -> None:
 # ---------------------------------------------------------------------------------------- #
 # locks
 # ---------------------------------------------------------------------------------------- #
-def test_no_real_v2_campaign_output_exists() -> None:
+def _the_only_v2_campaign_is_the_frozen_one(root: Path) -> None:
+    """The v2 campaign has run exactly once, and its identity is frozen in Git.
+
+    This replaces the pre-fit guard that required no v2 output at all. That guard was correct
+    until the campaign ran; keeping it would only assert a lifecycle stage that has ended. What
+    still has to hold is that the tree on disk is THE frozen campaign and not a second attempt.
+    """
+    import json
+
+    from minos_engine.models.relative_finalist_freeze import (
+        V2_FREEZE_PATH,
+        v2_campaign_freeze_identity,
+        verify_v2_campaign_freeze,
+    )
+    from minos_engine.qualification.l2f_accepted_identities import repository_root
+
+    freeze = json.loads((repository_root() / V2_FREEZE_PATH).read_bytes())
+    assert verify_v2_campaign_freeze(freeze)["ok"] is True
+    assert (
+        v2_campaign_freeze_identity(freeze)
+        == "42310a97f2e13d516b57789bbfa0cd6ee6e44d7e732747dd44ace3aad9d33de5"
+    )
+    assert freeze["shortlist"] == []
+    assert freeze["research_disposition"] == "CONTEXTUAL_SELECTOR_RESEARCH_CLOSED"
+    if root.exists():
+        assert (
+            json.loads((root / "campaign-result.json").read_bytes())["execution_source_commit"]
+            == freeze["execution_source_commit"]
+        ), "the tree on disk is not the frozen campaign"
+
+
+def test_the_only_v2_campaign_is_the_frozen_one() -> None:
     from tests.minos_scratch import CANONICAL_MINOS_ROOT
 
-    assert not (CANONICAL_MINOS_ROOT / V2_OUTPUT_LAYOUT["root"]).exists()
+    _the_only_v2_campaign_is_the_frozen_one(CANONICAL_MINOS_ROOT / V2_OUTPUT_LAYOUT["root"])
 
 
 def test_campaign_v1_is_untouched() -> None:

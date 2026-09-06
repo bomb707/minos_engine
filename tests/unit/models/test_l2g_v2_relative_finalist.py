@@ -343,12 +343,43 @@ def test_campaign_v1_is_untouched() -> None:
     assert freeze["validation_authorized_for_campaign_v1"] is False
 
 
-def test_no_v2_model_was_fitted() -> None:
-    root = repository_root()
-    assert not (root / "reports/layer2/l2g-v2-train-oof-campaign-result.json").exists()
+def _the_only_v2_campaign_is_the_frozen_one(root: Path) -> None:
+    """The v2 campaign has run exactly once, and its identity is frozen in Git.
+
+    This replaces the pre-fit guard that required no v2 output at all. That guard was correct
+    until the campaign ran; keeping it would only assert a lifecycle stage that has ended. What
+    still has to hold is that the tree on disk is THE frozen campaign and not a second attempt.
+    """
+    import json
+
+    from minos_engine.models.relative_finalist_freeze import (
+        V2_FREEZE_PATH,
+        v2_campaign_freeze_identity,
+        verify_v2_campaign_freeze,
+    )
+    from minos_engine.qualification.l2f_accepted_identities import repository_root
+
+    freeze = json.loads((repository_root() / V2_FREEZE_PATH).read_bytes())
+    assert verify_v2_campaign_freeze(freeze)["ok"] is True
+    assert (
+        v2_campaign_freeze_identity(freeze)
+        == "42310a97f2e13d516b57789bbfa0cd6ee6e44d7e732747dd44ace3aad9d33de5"
+    )
+    assert freeze["shortlist"] == []
+    assert freeze["research_disposition"] == "CONTEXTUAL_SELECTOR_RESEARCH_CLOSED"
+    if root.exists():
+        assert (
+            json.loads((root / "campaign-result.json").read_bytes())["execution_source_commit"]
+            == freeze["execution_source_commit"]
+        ), "the tree on disk is not the frozen campaign"
+
+
+def test_the_only_v2_campaign_is_the_frozen_one() -> None:
     from tests.minos_scratch import CANONICAL_MINOS_ROOT
 
-    assert not (CANONICAL_MINOS_ROOT / "minos_l2g_v2_train_oof").exists()
+    # the campaign result belongs in the external tree, never inside the repository
+    assert not (repository_root() / "reports/layer2/l2g-v2-train-oof-campaign-result.json").exists()
+    _the_only_v2_campaign_is_the_frozen_one(CANONICAL_MINOS_ROOT / "minos_l2g_v2_train_oof")
 
 
 def test_the_v2_source_reads_no_validation_and_no_test() -> None:

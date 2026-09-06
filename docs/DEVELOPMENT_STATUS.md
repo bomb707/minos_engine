@@ -28,7 +28,8 @@ does not restate or override them.
 | Operational DB revision | `0005_l2e_feature_view` |
 | BASELINE-QUALIFIED evidence commit (immutable anchor) | `f01368d9f2a9850eae9c705eb8a63f968ca0684e` — 42/42 PASS, gate `b9436bf3…` |
 | Next gate | **MODELS-QUALIFIED** (designed in `docs/layer2/L2G_EXPECTED_SCORE_MODEL.md`; registry declared, **not issued**) |
-| Current task | **L2-G v2 — SCIENTIFIC-EVIDENCE AUTHORITY (frozen; nothing fitted).** The sealed loop had no per-candidate boundary despite the previous report claiming one; each frozen candidate now runs inside a narrow deterministic failure surface, a failed candidate is accounted for with a canonical sanitised record and can never be shortlisted, and shared authority failures still abort everything. The offline verifier now REBUILDS the frozen dataset from bundle bytes (no DB) and authenticates every actual_delta, utility, prediction, action, regret, diagnostic, family and all three reference policies against it; 17 rehashed scientific tampers are refused. Protocol v3 and the four spec hashes did NOT move; authority is `l2g-v2-prefit-authority-v4` (`6b2edd38…`). **No v2 model has been fitted** |
+| Current task | **L2-G v2 — REAL TRAIN CAMPAIGN FROZEN. Contextual-selector research CLOSED.** All four frozen ModelSpecs completed (5/5 folds, 150 records, 50 decisions, 5 margins each); **shortlist empty**. Both HistGB selectors never switched and tied SAFE on both bars — refused by the three-part rule, which fired on real data. Both Ridge selectors switched 3× on chr19 and every switch was harmful (OOF R² −11.50). SAFE mean regret 0.014976328450755624 / CVaR 0.05608717452333845; ORACLE4 regret exactly 0. Freeze `l2g-v2-train-oof-campaign-freeze-v1` identity `42310a97…`. Outcome NO_CONTEXTUAL_SELECTOR_QUALIFIED_ON_TRAIN_V2; fallback SAFE `157d88d1…`; MODELS-QUALIFIED HOLD_NO_TRAIN_PROMOTABLE_CONTEXTUAL_MODEL; VALIDATION unread and NOT authorised; TEST sealed |
+| Previous task | **L2-G v2 — SCIENTIFIC-EVIDENCE AUTHORITY (frozen; nothing fitted).** The sealed loop had no per-candidate boundary despite the previous report claiming one; each frozen candidate now runs inside a narrow deterministic failure surface, a failed candidate is accounted for with a canonical sanitised record and can never be shortlisted, and shared authority failures still abort everything. The offline verifier now REBUILDS the frozen dataset from bundle bytes (no DB) and authenticates every actual_delta, utility, prediction, action, regret, diagnostic, family and all three reference policies against it; 17 rehashed scientific tampers are refused. Protocol v3 and the four spec hashes did NOT move; authority is `l2g-v2-prefit-authority-v4` (`6b2edd38…`). **No v2 model has been fitted** |
 | Previous task | **L2-G v2 — RUNNER→PUBLISHER INTEGRATION + OFFLINE AUTHORITY (frozen; nothing fitted).** The real runner never emitted `family`, so the first real campaign would have died at publication after fitting; it now supplies its own identity and real DELTA diagnostics, and ±inf fails completeness. The offline verifier authenticates SOURCES — committed authority, Git provenance, frozen identities, recomputed cell/BAM set hashes, recomputed metrics and SAFE bar, re-derived shortlist, exact tree layout and modes. Per-spec failure isolation; the future bundle requires a verified campaign and can no longer bind 64 zeroes. Protocol v3 and the four spec hashes did NOT move; authority is `l2g-v2-prefit-authority-v3` (`07464ddf…`). **No v2 model has been fitted** |
 | Previous task | **L2-G v2 — REAL-CAMPAIGN AUTHORITY (frozen; nothing fitted).** Promotion is now three-part — no worse on either bar AND strictly better on one — so a selector that never switches can no longer qualify by tying SAFE_BASELINE. Protocol/spec at v3; HistGB `early_stopping=False`; trusted v2 campaign capability, staged publication and whole-tree verifier; bundle binds the real feature authorities. **No v2 model has been fitted** |
 | Previous task | **L2-G v2 — EXECUTABLE PRE-FIT AUTHORITY (frozen; nothing fitted).** Protocol and spec versioned to v2: exact 4-inner-fold CV, exactly 120 pooled residuals, `numpy.quantile(method="higher")`, strict `>` switch, per-family transforms, equal-BAM weights. Sealed v2 runner, final-bundle procedure and the one-shot VALIDATION rule are all frozen while VALIDATION is still unread. **No v2 model has been fitted** |
@@ -1164,6 +1165,25 @@ The gate binds the **qualified source**, not the evidence commit that carries it
 | Phase-C candidate set (10 promoted) | `923e45d59799c34ca1831c65b57604405165935a9e51d4c0e690abbfaf122bd4` |
 | Phase-C plan (500-job ceiling) | `03b846e735e5817a8df7d5c37ae15778a955828a56513b16cef8ff2193a0aa43` |
 | Execution environment (Phases A and B) | `71e14a49833ac77bb9dc576345fb89c4dd68f4a3ad3673eb098d38593c1ef4d3` |
+| L2-G campaign v1 freeze | `1c2039dec2f3fbb51a8058c947bbf8de9f9c6d235a133b5948aa6b33ac516673` |
+| L2-G v2 campaign freeze | `42310a97f2e13d516b57789bbfa0cd6ee6e44d7e732747dd44ace3aad9d33de5` |
+| L2-G v2 campaign result | `db0348c546e46cd086fe59022a2b2b06f76f8602067f6b8e8dcdbc42c26bf7ba` |
+
+### L2-G contextual-selector research: CLOSED
+
+| Stage | Status |
+|---|---|
+| L2-G v1 (predict utility) | **COMPLETE** — `NO_CONTEXTUAL_MODEL_QUALIFIED_ON_TRAIN` |
+| L2-G v2 (predict advantage over SAFE) | **COMPLETE** — `NO_CONTEXTUAL_SELECTOR_QUALIFIED_ON_TRAIN_V2` |
+| Contextual-selector research | **CLOSED** (`CONTEXTUAL_SELECTOR_RESEARCH_CLOSED`) |
+| Production fallback | SAFE baseline `157d88d1587c13be395c62d60e27d1becdada78fad45e65d883bc1190e51acea` |
+| MODELS-QUALIFIED | `HOLD_NO_TRAIN_PROMOTABLE_CONTEXTUAL_MODEL` |
+| VALIDATION | **UNREAD / NOT AUTHORIZED** (`0026`) |
+| TEST | **SEALED** (L2-I) |
+
+Both campaigns failed their promotion criteria, which were fixed before either was fitted. v2 asked
+the strictly easier question — predict the advantage over the safe baseline rather than the utility
+itself — and the answer was still no. No further contextual-selector campaign is authorized.
 
 DB-V2 is **abandoned** and stays abandoned. A future additive evaluation
 migration is not permission to resurrect it.

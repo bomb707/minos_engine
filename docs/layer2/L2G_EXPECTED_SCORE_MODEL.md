@@ -898,3 +898,54 @@ contract or dataset. The prefit authority moves to **`l2g-v2-prefit-authority-v4
 `failed_candidate_artifacts = NONE` and `failed_candidate_shortlist_eligible = false`. Whether a
 campaign may complete with a failed candidate decides whether its evidence exists at all, so it
 belongs in the authority. The v2 campaign has still not been run.
+
+## 24. The real v2 campaign, and the end of contextual-selector research
+
+The four frozen v2 ModelSpecs ran once on TRAIN, at commit `3d1d8b8c…` / tree `1db1ca44…`, under
+prefit authority `l2g-v2-prefit-authority-v4` (`6b2edd38…`). All four completed: 5/5 outer folds,
+150/150 out-of-fold advantage records, 50/50 BAM decisions and 5 learned margins each. No candidate
+failed. The campaign result is `db0348c5…` (file `caf3dfee…`, 68783 bytes), and the whole-tree
+verifier plus the verified-published capability both pass over it.
+
+**The shortlist is empty**, and the two halves failed in different ways.
+
+*Both HistGB selectors never switched.* Their inner-OOF residual margins — 0.0765–0.0989 at
+q=0.75, 0.1417–0.1902 at q=0.90 — exceeded every advantage they predicted on every held-out BAM.
+They therefore reproduced `ALWAYS_SAFE_BASELINE` exactly: mean regret 0.014976328450755624, CVaR
+regret 0.05608717452333845, identical to the bar on both. Under the two-part rule this campaign was
+originally written against, they would have been **shortlisted** — promoted for demonstrating no
+contextual value whatsoever. The three-part rule refuses a tie on both bars, and this is the case
+it was added for. It fired on real data, not on a fixture.
+
+*Both Ridge selectors switched, and every switch hurt.* Three BAMs, all on chr19, at both margin
+quantiles — the predicted advantages there were 1.108 to 1.281, far above even the q=0.90 margins,
+which is why the two quantiles produced identical policies. All three switches were harmful:
+realised total −0.17224611520642463, worst single switch −0.07185638738326411, switch precision
+0.0. Mean regret 0.018421250754884117 and CVaR 0.06846296849085629, worse than SAFE on both bars.
+The diagnostics say why: Ridge's out-of-fold R² on the advantage was **−11.497716224663604** with
+RMSE 0.316. Fitting 157 predictors on 120 rows produces predictions an order of magnitude larger
+than any real advantage, and a margin derived from those same residuals cannot fence them in.
+
+HistGB predicted the advantage far better (MAE 0.0629, RMSE 0.0877, R² 0.0399, Spearman 0.258) and
+still never found a switch worth making. That is the substantive finding: it is not that the models
+could not be fitted, but that on this problem the advantage signal is too small relative to its own
+prediction error for a margin-gated switch to pay. `GLOBAL_BEST_FINALIST_FROM_OUTER_TRAIN` chose
+the safe baseline in all five folds, so it too equals SAFE exactly, while `ORACLE4` — perfect
+foresight over the same four actions — attains mean and CVaR regret of exactly 0.0. The entire
+contextual opportunity was 0.0150 of mean utility, and none of it was captured.
+
+The freeze `reports/layer2/l2g-v2-train-oof-campaign-freeze-v1.json` records all of this, derived
+from the verified tree rather than authored: identity
+`42310a97f2e13d516b57789bbfa0cd6ee6e44d7e732747dd44ace3aad9d33de5`. Its own verifier re-runs the
+three-part rule over the frozen numbers, recomputes the switch accounting, requires ORACLE4 to have
+zero regret and the SAFE reference not to switch, and refuses a freeze that shortlists a tie,
+softens the bar, opens VALIDATION, or reopens the research disposition.
+
+**Outcome `NO_CONTEXTUAL_SELECTOR_QUALIFIED_ON_TRAIN_V2`; disposition
+`CONTEXTUAL_SELECTOR_RESEARCH_CLOSED`.** v1 asked whether a model could predict utility and v2
+asked the strictly easier question of whether one could predict advantage over the safe baseline.
+Both answered no on TRAIN, under criteria fixed before either was fitted. The production fallback
+is the safe baseline `157d88d1…`; MODELS-QUALIFIED stays
+`HOLD_NO_TRAIN_PROMOTABLE_CONTEXTUAL_MODEL`. VALIDATION was never read and is not authorised —
+with no frozen candidate, opening it could only serve to rescue a selector TRAIN rejected. TEST
+remains sealed for L2-I.
