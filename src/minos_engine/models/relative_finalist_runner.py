@@ -43,6 +43,7 @@ __all__ = [
     "derive_switch_margin",
     "inner_folds_for",
     "policy_decisions",
+    "delta_diagnostics",
     "policy_metrics",
     "reference_decisions",
     "run_relative_outer_oof",
@@ -309,7 +310,7 @@ def reference_decisions(
     return out
 
 
-def policy_metrics(decisions: list[PolicyDecision]) -> dict[str, Any]:
+def policy_metrics(decisions: list[Any]) -> dict[str, Any]:
     """Decision metrics first. Prediction accuracy is a diagnostic, not a qualification."""
     import math
 
@@ -340,6 +341,49 @@ def policy_metrics(decisions: list[PolicyDecision]) -> dict[str, Any]:
         "worst_switch_delta": (
             min(d.actual_selected_delta for d in switches) if switches else None
         ),
+    }
+
+
+def delta_diagnostics(records: list[Any]) -> dict[str, float | None]:
+    """Prediction accuracy over the exact out-of-fold advantage records.
+
+    Non-promotional by construction: nothing here reaches the shortlist. R-squared is
+    1 - SSE/SST about the mean actual advantage, and Spearman is Pearson on ranks with midranks
+    for ties. Where a statistic is mathematically undefined -- a constant actual series has no
+    variance to explain, a constant predictor has no rank correlation -- the value is ``None``,
+    not a NaN and not a fabricated zero. NaN would be the natural float, but the canonical JSON
+    encoder refuses non-finite floats, so a NaN here would fail publication after the fitting;
+    ``null`` says undefined and survives the round trip.
+    """
+    import numpy as np
+
+    _require(bool(records), "no records to diagnose")
+    actual = np.asarray([float(r.actual_delta) for r in records], dtype=float)
+    predicted = np.asarray([float(r.predicted_delta) for r in records], dtype=float)
+    _require(bool(np.all(np.isfinite(actual))), "an actual advantage is not finite")
+    _require(bool(np.all(np.isfinite(predicted))), "a predicted advantage is not finite")
+    residual = predicted - actual
+    total = float(np.sum((actual - actual.mean()) ** 2))
+
+    def _rank(values: Any) -> Any:
+        order = np.argsort(values, kind="stable")
+        ranks = np.empty(len(values), dtype=float)
+        ranks[order] = np.arange(1, len(values) + 1, dtype=float)
+        # midranks, so ties do not depend on sort order
+        _, inverse, counts = np.unique(values, return_inverse=True, return_counts=True)
+        sums = np.zeros(len(counts), dtype=float)
+        np.add.at(sums, inverse, ranks)
+        return (sums / counts)[inverse]
+
+    ra, rp = _rank(actual), _rank(predicted)
+    spearman: float | None = None
+    if float(np.std(ra)) > 0.0 and float(np.std(rp)) > 0.0:
+        spearman = float(np.corrcoef(ra, rp)[0, 1])
+    return {
+        "delta_mae": float(np.mean(np.abs(residual))),
+        "delta_rmse": float(np.sqrt(np.mean(residual**2))),
+        "delta_r2": float(1.0 - float(np.sum(residual**2)) / total) if total > 0.0 else None,
+        "delta_spearman": spearman,
     }
 
 
@@ -430,10 +474,17 @@ def run_relative_outer_oof(
             decided.add(decision.dataset_id)
             decisions.append(decision)
 
+    metrics = policy_metrics(decisions)
     return {
+        # the producer supplies its own identity fields. Publication needs them, and a fixture
+        # that injects them afterwards hides the fact that the real path never did.
         "spec_hash": spec_hash,
+        "family": str(spec["family"]),
+        "implementation": str(spec["implementation"]),
         "records": records,
         "decisions": decisions,
         "margins": dict(sorted(margins.items())),
-        "metrics": policy_metrics(decisions),
+        "metrics": metrics,
+        "diagnostics": delta_diagnostics(records),
+        "training_failures": [],
     }

@@ -247,7 +247,6 @@ def run_real_l2g_v2_train_oof_campaign(
 
     Not executed on real data in this task.
     """
-    import hashlib
 
     from minos_engine.models.relative_finalist_evidence import (
         _CAMPAIGN_TOKEN,
@@ -276,9 +275,7 @@ def run_real_l2g_v2_train_oof_campaign(
         "HEAD's recorded tree is not its actual tree",
     )
     _require(provenance.worktree_clean, "the worktree is dirty; the campaign cannot name a commit")
-    authority_path = source_root / "reports/layer2/l2g-v2-prefit-authority.json"
-    _require(authority_path.is_file(), "the v2 prefit authority is missing")
-    prefit_sha = hashlib.sha256(authority_path.read_bytes()).hexdigest()
+    prefit_sha = verify_v2_prefit_authority(source_root)
 
     trusted = load_trusted_relative_training_data(
         feature_matrix_artifact_path=feature_matrix_artifact_path,
@@ -371,7 +368,13 @@ def run_real_l2g_v2_train_oof_campaign(
         authority=campaign_authority,
         per_spec=per_spec,
         references={
-            name: {"metrics": r["metrics"], "decision_count": len(r["decisions"])}
+            # the DECISIONS are retained, not just two scalars: the promotion bar has to be
+            # recomputable from the reference's own 50 decisions, never trusted from a summary
+            name: {
+                "metrics": r["metrics"],
+                "decisions": [d.content() for d in r["decisions"]],
+                "decision_count": len(r["decisions"]),
+            }
             for name, r in references.items()
         },
         shortlist=tuple(shortlist),
@@ -515,18 +518,23 @@ def select_validation_winner(
 
 def build_trusted_final_train_bundle(
     *,
-    trusted_campaign: Any,
+    verified_campaign: Any,
     spec_hash: str,
     estimator_artifact_sha256: str,
     transform_artifact_sha256: str | None,
 ) -> dict[str, Any]:
-    """THE authoritative future bundle builder. Derives its own residuals from the campaign.
+    """THE authoritative future bundle builder, over a VERIFIED published campaign.
 
-    Whoever chooses the residual set chooses the deployment margin, so the caller does not get to
-    supply either. The spec must actually be in the campaign's frozen shortlist: a bundle for a
-    model the TRAIN criterion rejected is not a deployment candidate.
+    Residuals come from the verified OOF artifact and the TRAIN evidence identity is that
+    artifact's real scientific hash -- there is no fallback, because a bundle that bound
+    sixty-four zeroes would be citing evidence that does not exist. The spec must be in the
+    verified shortlist: a bundle for a model the TRAIN criterion rejected is not deployable.
     """
-    from minos_engine.models.relative_finalist_evidence import TrustedL2GV2TrainCampaign
+    import numpy as np
+
+    from minos_engine.models.relative_finalist_evidence import (
+        VerifiedPublishedL2GV2TrainCampaign,
+    )
     from minos_engine.models.relative_finalist_protocol import (
         V2_CANDIDATE_GRID,
         build_v2_spec_content,
@@ -534,26 +542,24 @@ def build_trusted_final_train_bundle(
     )
 
     _require(
-        isinstance(trusted_campaign, TrustedL2GV2TrainCampaign),
-        "a deployment bundle may only be built from a trusted v2 campaign",
+        isinstance(verified_campaign, VerifiedPublishedL2GV2TrainCampaign),
+        "a deployment bundle may only be built from a VERIFIED published v2 campaign",
     )
     _require(
-        spec_hash in trusted_campaign.shortlist,
-        f"{spec_hash} is not in the frozen TRAIN shortlist; a rejected model is not deployable",
+        spec_hash in verified_campaign.shortlist,
+        f"{spec_hash} is not in the verified TRAIN shortlist; a rejected model is not deployable",
     )
-    authority = trusted_campaign.authority
-    entry = trusted_campaign.spec(spec_hash)
-    hashes = build_v2_spec_hashes(authority["relative_dataset_identity"])
-    index = list(hashes).index(spec_hash)
+    result = verified_campaign.result
+    hashes = build_v2_spec_hashes(ACCEPTED_RELATIVE_DATASET_IDENTITY)
     spec = build_v2_spec_content(
-        V2_CANDIDATE_GRID[index], dataset_identity=authority["relative_dataset_identity"]
+        V2_CANDIDATE_GRID[list(hashes).index(spec_hash)],
+        dataset_identity=ACCEPTED_RELATIVE_DATASET_IDENTITY,
     )
-
-    residuals = [
-        abs(float(r["predicted_delta"]) - float(r["actual_delta"])) for r in entry["records"]
-    ]
-    import numpy as np
-
+    residuals = verified_campaign.oof_residuals(spec_hash)
+    _require(
+        len(residuals) == RELATIVE_ROWS,
+        f"{len(residuals)} verified residuals, expected {RELATIVE_ROWS}",
+    )
     margin = float(
         np.quantile(
             np.asarray(residuals, dtype=float),
@@ -561,15 +567,114 @@ def build_trusted_final_train_bundle(
             method=NUMPY_QUANTILE_METHOD,
         )
     )
-    content = _build_final_train_bundle_content(
+    evidence_identity = verified_campaign.oof_scientific_hash(spec_hash)
+    _require(
+        evidence_identity != "0" * 64 and len(evidence_identity) == 64,
+        "the TRAIN OOF evidence identity is not a real artifact identity",
+    )
+    return _build_final_train_bundle_content(
         spec_hash=spec_hash,
         spec=spec,
         oof_residuals=residuals,
         deployment_margin=margin,
         estimator_artifact_sha256=estimator_artifact_sha256,
         transform_artifact_sha256=transform_artifact_sha256,
-        train_oof_evidence_identity=entry.get("oof_scientific_hash", "0" * 64),
-        source_commit=authority["execution_source_commit"],
-        source_tree=authority["execution_source_tree"],
+        train_oof_evidence_identity=evidence_identity,
+        source_commit=result["execution_source_commit"],
+        source_tree=result["execution_source_tree"],
     )
-    return content
+
+
+def _sanitise_failure(message: str) -> str:
+    """Strip anything nondeterministic: paths, addresses, and runaway length."""
+    import re
+
+    cleaned = re.sub(r"0x[0-9a-fA-F]+", "<addr>", message)
+    cleaned = re.sub(r"(/[^\s'\"]+)+", "<path>", cleaned)
+    return cleaned.strip()[:300]
+
+
+ACCEPTED_V2_PREFIT_AUTHORITY_SHA256: Final = (
+    "07464ddfdda22312e69c10683dde209c64a6378e7ccceeca9d5ce99da123219b"
+)
+
+
+def verify_v2_prefit_authority(root: Any = None) -> str:
+    """Require the EXACT accepted authority, not merely a file that happens to be present.
+
+    Hashing whatever sits at the path would let a differently-scoped authority drive the campaign;
+    every identity it carries is checked against this source as well as its bytes.
+    """
+    import hashlib
+    import json as _json
+
+    from minos_engine.models.relative_finalist_dataset import (
+        expected_bam_chromosome_set_hash,
+        expected_relative_cell_set_hash,
+    )
+    from minos_engine.models.relative_finalist_protocol import (
+        build_v2_spec_hashes,
+        compute_relative_protocol_hash,
+    )
+    from minos_engine.models.runtime import compute_training_runtime_hash
+    from minos_engine.qualification.l2f_accepted_identities import repository_root
+
+    base = Path(root) if root is not None else repository_root()
+    path = base / "reports/layer2/l2g-v2-prefit-authority.json"
+    _require(path.is_file(), f"the v2 prefit authority is missing: {path}")
+    raw = path.read_bytes()
+    actual = hashlib.sha256(raw).hexdigest()
+    _require(
+        actual == ACCEPTED_V2_PREFIT_AUTHORITY_SHA256,
+        f"the v2 prefit authority hashes to {actual}, not the accepted "
+        f"{ACCEPTED_V2_PREFIT_AUTHORITY_SHA256}",
+    )
+    document = _json.loads(raw)
+    _require(
+        document.get("schema_version") == "l2g-v2-prefit-authority-v3",
+        f"unexpected authority schema {document.get('schema_version')!r}",
+    )
+    for field, expected in (
+        ("protocol_hash", compute_relative_protocol_hash()),
+        ("relative_dataset_identity", ACCEPTED_RELATIVE_DATASET_IDENTITY),
+        ("relative_contract_hash", ACCEPTED_RELATIVE_CONTRACT_HASH),
+        ("finalist_domain_hash", ACCEPTED_FINALIST_DOMAIN_HASH),
+        ("feature_set_hash", ACCEPTED_FEATURE_SET_HASH),
+        ("feature_matrix_hash", ACCEPTED_FEATURE_MATRIX_HASH),
+        ("config_encoding_identity", ACCEPTED_CONFIG_ENCODING_IDENTITY),
+        ("training_runtime_hash", compute_training_runtime_hash()),
+    ):
+        _require(
+            document.get(field) == expected,
+            f"the authority's {field} is {document.get(field)!r}, expected {expected}",
+        )
+    recorded = [e["spec_hash"] for e in document["candidate_spec_hashes"]]
+    _require(
+        recorded == list(build_v2_spec_hashes(ACCEPTED_RELATIVE_DATASET_IDENTITY)),
+        "the authority records different candidate specs than this source derives",
+    )
+    from minos_engine.models.prefit_loader import load_verified_training_dataset
+    from minos_engine.models.relative_finalist_dataset import build_relative_finalist_dataset
+
+    dataset = build_relative_finalist_dataset(load_verified_training_dataset(root=root))
+    _require(
+        document.get("expected_relative_cell_set_hash")
+        == expected_relative_cell_set_hash(dataset.rows),
+        "the authority's expected relative-cell-set hash does not match the frozen dataset",
+    )
+    _require(
+        document.get("expected_bam_chromosome_set_hash")
+        == expected_bam_chromosome_set_hash(dataset.bam_chromosome),
+        "the authority's expected BAM/chromosome-set hash does not match the frozen dataset",
+    )
+    _require(
+        document.get("expected_relative_cell_count") == len(dataset.rows)
+        and document.get("expected_bam_count") == len(dataset.bam_chromosome),
+        "the authority's expected counts do not match the frozen dataset",
+    )
+    _require(
+        list(document.get("diagnostics") or ())
+        == ["delta_mae", "delta_rmse", "delta_r2", "delta_spearman"],
+        "the authority does not require the four DELTA diagnostics",
+    )
+    return actual

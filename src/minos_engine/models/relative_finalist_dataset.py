@@ -37,6 +37,10 @@ __all__ = [
     "AdvantageRow",
     "RelativeFinalistDataset",
     "build_relative_finalist_dataset",
+    "expected_bam_chromosome_set_hash",
+    "expected_relative_cell_set_hash",
+    "observed_bam_chromosome_set_hash",
+    "observed_relative_cell_set_hash",
 ]
 
 RELATIVE_DATASET_SCHEMA: Final = "l2g-relative-finalist-dataset-v1"
@@ -225,4 +229,47 @@ def build_relative_finalist_dataset(training_dataset: Any) -> RelativeFinalistDa
         source_cell_identities=source_cells,
         safe_utility=safe,
         rows=rows,
+    )
+
+
+EXPECTED_CELL_SET_DOMAIN: Final = "minos:l2g-v2-expected-relative-cell-set:v1\n"
+EXPECTED_BAM_SET_DOMAIN: Final = "minos:l2g-v2-expected-bam-chromosome-set:v1\n"
+
+
+def expected_relative_cell_set_hash(rows: Any) -> str:
+    """Order-independent identity of the exact 150 (BAM, alternative) cells."""
+    pairs = sorted((r.dataset_id, r.config_hash) for r in rows)
+    if len(set(pairs)) != len(pairs):
+        raise RelativeFinalistError("the cell set repeats a (BAM, alternative) pair")
+    return sha256_hex(
+        EXPECTED_CELL_SET_DOMAIN.encode("utf-8") + canonical_json_bytes([list(p) for p in pairs])
+    )
+
+
+def expected_bam_chromosome_set_hash(bam_chromosome: dict[str, str]) -> str:
+    """Order-independent identity of the exact 50 (BAM, chromosome) assignments."""
+    return sha256_hex(
+        EXPECTED_BAM_SET_DOMAIN.encode("utf-8")
+        + canonical_json_bytes([[b, c] for b, c in sorted(bam_chromosome.items())])
+    )
+
+
+def observed_relative_cell_set_hash(pairs: Any) -> str:
+    """The same identity, recomputed from whatever a published artifact actually contains."""
+    ordered = sorted((str(a), str(b)) for a, b in pairs)
+    if len(set(ordered)) != len(ordered):
+        raise RelativeFinalistError("the observed cell set repeats a pair")
+    return sha256_hex(
+        EXPECTED_CELL_SET_DOMAIN.encode("utf-8") + canonical_json_bytes([list(p) for p in ordered])
+    )
+
+
+def observed_bam_chromosome_set_hash(pairs: Any) -> str:
+    ordered = sorted((str(a), str(b)) for a, b in pairs)
+    # uniqueness on the BAM, not on the pair: one BAM assigned two chromosomes is two outer folds
+    # deciding the same dataset, which the expected side cannot express because it is a mapping
+    if len({b for b, _ in ordered}) != len(ordered):
+        raise RelativeFinalistError("the observed BAM set repeats a BAM")
+    return sha256_hex(
+        EXPECTED_BAM_SET_DOMAIN.encode("utf-8") + canonical_json_bytes([list(p) for p in ordered])
     )

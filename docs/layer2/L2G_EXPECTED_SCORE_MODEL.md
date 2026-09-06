@@ -763,3 +763,64 @@ shortlist.
 
 Authority `reports/layer2/l2g-v2-prefit-authority.json` (`l2g-v2-prefit-authority-v2`),
 SHA `0d5b578e12972b7959389e1d4028e07d783d4f22579ecd69aec4deaa9d829fd6`.
+
+## 22. v2 runner → publisher integration, and offline authority that authenticates sources
+
+Section 21 hardened the publisher against a tampered *result*. It did not check that the real
+producer could feed it. It could not.
+
+**The real runner never emitted `family`.** Publication reads `entry["family"]` for every spec.
+`run_relative_outer_oof` returned records, decisions, margins and metrics — and nothing that
+identified which policy produced them. Every existing test passed because the synthetic fixture
+inserted `family` by hand after calling the runner, so the suite exercised a contract the real path
+did not satisfy. The first real v2 campaign would have fitted 4 finalists across 5 outer folds and
+then died with `KeyError: 'family'` at publication, after the expensive part. The runner now
+supplies `spec_hash`, `family` and `implementation` itself: a producer that cannot name itself is
+not a producer, and a fixture that names it afterwards hides that.
+
+**Diagnostics were an empty object.** Publication used `entry.get("diagnostics", {})`, so a
+COMPLETE spec could publish with nothing recorded about how well DELTA was actually predicted —
+leaving no way, offline, to tell a selector that learned the advantage from one that learned a
+constant. The runner now computes `delta_mae`, `delta_rmse`, `delta_r2` and `delta_spearman` over
+its own OOF predictions, and a COMPLETE spec that carries no diagnostics is refused.
+
+Where a diagnostic is mathematically undefined — a constant predictor has no rank correlation — the
+value is `null`, never a fabricated zero and never NaN. NaN is the natural float, but the canonical
+encoder refuses non-finite floats, so a NaN diagnostic would have failed publication *after* the
+fitting: the same failure class as the missing `family`, found the same way.
+
+**±inf passed the finiteness check.** `assess_v2_completeness` tested `value != value`, which is
+true only for NaN. An infinite learned margin is exactly as unusable and would have sailed through
+as COMPLETE. It is `math.isfinite` now, over margins, records and decisions alike.
+
+**The offline verifier trusted the evidence it was verifying.** It recomputed hashes of the
+published bytes, which proves internal consistency and nothing about correctness: a campaign that
+bound the wrong protocol, the wrong dataset or a fabricated SAFE bar verified cleanly as long as it
+was self-consistent. It now authenticates against **sources**: it re-hashes the committed prefit
+authority, checks the Git commit and tree, and compares the protocol, spec, dataset, contract,
+domain, feature, config-encoding and runtime identities against the frozen ones. It recomputes the
+relative cell set and the BAM/chromosome set from the published artifacts — order-independent set
+hashes, so a reordering is the same evidence and a substitution is not. It recomputes every policy
+metric from the published decisions, recomputes the SAFE bar from the retained
+`reference_decisions`, and re-derives the shortlist. And it enforces the exact whole-tree layout,
+file modes included: an unexpected file or subdirectory is refused by name.
+
+Retaining the reference decisions is what makes the bar checkable. Storing only the SAFE metrics
+would mean trusting the number that decides every promotion.
+
+**Per-spec failure isolation.** One finalist raising no longer aborts the campaign; the spec is
+recorded INCOMPLETE with a sanitised message (addresses and paths stripped, capped) and the others
+continue. An INCOMPLETE spec can never reach the shortlist, so isolation cannot promote anything.
+
+**The bundle could bind 64 zeroes.** `build_trusted_final_train_bundle` took residuals from its
+caller and accepted a placeholder evidence identity, so a deployment margin could be derived from
+numbers no campaign ever produced. It now requires a `VerifiedPublishedL2GV2TrainCampaign` — a
+capability minted only by the offline verifier — derives the residuals from the verified artifact
+itself, requires the spec to be in the verified shortlist, and rejects the zero identity outright.
+
+No science moved. Protocol v3 `d2b275c0…` and the four spec-v3 hashes are unchanged: this is
+evidence plumbing, and a protocol bump would falsely imply the procedure changed. Authority
+`reports/layer2/l2g-v2-prefit-authority.json` becomes `l2g-v2-prefit-authority-v3`, SHA
+`07464ddfdda22312e69c10683dde209c64a6378e7ccceeca9d5ce99da123219b`, adding the expected
+relative-cell-set hash `2142e4e3…`, the expected BAM/chromosome-set hash `8b28b073…`, the expected
+counts, and the required diagnostics. The v2 campaign has still not been run.

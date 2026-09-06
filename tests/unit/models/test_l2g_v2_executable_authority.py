@@ -552,7 +552,7 @@ def test_the_v2_prefit_authority_binds_the_frozen_procedure(authority: dict[str,
     dataset = build_relative_finalist_dataset(load_verified_training_dataset())
     assert authority["relative_dataset_identity"] == ACCEPTED_RELATIVE_DATASET_IDENTITY
     assert authority["protocol_hash"] == compute_relative_protocol_hash()
-    assert authority["schema_version"] == "l2g-v2-prefit-authority-v2"
+    assert authority["schema_version"] == "l2g-v2-prefit-authority-v3"
     assert [e["spec_hash"] for e in authority["candidate_spec_hashes"]] == list(
         build_v2_spec_hashes(dataset.identity())
     )

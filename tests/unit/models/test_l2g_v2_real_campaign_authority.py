@@ -196,7 +196,7 @@ def authority() -> dict[str, Any]:
 
 
 def test_the_authority_binds_the_v3_procedure(authority: dict[str, Any]) -> None:
-    assert authority["schema_version"] == "l2g-v2-prefit-authority-v2"
+    assert authority["schema_version"] == "l2g-v2-prefit-authority-v3"
     assert authority["protocol_hash"] == compute_relative_protocol_hash()
     assert authority["relative_dataset_identity"] == ACCEPTED_RELATIVE_DATASET_IDENTITY
     recorded = [e["spec_hash"] for e in authority["candidate_spec_hashes"]]
@@ -216,13 +216,19 @@ def test_the_authority_records_the_explicit_histgb_parameters(authority: dict[st
 # ---------------------------------------------------------------------------------------- #
 # DEFECT B -- trusted evidence
 # ---------------------------------------------------------------------------------------- #
-def _bams() -> dict[str, str]:
-    return {f"bam-{c}-{i}": c for c in CV_FOLD_CHROMOSOMES for i in range(10)}
-
-
 def _campaign(modes: tuple[str, str, str, str]) -> tuple[Any, dict[str, Any], Any]:
+    """REAL BAM and finalist identities, SYNTHETIC utilities.
+
+    The offline verifier authenticates the published cell set against the frozen dataset, so the
+    identities must be real. No real advantage label is used.
+    """
+    from minos_engine.models.prefit_loader import load_verified_training_dataset
+    from minos_engine.models.relative_finalist_dataset import (
+        build_relative_finalist_dataset,
+    )
+
     rng = np.random.default_rng(9)
-    bams = _bams()
+    bams = dict(build_relative_finalist_dataset(load_verified_training_dataset()).bam_chromosome)
     utility: dict[tuple[str, str], float] = {}
     for b in bams:
         safe = float(np.clip(rng.normal(0.7, 0.1), 0, 1))
@@ -247,7 +253,12 @@ def _campaign(modes: tuple[str, str, str, str]) -> tuple[Any, dict[str, Any], An
                     outer_fold=chromosome,
                 )
             )
-        references[name] = {"metrics": policy_metrics(decisions), "decision_count": len(decisions)}
+        references[name] = {
+            "metrics": policy_metrics(decisions),
+            # the decisions themselves: the promotion bar is recomputed from them, never trusted
+            "decisions": [d.content() for d in decisions],
+            "decision_count": len(decisions),
+        }
 
     class _D:
         def __init__(self, d: dict[str, Any]) -> None:
@@ -298,12 +309,18 @@ def _campaign(modes: tuple[str, str, str, str]) -> tuple[Any, dict[str, Any], An
             )
         per_spec[spec_hash] = {
             "spec_hash": spec_hash,
-            "family": "RELATIVE_RIDGE_SHARED" if "RIDGE" in mode.upper() or True else "",
+            "family": "RELATIVE_RIDGE_SHARED",
             "records": records,
             "decisions": decisions,
             "margins": dict.fromkeys(CV_FOLD_CHROMOSOMES, 0.0),
             "metrics": policy_metrics([_D(d) for d in decisions]),
-            "diagnostics": {"delta_mae": 0.0},
+            # a COMPLETE spec must carry all four; the real producer computes them
+            "diagnostics": {
+                "delta_mae": 0.0,
+                "delta_rmse": 0.0,
+                "delta_r2": 0.0,
+                "delta_spearman": 0.0,
+            },
             "training_failures": [],
             "expected_cell_set": cells,
         }
@@ -544,7 +561,8 @@ def test_an_unexpected_evidence_file_is_refused(published: dict[str, Any]) -> No
     intruder = published["dir"] / "oof" / f"{'f' * 64}.json"
     intruder.write_text("{}")
     try:
-        with pytest.raises(V2EvidenceError, match="not accounted for"):
+        # the whole-tree layout check now names it directly
+        with pytest.raises(V2EvidenceError, match="unexpected file"):
             verify_published_l2g_v2_train_campaign(published["dir"])
     finally:
         intruder.unlink()
@@ -589,72 +607,34 @@ def test_a_partial_failure_leaves_no_final_tree(
 # ---------------------------------------------------------------------------------------- #
 # DEFECT C -- the bundle authority
 # ---------------------------------------------------------------------------------------- #
-def test_the_bundle_binds_the_real_feature_authorities_not_the_domain_hash(
-    campaign: tuple[Any, dict[str, Any], Any],
-) -> None:
-    trusted = campaign[0]
-    bundle = build_trusted_final_train_bundle(
-        trusted_campaign=trusted,
-        spec_hash=trusted.shortlist[0],
-        estimator_artifact_sha256="a" * 64,
-        transform_artifact_sha256="b" * 64,
-    )
-    assert bundle["feature_set_hash"] == ACCEPTED_FEATURE_SET_HASH
-    assert bundle["feature_matrix_hash"] == ACCEPTED_FEATURE_MATRIX_HASH
-    assert bundle["config_encoding_identity"] == ACCEPTED_CONFIG_ENCODING_IDENTITY
-    assert bundle["finalist_domain_hash"] == compute_finalist_domain_hash()
-    assert bundle["feature_set_hash"] != bundle["finalist_domain_hash"]
-    assert "feature_schema_hash" not in bundle
+def test_the_bundle_now_requires_a_verified_published_campaign() -> None:
+    """The in-memory campaign is no longer enough; see the producer->publisher suite for the
+    end-to-end bundle proofs, which can supply a verified capability."""
+    import inspect
 
-
-def test_the_bundle_derives_its_own_deployment_margin(
-    campaign: tuple[Any, dict[str, Any], Any],
-) -> None:
-    """Whoever chooses the residuals chooses the margin, so the caller does not."""
     parameters = set(inspect.signature(build_trusted_final_train_bundle).parameters)
     assert parameters == {
-        "trusted_campaign",
+        "verified_campaign",
         "spec_hash",
         "estimator_artifact_sha256",
         "transform_artifact_sha256",
     }
-    assert not (parameters & {"oof_residuals", "deployment_margin"})
-    trusted = campaign[0]
-    bundle = build_trusted_final_train_bundle(
-        trusted_campaign=trusted,
-        spec_hash=trusted.shortlist[0],
-        estimator_artifact_sha256="a" * 64,
-        transform_artifact_sha256=None,
-    )
-    records = trusted.spec(trusted.shortlist[0])["records"]
-    residuals = [abs(r["predicted_delta"] - r["actual_delta"]) for r in records]
-    expected = float(np.quantile(np.asarray(residuals), bundle["margin_quantile"], method="higher"))
-    assert bundle["deployment_margin"] == expected
-    assert bundle["validation_labels_used"] is False
-
-
-def test_a_non_shortlisted_spec_cannot_be_bundled(
-    campaign: tuple[Any, dict[str, Any], Any],
-) -> None:
-    trusted, _, hashes = campaign
-    rejected = next(h for h in hashes if h not in trusted.shortlist)
-    with pytest.raises(RelativeAuthorityError, match="not in the frozen TRAIN shortlist"):
+    assert not (parameters & {"oof_residuals", "deployment_margin", "trusted_campaign"})
+    with pytest.raises(RelativeAuthorityError, match="VERIFIED published"):
         build_trusted_final_train_bundle(
-            trusted_campaign=trusted,
-            spec_hash=rejected,
-            estimator_artifact_sha256="a" * 64,
-            transform_artifact_sha256=None,
-        )
-
-
-def test_a_dict_cannot_be_bundled() -> None:
-    with pytest.raises(RelativeAuthorityError, match="only be built from a trusted"):
-        build_trusted_final_train_bundle(
-            trusted_campaign={"shortlist": ("a" * 64,)},
+            verified_campaign={"shortlist": ("a" * 64,)},
             spec_hash="a" * 64,
             estimator_artifact_sha256="a" * 64,
             transform_artifact_sha256=None,
         )
+
+
+def test_the_bundle_never_falls_back_to_a_zero_evidence_identity() -> None:
+    import inspect
+
+    source = inspect.getsource(build_trusted_final_train_bundle)
+    assert 'entry.get("oof_scientific_hash", "0" * 64)' not in source
+    assert "is not a real artifact identity" in source
 
 
 # ---------------------------------------------------------------------------------------- #
