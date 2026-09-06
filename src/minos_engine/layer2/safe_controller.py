@@ -95,6 +95,8 @@ class VerifiedSafeBaselineAuthority:
         "entry_gate_checks",
         "parameter_space_hash",
         "policy_hash",
+        "source_commit",
+        "source_tree",
     )
 
     def __init__(
@@ -108,6 +110,8 @@ class VerifiedSafeBaselineAuthority:
         baseline_uri: str,
         parameter_space_hash: str,
         entry_gate_checks: dict[str, bool],
+        source_commit: str,
+        source_tree: str,
     ) -> None:
         if token is not _AUTHORITY_TOKEN:
             raise SafeControllerAuthorityError(
@@ -121,6 +125,10 @@ class VerifiedSafeBaselineAuthority:
         self.baseline_uri = baseline_uri
         self.parameter_space_hash = parameter_space_hash
         self.entry_gate_checks = dict(entry_gate_checks)
+        # minted from the SAME root that was verified, so nothing downstream needs to look a
+        # repository up again -- a later global lookup could name a different checkout entirely
+        self.source_commit = source_commit
+        self.source_tree = source_tree
 
     @property
     def policy(self) -> dict[str, Any]:
@@ -150,9 +158,14 @@ def load_verified_safe_baseline_authority(
         live_gatk_parameter_space,
     )
     from minos_engine.layer2.entry_gate import EntryGateRequest, verify_l2_entry_gate
-    from minos_engine.qualification.l2f_accepted_identities import repository_root
+    from minos_engine.layer2.safe_controller_policy import _resolve_root
+    from minos_engine.qualification.provenance import read_provenance
 
-    root = Path(repo_root) if repo_root is not None else repository_root()
+    # ONE authority domain: the entry gate, the policy, the baseline authority, the payload and
+    # the source provenance are all resolved against this same root. Mixing a caller-supplied
+    # root with an ambient global one would let a tampered copy borrow the real repository's
+    # authority for whichever checks it could not satisfy itself.
+    root = _resolve_root(repo_root)
 
     # --- the repository-owned L1 entry gate. Not duplicated, not caller-supplied ----------- #
     gate = verify_l2_entry_gate(EntryGateRequest(repo_root=str(root)))
@@ -215,6 +228,12 @@ def load_verified_safe_baseline_authority(
         "the canonical config cites a parameter space other than the live one",
     )
 
+    provenance = read_provenance(root)
+    _require(
+        bool(provenance.head_sha) and bool(provenance.tree_sha),
+        f"the execution source provenance could not be read from Git at {root}",
+    )
+
     return VerifiedSafeBaselineAuthority(
         _AUTHORITY_TOKEN,
         policy=policy,
@@ -224,6 +243,8 @@ def load_verified_safe_baseline_authority(
         baseline_uri=f"file://{path.resolve()}",
         parameter_space_hash=space.parameter_space_hash,
         entry_gate_checks=dict(gate.checks),
+        source_commit=str(provenance.head_sha),
+        source_tree=str(provenance.tree_sha),
     )
 
 
@@ -244,12 +265,11 @@ def safe_decision_manifest_content(
     Deterministic for identical semantic input: no timestamps, no PIDs, no durations. Operational
     facts belong in the persistence layer's own columns, not in a scientific identity -- two
     identical requests must produce the same decision identity or the identity means nothing.
-    """
-    from minos_engine.layer2.prerequisites import ACCEPTED
-    from minos_engine.qualification.l2f_accepted_identities import repository_root
-    from minos_engine.qualification.provenance import read_provenance
 
-    provenance = read_provenance(repository_root())
+    Every authority value here comes from the minted capability. Nothing looks a repository up
+    again: a global lookup after minting could name a different checkout than the one that was
+    actually verified, which is exactly the kind of seam this controller exists to close.
+    """
     profile = request.profile_ref
     policy = authority.policy
     requested = request.requested_mode
@@ -287,9 +307,11 @@ def safe_decision_manifest_content(
             "candidate_generation": False,
             "parameter_mutation": False,
         },
-        "accepted_prerequisite_identity": ACCEPTED.model_dump(mode="json"),
-        "execution_source_commit": str(provenance.head_sha),
-        "execution_source_tree": str(provenance.tree_sha),
+        # from the VERIFIED policy, not from a fresh global lookup: both come from the same
+        # authority domain the capability was minted in
+        "accepted_prerequisite_identity": policy["accepted_prerequisites"],
+        "execution_source_commit": authority.source_commit,
+        "execution_source_tree": authority.source_tree,
     }
 
 

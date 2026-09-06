@@ -29,9 +29,20 @@ safe baseline config hash, the live parameter-space identity and schema, the ful
 prerequisite identity, `models_qualified_status`, `model_bundle_load_authorized = false` and
 `select_config_public_boundary = BLOCKED`.
 
-The policy is *derived*, not authored: `safe_controller_policy_content()` verifies both campaign
-freezes and reads every identity from its owning module. No environment variable or caller
-argument participates.
+The policy is *derived*, not authored: `safe_controller_policy_content(root)` verifies both
+campaign freezes and reads every identity from its owning module. No environment variable or
+caller argument participates.
+
+**Exactly one policy document is valid for an authority domain.** `verify_safe_controller_policy`
+re-derives the whole document from the same root and requires equality field for field and nested
+value for nested value; `load_committed_safe_controller_policy` runs that against the committed
+bytes on every load. This corrects a real defect: the first implementation asserted a handful of
+fields and required only that the two campaign-freeze identities be *non-empty*, and never looked
+at `accepted_prerequisites`, `contextual_disabled_reason`, `refinement_disabled_scope`,
+`parameter_space_schema` or `config_schema` at all. A document with a swapped freeze identity, an
+edited nested prerequisite, a rewritten reason string, an unknown key or a missing key would have
+verified. A unit test comparing committed bytes to the deriver does not substitute for this: it
+proves something was true when the test last ran, not when the artifact is loaded.
 
 ## 3. Baseline authority (not copied from anywhere)
 
@@ -55,6 +66,24 @@ A frozen old baseline is **not** legal forever. Before any decision, the control
 If the space moves, or canonicalisation would rewrite any field, the controller raises rather than
 emitting. **The baseline is never silently mutated to fit new ranges**; a new compatibility domain
 requires explicit requalification.
+
+## 4a. One authority domain
+
+The entry gate, the committed policy, the baseline-selected authority, both L2-G freezes, the
+accepted prerequisites and the git source provenance are all resolved against the **same**
+explicitly passed `repo_root`. Mixing a caller-supplied root with an ambient `repository_root()`
+would let a tampered copy borrow the real repository's authority for whichever checks it could not
+satisfy itself, so a qualification copy is independently verifiable as a coherent domain.
+
+`live_gatk_parameter_space()` is the one deliberate exception: it reads two fixed committed paths
+from the installed source package and refuses caller-supplied documents by design. Making it
+root-scoped would mean weakening that refusal, so it stays package-scoped and a test pins the
+boundary rather than leaving it for a reader to discover.
+
+The verified execution source commit and tree are minted **into** `VerifiedSafeBaselineAuthority`
+from the root that was actually verified, and the decision manifest uses those values. Nothing
+resolves a repository again after minting — a later global lookup could name a different checkout
+than the one the capability attests to. No filesystem path enters the scientific identity.
 
 ## 5. Entry gate
 

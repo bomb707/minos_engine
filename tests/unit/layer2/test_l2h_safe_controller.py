@@ -417,6 +417,8 @@ def test_a_caller_cannot_mint_an_authority() -> None:
             baseline_uri="file:///nowhere",
             parameter_space_hash=PARAMETER_SPACE,
             entry_gate_checks={},
+            source_commit="0" * 40,
+            source_tree="0" * 40,
         )
 
 
@@ -649,3 +651,203 @@ def test_the_l2g_freezes_are_byte_identical() -> None:
         ),
     ):
         assert hashlib.sha256((root / relative).read_bytes()).hexdigest() == expected
+
+
+# ---------------------------------------------------------------------------------------- #
+# the RUNTIME loader refuses a tampered committed policy (not merely a source test)
+# ---------------------------------------------------------------------------------------- #
+def _tamper_policy(root: Path, mutate: Any, *, canonical: bool = True) -> None:
+    """Edit the committed policy inside a coherent repository copy, then re-canonicalise."""
+    path = root / SAFE_CONTROLLER_POLICY_PATH
+    content = json.loads(path.read_bytes())
+    mutate(content)
+    if canonical:
+        path.write_bytes(canonical_json_bytes(content))
+    else:
+        path.write_bytes(json.dumps(content, indent=2).encode("utf-8"))
+
+
+def _wrong_v1_freeze(content: dict[str, Any]) -> None:
+    content["l2g_v1_campaign_freeze_identity"] = content["l2g_v2_campaign_freeze_identity"]
+
+
+def _wrong_v2_freeze(content: dict[str, Any]) -> None:
+    content["l2g_v2_campaign_freeze_identity"] = content["l2g_v1_campaign_freeze_identity"]
+
+
+def _edit_nested_prerequisite(content: dict[str, Any]) -> None:
+    content["accepted_prerequisites"]["l1_gate_hash"] = "e" * 64
+
+
+def _drop_prerequisites(content: dict[str, Any]) -> None:
+    del content["accepted_prerequisites"]
+
+
+def _edit_parameter_space_schema(content: dict[str, Any]) -> None:
+    content["parameter_space_schema"] = "l2f-gatk-live-parameter-space-v2"
+
+
+def _edit_config_schema(content: dict[str, Any]) -> None:
+    content["config_schema"] = "some-other-config-schema-v1"
+
+
+def _edit_refinement_scope(content: dict[str, Any]) -> None:
+    content["refinement_disabled_scope"] = "NONE"
+
+
+def _edit_disabled_reason(content: dict[str, Any]) -> None:
+    content["contextual_disabled_reason"] = "contextual modes are fine actually"
+
+
+def _add_unknown_key(content: dict[str, Any]) -> None:
+    content["contextual_override_allowed"] = True
+
+
+def _drop_required_key(content: dict[str, Any]) -> None:
+    del content["models_qualified_status"]
+
+
+def _quietly_widen(content: dict[str, Any]) -> None:
+    """Canonical bytes, valid JSON, scientifically a different policy entirely."""
+    content["allowed_modes"] = ["SAFE_BASELINE", "FULL_CONTEXTUAL"]
+    content["disabled_modes"] = ["BOUNDED", "REFINEMENT"]
+    content["contextual_modes_disabled"] = False
+
+
+def _swap_baseline_identity(content: dict[str, Any]) -> None:
+    content["baseline_selected_identity"] = "d" * 64
+
+
+POLICY_TAMPERS: tuple[tuple[str, Any, bool], ...] = (
+    ("wrong_v1_freeze_identity", _wrong_v1_freeze, True),
+    ("wrong_v2_freeze_identity", _wrong_v2_freeze, True),
+    ("changed_nested_prerequisite", _edit_nested_prerequisite, True),
+    ("deleted_prerequisites", _drop_prerequisites, True),
+    ("changed_parameter_space_schema", _edit_parameter_space_schema, True),
+    ("changed_config_schema", _edit_config_schema, True),
+    ("changed_refinement_scope", _edit_refinement_scope, True),
+    ("changed_disabled_reason", _edit_disabled_reason, True),
+    ("unknown_top_level_key", _add_unknown_key, True),
+    ("deleted_required_key", _drop_required_key, True),
+    ("canonical_but_widened", _quietly_widen, True),
+    ("swapped_baseline_identity", _swap_baseline_identity, True),
+    ("non_canonical_bytes", lambda content: None, False),
+)
+
+
+@pytest.mark.parametrize(
+    "label,mutate,canonical", POLICY_TAMPERS, ids=[t[0] for t in POLICY_TAMPERS]
+)
+def test_the_runtime_loader_refuses_a_tampered_policy(
+    tmp_path: Path, label: str, mutate: Any, canonical: bool
+) -> None:
+    """The REAL loader, against a coherent repository copy. No substring scanning anywhere.
+
+    Each case rewrites the committed policy as valid canonical JSON, so nothing here is caught by
+    a syntax error: the only thing that can refuse them is field-for-field re-derivation from the
+    owning authorities.
+    """
+    root = _repo_copy(tmp_path)
+    _tamper_policy(root, mutate, canonical=canonical)
+    with pytest.raises((SafeControllerPolicyError, SafeControllerAuthorityError)):
+        load_committed_safe_controller_policy(root)
+    with pytest.raises((SafeControllerPolicyError, SafeControllerAuthorityError)):
+        load_verified_safe_baseline_authority(repo_root=root)
+
+
+def test_the_untampered_copy_still_verifies(tmp_path: Path) -> None:
+    """The tamper harness itself must not be what fails the cases above."""
+    root = _repo_copy(tmp_path)
+    policy = load_committed_safe_controller_policy(root)
+    assert compute_safe_controller_policy_hash(policy, root=root) == ACCEPTED_POLICY_HASH
+    authority = load_verified_safe_baseline_authority(repo_root=root)
+    assert authority.baseline_config_hash == SELECTED_CONFIG_HASH
+
+
+def test_exactly_one_policy_document_is_valid_for_an_authority_domain(tmp_path: Path) -> None:
+    """The invariant, stated directly: equality with the derived document, or refusal."""
+    root = _repo_copy(tmp_path)
+    derived = safe_controller_policy_content(root)
+    assert verify_safe_controller_policy(derived, root=root)["ok"] is True
+    for key in sorted(derived):
+        broken = copy.deepcopy(derived)
+        del broken[key]
+        with pytest.raises(SafeControllerPolicyError):
+            verify_safe_controller_policy(broken, root=root)
+
+
+def test_a_tampered_v2_freeze_breaks_the_policy_derivation(tmp_path: Path) -> None:
+    """The freeze is an AUTHORITY for this policy, so a broken freeze cannot yield one."""
+    from minos_engine.models.relative_finalist_freeze import V2_FREEZE_PATH
+
+    root = _repo_copy(tmp_path)
+    path = root / V2_FREEZE_PATH
+    freeze = json.loads(path.read_bytes())
+    freeze["research_disposition"] = "CONTEXTUAL_SELECTOR_RESEARCH_REOPENED"
+    path.write_bytes(canonical_json_bytes(freeze))
+    with pytest.raises(Exception, match="research|freeze|disposition"):
+        load_committed_safe_controller_policy(root)
+
+
+# ---------------------------------------------------------------------------------------- #
+# one authority domain, no ambient repository state
+# ---------------------------------------------------------------------------------------- #
+def test_the_capability_carries_the_provenance_of_the_root_it_verified(
+    tmp_path: Path,
+) -> None:
+    from minos_engine.qualification.provenance import read_provenance
+
+    root = _repo_copy(tmp_path)
+    authority = load_verified_safe_baseline_authority(repo_root=root)
+    expected = read_provenance(root)
+    assert authority.source_commit == expected.head_sha
+    assert authority.source_tree == expected.tree_sha
+
+
+def test_the_manifest_provenance_comes_from_the_capability_not_a_global_lookup(
+    tmp_path: Path,
+) -> None:
+    root = _repo_copy(tmp_path)
+    authority = load_verified_safe_baseline_authority(repo_root=root)
+    manifest = safe_decision_manifest_content(request=_request(authority), authority=authority)
+    assert manifest["execution_source_commit"] == authority.source_commit
+    assert manifest["execution_source_tree"] == authority.source_tree
+
+
+def test_no_global_repository_lookup_survives_in_the_controller() -> None:
+    """After minting, nothing may resolve a repository again."""
+    import ast
+
+    source = (repository_root() / "src/minos_engine/layer2/safe_controller.py").read_text(
+        encoding="utf-8"
+    )
+    called = {
+        node.func.id
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "repository_root" not in called
+
+
+def test_the_manifest_binds_no_filesystem_path(
+    authority: VerifiedSafeBaselineAuthority,
+) -> None:
+    """A path is operational; it must never enter a scientific identity."""
+    manifest = safe_decision_manifest_content(request=_request(authority), authority=authority)
+    for value in json.dumps(manifest).split('"'):
+        assert not value.startswith("/")
+        assert "file://" not in value
+
+
+def test_the_parameter_space_authority_is_package_scoped_by_design() -> None:
+    """The one authority that is deliberately not root-scoped, asserted rather than assumed.
+
+    ``live_gatk_parameter_space()`` reads two fixed committed paths from the installed source and
+    refuses caller-supplied documents outright. Making it root-scoped would mean weakening that
+    refusal, so the boundary is pinned here instead of being left to a reader to discover.
+    """
+    import inspect
+
+    from minos_engine.experiments.gatk_live_space import load_committed_live_gatk_parameter_space
+
+    assert inspect.signature(load_committed_live_gatk_parameter_space).parameters == {}
