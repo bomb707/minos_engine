@@ -824,3 +824,77 @@ evidence plumbing, and a protocol bump would falsely imply the procedure changed
 `07464ddfdda22312e69c10683dde209c64a6378e7ccceeca9d5ce99da123219b`, adding the expected
 relative-cell-set hash `2142e4e3…`, the expected BAM/chromosome-set hash `8b28b073…`, the expected
 counts, and the required diagnostics. The v2 campaign has still not been run.
+
+## 23. Frozen-label authentication, policy reconstruction, and a failure path that exists
+
+Section 22 claimed per-candidate failure isolation. **The sealed loop never had any.** It called
+`run_relative_outer_oof` directly, and `_sanitise_failure` — written for the purpose — was never
+called from anywhere. One candidate raising would still have destroyed a campaign that had already
+fitted the other three. The claim was in the report and the documentation before it was in the
+code; that is worth saying plainly, because a stated guarantee nobody can execute is worse than an
+absent one.
+
+The loop now runs each frozen candidate inside `run_frozen_candidates`, which catches a **narrow**
+surface — `RelativeRunnerError`, `ValueError` (so `LinAlgError` and `NotFittedError`),
+`ArithmeticError` — and records a canonical `TRAINING_FAILURE` entry carrying the spec hash, the
+derived family and implementation, empty records/decisions/margins/diagnostics, and one sanitised
+`{stage, exception_type, sanitized_reason}`. `KeyError`, `AttributeError`, `TypeError`,
+`ImportError` and `OSError` are deliberately **not** caught: those are integration defects, not
+statements about a model, and swallowing them per-candidate is precisely how a missing `family`
+key would have hidden for a second time. `KeyboardInterrupt`, `SystemExit` and `MemoryError` are
+excluded too. Shared-authority failures happen before this function and abort everything — there
+is nothing to isolate them from.
+
+The shortlist is now derived only from entries that `assess_v2_completeness` calls COMPLETE.
+Reading a failed candidate's empty metrics would have been inventing a promotion decision.
+
+**The offline verifier trusted the science it was verifying.** It authenticated identities and
+recomputed metrics *from the published bytes*, which catches an inconsistent forgery and nothing
+else: shift every `actual_delta`, rewrite every utility, author every decision by hand, then
+recompute the hashes, and the tree verified cleanly. So the verifier now rebuilds the frozen
+scientific reference — `relative_finalist_reconstruction` re-reads the frozen TRAIN bundle,
+requires the `TrainingDataset` to hash to `d031758c…` and the `RelativeFinalistDataset` to
+`4a8f2777…`, and derives the four-finalist utility table from the source rows. No database, no
+VALIDATION, no TEST: a reviewer needs a checkout and the bundle.
+
+Against that reference it requires, for every COMPLETE spec:
+
+- every published `actual_delta` equals the frozen advantage for its cell, at full precision — not
+  merely finite, and every chromosome and outer fold is the frozen assignment;
+- every decision's `predictions` are exactly the three alternatives, each equal to that BAM's own
+  published OOF prediction, and its `margin` is its outer fold's published margin;
+- the published `selected_config` and `switched` are what the frozen switch rule produces from
+  those predictions and that margin — argmax, ties to the lowest config hash, strict `>`;
+- `safe_utility`, `selected_utility`, `oracle4_utility`, `regret` and `actual_selected_delta` are
+  what the frozen utility table gives for that action;
+- the diagnostics are recomputed from the 150 records and must match, with `null` exactly where
+  the recomputation is undefined and nowhere else;
+- `family` and `implementation` are derived from the accepted ModelSpec, for failed candidates too.
+
+The three references are **regenerated** from the frozen utilities and folds, and the stored 50
+decisions must equal them field for field, before the SAFE bar is taken from them. Storing only
+the SAFE metrics — or trusting stored decisions because their config hashes look plausible — would
+mean trusting the number that decides every promotion. Thread evidence must be present and every
+scientific pool must record exactly one thread.
+
+Seventeen adversarial cases prove the point: each edits one scientific value — an advantage, a
+utility, a regret, a margin, a prediction, an action, a switch flag, a diagnostic, a family, a
+thread count, a reference decision, an ORACLE4 choice — and then repairs **every** affected file
+SHA, scientific identity, metric and promotion field. All seventeen are refused, and an
+untampered tree pushed through the same rehash harness still verifies, so the harness is not what
+fails them. Correct hashes do not make scientifically wrong bytes valid.
+
+The producer→publisher suite no longer injects anything: it calls the same `run_frozen_candidates`
+the sealed entry calls, over the real frozen 150 cells with the real labels and utilities, and
+only the design matrix is synthetic. The models learn from noise plus one informative column, so
+they make no scientific claim — but everything they are scored against is the frozen truth, and
+the shortlist and deployment-bundle paths are exercised rather than skipped.
+
+Protocol v3 `d2b275c0…` and the four spec-v3 hashes did not move, and neither did the relative
+contract or dataset. The prefit authority moves to **`l2g-v2-prefit-authority-v4`**, SHA
+`6b2edd38eeee0765c96a2b55083fa534647631c2e449bf702b9d4204f0f894d8`, binding
+`candidate_failure_policy = ISOLATE_MODEL_SPEC_AND_MARK_INELIGIBLE`,
+`shared_authority_failure_policy = ABORT_CAMPAIGN_NO_PUBLICATION`,
+`failed_candidate_artifacts = NONE` and `failed_candidate_shortlist_eligible = false`. Whether a
+campaign may complete with a failed candidate decides whether its evidence exists at all, so it
+belongs in the authority. The v2 campaign has still not been run.

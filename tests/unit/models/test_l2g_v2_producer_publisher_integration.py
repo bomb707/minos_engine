@@ -19,22 +19,16 @@ from typing import Any
 import numpy as np
 import pytest
 
-from minos_engine.models.contract import CV_FOLD_CHROMOSOMES
 from minos_engine.models.relative_finalist_authority import (
-    ACCEPTED_CONFIG_ENCODING_IDENTITY,
-    ACCEPTED_FEATURE_MATRIX_HASH,
     ACCEPTED_FEATURE_SET_HASH,
-    ACCEPTED_FINALIST_DOMAIN_HASH,
     ACCEPTED_RELATIVE_CONTRACT_HASH,
     ACCEPTED_RELATIVE_DATASET_IDENTITY,
     ACCEPTED_V2_PREFIT_AUTHORITY_SHA256,
-    PARENT_V1_CAMPAIGN_FREEZE,
     RelativeAuthorityError,
     build_trusted_final_train_bundle,
     verify_v2_prefit_authority,
 )
 from minos_engine.models.relative_finalist_contract import (
-    ALTERNATIVE_FINALISTS,
     FINALIST_DOMAIN,
     SAFE_BASELINE_CONFIG_HASH,
 )
@@ -52,103 +46,37 @@ from minos_engine.models.relative_finalist_evidence import (
     load_verified_published_l2g_v2_campaign,
     mint_trusted_v2_campaign,
     verify_published_l2g_v2_train_campaign,
-    write_l2g_v2_train_campaign_outputs,
 )
 from minos_engine.models.relative_finalist_protocol import (
     V2_CANDIDATE_GRID,
-    build_v2_spec_content,
     build_v2_spec_hashes,
     compute_relative_protocol_hash,
-    qualifies_against_bar,
+)
+from minos_engine.models.relative_finalist_reconstruction import (
+    build_frozen_scientific_reference,
 )
 from minos_engine.models.relative_finalist_runner import (
     delta_diagnostics,
-    policy_metrics,
-    reference_decisions,
-    run_relative_outer_oof,
 )
-from minos_engine.models.runtime import compute_training_runtime_hash
 from minos_engine.qualification.l2f_accepted_identities import repository_root
-from minos_engine.qualification.provenance import GitProvenance, read_provenance
-
-
-class _Row:
-    def __init__(self, bam: str, config: str, delta: float) -> None:
-        self.dataset_id, self.config_hash, self.delta = bam, config, delta
-
-
-def _synthetic_world() -> dict[str, Any]:
-    """REAL BAM and finalist identities, SYNTHETIC utilities and predictors.
-
-    The identities have to be real: the offline verifier authenticates the published cell set
-    against the frozen dataset via the committed authority, which is the whole point of §9. No
-    real advantage label is used and no real feature value is read.
-    """
-    from minos_engine.models.prefit_loader import load_verified_training_dataset
-    from minos_engine.models.relative_finalist_dataset import (
-        build_relative_finalist_dataset,
-    )
-
-    rng = np.random.default_rng(17)
-    dataset = build_relative_finalist_dataset(load_verified_training_dataset())
-    bams = dict(dataset.bam_chromosome)
-    utility: dict[tuple[str, str], float] = {}
-    for bam in sorted(bams):
-        safe = float(np.clip(rng.normal(0.7, 0.1), 0, 1))
-        utility[(bam, SAFE_BASELINE_CONFIG_HASH)] = safe
-        for config in ALTERNATIVE_FINALISTS:
-            utility[(bam, config)] = float(np.clip(safe + rng.normal(-0.04, 0.08), 0, 1))
-    rows = [
-        _Row(
-            r.dataset_id,
-            r.config_hash,
-            utility[(r.dataset_id, r.config_hash)]
-            - utility[(r.dataset_id, SAFE_BASELINE_CONFIG_HASH)],
-        )
-        for r in dataset.rows
-    ]
-    design = {(r.dataset_id, r.config_hash): rng.normal(size=157) for r in rows}
-    return {"bams": bams, "rows": rows, "utility": utility, "design": design}
-
-
-@pytest.fixture(scope="module")
-def world() -> dict[str, Any]:
-    return _synthetic_world()
-
-
-@pytest.fixture(scope="module")
-def produced(world: dict[str, Any]) -> dict[str, Any]:
-    """Whatever the REAL runner returns for all four frozen specs. Nothing added."""
-    hashes = build_v2_spec_hashes(ACCEPTED_RELATIVE_DATASET_IDENTITY)
-    per_spec: dict[str, Any] = {}
-    for recipe, spec_hash in zip(V2_CANDIDATE_GRID, hashes, strict=True):
-        spec = build_v2_spec_content(recipe, dataset_identity=ACCEPTED_RELATIVE_DATASET_IDENTITY)
-        per_spec[spec_hash] = run_relative_outer_oof(
-            spec=spec,
-            spec_hash=spec_hash,
-            rows=world["rows"],
-            design=world["design"],
-            utility=world["utility"],
-            chromosome_of=world["bams"],
-        )
-    return per_spec
+from tests.unit.models.conftest import v2_campaign_authority, v2_reference_bundle
 
 
 # ---------------------------------------------------------------------------------------- #
 # DEFECT: the producer did not supply what the publisher requires
 # ---------------------------------------------------------------------------------------- #
-def test_the_real_runner_supplies_family_and_implementation(produced: dict[str, Any]) -> None:
+def test_the_real_runner_supplies_family_and_implementation(v2_produced: dict[str, Any]) -> None:
     """This assertion fails on 019b3792: run_relative_outer_oof emitted no family."""
     hashes = build_v2_spec_hashes(ACCEPTED_RELATIVE_DATASET_IDENTITY)
     for recipe, spec_hash in zip(V2_CANDIDATE_GRID, hashes, strict=True):
-        entry = produced[spec_hash]
+        entry = v2_produced[spec_hash]
         assert entry["family"] == recipe["family"]
         assert entry["implementation"] == recipe["implementation"]
         assert entry["spec_hash"] == spec_hash
 
 
-def test_the_real_runner_supplies_non_empty_diagnostics(produced: dict[str, Any]) -> None:
-    for entry in produced.values():
+def test_the_real_runner_supplies_non_empty_diagnostics(v2_produced: dict[str, Any]) -> None:
+    for entry in v2_produced.values():
         diagnostics = entry["diagnostics"]
         assert diagnostics, "a COMPLETE spec published empty diagnostics"
         for name in ("delta_mae", "delta_rmse", "delta_r2", "delta_spearman"):
@@ -157,20 +85,30 @@ def test_the_real_runner_supplies_non_empty_diagnostics(produced: dict[str, Any]
         assert math.isfinite(diagnostics["delta_rmse"])
 
 
-def test_the_diagnostics_are_computed_from_the_exact_150_records(produced: dict[str, Any]) -> None:
-    entry = next(iter(produced.values()))
+def test_the_diagnostics_are_computed_from_the_exact_150_records(
+    v2_produced: dict[str, Any],
+) -> None:
+    entry = next(iter(v2_produced.values()))
     assert len(entry["records"]) == 150
-    recomputed = delta_diagnostics(entry["records"])
-    assert recomputed == entry["diagnostics"]
-    actual = np.asarray([r.actual_delta for r in entry["records"]])
-    predicted = np.asarray([r.predicted_delta for r in entry["records"]])
-    assert recomputed["delta_mae"] == pytest.approx(float(np.mean(np.abs(predicted - actual))))
-    assert recomputed["delta_rmse"] == pytest.approx(
+    actual = np.asarray([r["actual_delta"] for r in entry["records"]])
+    predicted = np.asarray([r["predicted_delta"] for r in entry["records"]])
+    diagnostics = entry["diagnostics"]
+    assert diagnostics["delta_mae"] == pytest.approx(float(np.mean(np.abs(predicted - actual))))
+    assert diagnostics["delta_rmse"] == pytest.approx(
         float(np.sqrt(np.mean((predicted - actual) ** 2)))
     )
 
 
-def test_diagnostics_never_change_the_shortlist(produced: dict[str, Any]) -> None:
+def test_the_published_actual_deltas_are_the_frozen_labels(v2_produced: dict[str, Any]) -> None:
+    """The producer's labels come from the frozen dataset, not from anything this test invented."""
+    frozen = build_frozen_scientific_reference().delta
+    for entry in v2_produced.values():
+        for record in entry["records"]:
+            cell = (record["dataset_id"], record["alternative_config"])
+            assert record["actual_delta"] == frozen[cell]
+
+
+def test_diagnostics_never_change_the_shortlist(v2_produced: dict[str, Any]) -> None:
     """A model that predicts advantage beautifully and switches badly is still not qualified."""
     import inspect
 
@@ -183,123 +121,17 @@ def test_diagnostics_never_change_the_shortlist(produced: dict[str, Any]) -> Non
 # ---------------------------------------------------------------------------------------- #
 # real producer -> trusted -> publish -> verify
 # ---------------------------------------------------------------------------------------- #
-def _authority(world: dict[str, Any]) -> dict[str, Any]:
-    provenance = read_provenance(repository_root())
-    return {
-        "execution_source_commit": provenance.head_sha,
-        "execution_source_tree": provenance.tree_sha,
-        "prefit_authority_sha256": ACCEPTED_V2_PREFIT_AUTHORITY_SHA256,
-        "parent_campaign_freeze_identity": PARENT_V1_CAMPAIGN_FREEZE,
-        "relative_dataset_identity": ACCEPTED_RELATIVE_DATASET_IDENTITY,
-        "relative_protocol_hash": compute_relative_protocol_hash(),
-        "relative_contract_hash": ACCEPTED_RELATIVE_CONTRACT_HASH,
-        "finalist_domain_hash": ACCEPTED_FINALIST_DOMAIN_HASH,
-        "feature_set_hash": ACCEPTED_FEATURE_SET_HASH,
-        "feature_matrix_hash": ACCEPTED_FEATURE_MATRIX_HASH,
-        "config_encoding_identity": ACCEPTED_CONFIG_ENCODING_IDENTITY,
-        "training_runtime_hash": compute_training_runtime_hash(),
-        "candidate_spec_hashes": list(build_v2_spec_hashes(ACCEPTED_RELATIVE_DATASET_IDENTITY)),
-        "thread_report": [
-            {"internal_api": "openblas", "num_threads": 1, "prefix": "l", "user_api": "blas"}
-        ],
-    }
-
-
-def _references(world: dict[str, Any]) -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for name in ("ALWAYS_SAFE_BASELINE", "GLOBAL_BEST_FINALIST_FROM_OUTER_TRAIN", "ORACLE4"):
-        decisions = []
-        for chromosome in CV_FOLD_CHROMOSOMES:
-            held = sorted(b for b, c in world["bams"].items() if c == chromosome)
-            train = sorted(b for b in world["bams"] if b not in set(held))
-            decisions.extend(
-                reference_decisions(
-                    name,
-                    utility=world["utility"],
-                    held_bams=held,
-                    training_bams=train,
-                    chromosome_of=world["bams"],
-                    outer_fold=chromosome,
-                )
-            )
-        out[name] = {
-            "metrics": policy_metrics(decisions),
-            "decisions": [d.content() for d in decisions],
-            "decision_count": len(decisions),
-        }
-    return out
-
-
-def _normalise(produced: dict[str, Any], world: dict[str, Any]) -> dict[str, Any]:
-    """Exactly what the sealed entry does: serialise records/decisions, attach the cell set."""
-    cells = [[r.dataset_id, r.config_hash] for r in world["rows"]]
-    out = {}
-    for spec_hash, entry in produced.items():
-        normalised = dict(entry)
-        normalised["records"] = [r.content() for r in entry["records"]]
-        normalised["decisions"] = [d.content() for d in entry["decisions"]]
-        normalised["expected_cell_set"] = cells
-        out[spec_hash] = normalised
-    return out
-
-
-@pytest.fixture(scope="module")
-def trusted(produced: dict[str, Any], world: dict[str, Any]) -> Any:
-    references = _references(world)
-    bar = references["ALWAYS_SAFE_BASELINE"]["metrics"]
-    per_spec = _normalise(produced, world)
-    shortlist = tuple(
-        sorted(
-            h
-            for h, e in per_spec.items()
-            if qualifies_against_bar(
-                mean_regret=float(e["metrics"]["mean_regret"]),
-                cvar_regret=float(e["metrics"]["cvar_regret"]),
-                bar_mean=float(bar["mean_regret"]),
-                bar_cvar=float(bar["cvar_regret"]),
-            )
-        )
-    )
-    return mint_trusted_v2_campaign(
-        _CAMPAIGN_TOKEN,
-        authority=_authority(world),
-        per_spec=per_spec,
-        references=references,
-        shortlist=shortlist,
-    )
-
-
-@pytest.fixture(scope="module")
-def published(trusted: Any, tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
-    import minos_engine.models.relative_finalist_evidence as module
-
-    real = read_provenance(repository_root())
-    original = module.read_provenance
-    module.read_provenance = lambda root: GitProvenance(  # type: ignore[assignment]
-        head_sha=real.head_sha,
-        tree_sha=real.tree_sha,
-        worktree_clean=True,
-        parent_sha=real.parent_sha,
-    )
-    try:
-        out = tmp_path_factory.mktemp("v2int") / V2_OUTPUT_LAYOUT["root"]
-        manifest = write_l2g_v2_train_campaign_outputs(trusted, output_dir=out)
-    finally:
-        module.read_provenance = original  # type: ignore[assignment]
-    return {"manifest": manifest, "dir": out}
-
-
-def test_the_real_produced_campaign_publishes_and_verifies(published: dict[str, Any]) -> None:
+def test_the_real_produced_campaign_publishes_and_verifies(v2_published: dict[str, Any]) -> None:
     """End to end from the real runner's own output. No hand-built per_spec."""
-    report = verify_published_l2g_v2_train_campaign(published["dir"])
+    report = verify_published_l2g_v2_train_campaign(v2_published["dir"])
     assert report["ok"] is True
     assert report["complete_spec_count"] == 4
 
 
 def test_every_published_spec_is_complete_under_the_real_producer(
-    produced: dict[str, Any], world: dict[str, Any]
+    v2_produced: dict[str, Any], v2_world: dict[str, Any]
 ) -> None:
-    for entry in _normalise(produced, world).values():
+    for entry in copy.deepcopy(v2_produced).values():
         report = assess_v2_completeness(entry)
         assert report["status"] == "COMPLETE", report["reasons"]
         assert report["observed_oof_record_count"] == 150
@@ -309,19 +141,19 @@ def test_every_published_spec_is_complete_under_the_real_producer(
 
 
 def test_publication_refuses_a_producer_result_missing_family(
-    produced: dict[str, Any], world: dict[str, Any], tmp_path: Path
+    v2_produced: dict[str, Any], v2_world: dict[str, Any], tmp_path: Path
 ) -> None:
     """The exact failure mode 019b3792 would have hit on the real campaign."""
     from minos_engine.models.relative_finalist_evidence import build_v2_campaign_result
 
-    per_spec = _normalise(produced, world)
+    per_spec = copy.deepcopy(v2_produced)
     for entry in per_spec.values():
         entry.pop("family")
     broken = mint_trusted_v2_campaign(
         _CAMPAIGN_TOKEN,
-        authority=_authority(world),
+        authority=v2_campaign_authority(),
         per_spec=per_spec,
-        references=_references(world),
+        references=v2_reference_bundle(v2_world),
         shortlist=(),
     )
     with pytest.raises(KeyError):
@@ -333,9 +165,9 @@ def test_publication_refuses_a_producer_result_missing_family(
 # ---------------------------------------------------------------------------------------- #
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
 def test_a_non_finite_prediction_or_margin_is_refused(
-    produced: dict[str, Any], world: dict[str, Any], bad: float
+    v2_produced: dict[str, Any], v2_world: dict[str, Any], bad: float
 ) -> None:
-    per_spec = _normalise(produced, world)
+    per_spec = copy.deepcopy(v2_produced)
     entry = copy.deepcopy(next(iter(per_spec.values())))
     entry["margins"]["chr18"] = bad
     assert assess_v2_completeness(entry)["status"] == "TRAINING_FAILURE"
@@ -359,10 +191,15 @@ def test_an_undefined_diagnostic_is_null_and_still_publishable() -> None:
     canonical_json_str(out)  # a NaN here would raise, and would raise at publication too
 
 
-def test_a_non_finite_diagnostic_is_refused_but_a_null_one_is_not(
-    published: dict[str, Any], tmp_path: Path
+def test_an_edited_diagnostic_fails_because_it_is_recomputed(
+    v2_published: dict[str, Any], tmp_path: Path
 ) -> None:
-    """null is an honest undefined statistic; a divergent number is a broken one."""
+    """Diagnostics are recomputed from the 150 records, so neither a number nor a null survives.
+
+    ``null`` is the honest report for an undefined statistic, but only where the recomputation is
+    actually undefined; claiming undefined for a statistic that has a value is as false as
+    claiming the wrong value.
+    """
     from minos_engine.models.relative_finalist_evidence import v2_metric_artifact_identity
 
     def _edit(value: Any) -> Any:
@@ -378,11 +215,14 @@ def test_a_non_finite_diagnostic_is_refused_but_a_null_one_is_not(
 
         return mutate
 
-    with pytest.raises(V2EvidenceError, match="finite number or null"):
+    with pytest.raises(V2EvidenceError, match="recomputes to"):
         verify_published_l2g_v2_train_campaign(
-            _republish(published, tmp_path / "bad", _edit("1.0"))
+            _republish(v2_published, tmp_path / "wrong", _edit(0.5))
         )
-    verify_published_l2g_v2_train_campaign(_republish(published, tmp_path / "null", _edit(None)))
+    with pytest.raises(V2EvidenceError, match="recomputation is undefined|recomputes to"):
+        verify_published_l2g_v2_train_campaign(
+            _republish(v2_published, tmp_path / "null", _edit(None))
+        )
 
 
 def test_the_diagnostics_helper_refuses_non_finite_input() -> None:
@@ -399,12 +239,12 @@ def test_the_diagnostics_helper_refuses_non_finite_input() -> None:
 # ---------------------------------------------------------------------------------------- #
 # the authority gate
 # ---------------------------------------------------------------------------------------- #
-def test_the_committed_authority_is_v3_and_binds_the_expected_sets() -> None:
+def test_the_committed_authority_is_v4_and_binds_the_expected_sets() -> None:
     assert verify_v2_prefit_authority(repository_root()) == ACCEPTED_V2_PREFIT_AUTHORITY_SHA256
     document = json.loads(
         (repository_root() / "reports/layer2/l2g-v2-prefit-authority.json").read_bytes()
     )
-    assert document["schema_version"] == "l2g-v2-prefit-authority-v3"
+    assert document["schema_version"] == "l2g-v2-prefit-authority-v4"
     from minos_engine.models.prefit_loader import load_verified_training_dataset
     from minos_engine.models.relative_finalist_dataset import (
         build_relative_finalist_dataset,
@@ -433,12 +273,12 @@ def test_an_edited_authority_is_refused(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------------------- #
 # adversarial: rehashed tampering must still fail
 # ---------------------------------------------------------------------------------------- #
-def _republish(published: dict[str, Any], tmp_path: Path, mutate: Any) -> Path:
+def _republish(v2_published: dict[str, Any], tmp_path: Path, mutate: Any) -> Path:
     """Copy the tree, mutate it, and repair every hash so only recomputation can catch it."""
     import shutil
 
     target = tmp_path / V2_OUTPUT_LAYOUT["root"]
-    shutil.copytree(published["dir"], target)
+    shutil.copytree(v2_published["dir"], target)
     result = json.loads((target / "campaign-result.json").read_bytes())
     mutate(target, result)
     (target / "campaign-result.json").write_bytes(
@@ -448,7 +288,7 @@ def _republish(published: dict[str, Any], tmp_path: Path, mutate: Any) -> Path:
 
 
 def test_an_edited_policy_metric_fails_even_when_every_hash_is_repaired(
-    published: dict[str, Any], tmp_path: Path
+    v2_published: dict[str, Any], tmp_path: Path
 ) -> None:
     from minos_engine.models.relative_finalist_evidence import v2_metric_artifact_identity
 
@@ -463,50 +303,50 @@ def test_an_edited_policy_metric_fails_even_when_every_hash_is_repaired(
         entry["metric_scientific_hash"] = v2_metric_artifact_identity(metric)
         entry["promotion_metrics"]["mean_regret"] = 0.0
 
-    target = _republish(published, tmp_path, mutate)
+    target = _republish(v2_published, tmp_path, mutate)
     with pytest.raises((V2EvidenceError, Exception)):
         verify_published_l2g_v2_train_campaign(target)
 
 
 def test_an_edited_safe_bar_fails_because_it_is_recomputed(
-    published: dict[str, Any], tmp_path: Path
+    v2_published: dict[str, Any], tmp_path: Path
 ) -> None:
     def mutate(target: Path, result: dict[str, Any]) -> None:
         result["safe_baseline_mean_regret"] = 0.0
 
-    target = _republish(published, tmp_path, mutate)
+    target = _republish(v2_published, tmp_path, mutate)
     # caught either by the recomputed bar or by the shortlist it would have changed
     with pytest.raises(V2EvidenceError, match="own decisions give|three-part rule"):
         verify_published_l2g_v2_train_campaign(target)
 
 
-def test_an_edited_source_tree_fails(published: dict[str, Any], tmp_path: Path) -> None:
+def test_an_edited_source_tree_fails(v2_published: dict[str, Any], tmp_path: Path) -> None:
     def mutate(target: Path, result: dict[str, Any]) -> None:
         result["execution_source_tree"] = "0" * 40
 
-    target = _republish(published, tmp_path, mutate)
+    target = _republish(v2_published, tmp_path, mutate)
     with pytest.raises(V2EvidenceError, match="actual tree"):
         verify_published_l2g_v2_train_campaign(target)
 
 
-def test_an_edited_feature_authority_fails(published: dict[str, Any], tmp_path: Path) -> None:
+def test_an_edited_feature_authority_fails(v2_published: dict[str, Any], tmp_path: Path) -> None:
     def mutate(target: Path, result: dict[str, Any]) -> None:
         result["feature_set_hash"] = "f" * 64
 
-    target = _republish(published, tmp_path, mutate)
+    target = _republish(v2_published, tmp_path, mutate)
     with pytest.raises(V2EvidenceError, match="feature_set_hash"):
         verify_published_l2g_v2_train_campaign(target)
 
 
-def test_an_unexpected_non_json_file_fails(published: dict[str, Any], tmp_path: Path) -> None:
-    target = _republish(published, tmp_path, lambda t, r: None)
+def test_an_unexpected_non_json_file_fails(v2_published: dict[str, Any], tmp_path: Path) -> None:
+    target = _republish(v2_published, tmp_path, lambda t, r: None)
     (target / "notes.txt").write_text("hello")
     with pytest.raises(V2EvidenceError, match="unexpected file"):
         verify_published_l2g_v2_train_campaign(target)
 
 
-def test_an_unexpected_subdirectory_fails(published: dict[str, Any], tmp_path: Path) -> None:
-    target = _republish(published, tmp_path, lambda t, r: None)
+def test_an_unexpected_subdirectory_fails(v2_published: dict[str, Any], tmp_path: Path) -> None:
+    target = _republish(v2_published, tmp_path, lambda t, r: None)
     (target / "extra").mkdir()
     with pytest.raises(V2EvidenceError, match="unexpected directory"):
         verify_published_l2g_v2_train_campaign(target)
@@ -521,9 +361,9 @@ def test_a_caller_cannot_mint_a_verified_published_campaign() -> None:
     assert _VERIFIED_TOKEN is not None
 
 
-def test_the_verified_capability_carries_real_oof_identities(published: dict[str, Any]) -> None:
-    verified = load_verified_published_l2g_v2_campaign(published["dir"])
-    result = json.loads((published["dir"] / "campaign-result.json").read_bytes())
+def test_the_verified_capability_carries_real_oof_identities(v2_published: dict[str, Any]) -> None:
+    verified = load_verified_published_l2g_v2_campaign(v2_published["dir"])
+    result = json.loads((v2_published["dir"] / "campaign-result.json").read_bytes())
     for entry in result["per_spec"]:
         if entry["status"] != "COMPLETE":
             continue
@@ -531,8 +371,8 @@ def test_the_verified_capability_carries_real_oof_identities(published: dict[str
         assert len(verified.oof_residuals(entry["spec_hash"])) == 150
 
 
-def test_the_bundle_never_binds_sixty_four_zeroes(published: dict[str, Any]) -> None:
-    verified = load_verified_published_l2g_v2_campaign(published["dir"])
+def test_the_bundle_never_binds_sixty_four_zeroes(v2_published: dict[str, Any]) -> None:
+    verified = load_verified_published_l2g_v2_campaign(v2_published["dir"])
     if not verified.shortlist:
         pytest.skip("this synthetic campaign shortlisted nothing")
     spec_hash = verified.shortlist[0]
@@ -558,8 +398,8 @@ def test_the_bundle_requires_a_verified_campaign_not_a_dict() -> None:
         )
 
 
-def test_a_non_shortlisted_spec_cannot_be_bundled(published: dict[str, Any]) -> None:
-    verified = load_verified_published_l2g_v2_campaign(published["dir"])
+def test_a_non_shortlisted_spec_cannot_be_bundled(v2_published: dict[str, Any]) -> None:
+    verified = load_verified_published_l2g_v2_campaign(v2_published["dir"])
     result = verified.result
     rejected = [
         e["spec_hash"] for e in result["per_spec"] if e["spec_hash"] not in verified.shortlist

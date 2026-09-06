@@ -26,6 +26,12 @@ from minos_engine.models.relative_finalist_contract import (
     compute_finalist_domain_hash,
     compute_relative_contract_hash,
 )
+from minos_engine.models.relative_finalist_evidence import (
+    FAILURE_REASON_LIMIT,
+    STATUS_COMPLETE,
+    STATUS_TRAINING_FAILURE,
+    assess_v2_completeness,
+)
 from minos_engine.models.relative_finalist_protocol import (
     FUTURE_VALIDATION_RULE,
     NUMPY_QUANTILE_METHOD,
@@ -34,16 +40,26 @@ from minos_engine.models.relative_finalist_protocol import (
     build_v2_spec_hashes,
     compute_relative_protocol_hash,
 )
+from minos_engine.models.relative_finalist_reconstruction import four_finalist_utility_table
+from minos_engine.models.relative_finalist_runner import RelativeRunnerError
 
 __all__ = [
     "ACCEPTED_RELATIVE_DATASET_IDENTITY",
+    "CANDIDATE_FAILURE_POLICY",
+    "CANDIDATE_FAILURE_SURFACE",
+    "FAILED_CANDIDATE_ARTIFACTS",
+    "OOF_FIT_STAGE",
+    "SHARED_AUTHORITY_FAILURE_POLICY",
     "V2_OUTPUT_ROOT",
     "RelativeAuthorityError",
     "TrustedRelativeTrainingData",
     "build_trusted_final_train_bundle",
     "evaluate_future_validation",
+    "failed_candidate_entry",
     "load_trusted_relative_training_data",
+    "run_frozen_candidates",
     "select_validation_winner",
+    "verify_v2_prefit_authority",
 ]
 
 ACCEPTED_SOURCE_TRAINING_DATASET: Final = (
@@ -213,15 +229,10 @@ def load_trusted_relative_training_data(
         design[(row.dataset_id, row.config_hash)] = vector
     _require(len(design) == RELATIVE_ROWS, "the design matrix is not the 150-row table")
 
-    utility: dict[tuple[str, str], float] = {}
-    for source_row in source.rows:
-        if source_row.config_hash not in FINALIST_DOMAIN:
-            continue
-        score = source_row.admitted_score
-        utility[(source_row.dataset_id, source_row.config_hash)] = (
-            float(score) if source_row.outcome == "ADMITTED" and score is not None else 0.0
-        )
-    _require(len(utility) == SOURCE_CELLS, "the four-finalist utility table is not 200 cells")
+    # ONE definition of U(BAM, config), shared with the offline verifier's reconstruction: two
+    # copies of this rule could drift, and then evidence would be judged against a different
+    # utility than the one that produced it
+    utility = four_finalist_utility_table(source)
 
     return TrustedRelativeTrainingData(
         _MINT_TOKEN,
@@ -254,7 +265,6 @@ def run_real_l2g_v2_train_oof_campaign(
     )
     from minos_engine.models.relative_finalist_runner import (
         reference_decisions,
-        run_relative_outer_oof,
     )
     from minos_engine.models.runtime import verify_training_runtime
     from minos_engine.models.threading_control import observe_thread_pools, single_threaded
@@ -295,18 +305,15 @@ def run_real_l2g_v2_train_oof_campaign(
     design, utility = trusted.design(), trusted.utility()
     rows = list(dataset.rows)
 
-    per_spec: dict[str, Any] = {}
     with single_threaded():
-        for recipe, spec_hash in zip(V2_CANDIDATE_GRID, trusted.spec_hashes, strict=True):
-            spec = build_v2_spec_content(recipe, dataset_identity=dataset.identity())
-            per_spec[spec_hash] = run_relative_outer_oof(
-                spec=spec,
-                spec_hash=spec_hash,
-                rows=rows,
-                design=design,
-                utility=utility,
-                chromosome_of=chromosome_of,
-            )
+        per_spec = run_frozen_candidates(
+            spec_hashes=tuple(trusted.spec_hashes),
+            dataset_identity=dataset.identity(),
+            rows=rows,
+            design=design,
+            utility=utility,
+            chromosome_of=chromosome_of,
+        )
     references: dict[str, dict[str, Any]] = {}
     for name in ("ALWAYS_SAFE_BASELINE", "GLOBAL_BEST_FINALIST_FROM_OUTER_TRAIN", "ORACLE4"):
         from minos_engine.models.contract import CV_FOLD_CHROMOSOMES
@@ -331,10 +338,13 @@ def run_real_l2g_v2_train_oof_campaign(
     bar: dict[str, Any] = references["ALWAYS_SAFE_BASELINE"]["metrics"]
     from minos_engine.models.relative_finalist_protocol import qualifies_against_bar
 
+    # ONLY scientifically complete candidates are comparable. A failed candidate has no metrics
+    # to compare, and reading its empty ones would be inventing a promotion decision.
     shortlist = sorted(
         h
         for h, r in per_spec.items()
-        if qualifies_against_bar(
+        if assess_v2_completeness(r)["status"] == STATUS_COMPLETE
+        and qualifies_against_bar(
             mean_regret=float(r["metrics"]["mean_regret"]),
             cvar_regret=float(r["metrics"]["cvar_regret"]),
             bar_mean=float(bar["mean_regret"]),
@@ -357,12 +367,6 @@ def run_real_l2g_v2_train_oof_campaign(
         "candidate_spec_hashes": list(trusted.spec_hashes),
         "thread_report": [dict(sorted(p.items())) for p in pools],
     }
-    expected_cells = [[r.dataset_id, r.config_hash] for r in rows]
-    for entry in per_spec.values():
-        entry["expected_cell_set"] = expected_cells
-        entry["records"] = [r.content() for r in entry["records"]]
-        entry["decisions"] = [d.content() for d in entry["decisions"]]
-        entry["training_failures"] = []
     return mint_trusted_v2_campaign(
         _CAMPAIGN_TOKEN,
         authority=campaign_authority,
@@ -591,11 +595,116 @@ def _sanitise_failure(message: str) -> str:
 
     cleaned = re.sub(r"0x[0-9a-fA-F]+", "<addr>", message)
     cleaned = re.sub(r"(/[^\s'\"]+)+", "<path>", cleaned)
-    return cleaned.strip()[:300]
+    return cleaned.strip()[:FAILURE_REASON_LIMIT]
+
+
+#: The deterministic model-specific failure surface. A candidate that cannot be fitted or scored
+#: is a scientific outcome about THAT candidate, so the other frozen candidates continue.
+#:
+#: Deliberately narrow. ``KeyError``, ``AttributeError``, ``TypeError``, ``ImportError`` and
+#: ``OSError`` are NOT here: those are integration or environment defects, not statements about a
+#: model, and swallowing them per-candidate is how a broken campaign publishes three-quarters of a
+#: result and calls it evidence. This task exists because exactly such a defect -- a missing
+#: ``family`` key -- hid behind a green suite. ``KeyboardInterrupt``, ``SystemExit`` and
+#: ``MemoryError`` are excluded too: the first two are not ``Exception`` at all, and an exhausted
+#: process is a kill condition, not a model result.
+CANDIDATE_FAILURE_SURFACE: Final[tuple[type[Exception], ...]] = (
+    RelativeRunnerError,
+    ValueError,  # includes numpy.linalg.LinAlgError and sklearn's NotFittedError
+    ArithmeticError,  # FloatingPointError, OverflowError, ZeroDivisionError
+)
+
+CANDIDATE_FAILURE_POLICY: Final = "ISOLATE_MODEL_SPEC_AND_MARK_INELIGIBLE"
+SHARED_AUTHORITY_FAILURE_POLICY: Final = "ABORT_CAMPAIGN_NO_PUBLICATION"
+FAILED_CANDIDATE_ARTIFACTS: Final = "NONE"
+OOF_FIT_STAGE: Final = "OUTER_OOF_FIT"
+
+
+def failed_candidate_entry(
+    *, spec_hash: str, recipe: dict[str, Any], stage: str, error: BaseException
+) -> dict[str, Any]:
+    """The canonical accounting entry for a candidate that could not be fitted.
+
+    It is a full entry, not a hole: all four frozen specs must still appear in the campaign
+    accounting, or a reader cannot tell "this model failed" from "this model was never tried".
+    It carries no records, no decisions, no margins and no diagnostics, so nothing about it can
+    reach a promotion comparison.
+    """
+    return {
+        "spec_hash": spec_hash,
+        "family": str(recipe["family"]),
+        "implementation": str(recipe["implementation"]),
+        "status": STATUS_TRAINING_FAILURE,
+        "records": [],
+        "decisions": [],
+        "margins": {},
+        "metrics": {},
+        "diagnostics": {},
+        "training_failures": [
+            {
+                "stage": str(stage),
+                "exception_type": type(error).__name__,
+                "sanitized_reason": _sanitise_failure(str(error)),
+            }
+        ],
+    }
+
+
+def run_frozen_candidates(
+    *,
+    spec_hashes: tuple[str, ...],
+    dataset_identity: str,
+    rows: list[Any],
+    design: dict[tuple[str, str], Any],
+    utility: dict[tuple[str, str], float],
+    chromosome_of: dict[str, str],
+) -> dict[str, Any]:
+    """Run the four frozen candidates, isolating a per-candidate failure.
+
+    One candidate raising must not destroy the evidence the other three already produced -- an
+    outer-OOF campaign is expensive, and discarding three completed candidates because the fourth
+    diverged is not a scientific decision. Shared-authority failures are NOT caught here: they
+    happen before this function, and they abort the whole campaign.
+    """
+    from minos_engine.models.relative_finalist_runner import run_relative_outer_oof
+
+    # the grid and the hashes are zipped positionally, so an out-of-order caller would silently
+    # label one candidate's evidence with another's identity
+    _require(
+        list(spec_hashes) == list(build_v2_spec_hashes(dataset_identity)),
+        "the candidate spec hashes are not the accepted four in their frozen order",
+    )
+    expected_cells = [[r.dataset_id, r.config_hash] for r in rows]
+    per_spec: dict[str, Any] = {}
+    for recipe, spec_hash in zip(V2_CANDIDATE_GRID, spec_hashes, strict=True):
+        spec = build_v2_spec_content(recipe, dataset_identity=dataset_identity)
+        try:
+            entry = run_relative_outer_oof(
+                spec=spec,
+                spec_hash=spec_hash,
+                rows=rows,
+                design=design,
+                utility=utility,
+                chromosome_of=chromosome_of,
+            )
+        except CANDIDATE_FAILURE_SURFACE as error:
+            per_spec[spec_hash] = failed_candidate_entry(
+                spec_hash=spec_hash, recipe=recipe, stage=OOF_FIT_STAGE, error=error
+            )
+            continue
+        entry["expected_cell_set"] = expected_cells
+        entry["records"] = [r.content() for r in entry["records"]]
+        entry["decisions"] = [d.content() for d in entry["decisions"]]
+        per_spec[spec_hash] = entry
+    _require(
+        sorted(per_spec) == sorted(spec_hashes),
+        "the campaign did not account for all four frozen candidate specs",
+    )
+    return per_spec
 
 
 ACCEPTED_V2_PREFIT_AUTHORITY_SHA256: Final = (
-    "07464ddfdda22312e69c10683dde209c64a6378e7ccceeca9d5ce99da123219b"
+    "6b2edd38eeee0765c96a2b55083fa534647631c2e449bf702b9d4204f0f894d8"
 )
 
 
@@ -631,7 +740,7 @@ def verify_v2_prefit_authority(root: Any = None) -> str:
     )
     document = _json.loads(raw)
     _require(
-        document.get("schema_version") == "l2g-v2-prefit-authority-v3",
+        document.get("schema_version") == "l2g-v2-prefit-authority-v4",
         f"unexpected authority schema {document.get('schema_version')!r}",
     )
     for field, expected in (
@@ -677,4 +786,17 @@ def verify_v2_prefit_authority(root: Any = None) -> str:
         == ["delta_mae", "delta_rmse", "delta_r2", "delta_spearman"],
         "the authority does not require the four DELTA diagnostics",
     )
+    # the failure policy is part of the authority, because whether a campaign may complete with a
+    # failed candidate decides whether its evidence exists at all
+    failure_policy: tuple[tuple[str, object], ...] = (
+        ("candidate_failure_policy", CANDIDATE_FAILURE_POLICY),
+        ("shared_authority_failure_policy", SHARED_AUTHORITY_FAILURE_POLICY),
+        ("failed_candidate_artifacts", FAILED_CANDIDATE_ARTIFACTS),
+        ("failed_candidate_shortlist_eligible", False),
+    )
+    for name, value in failure_policy:
+        _require(
+            document.get(name) == value,
+            f"the authority's {name} is {document.get(name)!r}, expected {value!r}",
+        )
     return actual

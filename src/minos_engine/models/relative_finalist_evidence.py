@@ -24,6 +24,10 @@ from minos_engine.common.canonical_json import canonical_json_bytes
 from minos_engine.common.errors import MinosEngineError
 from minos_engine.common.hashing import sha256_hex
 from minos_engine.models.contract import CV_FOLD_CHROMOSOMES
+from minos_engine.models.relative_finalist_contract import (
+    FINALIST_DOMAIN,
+    SAFE_BASELINE_CONFIG_HASH,
+)
 from minos_engine.models.relative_finalist_protocol import qualifies_against_bar
 from minos_engine.qualification.l2f_accepted_identities import repository_root
 from minos_engine.qualification.provenance import read_provenance
@@ -66,6 +70,7 @@ MEDIA_TYPE: Final = "application/json"
 EXPECTED_OOF_RECORDS: Final = 150
 EXPECTED_DECISIONS: Final = 50
 EXPECTED_MARGINS: Final = 5
+FAILURE_REASON_LIMIT: Final = 300
 STATUS_COMPLETE: Final = "COMPLETE"
 STATUS_TRAINING_FAILURE: Final = "TRAINING_FAILURE"
 
@@ -335,7 +340,11 @@ def build_v2_campaign_result(
         record: dict[str, Any] = {
             "spec_hash": spec_hash,
             "family": entry["family"],
+            "implementation": entry["implementation"],
             "status": completeness["status"],
+            # a failed candidate is ACCOUNTED FOR, not omitted: a reader must be able to tell
+            # "this model was tried and failed" from "this model was never run"
+            "training_failures": _jsonable(list(entry.get("training_failures", []))),
             **{k: v for k, v in completeness.items() if k != "status"},
         }
         if completeness["status"] == STATUS_COMPLETE:
@@ -448,6 +457,30 @@ def verify_v2_campaign_result(content: dict[str, Any]) -> dict[str, Any]:
         else:
             for name in ("oof_scientific_hash", "metric_scientific_hash", "promotion_metrics"):
                 _require(name not in entry, f"{entry['spec_hash']} failed but carries {name}")
+            failures = list(entry.get("training_failures") or ())
+            _require(
+                bool(failures),
+                f"{entry['spec_hash']} is TRAINING_FAILURE with no recorded reason",
+            )
+            for failure in failures:
+                _require(
+                    sorted(failure) == ["exception_type", "sanitized_reason", "stage"],
+                    "a training failure entry is not the canonical three fields",
+                )
+                _require(
+                    all(isinstance(failure[k], str) and failure[k] for k in failure),
+                    "a training failure field is empty or not a string",
+                )
+                _require(
+                    len(failure["sanitized_reason"]) <= FAILURE_REASON_LIMIT,
+                    "a sanitised failure reason exceeds its cap",
+                )
+                _require(
+                    "0x" not in failure["sanitized_reason"]
+                    and "/" not in failure["sanitized_reason"]
+                    and "Traceback" not in failure["sanitized_reason"],
+                    "a sanitised failure reason leaks a path, an address or a traceback",
+                )
 
     rederived = sorted(
         h
@@ -553,6 +586,81 @@ def _recompute_policy_metrics(decisions: list[dict[str, Any]]) -> dict[str, Any]
     return policy_metrics([_D(d) for d in decisions])
 
 
+def _decision_utilities(
+    utility: dict[tuple[str, str], float], *, bam: str, selected: str
+) -> dict[str, float]:
+    """The four utility-derived fields of a decision, from the FROZEN table alone.
+
+    Regret is oracle-minus-selected and the realised advantage is selected-minus-safe. Deriving
+    them here rather than reading them means a published decision cannot claim a regret its own
+    action does not produce.
+    """
+    safe_u = utility[(bam, SAFE_BASELINE_CONFIG_HASH)]
+    selected_u = utility[(bam, selected)]
+    oracle_u = max(utility[(bam, c)] for c in FINALIST_DOMAIN)
+    return {
+        "safe_utility": safe_u,
+        "selected_utility": selected_u,
+        "oracle4_utility": oracle_u,
+        "regret": oracle_u - selected_u,
+        "actual_selected_delta": selected_u - safe_u,
+    }
+
+
+def _recompute_delta_diagnostics(records: list[dict[str, Any]]) -> dict[str, float | None]:
+    """Recompute the DELTA diagnostics from published records using the frozen definition."""
+    from minos_engine.models.relative_finalist_runner import delta_diagnostics
+
+    class _R:
+        def __init__(self, d: dict[str, Any]) -> None:
+            self.actual_delta = float(d["actual_delta"])
+            self.predicted_delta = float(d["predicted_delta"])
+
+    return delta_diagnostics([_R(r) for r in records])
+
+
+def _regenerate_reference_decisions(
+    utility: dict[tuple[str, str], float], chromosome_of: dict[str, str]
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Rebuild the three frozen reference policies from the frozen utilities and folds.
+
+    This calls the same frozen ``reference_decisions`` the campaign uses, deliberately: the
+    independence that matters is independence from the PUBLISHED BYTES, not a second hand-written
+    copy of the rule that could silently disagree with the one the science was defined by.
+    """
+    from minos_engine.models.relative_finalist_runner import reference_decisions
+
+    fields = (
+        "actual_selected_delta",
+        "chromosome",
+        "oracle4_utility",
+        "outer_fold",
+        "regret",
+        "safe_utility",
+        "selected_config",
+        "selected_utility",
+        "switched",
+    )
+    out: dict[str, dict[str, dict[str, Any]]] = {}
+    for name in ("ALWAYS_SAFE_BASELINE", "GLOBAL_BEST_FINALIST_FROM_OUTER_TRAIN", "ORACLE4"):
+        per_bam: dict[str, dict[str, Any]] = {}
+        for chromosome in CV_FOLD_CHROMOSOMES:
+            held = sorted(b for b, c in chromosome_of.items() if c == chromosome)
+            train = sorted(b for b in chromosome_of if b not in set(held))
+            for decision in reference_decisions(
+                name,
+                utility=utility,
+                held_bams=held,
+                training_bams=train,
+                chromosome_of=chromosome_of,
+                outer_fold=chromosome,
+            ):
+                content = decision.content()
+                per_bam[str(content["dataset_id"])] = {f: content[f] for f in fields}
+        out[name] = per_bam
+    return out
+
+
 def _finite(value: Any) -> bool:
     import math
 
@@ -580,13 +688,19 @@ def verify_published_l2g_v2_train_campaign(
         ACCEPTED_RELATIVE_DATASET_IDENTITY,
         verify_v2_prefit_authority,
     )
+    from minos_engine.models.relative_finalist_contract import ALTERNATIVE_FINALISTS
     from minos_engine.models.relative_finalist_dataset import (
         observed_bam_chromosome_set_hash,
         observed_relative_cell_set_hash,
     )
     from minos_engine.models.relative_finalist_protocol import (
+        V2_CANDIDATE_GRID,
+        build_v2_spec_content,
         build_v2_spec_hashes,
         compute_relative_protocol_hash,
+    )
+    from minos_engine.models.relative_finalist_reconstruction import (
+        build_frozen_scientific_reference,
     )
     from minos_engine.models.runtime import compute_training_runtime_hash
     from minos_engine.qualification.git_tree import commit_tree_sha, is_commit
@@ -640,17 +754,68 @@ def verify_published_l2g_v2_train_campaign(
     expected_cells = authority["expected_relative_cell_set_hash"]
     expected_bams = authority["expected_bam_chromosome_set_hash"]
 
+    # --- the frozen scientific truth, rebuilt from bundle bytes, never from the evidence ---- #
+    frozen = build_frozen_scientific_reference(root=base)
+    _require(
+        frozen.dataset_identity == ACCEPTED_RELATIVE_DATASET_IDENTITY,
+        "the reconstructed relative dataset is not the accepted one",
+    )
+    frozen_delta = frozen.delta
+    frozen_utility = frozen.utility
+    frozen_chromosome = frozen.chromosome_of
+    _require(
+        observed_relative_cell_set_hash(frozen_delta) == expected_cells
+        and observed_bam_chromosome_set_hash(frozen_chromosome.items()) == expected_bams,
+        "the reconstructed dataset does not reproduce the authority's expected set hashes",
+    )
+    accepted_specs = {
+        h: build_v2_spec_content(recipe, dataset_identity=ACCEPTED_RELATIVE_DATASET_IDENTITY)
+        for recipe, h in zip(
+            V2_CANDIDATE_GRID,
+            build_v2_spec_hashes(ACCEPTED_RELATIVE_DATASET_IDENTITY),
+            strict=True,
+        )
+    }
+
+    # --- §14 thread evidence: single-threaded determinism, or the numbers are not reproducible - #
+    pools = list(result.get("thread_report") or ())
+    _require(bool(pools), "the campaign published no thread report")
+    for pool in pools:
+        _require("num_threads" in pool, "a thread pool entry records no num_threads")
+        threads = pool["num_threads"]
+        _require(
+            isinstance(threads, int) and not isinstance(threads, bool) and threads == 1,
+            f"a scientific thread pool ran with num_threads={threads!r}, not 1",
+        )
+
     # --- per-spec: recompute everything from the artifacts ------------------------------ #
     accounted: set[str] = set()
     recomputed_metrics: dict[str, dict[str, float]] = {}
     for entry in result["per_spec"]:
         spec_hash = entry["spec_hash"]
+        # §13: family and implementation are DERIVED from the accepted spec, never believed
+        _require(spec_hash in accepted_specs, f"{spec_hash} is not one of the four frozen specs")
+        accepted = accepted_specs[spec_hash]
+        _require(
+            entry.get("family") == accepted["family"],
+            f"{spec_hash} claims family {entry.get('family')!r}, not {accepted['family']!r}",
+        )
+        _require(
+            entry.get("implementation") == accepted["implementation"],
+            f"{spec_hash} claims a different implementation than its accepted spec",
+        )
         if entry["status"] != STATUS_COMPLETE:
+            # §15: a failed candidate is accounted for and inert -- no artifacts, no metrics,
+            # no shortlist. Its failure record was already checked structurally above.
             for stem in (V2_OUTPUT_LAYOUT["oof_dir"], V2_OUTPUT_LAYOUT["metrics_dir"]):
                 _require(
                     not (root / stem / f"{spec_hash}.json").exists(),
                     f"{spec_hash} failed but has a scientific artifact",
                 )
+            _require(
+                spec_hash not in result["shortlist"],
+                f"{spec_hash} failed but is in the shortlist",
+            )
             continue
         accounted.add(spec_hash)
         oof_path = root / V2_OUTPUT_LAYOUT["oof_dir"] / f"{spec_hash}.json"
@@ -675,23 +840,36 @@ def verify_published_l2g_v2_train_campaign(
         _require(len(oof["margins"]) == EXPECTED_MARGINS, "the artifact lacks 5 margins")
         for value in oof["margins"].values():
             _require(_finite(value), "a published margin is not finite")
+        # --- §7: every published label is the FROZEN label, not merely a finite number ----- #
+        predicted_by_cell: dict[tuple[str, str], float] = {}
         for record in records:
             _require(record["spec_hash"] == spec_hash, "a record cites another spec")
             _require(
                 _finite(record["actual_delta"]) and _finite(record["predicted_delta"]),
                 "a published advantage is not finite",
             )
-        chromosome_of = {d["dataset_id"]: d["chromosome"] for d in decisions}
-        for record in records:
+            cell = (record["dataset_id"], record["alternative_config"])
+            _require(cell in frozen_delta, f"{spec_hash}: {cell} is not a frozen relative cell")
             _require(
-                record["outer_fold"] == chromosome_of.get(record["dataset_id"]),
-                "a record's fold is not its BAM's chromosome",
+                float(record["actual_delta"]) == frozen_delta[cell],
+                f"{spec_hash}: the published actual_delta for {cell} is "
+                f"{record['actual_delta']!r}, but the frozen label is {frozen_delta[cell]!r}",
             )
+            _require(
+                record["chromosome"] == frozen_chromosome[record["dataset_id"]]
+                and record["outer_fold"] == frozen_chromosome[record["dataset_id"]],
+                f"{spec_hash}: a record's chromosome or fold is not the frozen assignment",
+            )
+            predicted_by_cell[cell] = float(record["predicted_delta"])
+
+        # --- §8/§9: the decisions must FOLLOW from those predictions and the frozen utilities - #
         for decision in decisions:
+            bam = decision["dataset_id"]
             _require(decision["spec_hash"] == spec_hash, "a decision cites another spec")
             _require(
-                decision["outer_fold"] == decision["chromosome"],
-                "a decision's fold is not its chromosome",
+                decision["chromosome"] == frozen_chromosome[bam]
+                and decision["outer_fold"] == frozen_chromosome[bam],
+                f"{spec_hash}: a decision's chromosome or fold is not the frozen assignment",
             )
             for field in (
                 "regret",
@@ -701,6 +879,39 @@ def verify_published_l2g_v2_train_campaign(
                 "actual_selected_delta",
             ):
                 _require(_finite(decision[field]), f"{field} is not finite")
+
+            published_predictions = dict(decision["predictions"])
+            _require(
+                sorted(published_predictions) == sorted(ALTERNATIVE_FINALISTS),
+                f"{spec_hash}: {bam}'s decision does not carry exactly the three alternatives",
+            )
+            for config, value in published_predictions.items():
+                _require(
+                    float(value) == predicted_by_cell[(bam, config)],
+                    f"{spec_hash}: {bam}'s decision prediction for {config} is not the "
+                    "prediction its own OOF record published",
+                )
+            _require(
+                float(decision["margin"]) == float(oof["margins"][frozen_chromosome[bam]]),
+                f"{spec_hash}: {bam}'s decision margin is not its outer fold's published margin",
+            )
+            # the frozen switch rule, re-applied: ties to the lowest config hash, strict >
+            best = max(published_predictions.values())
+            argmax = sorted(c for c, v in published_predictions.items() if float(v) == best)[0]
+            switched = float(best) > float(decision["margin"])
+            selected = argmax if switched else SAFE_BASELINE_CONFIG_HASH
+            _require(
+                decision["selected_config"] == selected and bool(decision["switched"]) is switched,
+                f"{spec_hash}: {bam}'s published action does not follow from its own "
+                "predictions and margin under the frozen switch rule",
+            )
+            expected_decision = _decision_utilities(frozen_utility, bam=bam, selected=selected)
+            for field, value in expected_decision.items():
+                _require(
+                    float(decision[field]) == value,
+                    f"{spec_hash}: {bam}'s {field} is {decision[field]!r}, but the frozen "
+                    f"utilities give {value!r}",
+                )
         # RECOMPUTED, never read from the result's booleans
         _require(
             observed_relative_cell_set_hash(
@@ -731,19 +942,27 @@ def verify_published_l2g_v2_train_campaign(
                 float(recorded) == float(value),
                 f"{spec_hash}: {name} is {recorded} in the artifact but recomputes to {value}",
             )
+        # --- §12: diagnostics RECOMPUTED from the 150 records, not merely shape-checked ---- #
         diagnostics = metric.get("diagnostics") or {}
         _require(bool(diagnostics), f"{spec_hash} is COMPLETE with empty diagnostics")
-        for name in ("delta_mae", "delta_rmse", "delta_r2", "delta_spearman"):
-            _require(name in diagnostics, f"{spec_hash} is missing diagnostic {name}")
-        for name in ("delta_mae", "delta_rmse"):
-            _require(_finite(diagnostics[name]), f"{name} must be finite")
-        for name in ("delta_r2", "delta_spearman"):
-            # null is the honest report for an undefined statistic (a constant predictor has no
-            # rank correlation). A number must be a real one.
-            value = diagnostics[name]
+        fresh_diagnostics = _recompute_delta_diagnostics(records)
+        _require(
+            sorted(diagnostics) == sorted(fresh_diagnostics),
+            f"{spec_hash} publishes a different set of diagnostics than the frozen definition",
+        )
+        for name, value in fresh_diagnostics.items():
+            recorded = diagnostics[name]
+            if value is None:
+                # null exactly where the statistic is undefined: a constant predictor has no rank
+                # correlation, and a number there would be an invention
+                _require(
+                    recorded is None,
+                    f"{spec_hash}: {name} is {recorded!r} but the recomputation is undefined",
+                )
+                continue
             _require(
-                value is None or _finite(value),
-                f"{name} must be a finite number or null when undefined",
+                _finite(recorded) and float(recorded) == float(value),
+                f"{spec_hash}: {name} is {recorded!r} in the artifact but recomputes to {value!r}",
             )
         recomputed_metrics[spec_hash] = {
             "mean_regret": float(fresh["mean_regret"]),
@@ -755,17 +974,31 @@ def verify_published_l2g_v2_train_campaign(
                 f"{spec_hash}: {name} in the result differs from the recomputed value",
             )
 
-    # --- the SAFE bar, recomputed from its own stored decisions ------------------------- #
-    safe = result["reference_decisions"]["ALWAYS_SAFE_BASELINE"]
-    _require(len(safe) == EXPECTED_DECISIONS, "the SAFE reference lacks 50 decisions")
-    from minos_engine.models.relative_finalist_contract import SAFE_BASELINE_CONFIG_HASH
-
-    for decision in safe:
+    # --- §10: the three references, REGENERATED from the frozen utilities ---------------- #
+    # Stored reference decisions are not evidence of anything on their own: a fabricated SAFE
+    # policy with a comfortable regret would set a comfortable promotion bar. So each reference
+    # is regenerated here from the frozen utility table and the frozen folds, and the stored
+    # decisions must equal what the regeneration produces, field for field.
+    regenerated = _regenerate_reference_decisions(frozen_utility, frozen_chromosome)
+    for name, expected_decisions in regenerated.items():
+        stored = list(result["reference_decisions"].get(name) or ())
         _require(
-            decision["selected_config"] == SAFE_BASELINE_CONFIG_HASH,
-            "the SAFE reference selected something else",
+            len(stored) == EXPECTED_DECISIONS,
+            f"the {name} reference has {len(stored)} decisions, expected {EXPECTED_DECISIONS}",
         )
-        _require(not decision["switched"], "the SAFE reference switched")
+        by_bam = {d["dataset_id"]: d for d in stored}
+        _require(len(by_bam) == EXPECTED_DECISIONS, f"the {name} reference repeats a BAM")
+        for bam, want in expected_decisions.items():
+            got = by_bam.get(bam)
+            _require(got is not None, f"the {name} reference has no decision for {bam}")
+            assert got is not None
+            for field, value in want.items():
+                _require(
+                    got.get(field) == value,
+                    f"the {name} reference's {field} for {bam} is {got.get(field)!r}, but the "
+                    f"frozen utilities give {value!r}",
+                )
+    safe = result["reference_decisions"]["ALWAYS_SAFE_BASELINE"]
     safe_metrics = _recompute_policy_metrics(safe)
     _require(safe_metrics["switch_fraction"] == 0.0, "the SAFE reference has a non-zero switch")
     _require(
@@ -773,12 +1006,27 @@ def verify_published_l2g_v2_train_campaign(
         and float(result["safe_baseline_cvar_regret"]) == float(safe_metrics["cvar_regret"]),
         "the recorded SAFE bar is not what its own decisions give",
     )
-    oracle = result["reference_decisions"].get("ORACLE4", [])
-    if oracle:
-        _require(
-            all(math.isclose(float(d["regret"]), 0.0, abs_tol=1e-12) for d in oracle),
-            "ORACLE4 has non-zero regret",
-        )
+    for name, stored_metrics in result["reference_metrics"].items():
+        fresh_reference = _recompute_policy_metrics(result["reference_decisions"][name])
+        for metric_name, value in fresh_reference.items():
+            recorded = stored_metrics.get(metric_name)
+            if value is None or recorded is None:
+                _require(
+                    value is None and recorded is None,
+                    f"the {name} reference's {metric_name} disagrees on availability",
+                )
+                continue
+            _require(
+                float(recorded) == float(value),
+                f"the {name} reference's {metric_name} is {recorded} but recomputes to {value}",
+            )
+    _require(
+        all(
+            math.isclose(float(d["regret"]), 0.0, abs_tol=1e-12)
+            for d in result["reference_decisions"]["ORACLE4"]
+        ),
+        "ORACLE4 has non-zero regret",
+    )
 
     rederived = sorted(
         h

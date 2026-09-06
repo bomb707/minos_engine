@@ -15,7 +15,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pytest
 
 from minos_engine.models.contract import CV_FOLD_CHROMOSOMES
@@ -58,11 +57,19 @@ from minos_engine.models.relative_finalist_protocol import (
     SPEC_SCHEMA,
     SUPERSEDED_PROTOCOL_V2,
     V2_CANDIDATE_GRID,
+    build_v2_spec_content,
     build_v2_spec_hashes,
     compute_relative_protocol_hash,
     qualifies_against_bar,
 )
-from minos_engine.models.relative_finalist_runner import policy_metrics, reference_decisions
+from minos_engine.models.relative_finalist_reconstruction import (
+    build_frozen_scientific_reference,
+)
+from minos_engine.models.relative_finalist_runner import (
+    delta_diagnostics,
+    policy_metrics,
+    reference_decisions,
+)
 from minos_engine.models.runtime import compute_training_runtime_hash
 from minos_engine.qualification.l2f_accepted_identities import repository_root
 from minos_engine.qualification.provenance import GitProvenance, read_provenance
@@ -196,7 +203,8 @@ def authority() -> dict[str, Any]:
 
 
 def test_the_authority_binds_the_v3_procedure(authority: dict[str, Any]) -> None:
-    assert authority["schema_version"] == "l2g-v2-prefit-authority-v3"
+    """The authority is v4; the PROTOCOL it binds is still v3 and must not move."""
+    assert authority["schema_version"] == "l2g-v2-prefit-authority-v4"
     assert authority["protocol_hash"] == compute_relative_protocol_hash()
     assert authority["relative_dataset_identity"] == ACCEPTED_RELATIVE_DATASET_IDENTITY
     recorded = [e["spec_hash"] for e in authority["candidate_spec_hashes"]]
@@ -216,26 +224,32 @@ def test_the_authority_records_the_explicit_histgb_parameters(authority: dict[st
 # ---------------------------------------------------------------------------------------- #
 # DEFECT B -- trusted evidence
 # ---------------------------------------------------------------------------------------- #
-def _campaign(modes: tuple[str, str, str, str]) -> tuple[Any, dict[str, Any], Any]:
-    """REAL BAM and finalist identities, SYNTHETIC utilities.
-
-    The offline verifier authenticates the published cell set against the frozen dataset, so the
-    identities must be real. No real advantage label is used.
-    """
-    from minos_engine.models.prefit_loader import load_verified_training_dataset
-    from minos_engine.models.relative_finalist_dataset import (
-        build_relative_finalist_dataset,
+def _accepted_spec(spec_hash: str) -> dict[str, Any]:
+    """The accepted ModelSpec for a frozen hash, so no fixture invents a family."""
+    hashes = list(build_v2_spec_hashes(ACCEPTED_RELATIVE_DATASET_IDENTITY))
+    return build_v2_spec_content(
+        V2_CANDIDATE_GRID[hashes.index(spec_hash)],
+        dataset_identity=ACCEPTED_RELATIVE_DATASET_IDENTITY,
     )
 
-    rng = np.random.default_rng(9)
-    bams = dict(build_relative_finalist_dataset(load_verified_training_dataset()).bam_chromosome)
-    utility: dict[tuple[str, str], float] = {}
-    for b in bams:
-        safe = float(np.clip(rng.normal(0.7, 0.1), 0, 1))
-        utility[(b, SAFE_BASELINE_CONFIG_HASH)] = safe
-        for c in ALTERNATIVE_FINALISTS:
-            utility[(b, c)] = float(np.clip(safe + rng.normal(-0.05, 0.08), 0, 1))
+
+def _campaign(modes: tuple[str, str, str, str]) -> tuple[Any, dict[str, Any], Any]:
+    """REAL identities, REAL labels, REAL utilities; the POLICIES are synthetic.
+
+    The offline verifier reconstructs the frozen dataset and checks every published label, utility
+    and decision against it, so a fixture cannot invent utilities any more -- and should not have
+    been able to before. What it may choose is how each synthetic candidate behaves: ``noop`` sets
+    a margin nothing can exceed and therefore keeps SAFE everywhere, while ``good`` sets a margin
+    of zero and switches wherever the frozen advantage is positive. Both publish decisions that
+    genuinely follow from their own predictions under the frozen switch rule.
+    """
+    frozen = build_frozen_scientific_reference()
+    bams = frozen.chromosome_of
+    utility = frozen.utility
+    delta = frozen.delta
     cells = [[b, c] for b in sorted(bams) for c in ALTERNATIVE_FINALISTS]
+    # a margin no predicted advantage can exceed, so "noop" keeps SAFE under the strict rule
+    never = max(delta.values()) + 1.0
 
     references: dict[str, Any] = {}
     for name in ("ALWAYS_SAFE_BASELINE", "GLOBAL_BEST_FINALIST_FROM_OUTER_TRAIN", "ORACLE4"):
@@ -267,26 +281,27 @@ def _campaign(modes: tuple[str, str, str, str]) -> tuple[Any, dict[str, Any], An
     hashes = build_v2_spec_hashes(ACCEPTED_RELATIVE_DATASET_IDENTITY)
     per_spec: dict[str, Any] = {}
     for spec_hash, mode in zip(hashes, modes, strict=True):
+        margin = never if mode == "noop" else 0.0
         records, decisions = [], []
         for b in sorted(bams):
             ch = bams[b]
+            predictions = {c: delta[(b, c)] for c in ALTERNATIVE_FINALISTS}
             for c in ALTERNATIVE_FINALISTS:
-                actual = utility[(b, c)] - utility[(b, SAFE_BASELINE_CONFIG_HASH)]
                 records.append(
                     {
                         "spec_hash": spec_hash,
                         "dataset_id": b,
                         "chromosome": ch,
                         "alternative_config": c,
-                        "actual_delta": actual,
-                        "predicted_delta": -1.0 if mode == "noop" else actual,
+                        "actual_delta": delta[(b, c)],
+                        "predicted_delta": predictions[c],
                         "outer_fold": ch,
                     }
                 )
-            best = max(ALTERNATIVE_FINALISTS, key=lambda c: utility[(b, c)])
-            gain = utility[(b, best)] - utility[(b, SAFE_BASELINE_CONFIG_HASH)]
-            switch = mode == "good" and gain > 0
-            selected = best if switch else SAFE_BASELINE_CONFIG_HASH
+            best = max(predictions.values())
+            argmax = sorted(c for c, v in predictions.items() if v == best)[0]
+            switched = best > margin
+            selected = argmax if switched else SAFE_BASELINE_CONFIG_HASH
             oracle = max(utility[(b, c)] for c in FINALIST_DOMAIN)
             decisions.append(
                 {
@@ -294,10 +309,10 @@ def _campaign(modes: tuple[str, str, str, str]) -> tuple[Any, dict[str, Any], An
                     "dataset_id": b,
                     "chromosome": ch,
                     "outer_fold": ch,
-                    "predictions": {},
-                    "margin": 0.0,
+                    "predictions": dict(sorted(predictions.items())),
+                    "margin": margin,
                     "selected_config": selected,
-                    "switched": switch,
+                    "switched": switched,
                     "safe_utility": utility[(b, SAFE_BASELINE_CONFIG_HASH)],
                     "selected_utility": utility[(b, selected)],
                     "oracle4_utility": oracle,
@@ -307,20 +322,22 @@ def _campaign(modes: tuple[str, str, str, str]) -> tuple[Any, dict[str, Any], An
                     ),
                 }
             )
+
+        class _R:
+            def __init__(self, d: dict[str, Any]) -> None:
+                self.actual_delta = d["actual_delta"]
+                self.predicted_delta = d["predicted_delta"]
+
         per_spec[spec_hash] = {
             "spec_hash": spec_hash,
-            "family": "RELATIVE_RIDGE_SHARED",
+            "family": _accepted_spec(spec_hash)["family"],
+            "implementation": _accepted_spec(spec_hash)["implementation"],
             "records": records,
             "decisions": decisions,
-            "margins": dict.fromkeys(CV_FOLD_CHROMOSOMES, 0.0),
+            "margins": dict.fromkeys(CV_FOLD_CHROMOSOMES, margin),
             "metrics": policy_metrics([_D(d) for d in decisions]),
-            # a COMPLETE spec must carry all four; the real producer computes them
-            "diagnostics": {
-                "delta_mae": 0.0,
-                "delta_rmse": 0.0,
-                "delta_r2": 0.0,
-                "delta_spearman": 0.0,
-            },
+            # the frozen diagnostic definition, over these exact records
+            "diagnostics": delta_diagnostics([_R(r) for r in records]),
             "training_failures": [],
             "expected_cell_set": cells,
         }
@@ -420,7 +437,8 @@ def test_the_sealed_v2_entry_returns_a_trusted_campaign() -> None:
     assert "mint_trusted_v2_campaign" in source
     assert "read_provenance(source_root)" in source
     capture = source.index("read_provenance(source_root)")
-    first_fit = source.index("run_relative_outer_oof(")
+    # fitting now happens inside the isolating helper, which the entry calls after provenance
+    first_fit = source.index("run_frozen_candidates(")
     assert capture < first_fit, "provenance is captured after fitting"
 
 
