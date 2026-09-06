@@ -28,7 +28,8 @@ does not restate or override them.
 | Operational DB revision | `0005_l2e_feature_view` |
 | BASELINE-QUALIFIED evidence commit (immutable anchor) | `f01368d9f2a9850eae9c705eb8a63f968ca0684e` — 42/42 PASS, gate `b9436bf3…` |
 | Next gate | **MODELS-QUALIFIED** (designed in `docs/layer2/L2G_EXPECTED_SCORE_MODEL.md`; registry declared, **not issued**) |
-| Current task | **L2-G v2 — REAL TRAIN CAMPAIGN FROZEN. Contextual-selector research CLOSED.** All four frozen ModelSpecs completed (5/5 folds, 150 records, 50 decisions, 5 margins each); **shortlist empty**. Both HistGB selectors never switched and tied SAFE on both bars — refused by the three-part rule, which fired on real data. Both Ridge selectors switched 3× on chr19 and every switch was harmful (OOF R² −11.50). SAFE mean regret 0.014976328450755624 / CVaR 0.05608717452333845; ORACLE4 regret exactly 0. Freeze `l2g-v2-train-oof-campaign-freeze-v1` identity `42310a97…`. Outcome NO_CONTEXTUAL_SELECTOR_QUALIFIED_ON_TRAIN_V2; fallback SAFE `157d88d1…`; MODELS-QUALIFIED HOLD_NO_TRAIN_PROMOTABLE_CONTEXTUAL_MODEL; VALIDATION unread and NOT authorised; TEST sealed |
+| Current task | **L2-H — SAFE-BASELINE-ONLY CONTROLLER SOURCE AUTHORITY.** L2-G is CLOSED and contextual model capability is NOT QUALIFIED, so `SAFE_BASELINE` is the only authorizable control mode. Policy `l2h-safe-controller-policy-v1` (`638d6348…`) names exactly one allowed mode; BOUNDED / FULL_CONTEXTUAL / REFINEMENT are disabled and a request for one is reduced to SAFE with `SAFE_BASELINE_FORCED`, never executed. Pure core `select_safe_baseline` has one possible config by construction; global authority failures fail closed, round-level degradation emits the verified baseline. Persistence gap reported, no migration. **No gate issued, `select_config` still blocked, MODELS-QUALIFIED still HOLD** |
+| Previous task | **L2-G v2 — REAL TRAIN CAMPAIGN FROZEN. Contextual-selector research CLOSED.** All four frozen ModelSpecs completed (5/5 folds, 150 records, 50 decisions, 5 margins each); **shortlist empty**. Both HistGB selectors never switched and tied SAFE on both bars — refused by the three-part rule, which fired on real data. Both Ridge selectors switched 3× on chr19 and every switch was harmful (OOF R² −11.50). SAFE mean regret 0.014976328450755624 / CVaR 0.05608717452333845; ORACLE4 regret exactly 0. Freeze `l2g-v2-train-oof-campaign-freeze-v1` identity `42310a97…`. Outcome NO_CONTEXTUAL_SELECTOR_QUALIFIED_ON_TRAIN_V2; fallback SAFE `157d88d1…`; MODELS-QUALIFIED HOLD_NO_TRAIN_PROMOTABLE_CONTEXTUAL_MODEL; VALIDATION unread and NOT authorised; TEST sealed |
 | Previous task | **L2-G v2 — SCIENTIFIC-EVIDENCE AUTHORITY (frozen; nothing fitted).** The sealed loop had no per-candidate boundary despite the previous report claiming one; each frozen candidate now runs inside a narrow deterministic failure surface, a failed candidate is accounted for with a canonical sanitised record and can never be shortlisted, and shared authority failures still abort everything. The offline verifier now REBUILDS the frozen dataset from bundle bytes (no DB) and authenticates every actual_delta, utility, prediction, action, regret, diagnostic, family and all three reference policies against it; 17 rehashed scientific tampers are refused. Protocol v3 and the four spec hashes did NOT move; authority is `l2g-v2-prefit-authority-v4` (`6b2edd38…`). **No v2 model has been fitted** |
 | Previous task | **L2-G v2 — RUNNER→PUBLISHER INTEGRATION + OFFLINE AUTHORITY (frozen; nothing fitted).** The real runner never emitted `family`, so the first real campaign would have died at publication after fitting; it now supplies its own identity and real DELTA diagnostics, and ±inf fails completeness. The offline verifier authenticates SOURCES — committed authority, Git provenance, frozen identities, recomputed cell/BAM set hashes, recomputed metrics and SAFE bar, re-derived shortlist, exact tree layout and modes. Per-spec failure isolation; the future bundle requires a verified campaign and can no longer bind 64 zeroes. Protocol v3 and the four spec hashes did NOT move; authority is `l2g-v2-prefit-authority-v3` (`07464ddf…`). **No v2 model has been fitted** |
 | Previous task | **L2-G v2 — REAL-CAMPAIGN AUTHORITY (frozen; nothing fitted).** Promotion is now three-part — no worse on either bar AND strictly better on one — so a selector that never switches can no longer qualify by tying SAFE_BASELINE. Protocol/spec at v3; HistGB `early_stopping=False`; trusted v2 campaign capability, staged publication and whole-tree verifier; bundle binds the real feature authorities. **No v2 model has been fitted** |
@@ -1168,6 +1169,26 @@ The gate binds the **qualified source**, not the evidence commit that carries it
 | L2-G campaign v1 freeze | `1c2039dec2f3fbb51a8058c947bbf8de9f9c6d235a133b5948aa6b33ac516673` |
 | L2-G v2 campaign freeze | `42310a97f2e13d516b57789bbfa0cd6ee6e44d7e732747dd44ace3aad9d33de5` |
 | L2-G v2 campaign result | `db0348c546e46cd086fe59022a2b2b06f76f8602067f6b8e8dcdbc42c26bf7ba` |
+
+### Production scientific policy: SAFE_BASELINE only (L2-H)
+
+| Item | Status |
+|---|---|
+| L2-G | **CLOSED** |
+| Contextual model capability | **NOT QUALIFIED** — no model bundle exists |
+| Production scientific policy | **SAFE_BASELINE** |
+| L2-H current activity | SAFE-BASELINE-ONLY CONTROLLER **SOURCE AUTHORITY** |
+| Safe controller policy | `l2h-safe-controller-policy-v1`, hash `638d634834c921f5ba00220caaca59c4b317368767c38bd50cafaad232241fa3` |
+| Allowed control modes | exactly `{SAFE_BASELINE}` |
+| `Layer2Service.select_config` | **BLOCKED** (`StageNotReadyError`) |
+| Controller gate | **none issued**; `CONTROLLER-FROZEN` reserved for full contextual capability |
+
+**This is not a hidden downgrade from a failed model into a "qualified model."** `SAFE_BASELINE`
+was always a control mode in the Layer 2 architecture and always the fail-safe. What changed is
+only that it is now the *only* authorized controller capability, because the other three modes
+require a qualified model bundle and none exists. An empty shortlist is the absence of a model,
+not evidence of one. See [ADR-0005](decisions/ADR-0005-SAFE-BASELINE-ONLY-CONTROL.md) and
+[L2H_SAFE_CONTROLLER.md](layer2/L2H_SAFE_CONTROLLER.md).
 
 ### L2-G contextual-selector research: CLOSED
 

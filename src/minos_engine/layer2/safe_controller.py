@@ -1,0 +1,371 @@
+"""The SAFE_BASELINE-only Layer 2 controller: source authority and pure decision core.
+
+There is exactly one scientific outcome this module can produce -- the qualified baseline config
+`157d88d1…` -- and that is a property of its structure, not of its inputs. There is no candidate
+generator, no ranker, no utility model, no exploration and no random source anywhere in the call
+path. A caller cannot widen it: `model_bundle_id` is recorded and ignored, and a request for a
+contextual mode is deterministically reduced to SAFE_BASELINE rather than executed.
+
+**Two failure classes, deliberately not merged.**
+
+A GLOBAL AUTHORITY FAILURE means the engine cannot prove what it is about to emit: the L1 entry
+gate is invalid, the baseline authority does not resolve, the payload bytes do not hash to the
+accepted config, the parameter space has moved, or a repository prerequisite has drifted. These
+raise :class:`SafeControllerAuthorityError` and emit nothing. Returning an unauthenticated CONFIG
+because "the safe path should always work" would make the safe path the least trustworthy one.
+
+A ROUND-LEVEL REDUCED-AUTHORITY CONDITION means the engine knows exactly what to emit and emits
+it: a contextual mode was requested but no qualified model exists, or safe mode was asked for
+directly. These return the verified baseline with a typed fallback reason. Nothing pretends the
+requested contextual mode ran.
+
+Layer 2 still does not open the BAM, and this module reads no truth, no VALIDATION and no TEST.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any, Final
+
+from minos_engine.common.canonical_json import canonical_json_bytes
+from minos_engine.common.errors import MinosEngineError
+from minos_engine.common.hashing import sha256_hex
+from minos_engine.layer2.contracts import (
+    ArtifactIdentity,
+    ControlMode,
+    DecisionIdentity,
+    DecisionRequest,
+    DecisionResult,
+    FallbackReason,
+)
+from minos_engine.layer2.safe_controller_policy import (
+    ALLOWED_MODES,
+    SAFE_CONTROLLER_VERSION,
+    compute_safe_controller_policy_hash,
+    load_committed_safe_controller_policy,
+)
+
+#: Where the frozen content-addressed GATK payloads live. An operational handle only: the file is
+#: verified against the hash that names it, so a wrong root fails rather than substitutes.
+from minos_engine.models.config_table import CONFIG_PAYLOAD_ROOT
+
+__all__ = [
+    "SAFE_DECISION_MANIFEST_DOMAIN",
+    "SAFE_DECISION_MANIFEST_SCHEMA",
+    "SafeBaselineController",
+    "SafeControllerAuthorityError",
+    "VerifiedSafeBaselineAuthority",
+    "load_verified_safe_baseline_authority",
+    "safe_decision_manifest_content",
+    "safe_decision_manifest_identity",
+    "select_safe_baseline",
+]
+
+SAFE_DECISION_MANIFEST_SCHEMA: Final = "l2h-safe-decision-manifest-v1"
+SAFE_DECISION_MANIFEST_DOMAIN: Final = "minos:l2h-safe-decision-manifest:v1\n"
+
+
+class SafeControllerAuthorityError(MinosEngineError):
+    """A GLOBAL authority the safe controller depends on is invalid. Emit nothing."""
+
+
+def _require(condition: bool, message: str) -> None:
+    if not condition:
+        raise SafeControllerAuthorityError(message)
+
+
+_AUTHORITY_TOKEN: Final = object()
+
+
+class VerifiedSafeBaselineAuthority:
+    """Proof that everything the controller needs was checked before any decision was made.
+
+    Minted only by :func:`load_verified_safe_baseline_authority`. The pure core takes this rather
+    than paths or hashes, so there is no way to reach a decision without having passed the entry
+    gate, resolved the baseline from its own authority, verified the payload bytes and confirmed
+    the config is still legal under the CURRENT parameter space.
+    """
+
+    __slots__ = (
+        "_policy",
+        "baseline_config_hash",
+        "baseline_payload_sha256",
+        "baseline_uri",
+        "entry_gate_checks",
+        "parameter_space_hash",
+        "policy_hash",
+    )
+
+    def __init__(
+        self,
+        token: object,
+        *,
+        policy: dict[str, Any],
+        policy_hash: str,
+        baseline_config_hash: str,
+        baseline_payload_sha256: str,
+        baseline_uri: str,
+        parameter_space_hash: str,
+        entry_gate_checks: dict[str, bool],
+    ) -> None:
+        if token is not _AUTHORITY_TOKEN:
+            raise SafeControllerAuthorityError(
+                "a safe-baseline authority may only be minted by the verifying loader; a "
+                "dictionary has not been verified against anything"
+            )
+        self._policy = dict(policy)
+        self.policy_hash = policy_hash
+        self.baseline_config_hash = baseline_config_hash
+        self.baseline_payload_sha256 = baseline_payload_sha256
+        self.baseline_uri = baseline_uri
+        self.parameter_space_hash = parameter_space_hash
+        self.entry_gate_checks = dict(entry_gate_checks)
+
+    @property
+    def policy(self) -> dict[str, Any]:
+        return dict(self._policy)
+
+    @property
+    def allowed_modes(self) -> tuple[str, ...]:
+        return tuple(self._policy["allowed_modes"])
+
+    def selected_config(self) -> ArtifactIdentity:
+        """The one and only config this controller can select."""
+        return ArtifactIdentity(uri=self.baseline_uri, sha256=self.baseline_config_hash)
+
+
+def load_verified_safe_baseline_authority(
+    *,
+    repo_root: Any = None,
+    config_payload_root: Any = None,
+) -> VerifiedSafeBaselineAuthority:
+    """Verify every GLOBAL authority, then mint the capability. Fails closed on all of them."""
+    from minos_engine.baseline.baseline_selected import (
+        SELECTED_CONFIG_HASH,
+        load_committed_baseline_selected,
+    )
+    from minos_engine.experiments.gatk_live_space import (
+        canonicalize_live_gatk_config,
+        live_gatk_parameter_space,
+    )
+    from minos_engine.layer2.entry_gate import EntryGateRequest, verify_l2_entry_gate
+    from minos_engine.qualification.l2f_accepted_identities import repository_root
+
+    root = Path(repo_root) if repo_root is not None else repository_root()
+
+    # --- the repository-owned L1 entry gate. Not duplicated, not caller-supplied ----------- #
+    gate = verify_l2_entry_gate(EntryGateRequest(repo_root=str(root)))
+    _require(
+        gate.ok,
+        "the Layer 2 entry gate does not pass: " + "; ".join(gate.reasons or ("no reason",)),
+    )
+
+    policy = load_committed_safe_controller_policy(root)
+    policy_hash = compute_safe_controller_policy_hash(policy)
+
+    # --- the baseline comes from ITS OWN authority, never from a caller or a constant here -- #
+    selected = load_committed_baseline_selected(root)
+    baseline_hash = str(selected["content"]["selected_config_hash"])
+    _require(
+        selected["baseline_selected_hash"] == policy["baseline_selected_identity"],
+        "the committed baseline authority does not hash to the identity the policy binds",
+    )
+    _require(
+        baseline_hash == SELECTED_CONFIG_HASH == policy["safe_baseline_config_hash"],
+        f"the baseline authority resolves to {baseline_hash}, not the policy's baseline",
+    )
+
+    # --- the payload bytes, and that they ARE the accepted baseline ------------------------ #
+    payload_root = Path(config_payload_root) if config_payload_root else CONFIG_PAYLOAD_ROOT
+    path = payload_root / f"{baseline_hash}.json"
+    _require(path.is_file(), f"the baseline CONFIG payload is missing: {path}")
+    _require(not path.is_symlink(), f"{path} is a symlink")
+    raw = path.read_bytes()
+    payload_sha = sha256_hex(raw)
+    parsed = json.loads(raw)
+    _require(
+        canonical_json_bytes(parsed) == raw,
+        "the baseline payload is not canonical bytes, so its hash is not its identity",
+    )
+    _require(
+        sha256_hex(canonical_json_bytes(parsed)) == baseline_hash,
+        f"the baseline payload hashes to {payload_sha}, not the accepted {baseline_hash}",
+    )
+
+    # --- §13: legal under the CURRENT parameter space, not the one it was chosen under ----- #
+    space = live_gatk_parameter_space()
+    _require(
+        space.parameter_space_hash == policy["parameter_space_hash"],
+        f"the live parameter space is {space.parameter_space_hash}, but the policy binds "
+        f"{policy['parameter_space_hash']}; a new compatibility domain requires requalification",
+    )
+    canonical = canonicalize_live_gatk_config(parsed)
+    _require(
+        canonical.config_hash == baseline_hash,
+        "canonicalising the baseline under the current parameter space changes its identity; "
+        "the baseline must never be silently mutated to fit new ranges",
+    )
+    _require(
+        canonical.effective_config == parsed,
+        "the current parameter space rewrites a baseline field; this needs requalification",
+    )
+    _require(
+        canonical.parameter_space_hash == space.parameter_space_hash,
+        "the canonical config cites a parameter space other than the live one",
+    )
+
+    return VerifiedSafeBaselineAuthority(
+        _AUTHORITY_TOKEN,
+        policy=policy,
+        policy_hash=policy_hash,
+        baseline_config_hash=baseline_hash,
+        baseline_payload_sha256=payload_sha,
+        baseline_uri=f"file://{path.resolve()}",
+        parameter_space_hash=space.parameter_space_hash,
+        entry_gate_checks=dict(gate.checks),
+    )
+
+
+def _fallback_reason(requested: ControlMode) -> FallbackReason:
+    """SAFE asked for is not a fallback; a contextual mode reduced to SAFE is."""
+    if requested.value in ALLOWED_MODES:
+        return FallbackReason.NONE
+    # deliberately NOT BASELINE_GATE_FAILED: no baseline-improvement comparison ever existed,
+    # because no model was ever loaded to make one
+    return FallbackReason.SAFE_BASELINE_FORCED
+
+
+def safe_decision_manifest_content(
+    *, request: DecisionRequest, authority: VerifiedSafeBaselineAuthority
+) -> dict[str, Any]:
+    """The canonical scientific manifest of one safe decision.
+
+    Deterministic for identical semantic input: no timestamps, no PIDs, no durations. Operational
+    facts belong in the persistence layer's own columns, not in a scientific identity -- two
+    identical requests must produce the same decision identity or the identity means nothing.
+    """
+    from minos_engine.layer2.prerequisites import ACCEPTED
+    from minos_engine.qualification.l2f_accepted_identities import repository_root
+    from minos_engine.qualification.provenance import read_provenance
+
+    provenance = read_provenance(repository_root())
+    profile = request.profile_ref
+    policy = authority.policy
+    requested = request.requested_mode
+    return {
+        "schema_version": SAFE_DECISION_MANIFEST_SCHEMA,
+        "round_id": request.round.round_id,
+        "profile_id": profile.profile_id,
+        "profile_manifest_hash": profile.profile_manifest_hash,
+        "profile_fingerprint_hash": profile.fingerprint_hash,
+        "profile_identity_tuple_hash": profile.identity_tuple_hash,
+        "region_hash": profile.region_hash,
+        "parameter_space_hash": authority.parameter_space_hash,
+        "caller": request.parameter_space.caller,
+        "baseline_authority_identity": policy["baseline_selected_identity"],
+        "baseline_qualified_gate_hash": policy["baseline_qualified_gate_hash"],
+        "baseline_config_hash": authority.baseline_config_hash,
+        "baseline_payload_sha256": authority.baseline_payload_sha256,
+        "selected_config_hash": authority.baseline_config_hash,
+        "controller_policy_hash": authority.policy_hash,
+        "controller_version": SAFE_CONTROLLER_VERSION,
+        "request_controller_version": request.controller_version,
+        "requested_mode": requested.value,
+        "actual_mode": ControlMode.SAFE_BASELINE.value,
+        "fallback_reason": _fallback_reason(requested).value,
+        "model_bundle_id_present": request.model_bundle_id is not None,
+        "model_bundle_loaded": False,
+        "models_qualified_status": policy["models_qualified_status"],
+        "l2g_v2_campaign_freeze_identity": policy["l2g_v2_campaign_freeze_identity"],
+        "contextual_research_closed": True,
+        "guards": {
+            "entry_gate_ok": True,
+            "entry_gate_check_count": len(authority.entry_gate_checks),
+            "baseline_payload_verified": True,
+            "parameter_space_compatible": True,
+            "candidate_generation": False,
+            "parameter_mutation": False,
+        },
+        "accepted_prerequisite_identity": ACCEPTED.model_dump(mode="json"),
+        "execution_source_commit": str(provenance.head_sha),
+        "execution_source_tree": str(provenance.tree_sha),
+    }
+
+
+def safe_decision_manifest_identity(content: dict[str, Any]) -> str:
+    """Domain-separated identity of a safe-controller decision manifest."""
+    return sha256_hex(SAFE_DECISION_MANIFEST_DOMAIN.encode("utf-8") + canonical_json_bytes(content))
+
+
+def select_safe_baseline(
+    *, request: DecisionRequest, authority: VerifiedSafeBaselineAuthority
+) -> DecisionResult:
+    """THE pure safe-controller core. One possible scientific result, by construction.
+
+    Takes a verified capability rather than paths: by the time this runs, every global authority
+    has already passed, so anything left is either a straight safe selection or a contextual
+    request being reduced to one.
+    """
+    _require(
+        isinstance(authority, VerifiedSafeBaselineAuthority),
+        "a decision may only be made from a verified safe-baseline authority",
+    )
+    _require(
+        tuple(authority.allowed_modes) == tuple(ALLOWED_MODES),
+        "the authority allows a mode set this controller cannot honour",
+    )
+    # the caller's declared baseline and parameter space must be the accepted ones. A request
+    # naming a different baseline is not a fallback case; it is a caller disagreeing with the
+    # authority, and emitting the accepted config anyway would answer a question nobody asked.
+    _require(
+        request.safe_baseline.sha256 == authority.baseline_config_hash,
+        f"the request names safe baseline {request.safe_baseline.sha256}, not the accepted "
+        f"{authority.baseline_config_hash}",
+    )
+    _require(
+        request.parameter_space.parameter_space_hash == authority.parameter_space_hash,
+        "the request names a parameter space other than the accepted live one",
+    )
+
+    manifest = safe_decision_manifest_content(request=request, authority=authority)
+    manifest_hash = safe_decision_manifest_identity(manifest)
+    return DecisionResult(
+        decision=DecisionIdentity(
+            decision_id=manifest_hash,
+            config_hash=authority.baseline_config_hash,
+            decision_manifest_hash=manifest_hash,
+        ),
+        mode=ControlMode.SAFE_BASELINE,
+        selected_config=authority.selected_config(),
+        fallback_reason=_fallback_reason(request.requested_mode),
+    )
+
+
+class SafeBaselineController:
+    """A thin binding of one verified authority to the pure core.
+
+    Not wired into :class:`~minos_engine.layer2.service.Layer2Service`: the public
+    ``select_config`` boundary stays blocked until controller qualification and the decision
+    persistence path are both closed. This class exists so that qualification drills can exercise
+    the real decision path without exposing it.
+    """
+
+    __slots__ = ("_authority",)
+
+    def __init__(self, authority: VerifiedSafeBaselineAuthority) -> None:
+        _require(
+            isinstance(authority, VerifiedSafeBaselineAuthority),
+            "a safe controller may only be constructed from a verified authority",
+        )
+        self._authority = authority
+
+    @property
+    def authority(self) -> VerifiedSafeBaselineAuthority:
+        return self._authority
+
+    def decide(self, request: DecisionRequest) -> DecisionResult:
+        return select_safe_baseline(request=request, authority=self._authority)
+
+    def manifest(self, request: DecisionRequest) -> dict[str, Any]:
+        return safe_decision_manifest_content(request=request, authority=self._authority)
