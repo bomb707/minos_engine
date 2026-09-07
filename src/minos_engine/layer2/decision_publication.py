@@ -138,7 +138,14 @@ def publish_safe_decision(
     target = root / f"{identity}.json"
 
     def _converge() -> PublishedDecision:
-        """An existing final record: identical bytes converge, different bytes fail closed."""
+        """An existing final record: identical bytes converge, different bytes fail closed.
+
+        The loser of a race must not return success before the record it is converging on is
+        durable. It cannot know whether the winner has fsynced the directory entry yet, so it
+        fsyncs the file and the directory itself rather than assuming: every successful return
+        path independently guarantees durability, which is what "durable before successful
+        return" has to mean when more than one writer exists.
+        """
         _require(not target.is_symlink(), f"{target} is a symlink")
         existing = target.read_bytes()
         _require(
@@ -146,6 +153,12 @@ def publish_safe_decision(
             f"{identity} is already published with different bytes; a decision identity may "
             "never name two decisions",
         )
+        descriptor = os.open(target, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        _fsync_directory(root)
         return PublishedDecision(
             identity=identity,
             path=target,

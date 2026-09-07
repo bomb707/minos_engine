@@ -692,8 +692,16 @@ REQUIRED_CHECKS: dict[str, frozenset[str]] = {
     #: loaded. CONTROLLER-FROZEN stays reserved for a controller with contextual capability and
     #: therefore requires MODELS-QUALIFIED PASS, which does not exist.
     #:
-    #: Prerequisites: BASELINE-QUALIFIED PASS + the L2-G terminal contextual-model HOLD/freeze +
-    #: a PASS safe-controller qualification report.
+    #: Prerequisites a future issuer MUST verify before writing this gate:
+    #:
+    #: * BASELINE-QUALIFIED PASS and the L2-G terminal contextual-model HOLD/freeze;
+    #: * a PASS safe-controller qualification report whose ``schema_version`` is the CURRENT
+    #:   corrected schema -- ``l2h-safe-controller-qualification-v3`` -- not an earlier one;
+    #: * that report's exact evidence identity and file SHA-256, pinned by the issuer;
+    #: * that report's exact ``source_commit`` / ``source_tree``, so the gate names the checkout
+    #:   the qualification actually ran from;
+    #: * explicit rejection of the superseded v1 (``7d305bcd…``) and v2 (``8408630f…``) reports:
+    #:   the v3 verifier refuses them on schema, and an issuer must not route around that.
     "SAFE-CONTROLLER-FROZEN": frozenset(
         {
             # ENTRY AUTHORITY
@@ -728,6 +736,12 @@ REQUIRED_CHECKS: dict[str, frozenset[str]] = {
             "decision_persistence_disposition_closed",
             "publication_is_content_addressed_and_idempotent",
             "select_config_public_boundary_blocked",
+            # CORRECTED PROPERTIES (qualification v3). A gate issued on v1 or v2 semantics would
+            # be resting on an isolation proof that enumerated sealed identities, or on a TRAIN
+            # anchor whose own authority identity was recorded rather than verified.
+            "sealed_authorities_never_opened",
+            "train_ownership_anchored_to_accepted_authority",
+            "publication_identity_is_derived_not_declared",
         }
     ),
 }

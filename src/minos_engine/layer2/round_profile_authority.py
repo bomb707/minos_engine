@@ -59,6 +59,7 @@ from minos_engine.models.contract import (
 __all__ = [
     "ADMITTED_PARTITION",
     "PHASE_A_AUTHORITY_PATH",
+    "accepted_phase_a_authority_identity",
     "PROFILE_CORPUS_ROOT",
     "TRAIN_SCHEDULE_PATH",
     "OWNERSHIP_DOMAIN",
@@ -283,6 +284,84 @@ def _read_exact(path: Path, *, expected_sha: str, expected_size: int) -> bytes:
     return raw
 
 
+PHASE_A_AUTHORITY_DOMAIN: Final = "minos:l2f2-phase-a-execution-authority:v1\n"
+PHASE_A_AUTHORITY_SCHEMA: Final = "l2f2-phase-a-execution-authority-v1"
+
+#: The accepted schedule and split byte identities, as the accepted Phase-A authority records them.
+ACCEPTED_TRAIN_SCHEDULE_SHA256: Final = (
+    "694a8993ef64f72ca3705442c1bc070c0288d46e08e00e39bab1155d4415d454"
+)
+ACCEPTED_SPLIT_MANIFEST_SHA256: Final = (
+    "ffdd31955a24147430156aff003248f8acb51c68514ca95c6fdbe75525328773"
+)
+
+
+def accepted_phase_a_authority_identity(base: Path) -> tuple[str, str, str]:
+    """Derive the accepted Phase-A authority identity from authority that is already accepted.
+
+    The identity is neither hardcoded nor copied out of the document being checked. It is
+    *derived*:
+
+    1. ``BASELINE_QUALIFIED_GATE_HASH`` is an accepted source constant;
+    2. ``gates/baseline-qualified.json`` must recompute to exactly that hash, and ``compute_hash``
+       covers ``qualified_source_git_sha`` / ``qualified_source_tree_sha`` -- so the accepted gate
+       cryptographically pins the commit its qualification was made from;
+    3. at that commit the git blob for the Phase-A execution authority is immutable and already
+       part of the accepted L2-F2 chain;
+    4. that blob's ``content`` is re-hashed under the Phase-A domain and must equal the
+       ``authority_hash`` it declares.
+
+    Copying ``authority_hash`` out of the working manifest would prove nothing, which is exactly
+    the defect this closes.
+
+    Returns ``(accepted_identity, qualified_source_commit, qualified_source_tree)``.
+    """
+    import subprocess  # noqa: S404 - reads one immutable blob from this repository
+
+    from minos_engine.gates.verifier import load_gate
+    from minos_engine.models.contract import BASELINE_QUALIFIED_GATE_HASH
+
+    gate_path = base / "gates/baseline-qualified.json"
+    _require(gate_path.is_file(), f"the accepted BASELINE-QUALIFIED gate is missing: {gate_path}")
+    gate = load_gate(gate_path)
+    _require(
+        gate.compute_hash() == BASELINE_QUALIFIED_GATE_HASH == gate.gate_hash,
+        "the BASELINE-QUALIFIED gate does not hash to the accepted source constant, so it pins "
+        "nothing",
+    )
+    commit = str(gate.qualified_source_git_sha or "")
+    tree = str(gate.qualified_source_tree_sha or "")
+    _require(
+        len(commit) == 40 and len(tree) == 40,
+        "the accepted gate does not pin a qualified source commit and tree",
+    )
+
+    try:
+        blob = subprocess.run(  # noqa: S603
+            ["git", "-C", str(base), "show", f"{commit}:{PHASE_A_AUTHORITY_PATH}"],
+            capture_output=True,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise RoundProfileAuthorityError(
+            f"the Phase-A authority blob is unreachable at the accepted commit {commit}: {error}"
+        ) from None
+
+    accepted = json.loads(blob)
+    _require(
+        accepted.get("schema_version") == PHASE_A_AUTHORITY_SCHEMA,
+        "the accepted Phase-A blob has an unexpected schema",
+    )
+    identity = sha256_hex(
+        PHASE_A_AUTHORITY_DOMAIN.encode("utf-8") + canonical_json_bytes(accepted["content"])
+    )
+    _require(
+        identity == str(accepted["authority_hash"]),
+        "the accepted Phase-A blob does not hash to its own declared authority identity",
+    )
+    return identity, commit, tree
+
+
 def _anchored_train_schedule(base: Path) -> tuple[list[dict[str, str]], dict[str, str]]:
     """Return the 50 anchored TRAIN rows and the anchors that made them trustworthy.
 
@@ -301,31 +380,60 @@ def _anchored_train_schedule(base: Path) -> tuple[list[dict[str, str]], dict[str
     )
 
     schedule_path = base / TRAIN_SCHEDULE_PATH
-    authority_path = base / PHASE_A_AUTHORITY_PATH
     _require(schedule_path.is_file(), f"the TRAIN schedule is missing: {schedule_path}")
+
+    accepted_identity, accepted_commit, accepted_tree = accepted_phase_a_authority_identity(base)
+
+    # `build_phase_a_authority` is deliberately NOT called: it reaches the split manifest, which
+    # carries sealed rows. Only the document's own content is re-hashed here.
+    path = base / PHASE_A_AUTHORITY_PATH
+    _require(path.is_file(), f"the Phase-A execution authority is missing: {path}")
+    authority = json.loads(path.read_bytes())
     _require(
-        authority_path.is_file(), f"the Phase-A execution authority is missing: {authority_path}"
+        authority.get("schema_version") == PHASE_A_AUTHORITY_SCHEMA,
+        f"unexpected Phase-A authority schema {authority.get('schema_version')!r}",
+    )
+    content = authority.get("content")
+    _require(
+        isinstance(content, dict) and bool(content),
+        "the Phase-A authority carries no content to hash",
+    )
+    recomputed = sha256_hex(
+        PHASE_A_AUTHORITY_DOMAIN.encode("utf-8") + canonical_json_bytes(content)
+    )
+    _require(
+        recomputed == str(authority.get("authority_hash")),
+        f"the Phase-A authority hashes to {recomputed} but declares "
+        f"{authority.get('authority_hash')!r}",
+    )
+    # THE check the previous version lacked. A coherent rewrite of the authority AND the schedule
+    # keeps every internal field consistent -- including a recomputed self hash -- so only the
+    # ALREADY-ACCEPTED identity can refuse it.
+    _require(
+        recomputed == accepted_identity,
+        f"the Phase-A authority identity is {recomputed}, not the accepted {accepted_identity}; "
+        "a locally consistent rewrite is still a forgery",
     )
 
-    # The anchor is PURE SOURCE and opens nothing. Recomputing the baseline protocol from
-    # `build_baseline_protocol` would have hashed the split manifest, which carries sealed rows --
-    # the seal guard caught exactly that during development, which is why this route exists.
-    selected = baseline_selected_content()
+    # the baseline-selected authority is still checked, so the protocol lineage cannot drift
     _require(
         compute_baseline_selected_hash() == ACCEPTED_BASELINE_SELECTED_IDENTITY,
         "the baseline-selected authority this source computes is not the accepted one",
     )
-    protocol_hash = str(selected["baseline_protocol_hash"])
-
-    authority = json.loads(authority_path.read_bytes())
-    content = authority["content"]
+    protocol_hash = str(baseline_selected_content()["baseline_protocol_hash"])
     _require(
         content.get("baseline_protocol_hash") == protocol_hash,
-        "the Phase-A authority cites a protocol other than the accepted baseline protocol, so it "
-        "cannot anchor anything",
+        "the Phase-A authority cites a protocol other than the accepted baseline protocol",
     )
+
     expected_schedule_sha = str(content["train_schedule_manifest_sha256"])
     expected_split_sha = str(content["split_manifest_sha256"])
+    _require(
+        expected_schedule_sha == ACCEPTED_TRAIN_SCHEDULE_SHA256
+        and expected_split_sha == ACCEPTED_SPLIT_MANIFEST_SHA256,
+        "the authenticated Phase-A authority names different schedule or split bytes than the "
+        "accepted ones",
+    )
 
     raw = schedule_path.read_bytes()
     actual = hashlib.sha256(raw).hexdigest()
@@ -386,10 +494,12 @@ def _anchored_train_schedule(base: Path) -> tuple[list[dict[str, str]], dict[str
     )
     anchors = {
         "baseline_protocol_hash": protocol_hash,
-        "phase_a_authority_hash": str(authority["authority_hash"]),
+        "phase_a_authority_hash": accepted_identity,
         "train_schedule_manifest_sha256": expected_schedule_sha,
         "split_manifest_sha256": expected_split_sha,
         "registry_snapshot_hash": ACCEPTED_REGISTRY_SNAPSHOT_HASH,
+        "phase_a_accepted_source_commit": accepted_commit,
+        "phase_a_accepted_source_tree": accepted_tree,
     }
     return sorted(rows, key=lambda r: r["round_id"]), anchors
 

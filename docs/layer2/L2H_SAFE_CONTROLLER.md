@@ -158,18 +158,33 @@ list comes from `manifests/l2f2_train_schedule_v1.json` — the frozen TRAIN-ONL
 accepted L2-F2 campaign already ran on: 50 entries of `{chromosome, dataset_id, round_id}`, no
 sealed row.
 
-**The schedule is not trusted for being present.** Its anchor chain is pure source and opens
-nothing:
+**The schedule is not trusted for being present, and neither is the authority that names it.**
+The Phase-A execution authority's identity is *derived* from authority that is already accepted,
+never copied out of the document being checked:
 
-1. `compute_baseline_selected_hash()` must equal the accepted `BASELINE_SELECTED_HASH`
-   (`b13aef13…`), which the accepted L2-H policy and the verified BASELINE-QUALIFIED evidence both
-   bind;
-2. its content yields `baseline_protocol_hash = c548e190…`;
-3. the accepted Phase-A execution authority must cite that same protocol hash, and it records
-   `train_schedule_manifest_sha256 = 694a8993…`;
-4. the schedule's bytes must hash to it;
-5. the schedule's declared shape — 50 TRAIN, 10 per chromosome, 10 batches, that chromosome list —
-   must equal the **source constants** in `baseline/schedule.py`, not a local document.
+1. `BASELINE_QUALIFIED_GATE_HASH` is an accepted source constant;
+2. `gates/baseline-qualified.json` must recompute to exactly that hash, and `compute_hash` covers
+   `qualified_source_git_sha` / `qualified_source_tree_sha` — so the accepted gate cryptographically
+   pins commit `9395c116e22c52777441d76200acd96a738417bf` (tree `fe831428…`);
+3. at that commit the git blob for `manifests/l2f2_phase_a_execution_authority_v1.json` is
+   immutable and already part of the accepted L2-F2 chain; its `content` re-hashed under
+   `minos:l2f2-phase-a-execution-authority:v1\n` gives the accepted identity
+   **`9ad0ba48c80e7b305505fea201e93185deb15ae735338086d05b38afcf4deb3f`**;
+4. the working Phase-A document must re-hash to its own declared `authority_hash` **and** that
+   value must equal the accepted identity;
+5. only then are its `train_schedule_manifest_sha256 = 694a8993…` and
+   `split_manifest_sha256 = ffdd3195…` believed, and the schedule's bytes must hash to the former;
+6. the schedule's declared shape must equal the **source constants** in `baseline/schedule.py`.
+
+Step 4 is the correction. v2 recorded the Phase-A authority hash rather than verifying it, so a
+coherent rewrite of the authority *and* the schedule together — recomputing the schedule SHA, the
+authority's reference to it, and the authority's own self hash — survived the authority layer, and
+rejection fell to whichever per-member attestation happened to be reached later. That is not
+authentication of the schedule. A test now performs exactly that forgery, reordering real admitted
+bindings so nothing downstream can catch it, and requires refusal at the anchor before any corpus
+member is opened.
+
+`build_phase_a_authority` is deliberately not called: it reaches the split manifest.
 
 Recomputing the protocol via `build_baseline_protocol` would have hashed the split manifest, which
 carries sealed rows. The seal guard caught exactly that during development, which is why the anchor

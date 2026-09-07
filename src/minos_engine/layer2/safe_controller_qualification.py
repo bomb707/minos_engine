@@ -50,13 +50,13 @@ __all__ = [
     "verify_qualification_report",
 ]
 
-SAFE_CONTROLLER_QUALIFICATION_SCHEMA: Final = "l2h-safe-controller-qualification-v2"
-SAFE_CONTROLLER_QUALIFICATION_DOMAIN: Final = "minos:l2h-safe-controller-qualification:v2\n"
+SAFE_CONTROLLER_QUALIFICATION_SCHEMA: Final = "l2h-safe-controller-qualification-v3"
+SAFE_CONTROLLER_QUALIFICATION_DOMAIN: Final = "minos:l2h-safe-controller-qualification:v3\n"
 SAFE_CONTROLLER_QUALIFICATION_PATH: Final = (
-    "reports/layer2/l2h-safe-controller-qualification-v2.json"
+    "reports/layer2/l2h-safe-controller-qualification-v3.json"
 )
 
-QUALIFICATION_TOOL_VERSION: Final = "l2h-safe-controller-qualifier-v2"
+QUALIFICATION_TOOL_VERSION: Final = "l2h-safe-controller-qualifier-v3"
 
 #: The capability this qualification covers. Named so nobody has to infer it.
 CAPABILITY_SCOPE: Final = "SAFE_BASELINE_ONLY"
@@ -101,17 +101,37 @@ ADDITIONAL_CHECKS: Final[tuple[str, ...]] = (
 
 #: Why the v1 report may not be used for qualification. Recorded in the evidence itself so a
 #: future reader does not have to reconstruct it.
-SUPERSEDES: Final[dict[str, str]] = {
-    "schema": "l2h-safe-controller-qualification-v1",
-    "identity": "7d305bcd7c35c82389259ec1d88058ff9202ce454a0364d15e4b864345aaf821",
-    "reason": (
-        "its sealed-partition isolation proof was insufficient: the ownership loader read, "
-        "parsed and traversed the whole 75-member profile snapshot before skipping non-TRAIN "
-        "members, so TEST identities were enumerated, and the report's skipped_partition_counts "
-        "were derived by traversing the very records they claimed were untouched"
-    ),
-    "status": "HISTORICAL_EVIDENCE_NOT_VALID_FOR_QUALIFICATION",
-}
+SUPERSEDES: Final[tuple[dict[str, str], ...]] = (
+    {
+        "schema": "l2h-safe-controller-qualification-v1",
+        "identity": "7d305bcd7c35c82389259ec1d88058ff9202ce454a0364d15e4b864345aaf821",
+        "reason": (
+            "sealed-partition isolation was insufficient: the ownership loader read, parsed and "
+            "traversed the whole 75-member profile snapshot before skipping non-TRAIN members, "
+            "so TEST identities were enumerated, and the report's skipped_partition_counts were "
+            "derived by traversing the very records they claimed were untouched"
+        ),
+        "status": "HISTORICAL_EVIDENCE_NOT_VALID_FOR_QUALIFICATION",
+    },
+    {
+        "schema": "l2h-safe-controller-qualification-v2",
+        "identity": "8408630ffb130afeb22bf08dc47b78f3be5bbeef3dc102c2c3b5265f3431d286",
+        "reason": (
+            "enumeration was fixed, but the TRAIN-schedule anchor was incompletely "
+            "authenticated -- the Phase-A authority's own identity was recorded rather than "
+            "verified against an already-accepted one, so a coherent rewrite of the authority "
+            "and the schedule together survived the authority layer -- and the access "
+            "instrumentation covered only io.open and only the ownership load, not the whole run"
+        ),
+        "status": "HISTORICAL_EVIDENCE_NOT_VALID_FOR_QUALIFICATION",
+    },
+)
+
+#: The v3 report states what it does NOT claim about its predecessors: both recorded real runs.
+SUPERSESSION_NOTE: Final = (
+    "v1 and v2 are historical evidence from insufficient authority boundaries, not invalid "
+    "science: each recorded a real run of the controller it was written against"
+)
 
 ALL_CHECKS: Final[tuple[str, ...]] = MANDATORY_CHECKS + ADDITIONAL_CHECKS
 
@@ -241,9 +261,6 @@ def run_safe_controller_qualification(
         v2_campaign_freeze_identity,
         verify_v2_campaign_freeze,
     )
-    from minos_engine.qualification.l2f2_baseline_qualified_runner import (
-        verify_baseline_qualified_gate,
-    )
 
     root = _resolve_root(repo_root)
     published_root = Path(output_root)
@@ -255,265 +272,295 @@ def run_safe_controller_qualification(
         authority = load_verified_safe_baseline_authority(repo_root=root)
         ownership = load_verified_round_profile_corpus(root=root, corpus_root=corpus_root)
         materialized_rounds = set(ownership.rounds())
-    policy = authority.policy
+        policy = authority.policy
 
-    gate = verify_l2_entry_gate(EntryGateRequest(repo_root=str(root)))
-    baseline_gate = verify_baseline_qualified_gate(
-        gate_path=str(root / "gates/baseline-qualified.json"),
-        qualification_path=str(root / "reports/layer2/baseline-qualified-result.json"),
-        root=root,
-    )
-    v1 = json.loads((root / CAMPAIGN_FREEZE_PATH).read_bytes())
-    verify_campaign_freeze(v1)
-    v2 = json.loads((root / V2_FREEZE_PATH).read_bytes())
-    verify_v2_campaign_freeze(v2)
+        gate = verify_l2_entry_gate(EntryGateRequest(repo_root=str(root)))
 
-    # --- the campaign itself: every owned profile, every requested mode -------------------- #
-    requested_counts: dict[str, int] = {mode.value: 0 for mode in ControlMode}
-    actual_counts: dict[str, int] = {}
-    fallback_counts: dict[str, int] = {}
-    selected_configs: dict[str, int] = {}
-    identities: dict[tuple[str, str], str] = {}
-    decision_count = 0
-    invalid_configs = 0
-    publication_reused = 0
+        # SEALED-SAFE BASELINE-QUALIFIED authentication. The repository's own
+        # `verify_baseline_qualified_gate` reads the split manifest, which carries sealed member
+        # identities, so it cannot run inside the guard. Authenticating the gate ARTIFACT is
+        # stronger anyway: it must hash to the accepted source constant, carry exactly the
+        # registered required checks all true, and be PASS.
+        from minos_engine.gates.required_checks import required_checks_for
+        from minos_engine.gates.verifier import load_gate
+        from minos_engine.models.contract import (
+            BASELINE_QUALIFICATION_HASH,
+            BASELINE_QUALIFIED_GATE_HASH,
+        )
 
-    for round_id in ownership.rounds():
-        owned = ownership.owned(round_id)
-        for mode in ControlMode:
-            request = _request_for(owned, authority=authority, mode=mode)
-            result = select_safe_baseline(request=request, authority=authority, ownership=ownership)
-            manifest = safe_decision_manifest_content(
-                request=request, authority=authority, ownership=ownership
-            )
-            identity = safe_decision_manifest_identity(manifest)
-            decision_count += 1
-            requested_counts[mode.value] += 1
-            actual_counts[result.mode.value] = actual_counts.get(result.mode.value, 0) + 1
-            fallback_counts[result.fallback_reason.value] = (
-                fallback_counts.get(result.fallback_reason.value, 0) + 1
-            )
-            selected_configs[result.selected_config.sha256] = (
-                selected_configs.get(result.selected_config.sha256, 0) + 1
-            )
-            if result.selected_config.sha256 != SELECTED_CONFIG_HASH:
-                invalid_configs += 1
-            if result.decision.decision_manifest_hash != identity:
-                invalid_configs += 1
-            identities[(round_id, mode.value)] = identity
+        baseline_artifact = load_gate(root / "gates/baseline-qualified.json")
+        baseline_gate_ok = (
+            baseline_artifact.compute_hash()
+            == BASELINE_QUALIFIED_GATE_HASH
+            == baseline_artifact.gate_hash
+            and baseline_artifact.status.value == "PASS"
+            and set(baseline_artifact.mandatory_checks) == required_checks_for("BASELINE-QUALIFIED")
+            and all(baseline_artifact.mandatory_checks.values())
+            and baseline_artifact.input_hashes.get("qualification_hash")
+            == BASELINE_QUALIFICATION_HASH
+        )
+        baseline_gate = {
+            "ok": baseline_gate_ok,
+            "required_check_count": len(baseline_artifact.mandatory_checks),
+        }
+        v1 = json.loads((root / CAMPAIGN_FREEZE_PATH).read_bytes())
+        verify_campaign_freeze(v1)
+        v2 = json.loads((root / V2_FREEZE_PATH).read_bytes())
+        verify_v2_campaign_freeze(v2)
 
-            published = publish_safe_decision(
-                manifest=manifest, identity=identity, output_root=published_root
-            )
-            # retry the exact same publication: idempotent by naming, not by protocol
-            again = publish_safe_decision(
-                manifest=manifest, identity=identity, output_root=published_root
-            )
-            publication_reused += int(again.reused)
-            _require(
-                read_published_decision(identity=identity, output_root=published_root) == manifest,
-                f"{identity} did not read back as the decision that was published",
-            )
-            _require(published.sha256 == again.sha256, "a retry published different bytes")
+        # --- the campaign itself: every owned profile, every requested mode -------------------- #
+        requested_counts: dict[str, int] = {mode.value: 0 for mode in ControlMode}
+        actual_counts: dict[str, int] = {}
+        fallback_counts: dict[str, int] = {}
+        selected_configs: dict[str, int] = {}
+        identities: dict[tuple[str, str], str] = {}
+        decision_count = 0
+        invalid_configs = 0
+        publication_reused = 0
 
-    # --- deterministic semantic replay ----------------------------------------------------- #
-    replay_stable = True
-    for round_id in ownership.rounds()[:8]:
-        owned = ownership.owned(round_id)
-        for mode in ControlMode:
-            replayed = select_safe_baseline(
-                request=_request_for(owned, authority=authority, mode=mode),
+        for round_id in ownership.rounds():
+            owned = ownership.owned(round_id)
+            for mode in ControlMode:
+                request = _request_for(owned, authority=authority, mode=mode)
+                result = select_safe_baseline(
+                    request=request, authority=authority, ownership=ownership
+                )
+                manifest = safe_decision_manifest_content(
+                    request=request, authority=authority, ownership=ownership
+                )
+                identity = safe_decision_manifest_identity(manifest)
+                decision_count += 1
+                requested_counts[mode.value] += 1
+                actual_counts[result.mode.value] = actual_counts.get(result.mode.value, 0) + 1
+                fallback_counts[result.fallback_reason.value] = (
+                    fallback_counts.get(result.fallback_reason.value, 0) + 1
+                )
+                selected_configs[result.selected_config.sha256] = (
+                    selected_configs.get(result.selected_config.sha256, 0) + 1
+                )
+                if result.selected_config.sha256 != SELECTED_CONFIG_HASH:
+                    invalid_configs += 1
+                if result.decision.decision_manifest_hash != identity:
+                    invalid_configs += 1
+                identities[(round_id, mode.value)] = identity
+
+                published = publish_safe_decision(
+                    manifest=manifest, identity=identity, output_root=published_root
+                )
+                # retry the exact same publication: idempotent by naming, not by protocol
+                again = publish_safe_decision(
+                    manifest=manifest, identity=identity, output_root=published_root
+                )
+                publication_reused += int(again.reused)
+                _require(
+                    read_published_decision(identity=identity, output_root=published_root)
+                    == manifest,
+                    f"{identity} did not read back as the decision that was published",
+                )
+                _require(published.sha256 == again.sha256, "a retry published different bytes")
+
+        # --- deterministic semantic replay ----------------------------------------------------- #
+        replay_stable = True
+        for round_id in ownership.rounds()[:8]:
+            owned = ownership.owned(round_id)
+            for mode in ControlMode:
+                replayed = select_safe_baseline(
+                    request=_request_for(owned, authority=authority, mode=mode),
+                    authority=authority,
+                    ownership=ownership,
+                )
+                if replayed.decision.decision_manifest_hash != identities[(round_id, mode.value)]:
+                    replay_stable = False
+
+        # --- low-time determinism --------------------------------------------------------------- #
+        sample = ownership.owned(ownership.rounds()[0])
+        low_time = select_safe_baseline(
+            request=_request_for(
+                sample, authority=authority, mode=ControlMode.SAFE_BASELINE, remaining_seconds=0.0
+            ),
+            authority=authority,
+            ownership=ownership,
+        )
+        roomy = select_safe_baseline(
+            request=_request_for(
+                sample, authority=authority, mode=ControlMode.SAFE_BASELINE, remaining_seconds=599.0
+            ),
+            authority=authority,
+            ownership=ownership,
+        )
+        low_time_deterministic = (
+            low_time.decision.decision_manifest_hash == roomy.decision.decision_manifest_hash
+            and low_time.selected_config.sha256 == SELECTED_CONFIG_HASH
+            and low_time.fallback_reason is FallbackReason.NONE
+        )
+
+        # --- model bundle cannot influence anything ---------------------------------------------- #
+        bundle_a = select_safe_baseline(
+            request=_request_for(
+                sample, authority=authority, mode=ControlMode.FULL_CONTEXTUAL
+            ).model_copy(update={"model_bundle_id": "bundle-a"}),
+            authority=authority,
+            ownership=ownership,
+        )
+        bundle_b = select_safe_baseline(
+            request=_request_for(
+                sample, authority=authority, mode=ControlMode.FULL_CONTEXTUAL
+            ).model_copy(update={"model_bundle_id": "bundle-b"}),
+            authority=authority,
+            ownership=ownership,
+        )
+        bundle_inert = (
+            bundle_a.selected_config.sha256
+            == bundle_b.selected_config.sha256
+            == SELECTED_CONFIG_HASH
+            and bundle_a.decision == bundle_b.decision
+            and bundle_a.mode is ControlMode.SAFE_BASELINE
+        )
+
+        # --- authority-failure drills: each must fail closed ------------------------------------- #
+        def _foreign_baseline() -> None:
+            select_safe_baseline(
+                request=_request_for(
+                    sample, authority=authority, mode=ControlMode.SAFE_BASELINE
+                ).model_copy(
+                    update={"safe_baseline": ArtifactIdentity(uri="file:///x", sha256="0" * 64)}
+                ),
                 authority=authority,
                 ownership=ownership,
             )
-            if replayed.decision.decision_manifest_hash != identities[(round_id, mode.value)]:
-                replay_stable = False
 
-    # --- low-time determinism --------------------------------------------------------------- #
-    sample = ownership.owned(ownership.rounds()[0])
-    low_time = select_safe_baseline(
-        request=_request_for(
-            sample, authority=authority, mode=ControlMode.SAFE_BASELINE, remaining_seconds=0.0
-        ),
-        authority=authority,
-        ownership=ownership,
-    )
-    roomy = select_safe_baseline(
-        request=_request_for(
-            sample, authority=authority, mode=ControlMode.SAFE_BASELINE, remaining_seconds=599.0
-        ),
-        authority=authority,
-        ownership=ownership,
-    )
-    low_time_deterministic = (
-        low_time.decision.decision_manifest_hash == roomy.decision.decision_manifest_hash
-        and low_time.selected_config.sha256 == SELECTED_CONFIG_HASH
-        and low_time.fallback_reason is FallbackReason.NONE
-    )
+        def _foreign_space() -> None:
+            select_safe_baseline(
+                request=_request_for(
+                    sample, authority=authority, mode=ControlMode.SAFE_BASELINE
+                ).model_copy(
+                    update={
+                        "parameter_space": ParameterSpaceIdentity(parameter_space_hash="a" * 64)
+                    }
+                ),
+                authority=authority,
+                ownership=ownership,
+            )
 
-    # --- model bundle cannot influence anything ---------------------------------------------- #
-    bundle_a = select_safe_baseline(
-        request=_request_for(
-            sample, authority=authority, mode=ControlMode.FULL_CONTEXTUAL
-        ).model_copy(update={"model_bundle_id": "bundle-a"}),
-        authority=authority,
-        ownership=ownership,
-    )
-    bundle_b = select_safe_baseline(
-        request=_request_for(
-            sample, authority=authority, mode=ControlMode.FULL_CONTEXTUAL
-        ).model_copy(update={"model_bundle_id": "bundle-b"}),
-        authority=authority,
-        ownership=ownership,
-    )
-    bundle_inert = (
-        bundle_a.selected_config.sha256 == bundle_b.selected_config.sha256 == SELECTED_CONFIG_HASH
-        and bundle_a.decision == bundle_b.decision
-        and bundle_a.mode is ControlMode.SAFE_BASELINE
-    )
+        def _absent_payload() -> None:
+            load_verified_safe_baseline_authority(
+                repo_root=root, config_payload_root=published_root / "no-such-config-root"
+            )
 
-    # --- authority-failure drills: each must fail closed ------------------------------------- #
-    def _foreign_baseline() -> None:
-        select_safe_baseline(
-            request=_request_for(
-                sample, authority=authority, mode=ControlMode.SAFE_BASELINE
-            ).model_copy(
-                update={"safe_baseline": ArtifactIdentity(uri="file:///x", sha256="0" * 64)}
+        def _broken_entry_gate() -> None:
+            load_verified_safe_baseline_authority(repo_root=published_root / "not-a-repository")
+
+        def sample_reference(owned: Any, **override: Any) -> Layer1ProfileReference:
+            fields: dict[str, Any] = {
+                "profile_id": owned.profile_id,
+                "profile_manifest_hash": "0" * 64,
+                "profile_manifest_sha256": owned.profile_manifest_sha256,
+                "fingerprint_hash": owned.fingerprint_hash,
+                "region_hash": owned.region_hash,
+                "bam_sha256": owned.bam_sha256,
+                "bai_sha256": owned.bai_sha256,
+                "reference_sha256": owned.reference_sha256,
+                "fai_sha256": owned.fai_sha256,
+            }
+            fields.update(override)
+            return Layer1ProfileReference(**fields)
+
+        def _ownership_drill(**override: Any) -> Any:
+            def run() -> None:
+                request = _request_for(
+                    sample, authority=authority, mode=ControlMode.SAFE_BASELINE
+                ).model_copy(update={"profile_ref": sample_reference(sample, **override)})
+                select_safe_baseline(request=request, authority=authority, ownership=ownership)
+
+            return run
+
+        other = ownership.owned(ownership.rounds()[1])
+        drills: dict[str, Any] = {
+            "foreign_baseline": _foreign_baseline,
+            "foreign_parameter_space": _foreign_space,
+            "absent_baseline_payload": _absent_payload,
+            "broken_entry_gate": _broken_entry_gate,
+            "unowned_round": lambda: ownership.owned("not-a-round"),
+            "wrong_profile_id": _ownership_drill(profile_id="foreign-profile"),
+            "wrong_profile_manifest_sha256": _ownership_drill(
+                profile_manifest_sha256=other.profile_manifest_sha256
             ),
-            authority=authority,
-            ownership=ownership,
-        )
-
-    def _foreign_space() -> None:
-        select_safe_baseline(
-            request=_request_for(
-                sample, authority=authority, mode=ControlMode.SAFE_BASELINE
-            ).model_copy(
-                update={"parameter_space": ParameterSpaceIdentity(parameter_space_hash="a" * 64)}
-            ),
-            authority=authority,
-            ownership=ownership,
-        )
-
-    def _absent_payload() -> None:
-        load_verified_safe_baseline_authority(
-            repo_root=root, config_payload_root=published_root / "no-such-config-root"
-        )
-
-    def _broken_entry_gate() -> None:
-        load_verified_safe_baseline_authority(repo_root=published_root / "not-a-repository")
-
-    def sample_reference(owned: Any, **override: Any) -> Layer1ProfileReference:
-        fields: dict[str, Any] = {
-            "profile_id": owned.profile_id,
-            "profile_manifest_hash": "0" * 64,
-            "profile_manifest_sha256": owned.profile_manifest_sha256,
-            "fingerprint_hash": owned.fingerprint_hash,
-            "region_hash": owned.region_hash,
-            "bam_sha256": owned.bam_sha256,
-            "bai_sha256": owned.bai_sha256,
-            "reference_sha256": owned.reference_sha256,
-            "fai_sha256": owned.fai_sha256,
+            "wrong_fingerprint": _ownership_drill(fingerprint_hash=other.fingerprint_hash),
+            "wrong_bam": _ownership_drill(bam_sha256=other.bam_sha256),
+            "wrong_bai": _ownership_drill(bai_sha256=other.bai_sha256),
+            "wrong_reference": _ownership_drill(reference_sha256=other.reference_sha256),
+            "wrong_fai": _ownership_drill(fai_sha256=other.fai_sha256),
+            "wrong_region": _ownership_drill(region_hash=other.region_hash),
         }
-        fields.update(override)
-        return Layer1ProfileReference(**fields)
+        drill_results = {name: _drill(fn) for name, fn in sorted(drills.items())}
 
-    def _ownership_drill(**override: Any) -> Any:
-        def run() -> None:
-            request = _request_for(
-                sample, authority=authority, mode=ControlMode.SAFE_BASELINE
-            ).model_copy(update={"profile_ref": sample_reference(sample, **override)})
-            select_safe_baseline(request=request, authority=authority, ownership=ownership)
-
-        return run
-
-    other = ownership.owned(ownership.rounds()[1])
-    drills: dict[str, Any] = {
-        "foreign_baseline": _foreign_baseline,
-        "foreign_parameter_space": _foreign_space,
-        "absent_baseline_payload": _absent_payload,
-        "broken_entry_gate": _broken_entry_gate,
-        "unowned_round": lambda: ownership.owned("not-a-round"),
-        "wrong_profile_id": _ownership_drill(profile_id="foreign-profile"),
-        "wrong_profile_manifest_sha256": _ownership_drill(
-            profile_manifest_sha256=other.profile_manifest_sha256
-        ),
-        "wrong_fingerprint": _ownership_drill(fingerprint_hash=other.fingerprint_hash),
-        "wrong_bam": _ownership_drill(bam_sha256=other.bam_sha256),
-        "wrong_bai": _ownership_drill(bai_sha256=other.bai_sha256),
-        "wrong_reference": _ownership_drill(reference_sha256=other.reference_sha256),
-        "wrong_fai": _ownership_drill(fai_sha256=other.fai_sha256),
-        "wrong_region": _ownership_drill(region_hash=other.region_hash),
-    }
-    drill_results = {name: _drill(fn) for name, fn in sorted(drills.items())}
-
-    # --- static isolation: what the controller path can even reach ------------------------- #
-    modules = (
-        "safe_controller.py",
-        "safe_controller_policy.py",
-        "round_profile_authority.py",
-        "decision_publication.py",
-        "safe_controller_qualification.py",
-    )
-    imported: set[str] = set()
-    called: set[str] = set()
-    import ast
-
-    for name in modules:
-        source = (root / "src/minos_engine/layer2" / name).read_text(encoding="utf-8")
-        for node in ast.walk(ast.parse(source)):
-            if isinstance(node, ast.Import):
-                imported.update(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                imported.add(node.module)
-                imported.update(f"{node.module}.{alias.name}" for alias in node.names)
-            elif isinstance(node, ast.Call):
-                function = node.func
-                if isinstance(function, ast.Name):
-                    called.add(function.id)
-                elif isinstance(function, ast.Attribute):
-                    called.add(function.attr)
-
-    forbidden_modules = (
-        "sklearn",
-        "optuna",
-        "smac",
-        "hyperopt",
-        "random",
-        "secrets",
-        "numpy.random",
-        "minos_engine.evaluation",
-        "minos_engine.models.campaign",
-        "minos_engine.models.shortlist",
-        "minos_engine.models.relative_finalist_runner",
-        "minos_engine.twin",
-    )
-    isolation_violations = sorted(
-        f"{m} imports {i}"
-        for i in sorted(imported)
-        for m in forbidden_modules
-        if i == m or i.startswith(m + ".")
-    )
-    forbidden_calls = sorted(
-        {"default_rng", "shuffle", "predict", "fit", "sample", "choice", "randint"} & called
-    )
-
-    # OBSERVED: publishing a manifest under a name it does not hash to must be refused
-    publication_identity_derived = _drill(
-        lambda: publish_safe_decision(
-            manifest={"schema_version": "not-a-decision"},
-            identity="b" * 64,
-            output_root=published_root,
+        # --- static isolation: what the controller path can even reach ------------------------- #
+        modules = (
+            "safe_controller.py",
+            "safe_controller_policy.py",
+            "round_profile_authority.py",
+            "decision_publication.py",
+            "safe_controller_qualification.py",
         )
-    )
+        imported: set[str] = set()
+        called: set[str] = set()
+        import ast
 
-    service_blocked = False
-    try:
-        Layer2Service().select_config(
-            _request_for(sample, authority=authority, mode=ControlMode.SAFE_BASELINE)
+        for name in modules:
+            source = (root / "src/minos_engine/layer2" / name).read_text(encoding="utf-8")
+            for node in ast.walk(ast.parse(source)):
+                if isinstance(node, ast.Import):
+                    imported.update(alias.name for alias in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    imported.add(node.module)
+                    imported.update(f"{node.module}.{alias.name}" for alias in node.names)
+                elif isinstance(node, ast.Call):
+                    function = node.func
+                    if isinstance(function, ast.Name):
+                        called.add(function.id)
+                    elif isinstance(function, ast.Attribute):
+                        called.add(function.attr)
+
+        forbidden_modules = (
+            "sklearn",
+            "optuna",
+            "smac",
+            "hyperopt",
+            "random",
+            "secrets",
+            "numpy.random",
+            "minos_engine.evaluation",
+            "minos_engine.models.campaign",
+            "minos_engine.models.shortlist",
+            "minos_engine.models.relative_finalist_runner",
+            "minos_engine.twin",
         )
-    except Exception as error:
-        service_blocked = type(error).__name__ == "StageNotReadyError"
+        isolation_violations = sorted(
+            f"{m} imports {i}"
+            for i in sorted(imported)
+            for m in forbidden_modules
+            if i == m or i.startswith(m + ".")
+        )
+        forbidden_calls = sorted(
+            {"default_rng", "shuffle", "predict", "fit", "sample", "choice", "randint"} & called
+        )
+
+        # OBSERVED: publishing a manifest under a name it does not hash to must be refused
+        publication_identity_derived = _drill(
+            lambda: publish_safe_decision(
+                manifest={"schema_version": "not-a-decision"},
+                identity="b" * 64,
+                output_root=published_root,
+            )
+        )
+
+        service_blocked = False
+        try:
+            Layer2Service().select_config(
+                _request_for(sample, authority=authority, mode=ControlMode.SAFE_BASELINE)
+            )
+        except Exception as error:
+            service_blocked = type(error).__name__ == "StageNotReadyError"
 
     observation: dict[str, Any] = {
         "capability_scope": CAPABILITY_SCOPE,
@@ -703,14 +750,16 @@ def assemble_qualification_report(trusted: Any) -> dict[str, Any]:
     content = {
         "schema_version": SAFE_CONTROLLER_QUALIFICATION_SCHEMA,
         "capability_scope": CAPABILITY_SCOPE,
-        "supersedes": dict(sorted(SUPERSEDES.items())),
+        "supersedes": [dict(sorted(entry.items())) for entry in SUPERSEDES],
+        "supersession_note": SUPERSESSION_NOTE,
         "mandatory_checks": list(MANDATORY_CHECKS),
         "additional_checks": list(ADDITIONAL_CHECKS),
         "checks": dict(sorted(checks.items())),
         "status": "PASS" if all(checks.values()) else "HOLD",
         "observation": dict(sorted(scientific.items())),
-        "validation_read": False,
-        "test_accessed": False,
+        # DERIVED from the observed counters, never authored. The verifier recomputes them.
+        "test_accessed": int(observation["test_identity_authority_open_attempts"]) > 0,
+        "validation_read": int(observation["validation_identity_authority_open_attempts"]) > 0,
         "gate_issued": False,
         "service_activated": False,
     }
@@ -740,8 +789,9 @@ def verify_qualification_report(content: dict[str, Any]) -> dict[str, Any]:
         "the report does not carry exactly the mandatory check set, in order",
     )
     _require(
-        dict(content.get("supersedes") or {}) == dict(sorted(SUPERSEDES.items())),
-        "the report does not record why the v1 qualification is superseded",
+        list(content.get("supersedes") or ())
+        == [dict(sorted(entry.items())) for entry in SUPERSEDES],
+        "the report does not record why every earlier qualification is superseded",
     )
     # the isolation flags may not contradict the observations they claim to summarise
     observed = dict(content["observation"])
@@ -751,10 +801,12 @@ def verify_qualification_report(content: dict[str, Any]) -> dict[str, Any]:
         "the report records a sealed-authority open attempt",
     )
     _require(
-        content.get("test_accessed") is False
-        and content.get("validation_read") is False
-        and observed["admitted_partition"] == "train",
-        "the isolation flags contradict the observed partition and access counters",
+        observed["admitted_partition"] == "train",
+        "the qualification admitted a partition other than TRAIN",
+    )
+    _require(
+        list(observed.get("guarded_file_apis") or ()) == ["builtins.open", "io.open", "os.open"],
+        "the run did not guard every file-open entry point",
     )
     checks = dict(content["checks"])
     _require(
@@ -775,8 +827,21 @@ def verify_qualification_report(content: dict[str, Any]) -> dict[str, Any]:
         content.get("status") == expected_status,
         f"the report claims {content.get('status')!r} but its checks give {expected_status!r}",
     )
-    for flag in ("validation_read", "test_accessed", "gate_issued", "service_activated"):
+    for flag in ("gate_issued", "service_activated"):
         _require(content.get(flag) is False, f"the qualification must record {flag} as false")
+    # RECOMPUTED from the report's own observations: a hard-coded access claim its counters do
+    # not support is refused rather than believed.
+    for flag, counter in (
+        ("test_accessed", "test_identity_authority_open_attempts"),
+        ("validation_read", "validation_identity_authority_open_attempts"),
+    ):
+        derived_flag = int(observed[counter]) > 0
+        _require(
+            bool(content.get(flag)) is derived_flag,
+            f"{flag} is recorded {content.get(flag)!r} but {counter} = {observed[counter]!r} "
+            f"derives {derived_flag!r}",
+        )
+        _require(not derived_flag, f"the run touched a sealed authority: {counter} is non-zero")
     _require(
         content["observation"]["models_qualified_status"]
         == "HOLD_NO_TRAIN_PROMOTABLE_CONTEXTUAL_MODEL",

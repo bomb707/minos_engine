@@ -348,7 +348,8 @@ def test_a_phase_a_authority_citing_a_foreign_protocol_is_refused(tmp_path: Path
     authority = json.loads((repo / PHASE_A_AUTHORITY_PATH).read_bytes())
     authority["content"]["baseline_protocol_hash"] = "e" * 64
     (repo / PHASE_A_AUTHORITY_PATH).write_bytes(canonical_json_bytes(authority))
-    with pytest.raises(RoundProfileAuthorityError, match="cannot anchor anything"):
+    # editing the content without repairing the self hash is caught by the self hash first
+    with pytest.raises(RoundProfileAuthorityError, match="but declares"):
         load_verified_round_profile_corpus(root=repo, corpus_root=corpus)
 
 
@@ -817,14 +818,28 @@ def test_only_scheduled_train_identities_reach_the_qualification_report(
             raise AssertionError(f"an unowned dataset identity reached the evidence: {token}")
 
 
-def test_the_report_records_why_v1_is_superseded(qualification: dict[str, Any]) -> None:
-    supersedes = qualification["supersedes"]
-    assert supersedes["schema"] == "l2h-safe-controller-qualification-v1"
+def test_the_report_records_why_both_predecessors_are_superseded(
+    qualification: dict[str, Any],
+) -> None:
+    entries = {e["schema"]: e for e in qualification["supersedes"]}
+    assert set(entries) == {
+        "l2h-safe-controller-qualification-v1",
+        "l2h-safe-controller-qualification-v2",
+    }
     assert (
-        supersedes["identity"] == "7d305bcd7c35c82389259ec1d88058ff9202ce454a0364d15e4b864345aaf821"
+        entries["l2h-safe-controller-qualification-v1"]["identity"]
+        == "7d305bcd7c35c82389259ec1d88058ff9202ce454a0364d15e4b864345aaf821"
     )
-    assert supersedes["status"] == "HISTORICAL_EVIDENCE_NOT_VALID_FOR_QUALIFICATION"
-    assert "enumerated" in supersedes["reason"]
+    assert (
+        entries["l2h-safe-controller-qualification-v2"]["identity"]
+        == "8408630ffb130afeb22bf08dc47b78f3be5bbeef3dc102c2c3b5265f3431d286"
+    )
+    assert "enumerated" in entries["l2h-safe-controller-qualification-v1"]["reason"]
+    assert "incompletely" in entries["l2h-safe-controller-qualification-v2"]["reason"]
+    for entry in entries.values():
+        assert entry["status"] == "HISTORICAL_EVIDENCE_NOT_VALID_FOR_QUALIFICATION"
+    # and neither is called invalid science
+    assert "not invalid science" in qualification["supersession_note"]
 
 
 def test_the_isolation_flags_are_observed_not_authored(qualification: dict[str, Any]) -> None:
@@ -856,8 +871,9 @@ def test_a_report_claiming_a_sealed_partition_was_admitted_is_refused(
         verify_qualification_report(forged)
 
 
-def test_the_superseded_v1_report_cannot_pass_the_v2_verifier() -> None:
-    """§J: a future gate must not be authorizable by the superseded evidence."""
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_a_superseded_report_cannot_pass_the_current_verifier(version: str) -> None:
+    """§J: a future gate must not be authorizable by superseded evidence."""
     from minos_engine.layer2.safe_controller_qualification import (
         SAFE_CONTROLLER_QUALIFICATION_SCHEMA,
     )
@@ -870,3 +886,146 @@ def test_the_superseded_v1_report_cannot_pass_the_v2_verifier() -> None:
     assert v1["schema_version"] != SAFE_CONTROLLER_QUALIFICATION_SCHEMA
     with pytest.raises(SafeControllerQualificationError, match="unexpected qualification schema"):
         verify_qualification_report(v1)
+
+
+# ---------------------------------------------------------------------------------------- #
+# the Phase-A anchor: derived from accepted authority, not copied
+# ---------------------------------------------------------------------------------------- #
+def test_the_phase_a_identity_is_derived_from_the_accepted_gate() -> None:
+    """Not hardcoded and not read out of the document being checked."""
+    from minos_engine.layer2.round_profile_authority import (
+        accepted_phase_a_authority_identity,
+    )
+
+    identity, commit, tree = accepted_phase_a_authority_identity(repository_root())
+    assert identity == "9ad0ba48c80e7b305505fea201e93185deb15ae735338086d05b38afcf4deb3f"
+    assert commit == "9395c116e22c52777441d76200acd96a738417bf"
+    assert tree == "fe83142845574a7ae28f7a236e959b56474ed997"
+
+
+def test_the_accepted_gate_is_what_pins_the_phase_a_commit() -> None:
+    """The chain: accepted source constant -> gate hash -> qualified source commit -> blob."""
+    from minos_engine.gates.verifier import load_gate
+    from minos_engine.models.contract import BASELINE_QUALIFIED_GATE_HASH
+
+    gate = load_gate(repository_root() / "gates/baseline-qualified.json")
+    assert gate.compute_hash() == BASELINE_QUALIFIED_GATE_HASH == gate.gate_hash
+    assert gate.qualified_source_git_sha == "9395c116e22c52777441d76200acd96a738417bf"
+
+
+def test_a_self_hashed_but_foreign_phase_a_authority_is_refused(tmp_path: Path) -> None:
+    """Internally consistent is not the same as accepted."""
+    from minos_engine.common.hashing import sha256_hex
+    from minos_engine.layer2.round_profile_authority import PHASE_A_AUTHORITY_DOMAIN
+
+    repo, corpus = _corpus_copy(tmp_path)
+    document = json.loads((repo / PHASE_A_AUTHORITY_PATH).read_bytes())
+    document["content"]["baseline_protocol_hash"] = "b" * 64
+    document["authority_hash"] = sha256_hex(
+        PHASE_A_AUTHORITY_DOMAIN.encode("utf-8") + canonical_json_bytes(document["content"])
+    )
+    (repo / PHASE_A_AUTHORITY_PATH).write_bytes(canonical_json_bytes(document))
+    with pytest.raises(RoundProfileAuthorityError, match="not the accepted"):
+        load_verified_round_profile_corpus(root=repo, corpus_root=corpus)
+
+
+def test_a_coherently_rewritten_authority_and_schedule_is_refused(tmp_path: Path) -> None:
+    """THE attack the previous version delegated to a later per-member check.
+
+    Replace real admitted bindings in the schedule, recompute the schedule SHA, rewrite the
+    Phase-A authority to name it, and recompute the authority's own self hash. Every internal
+    field is consistent. Only the ALREADY-ACCEPTED authority identity can refuse it, and it must
+    refuse before any corpus member is opened.
+    """
+    import hashlib as _hashlib
+
+    from minos_engine.common.hashing import sha256_hex
+    from minos_engine.layer2.round_profile_authority import PHASE_A_AUTHORITY_DOMAIN
+
+    repo, corpus = _corpus_copy(tmp_path)
+    schedule = json.loads((repo / TRAIN_SCHEDULE_PATH).read_bytes())
+    # reorder real, admitted bindings: no missing round, no bad attestation, no malformed profile
+    schedule["batches"][0], schedule["batches"][1] = (
+        schedule["batches"][1],
+        schedule["batches"][0],
+    )
+    raw = canonical_json_bytes(schedule)
+    (repo / TRAIN_SCHEDULE_PATH).write_bytes(raw)
+
+    document = json.loads((repo / PHASE_A_AUTHORITY_PATH).read_bytes())
+    document["content"]["train_schedule_manifest_sha256"] = _hashlib.sha256(raw).hexdigest()
+    document["authority_hash"] = sha256_hex(
+        PHASE_A_AUTHORITY_DOMAIN.encode("utf-8") + canonical_json_bytes(document["content"])
+    )
+    (repo / PHASE_A_AUTHORITY_PATH).write_bytes(canonical_json_bytes(document))
+
+    # the forgery is internally perfect; only the accepted identity refuses it
+    with pytest.raises(RoundProfileAuthorityError, match="a locally consistent rewrite"):
+        load_verified_round_profile_corpus(root=repo, corpus_root=corpus)
+
+
+def test_the_unmodified_schedule_is_accepted(tmp_path: Path) -> None:
+    repo, corpus = _corpus_copy(tmp_path)
+    assert len(load_verified_round_profile_corpus(root=repo, corpus_root=corpus)) == 50
+
+
+# ---------------------------------------------------------------------------------------- #
+# §E every file-open API is guarded
+# ---------------------------------------------------------------------------------------- #
+SEALED_MANIFEST = "manifests/profile_snapshot_epoch1_members.json"
+
+
+def test_builtins_open_on_a_sealed_authority_is_refused() -> None:
+    """Rebinding io.open does not intercept an existing builtins.open binding."""
+    import builtins
+
+    sealed = repository_root() / SEALED_MANIFEST
+    with sealed_access_guard() as observed, pytest.raises(SealedAccessError):
+        builtins.open(sealed, "rb")  # noqa: SIM115 - the point is that it never opens
+    assert observed.open_attempts == 1
+
+
+def test_io_open_on_a_sealed_authority_is_refused() -> None:
+    import io
+
+    sealed = repository_root() / SEALED_MANIFEST
+    with sealed_access_guard() as observed, pytest.raises(SealedAccessError):
+        io.open(sealed, "rb")  # noqa: SIM115,UP020 - the point is that it never opens
+    assert observed.open_attempts == 1
+
+
+def test_os_open_on_a_sealed_authority_is_refused() -> None:
+    import os
+
+    sealed = repository_root() / SEALED_MANIFEST
+    with sealed_access_guard() as observed, pytest.raises(SealedAccessError):
+        os.open(sealed, os.O_RDONLY)
+    assert observed.open_attempts == 1
+
+
+def test_path_read_bytes_on_a_sealed_authority_is_refused() -> None:
+    sealed = repository_root() / SEALED_MANIFEST
+    with sealed_access_guard() as observed, pytest.raises(SealedAccessError):
+        sealed.read_bytes()
+    assert observed.open_attempts == 1
+    assert observed.test_attempts == 1
+    assert observed.validation_attempts == 1
+
+
+def test_the_guard_restores_every_api_it_patched() -> None:
+    import builtins
+    import io
+    import os
+
+    before = (builtins.open, io.open, os.open)
+    with sealed_access_guard():
+        pass
+    assert (builtins.open, io.open, os.open) == before
+
+
+def test_the_guard_does_not_break_ordinary_reads(tmp_path: Path) -> None:
+    ordinary = tmp_path / "ordinary.json"
+    ordinary.write_bytes(b"{}")
+    with sealed_access_guard() as observed:
+        assert ordinary.read_bytes() == b"{}"
+    assert observed.open_attempts == 0
