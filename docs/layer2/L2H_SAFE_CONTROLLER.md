@@ -305,21 +305,29 @@ and this task does not touch it.
 
 ## 13. Qualification result
 
-`reports/layer2/l2h-safe-controller-qualification-v1.json` — schema
-`l2h-safe-controller-qualification-v1`, domain `minos:l2h-safe-controller-qualification:v1\n`,
-identity **`7d305bcd7c35c82389259ec1d88058ff9202ce454a0364d15e4b864345aaf821`**, file SHA
-`b0a3a16d2a411d18e708ef6add63a6832778e51cfb8454874763a0f5c8604453`, 6046 bytes. Produced from
-source commit `9a516c1738b862aa78ce211c03891b57f5444deb`.
+`reports/layer2/l2h-safe-controller-qualification-v2.json` — schema
+`l2h-safe-controller-qualification-v2`, domain `minos:l2h-safe-controller-qualification:v2\n`,
+identity **`8408630ffb130afeb22bf08dc47b78f3be5bbeef3dc102c2c3b5265f3431d286`**, file SHA
+`483f77c63938331b4930439a244e8db8992049d7a4fab75faf76629ed5975e9d`, 7544 bytes. Produced from
+source commit `23b360562b317467a542ee722341fc2d0931bfed`. Ownership corpus identity
+`dd1bd330b859f28f6617b05702ef80b159e863d4cd67c5610210d897bd82f307`.
 
-**Status PASS.** 50 TRAIN profiles × 4 requested modes = **200 decisions**, every one selecting
-`157d88d1…`; 50 `NONE` and 150 `SAFE_BASELINE_FORCED`; 0 invalid configs, 0 model loads, 0
-candidate generations, 0 parameter mutations. Thirteen authority-failure drills all failed closed.
-All 21 mandatory checks and all 6 additional checks true.
+**Status PASS.** 50 anchored TRAIN profiles × 4 requested modes = **200 decisions**, every one
+selecting `157d88d1…`; 50 `NONE` and 150 `SAFE_BASELINE_FORCED`; 0 invalid configs, 0 model loads,
+0 candidate generations, 0 parameter mutations. All 21 mandatory checks and all 8 additional
+checks true, including `sealed_authorities_never_opened`,
+`train_ownership_anchored_to_accepted_authority` and
+`publication_identity_is_derived_not_declared`.
 
-The report records no timestamp, host, PID, path or credential — an identity that changed every
-run would not be an identity. It records `gate_issued: false` and `service_activated: false`, and
-its verifier refuses any report whose recorded checks disagree with its own observations, whose
-status disagrees with its checks, or which claims a contextual model qualification.
+`forbidden_sealed_path_open_attempts = 0` and `attempted_sealed_authorities = []` are **observed
+by the guard**, not written as constants, and the verifier refuses a report whose isolation flags
+contradict them. The report deliberately no longer carries `skipped_partition_counts`: counts
+derived by traversing sealed records are precisely what v1 got wrong.
+
+**`l2h-safe-controller-qualification-v1.json` (`7d305bcd…`) is preserved as history and is not
+valid for qualification.** The v2 verifier refuses it on schema, and the v2 report records the
+reason in its own `supersedes` block. A future SAFE-CONTROLLER-FROZEN gate must be issued against
+v2 evidence.
 
 **This is not MODELS-QUALIFIED and cannot become it.** Four of its own checks assert the absence of
 contextual capability. No gate artifact was issued, and `Layer2Service.select_config` still raises
