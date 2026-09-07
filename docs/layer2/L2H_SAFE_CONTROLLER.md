@@ -281,3 +281,25 @@ VALIDATION is not read here and stays at `0026`; the v2 freeze records
 stays sealed for L2-I. MODELS-QUALIFIED is absent. `Layer2Service.select_config` still raises
 `StageNotReadyError` — a required check in three registered gates and asserted by seven runners —
 and this task does not touch it.
+
+## 13. Qualification result
+
+`reports/layer2/l2h-safe-controller-qualification-v1.json` — schema
+`l2h-safe-controller-qualification-v1`, domain `minos:l2h-safe-controller-qualification:v1\n`,
+identity **`7d305bcd7c35c82389259ec1d88058ff9202ce454a0364d15e4b864345aaf821`**, file SHA
+`b0a3a16d2a411d18e708ef6add63a6832778e51cfb8454874763a0f5c8604453`, 6046 bytes. Produced from
+source commit `9a516c1738b862aa78ce211c03891b57f5444deb`.
+
+**Status PASS.** 50 TRAIN profiles × 4 requested modes = **200 decisions**, every one selecting
+`157d88d1…`; 50 `NONE` and 150 `SAFE_BASELINE_FORCED`; 0 invalid configs, 0 model loads, 0
+candidate generations, 0 parameter mutations. Thirteen authority-failure drills all failed closed.
+All 21 mandatory checks and all 6 additional checks true.
+
+The report records no timestamp, host, PID, path or credential — an identity that changed every
+run would not be an identity. It records `gate_issued: false` and `service_activated: false`, and
+its verifier refuses any report whose recorded checks disagree with its own observations, whose
+status disagrees with its checks, or which claims a contextual model qualification.
+
+**This is not MODELS-QUALIFIED and cannot become it.** Four of its own checks assert the absence of
+contextual capability. No gate artifact was issued, and `Layer2Service.select_config` still raises
+`StageNotReadyError`.
