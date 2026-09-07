@@ -201,6 +201,20 @@ name, then 49 rounds × 4 requested modes = **196 decisions** actually persisted
 drills on a fiftieth round held back for exactly that purpose. Thirty checks, every one derived
 from the observation rather than recorded. No truth, no scores, no VALIDATION, no TEST.
 
+| | |
+|---|---|
+| qualification identity | `e88f6cf83063905e1608c9583185b30d09f9943e3abfa92a0508858f8d617f20` |
+| file SHA-256 | `9bb98d5106f239e596715d79e91c8dee2055b2cc3f2b2a860eb625b2b5400775` (49 887 bytes) |
+| qualified source commit / tree | `1b67ee2f755b82526028d97aca7e8fe8db56e816` / `e5de947544241edeb83527c59de61792e0c18bb5` |
+| overlay contract hash | `4265fe13583344ebf0f6d1404a9a2fc0e4556096122e060442e5aaf87f8fef25` |
+| accepted SAFE-CONTROLLER-FROZEN | `504e701fe77b651c919ebc015dc6911bbca880613014058979b18ab408f88add` |
+
+`verify_persistence_report` re-derives all thirty checks and the status from the observation,
+refuses any operational value (URL, host, path, credential) anywhere in the document, and
+**proves** the qualified source commit against git rather than length-checking it — shape is not
+provenance. The pinned constants live in the commit *after* the one that ran the campaign, so
+nothing identifies itself.
+
 
 
 ## 10. Where the code lives
