@@ -39,6 +39,7 @@ from minos_engine.layer2.contracts import (
     DecisionResult,
     FallbackReason,
 )
+from minos_engine.layer2.round_profile_authority import VerifiedRoundProfileAuthority
 from minos_engine.layer2.safe_controller_policy import (
     ALLOWED_MODES,
     SAFE_CONTROLLER_VERSION,
@@ -258,7 +259,11 @@ def _fallback_reason(requested: ControlMode) -> FallbackReason:
 
 
 def safe_decision_manifest_content(
-    *, request: DecisionRequest, authority: VerifiedSafeBaselineAuthority
+    *,
+    request: DecisionRequest,
+    authority: VerifiedSafeBaselineAuthority,
+    ownership: VerifiedRoundProfileAuthority,
+    owned: Any = None,
 ) -> dict[str, Any]:
     """The canonical scientific manifest of one safe decision.
 
@@ -270,17 +275,30 @@ def safe_decision_manifest_content(
     again: a global lookup after minting could name a different checkout than the one that was
     actually verified, which is exactly the kind of seam this controller exists to close.
     """
-    profile = request.profile_ref
+    proven = owned if owned is not None else ownership.require_owned_request(request)
     policy = authority.policy
     requested = request.requested_mode
     return {
         "schema_version": SAFE_DECISION_MANIFEST_SCHEMA,
-        "round_id": request.round.round_id,
-        "profile_id": profile.profile_id,
-        "profile_manifest_hash": profile.profile_manifest_hash,
-        "profile_fingerprint_hash": profile.fingerprint_hash,
-        "profile_identity_tuple_hash": profile.identity_tuple_hash,
-        "region_hash": profile.region_hash,
+        # every identity here is the OWNED one, proven against the frozen snapshot. The request's
+        # own values had to equal these to get this far, so binding the proven side means the
+        # scientific identity never depends on a value a caller merely asserted. Note that
+        # `profile_manifest_hash` is deliberately absent: it has no canonical definition in this
+        # engine (see Layer1ProfileReference), and an unauthenticated opaque value has no place
+        # in a scientific identity.
+        "round_id": proven.round_id,
+        "dataset_id": proven.dataset_id,
+        "chromosome": proven.chromosome,
+        "profile_id": proven.profile_id,
+        "profile_sha256": proven.profile_sha256,
+        "profile_manifest_sha256": proven.profile_manifest_sha256,
+        "profile_fingerprint_hash": proven.fingerprint_hash,
+        "profile_identity_tuple_hash": proven.identity_tuple_hash,
+        "attestation_hash": proven.attestation_hash,
+        "registry_snapshot_hash": proven.registry_snapshot_hash,
+        "profile_corpus_identity": ownership.corpus_identity,
+        "profile_snapshot_hash": ownership.snapshot_hash,
+        "region_hash": proven.region_hash,
         "parameter_space_hash": authority.parameter_space_hash,
         "caller": request.parameter_space.caller,
         "baseline_authority_identity": policy["baseline_selected_identity"],
@@ -304,6 +322,7 @@ def safe_decision_manifest_content(
             "entry_gate_check_count": len(authority.entry_gate_checks),
             "baseline_payload_verified": True,
             "parameter_space_compatible": True,
+            "round_profile_ownership_proven": True,
             "candidate_generation": False,
             "parameter_mutation": False,
         },
@@ -321,17 +340,29 @@ def safe_decision_manifest_identity(content: dict[str, Any]) -> str:
 
 
 def select_safe_baseline(
-    *, request: DecisionRequest, authority: VerifiedSafeBaselineAuthority
+    *,
+    request: DecisionRequest,
+    authority: VerifiedSafeBaselineAuthority,
+    ownership: VerifiedRoundProfileAuthority,
 ) -> DecisionResult:
     """THE pure safe-controller core. One possible scientific result, by construction.
 
-    Takes a verified capability rather than paths: by the time this runs, every global authority
+    Takes verified capabilities rather than paths: by the time this runs, every global authority
     has already passed, so anything left is either a straight safe selection or a contextual
     request being reduced to one.
+
+    ``ownership`` is not optional. Proving a profile reference internally consistent only shows
+    that a caller can do arithmetic; it says nothing about whether the round or the profile
+    exists. A request that cannot be traced to an owning frozen snapshot member is refused, not
+    degraded.
     """
     _require(
         isinstance(authority, VerifiedSafeBaselineAuthority),
         "a decision may only be made from a verified safe-baseline authority",
+    )
+    _require(
+        isinstance(ownership, VerifiedRoundProfileAuthority),
+        "a decision may only be made against a verified round/profile corpus",
     )
     _require(
         tuple(authority.allowed_modes) == tuple(ALLOWED_MODES),
@@ -350,7 +381,10 @@ def select_safe_baseline(
         "the request names a parameter space other than the accepted live one",
     )
 
-    manifest = safe_decision_manifest_content(request=request, authority=authority)
+    owned = ownership.require_owned_request(request)
+    manifest = safe_decision_manifest_content(
+        request=request, authority=authority, ownership=ownership, owned=owned
+    )
     manifest_hash = safe_decision_manifest_identity(manifest)
     return DecisionResult(
         decision=DecisionIdentity(
@@ -373,21 +407,38 @@ class SafeBaselineController:
     the real decision path without exposing it.
     """
 
-    __slots__ = ("_authority",)
+    __slots__ = ("_authority", "_ownership")
 
-    def __init__(self, authority: VerifiedSafeBaselineAuthority) -> None:
+    def __init__(
+        self,
+        authority: VerifiedSafeBaselineAuthority,
+        ownership: VerifiedRoundProfileAuthority,
+    ) -> None:
         _require(
             isinstance(authority, VerifiedSafeBaselineAuthority),
             "a safe controller may only be constructed from a verified authority",
         )
+        _require(
+            isinstance(ownership, VerifiedRoundProfileAuthority),
+            "a safe controller may only be constructed against a verified profile corpus",
+        )
         self._authority = authority
+        self._ownership = ownership
 
     @property
     def authority(self) -> VerifiedSafeBaselineAuthority:
         return self._authority
 
+    @property
+    def ownership(self) -> VerifiedRoundProfileAuthority:
+        return self._ownership
+
     def decide(self, request: DecisionRequest) -> DecisionResult:
-        return select_safe_baseline(request=request, authority=self._authority)
+        return select_safe_baseline(
+            request=request, authority=self._authority, ownership=self._ownership
+        )
 
     def manifest(self, request: DecisionRequest) -> dict[str, Any]:
-        return safe_decision_manifest_content(request=request, authority=self._authority)
+        return safe_decision_manifest_content(
+            request=request, authority=self._authority, ownership=self._ownership
+        )

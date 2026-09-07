@@ -203,10 +203,26 @@ class Layer1ProfileReference(_Frozen):
     future degraded/reference-less profile needs its own separately-typed contract;
     this one is never weakened. ``identity_tuple_hash`` is derived canonically from
     the (bam, bai, reference, fai, region) tuple and binds the exact input identity.
+
+    **A known contract defect, recorded rather than papered over.**
+    ``profile_manifest_hash`` has no canonical definition anywhere in this engine: nothing
+    computes it, no manifest carries a field of that name, and its validator only checks that it
+    is 64 lowercase hex characters. It is therefore an *unauthenticated* opaque value and must
+    never be treated as evidence of anything. The quantity that IS owned and computed is the
+    SHA-256 of the owning ``profile-manifest-v1`` document's exact bytes -- ``profile_ingest``
+    computes it as ``profile_manifest_sha256`` and the frozen profile snapshot records it per
+    member -- so that is added here under its own name. Silently reinterpreting the older field
+    as this one would be inventing a meaning for a hash whose preimage nobody ever defined.
+
+    ``profile_manifest_sha256`` defaults to empty for backward compatibility, but the ownership
+    authority requires it: a request without it cannot be proved to belong to a real profile.
     """
 
     profile_id: str = Field(min_length=1)
+    #: UNAUTHENTICATED. Shape-checked only; see the class docstring. Not evidence.
     profile_manifest_hash: str
+    #: SHA-256 of the owning ``profile-manifest-v1`` document's exact bytes.
+    profile_manifest_sha256: str = ""
     fingerprint_hash: str
     region_hash: str
     bam_sha256: str
@@ -227,6 +243,11 @@ class Layer1ProfileReference(_Frozen):
     @classmethod
     def _v_req(cls, v: str) -> str:
         return _sha256(v)
+
+    @field_validator("profile_manifest_sha256")
+    @classmethod
+    def _v_optional_sha(cls, v: str) -> str:
+        return v if v == "" else _sha256(v)
 
     @model_validator(mode="after")
     def _bind_tuple(self) -> Layer1ProfileReference:

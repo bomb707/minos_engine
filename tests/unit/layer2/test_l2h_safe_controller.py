@@ -28,6 +28,10 @@ from minos_engine.layer2.contracts import (
     ParameterSpaceIdentity,
     RoundIdentity,
 )
+from minos_engine.layer2.round_profile_authority import (
+    VerifiedRoundProfileAuthority,
+    load_verified_round_profile_corpus,
+)
 from minos_engine.layer2.safe_controller import (
     SAFE_DECISION_MANIFEST_SCHEMA,
     SafeBaselineController,
@@ -61,32 +65,55 @@ def authority() -> VerifiedSafeBaselineAuthority:
     return load_verified_safe_baseline_authority(repo_root=repository_root())
 
 
-def _profile() -> Layer1ProfileReference:
-    return Layer1ProfileReference(
-        profile_id="profile-1",
-        profile_manifest_hash="1" * 64,
-        fingerprint_hash="2" * 64,
-        region_hash="3" * 64,
-        bam_sha256="4" * 64,
-        bai_sha256="5" * 64,
-        reference_sha256="6" * 64,
-        fai_sha256="7" * 64,
-    )
+@pytest.fixture(scope="module")
+def ownership() -> VerifiedRoundProfileAuthority:
+    return load_verified_round_profile_corpus(root=repository_root())
+
+
+def _owned(ownership: VerifiedRoundProfileAuthority, index: int = 0) -> Any:
+    return ownership.owned(ownership.rounds()[index])
+
+
+def _profile(owned: Any, **override: Any) -> Layer1ProfileReference:
+    """A reference to a REAL owned profile.
+
+    The earlier synthetic reference satisfied its own identity tuple by construction, which is
+    exactly the hole the ownership authority closes: a profile that only agrees with itself is not
+    a profile anyone owns.
+    """
+    fields: dict[str, Any] = {
+        "profile_id": owned.profile_id,
+        # unauthenticated by contract; supplied only because the field is mandatory
+        "profile_manifest_hash": "0" * 64,
+        "profile_manifest_sha256": owned.profile_manifest_sha256,
+        "fingerprint_hash": owned.fingerprint_hash,
+        "region_hash": owned.region_hash,
+        "bam_sha256": owned.bam_sha256,
+        "bai_sha256": owned.bai_sha256,
+        "reference_sha256": owned.reference_sha256,
+        "fai_sha256": owned.fai_sha256,
+    }
+    fields.update(override)
+    return Layer1ProfileReference(**fields)
 
 
 def _request(
     authority: VerifiedSafeBaselineAuthority,
+    ownership: VerifiedRoundProfileAuthority,
     *,
     mode: ControlMode = ControlMode.SAFE_BASELINE,
     model_bundle_id: str | None = None,
     baseline_sha: str | None = None,
     parameter_space: str | None = None,
     remaining_seconds: float = 30.0,
-    round_id: str = "round-1",
+    index: int = 0,
+    round_id: str | None = None,
+    **profile_override: Any,
 ) -> DecisionRequest:
+    owned = _owned(ownership, index)
     return DecisionRequest(
-        round=RoundIdentity(round_id=round_id),
-        profile_ref=_profile(),
+        round=RoundIdentity(round_id=round_id or owned.round_id),
+        profile_ref=_profile(owned, **profile_override),
         parameter_space=ParameterSpaceIdentity(
             parameter_space_hash=parameter_space or authority.parameter_space_hash
         ),
@@ -194,9 +221,11 @@ def test_an_edited_policy_is_refused(label: str, mutate: Any) -> None:
 # the decision path
 # ---------------------------------------------------------------------------------------- #
 def test_a_safe_request_selects_the_exact_accepted_baseline(
-    authority: VerifiedSafeBaselineAuthority,
+    authority: VerifiedSafeBaselineAuthority, ownership: VerifiedRoundProfileAuthority
 ) -> None:
-    result = select_safe_baseline(request=_request(authority), authority=authority)
+    result = select_safe_baseline(
+        ownership=ownership, request=_request(authority, ownership), authority=authority
+    )
     assert result.mode is ControlMode.SAFE_BASELINE
     assert result.selected_config.sha256 == SELECTED_CONFIG_HASH
     assert result.decision.config_hash == SELECTED_CONFIG_HASH
@@ -207,39 +236,53 @@ def test_a_safe_request_selects_the_exact_accepted_baseline(
     "mode", [ControlMode.BOUNDED, ControlMode.FULL_CONTEXTUAL, ControlMode.REFINEMENT]
 )
 def test_a_contextual_request_is_reduced_to_safe_with_a_typed_reason(
-    authority: VerifiedSafeBaselineAuthority, mode: ControlMode
+    authority: VerifiedSafeBaselineAuthority,
+    ownership: VerifiedRoundProfileAuthority,
+    mode: ControlMode,
 ) -> None:
     """Reduced, not executed, and not silently relabelled as though the mode had run."""
-    result = select_safe_baseline(request=_request(authority, mode=mode), authority=authority)
+    result = select_safe_baseline(
+        ownership=ownership, request=_request(authority, ownership, mode=mode), authority=authority
+    )
     assert result.mode is ControlMode.SAFE_BASELINE
     assert result.fallback_reason is FallbackReason.SAFE_BASELINE_FORCED
     assert result.selected_config.sha256 == SELECTED_CONFIG_HASH
     manifest = safe_decision_manifest_content(
-        request=_request(authority, mode=mode), authority=authority
+        ownership=ownership, request=_request(authority, ownership, mode=mode), authority=authority
     )
     assert manifest["requested_mode"] == mode.value
     assert manifest["actual_mode"] == ControlMode.SAFE_BASELINE.value
 
 
 def test_baseline_gate_failed_is_never_claimed(
-    authority: VerifiedSafeBaselineAuthority,
+    authority: VerifiedSafeBaselineAuthority, ownership: VerifiedRoundProfileAuthority
 ) -> None:
     """No baseline-improvement comparison ever existed, so that reason would be a fiction."""
     for mode in ControlMode:
-        result = select_safe_baseline(request=_request(authority, mode=mode), authority=authority)
+        result = select_safe_baseline(
+            ownership=ownership,
+            request=_request(authority, ownership, mode=mode),
+            authority=authority,
+        )
         assert result.fallback_reason is not FallbackReason.BASELINE_GATE_FAILED
 
 
 def test_a_model_bundle_id_cannot_alter_the_selected_config(
-    authority: VerifiedSafeBaselineAuthority,
+    authority: VerifiedSafeBaselineAuthority, ownership: VerifiedRoundProfileAuthority
 ) -> None:
     first = select_safe_baseline(
-        request=_request(authority, model_bundle_id="bundle-A"), authority=authority
+        ownership=ownership,
+        request=_request(authority, ownership, model_bundle_id="bundle-A"),
+        authority=authority,
     )
     second = select_safe_baseline(
-        request=_request(authority, model_bundle_id="bundle-B"), authority=authority
+        ownership=ownership,
+        request=_request(authority, ownership, model_bundle_id="bundle-B"),
+        authority=authority,
     )
-    none_given = select_safe_baseline(request=_request(authority), authority=authority)
+    none_given = select_safe_baseline(
+        ownership=ownership, request=_request(authority, ownership), authority=authority
+    )
     assert (
         first.selected_config.sha256
         == second.selected_config.sha256
@@ -249,16 +292,22 @@ def test_a_model_bundle_id_cannot_alter_the_selected_config(
 
 
 def test_the_manifest_records_bundle_presence_but_never_the_identifier(
-    authority: VerifiedSafeBaselineAuthority,
+    authority: VerifiedSafeBaselineAuthority, ownership: VerifiedRoundProfileAuthority
 ) -> None:
     """A bundle handle must not reach the scientific identity, so only a boolean is bound."""
     with_bundle = safe_decision_manifest_content(
-        request=_request(authority, model_bundle_id="bundle-A"), authority=authority
+        ownership=ownership,
+        request=_request(authority, ownership, model_bundle_id="bundle-A"),
+        authority=authority,
     )
     other_bundle = safe_decision_manifest_content(
-        request=_request(authority, model_bundle_id="bundle-B"), authority=authority
+        ownership=ownership,
+        request=_request(authority, ownership, model_bundle_id="bundle-B"),
+        authority=authority,
     )
-    without = safe_decision_manifest_content(request=_request(authority), authority=authority)
+    without = safe_decision_manifest_content(
+        ownership=ownership, request=_request(authority, ownership), authority=authority
+    )
     assert with_bundle["model_bundle_id_present"] is True
     assert without["model_bundle_id_present"] is False
     assert with_bundle["model_bundle_loaded"] is False
@@ -270,13 +319,17 @@ def test_the_manifest_records_bundle_presence_but_never_the_identifier(
 
 
 def test_low_remaining_time_still_produces_the_same_safe_decision(
-    authority: VerifiedSafeBaselineAuthority,
+    authority: VerifiedSafeBaselineAuthority, ownership: VerifiedRoundProfileAuthority
 ) -> None:
     tight = select_safe_baseline(
-        request=_request(authority, remaining_seconds=0.0), authority=authority
+        ownership=ownership,
+        request=_request(authority, ownership, remaining_seconds=0.0),
+        authority=authority,
     )
     roomy = select_safe_baseline(
-        request=_request(authority, remaining_seconds=600.0), authority=authority
+        ownership=ownership,
+        request=_request(authority, ownership, remaining_seconds=600.0),
+        authority=authority,
     )
     assert tight.selected_config.sha256 == roomy.selected_config.sha256 == SELECTED_CONFIG_HASH
     assert tight.fallback_reason is FallbackReason.NONE
@@ -288,23 +341,31 @@ def test_low_remaining_time_still_produces_the_same_safe_decision(
 # the manifest
 # ---------------------------------------------------------------------------------------- #
 def test_the_manifest_is_canonical_and_deterministic(
-    authority: VerifiedSafeBaselineAuthority,
+    authority: VerifiedSafeBaselineAuthority, ownership: VerifiedRoundProfileAuthority
 ) -> None:
-    first = safe_decision_manifest_content(request=_request(authority), authority=authority)
-    second = safe_decision_manifest_content(request=_request(authority), authority=authority)
+    first = safe_decision_manifest_content(
+        ownership=ownership, request=_request(authority, ownership), authority=authority
+    )
+    second = safe_decision_manifest_content(
+        ownership=ownership, request=_request(authority, ownership), authority=authority
+    )
     assert canonical_json_bytes(first) == canonical_json_bytes(second)
     assert safe_decision_manifest_identity(first) == safe_decision_manifest_identity(second)
     assert first["schema_version"] == SAFE_DECISION_MANIFEST_SCHEMA
 
 
 def test_a_different_round_is_a_different_decision(
-    authority: VerifiedSafeBaselineAuthority,
+    authority: VerifiedSafeBaselineAuthority, ownership: VerifiedRoundProfileAuthority
 ) -> None:
     a = safe_decision_manifest_content(
-        request=_request(authority, round_id="round-1"), authority=authority
+        ownership=ownership,
+        request=_request(authority, ownership, index=0),
+        authority=authority,
     )
     b = safe_decision_manifest_content(
-        request=_request(authority, round_id="round-2"), authority=authority
+        ownership=ownership,
+        request=_request(authority, ownership, index=1),
+        authority=authority,
     )
     assert safe_decision_manifest_identity(a) != safe_decision_manifest_identity(b)
 
@@ -313,14 +374,17 @@ MANIFEST_KEYS = frozenset(
     {
         "accepted_prerequisite_identity",
         "actual_mode",
+        "attestation_hash",
         "baseline_authority_identity",
         "baseline_config_hash",
         "baseline_payload_sha256",
         "baseline_qualified_gate_hash",
         "caller",
+        "chromosome",
         "contextual_research_closed",
         "controller_policy_hash",
         "controller_version",
+        "dataset_id",
         "execution_source_commit",
         "execution_source_tree",
         "fallback_reason",
@@ -330,11 +394,15 @@ MANIFEST_KEYS = frozenset(
         "model_bundle_loaded",
         "models_qualified_status",
         "parameter_space_hash",
+        "profile_corpus_identity",
         "profile_fingerprint_hash",
         "profile_id",
         "profile_identity_tuple_hash",
-        "profile_manifest_hash",
+        "profile_manifest_sha256",
+        "profile_sha256",
+        "profile_snapshot_hash",
         "region_hash",
+        "registry_snapshot_hash",
         "request_controller_version",
         "requested_mode",
         "round_id",
@@ -344,8 +412,29 @@ MANIFEST_KEYS = frozenset(
 )
 
 
+def test_the_manifest_binds_owned_identity_not_the_unauthenticated_field(
+    authority: VerifiedSafeBaselineAuthority, ownership: VerifiedRoundProfileAuthority
+) -> None:
+    """``profile_manifest_hash`` has no canonical definition, so it may not be an identity input."""
+    owned = _owned(ownership)
+    manifest = safe_decision_manifest_content(
+        ownership=ownership, request=_request(authority, ownership), authority=authority
+    )
+    assert "profile_manifest_hash" not in manifest
+    assert manifest["profile_manifest_sha256"] == owned.profile_manifest_sha256
+    assert manifest["profile_id"] == owned.profile_id
+    assert manifest["attestation_hash"] == owned.attestation_hash
+    # the request declared a junk value for the unauthenticated field; it changed nothing
+    other = safe_decision_manifest_content(
+        ownership=ownership,
+        request=_request(authority, ownership, profile_manifest_hash="f" * 64),
+        authority=authority,
+    )
+    assert safe_decision_manifest_identity(other) == safe_decision_manifest_identity(manifest)
+
+
 def test_the_manifest_carries_exactly_the_expected_fields(
-    authority: VerifiedSafeBaselineAuthority,
+    authority: VerifiedSafeBaselineAuthority, ownership: VerifiedRoundProfileAuthority
 ) -> None:
     """A whitelist, not a substring scan.
 
@@ -355,7 +444,9 @@ def test_the_manifest_carries_exactly_the_expected_fields(
     actually shows no truth, score, VALIDATION or TEST material can be present: a new field cannot
     appear without this test being updated deliberately.
     """
-    manifest = safe_decision_manifest_content(request=_request(authority), authority=authority)
+    manifest = safe_decision_manifest_content(
+        ownership=ownership, request=_request(authority, ownership), authority=authority
+    )
     assert set(manifest) == MANIFEST_KEYS
     assert set(manifest["guards"]) == {
         "baseline_payload_verified",
@@ -364,22 +455,27 @@ def test_the_manifest_carries_exactly_the_expected_fields(
         "entry_gate_ok",
         "parameter_mutation",
         "parameter_space_compatible",
+        "round_profile_ownership_proven",
     }
 
 
 def test_the_manifest_holds_no_operational_timestamp(
-    authority: VerifiedSafeBaselineAuthority,
+    authority: VerifiedSafeBaselineAuthority, ownership: VerifiedRoundProfileAuthority
 ) -> None:
     """An identity that changes every call is not an identity."""
-    manifest = safe_decision_manifest_content(request=_request(authority), authority=authority)
+    manifest = safe_decision_manifest_content(
+        ownership=ownership, request=_request(authority, ownership), authority=authority
+    )
     for key in manifest:
         assert "time" not in key and "_at" not in key and "duration" not in key
 
 
 def test_the_manifest_binds_the_controller_and_the_closure(
-    authority: VerifiedSafeBaselineAuthority,
+    authority: VerifiedSafeBaselineAuthority, ownership: VerifiedRoundProfileAuthority
 ) -> None:
-    manifest = safe_decision_manifest_content(request=_request(authority), authority=authority)
+    manifest = safe_decision_manifest_content(
+        ownership=ownership, request=_request(authority, ownership), authority=authority
+    )
     assert manifest["controller_policy_hash"] == ACCEPTED_POLICY_HASH
     assert manifest["selected_config_hash"] == SELECTED_CONFIG_HASH
     assert manifest["parameter_space_hash"] == PARAMETER_SPACE
@@ -425,6 +521,7 @@ def test_a_caller_cannot_mint_an_authority() -> None:
 def test_a_dict_cannot_stand_in_for_an_authority() -> None:
     with pytest.raises(SafeControllerAuthorityError, match="verified safe-baseline authority"):
         select_safe_baseline(
+            ownership=ownership,
             request=None,  # type: ignore[arg-type]
             authority={"baseline_config_hash": SELECTED_CONFIG_HASH},  # type: ignore[arg-type]
         )
@@ -480,21 +577,25 @@ def test_an_edited_committed_policy_fails_closed(tmp_path: Path) -> None:
 
 
 def test_a_request_naming_a_foreign_baseline_fails_closed(
-    authority: VerifiedSafeBaselineAuthority,
+    authority: VerifiedSafeBaselineAuthority, ownership: VerifiedRoundProfileAuthority
 ) -> None:
     """A caller disagreeing with the authority is not a fallback case; it is a disagreement."""
     with pytest.raises(SafeControllerAuthorityError, match="names safe baseline"):
         select_safe_baseline(
-            request=_request(authority, baseline_sha="0" * 64), authority=authority
+            ownership=ownership,
+            request=_request(authority, ownership, baseline_sha="0" * 64),
+            authority=authority,
         )
 
 
 def test_a_request_naming_a_foreign_parameter_space_fails_closed(
-    authority: VerifiedSafeBaselineAuthority,
+    authority: VerifiedSafeBaselineAuthority, ownership: VerifiedRoundProfileAuthority
 ) -> None:
     with pytest.raises(SafeControllerAuthorityError, match="parameter space"):
         select_safe_baseline(
-            request=_request(authority, parameter_space="a" * 64), authority=authority
+            ownership=ownership,
+            request=_request(authority, ownership, parameter_space="a" * 64),
+            authority=authority,
         )
 
 
@@ -607,11 +708,11 @@ def test_the_policy_module_names_exactly_one_allowed_mode() -> None:
 # the public boundary and the surrounding locks
 # ---------------------------------------------------------------------------------------- #
 def test_the_public_select_config_boundary_is_still_blocked(
-    authority: VerifiedSafeBaselineAuthority,
+    authority: VerifiedSafeBaselineAuthority, ownership: VerifiedRoundProfileAuthority
 ) -> None:
     """L2-H builds source authority only; the service stays shut."""
     with pytest.raises(StageNotReadyError):
-        Layer2Service().select_config(_request(authority))
+        Layer2Service().select_config(_request(authority, ownership))
 
 
 def test_the_controller_class_is_not_wired_into_the_service() -> None:
@@ -625,11 +726,13 @@ def test_the_controller_class_is_not_wired_into_the_service() -> None:
 
 
 def test_the_controller_class_still_reaches_the_same_decision(
-    authority: VerifiedSafeBaselineAuthority,
+    authority: VerifiedSafeBaselineAuthority, ownership: VerifiedRoundProfileAuthority
 ) -> None:
-    controller = SafeBaselineController(authority)
-    direct = select_safe_baseline(request=_request(authority), authority=authority)
-    assert controller.decide(_request(authority)).decision == direct.decision
+    controller = SafeBaselineController(authority, ownership)
+    direct = select_safe_baseline(
+        ownership=ownership, request=_request(authority, ownership), authority=authority
+    )
+    assert controller.decide(_request(authority, ownership)).decision == direct.decision
 
 
 def test_models_qualified_remains_absent() -> None:
@@ -806,10 +909,13 @@ def test_the_capability_carries_the_provenance_of_the_root_it_verified(
 
 def test_the_manifest_provenance_comes_from_the_capability_not_a_global_lookup(
     tmp_path: Path,
+    ownership: VerifiedRoundProfileAuthority,
 ) -> None:
     root = _repo_copy(tmp_path)
     authority = load_verified_safe_baseline_authority(repo_root=root)
-    manifest = safe_decision_manifest_content(request=_request(authority), authority=authority)
+    manifest = safe_decision_manifest_content(
+        ownership=ownership, request=_request(authority, ownership), authority=authority
+    )
     assert manifest["execution_source_commit"] == authority.source_commit
     assert manifest["execution_source_tree"] == authority.source_tree
 
@@ -830,10 +936,12 @@ def test_no_global_repository_lookup_survives_in_the_controller() -> None:
 
 
 def test_the_manifest_binds_no_filesystem_path(
-    authority: VerifiedSafeBaselineAuthority,
+    authority: VerifiedSafeBaselineAuthority, ownership: VerifiedRoundProfileAuthority
 ) -> None:
     """A path is operational; it must never enter a scientific identity."""
-    manifest = safe_decision_manifest_content(request=_request(authority), authority=authority)
+    manifest = safe_decision_manifest_content(
+        ownership=ownership, request=_request(authority, ownership), authority=authority
+    )
     for value in json.dumps(manifest).split('"'):
         assert not value.startswith("/")
         assert "file://" not in value

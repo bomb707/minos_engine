@@ -684,6 +684,52 @@ REQUIRED_CHECKS: dict[str, frozenset[str]] = {
             "promotable_family_selected_not_a_reference",
         }
     ),
+    #: SAFE-CONTROLLER-FROZEN — a MODE-SCOPED authority, DESIGNED BUT NOT YET ISSUED.
+    #:
+    #: Its capability is exactly SAFE_BASELINE. It does NOT imply MODELS-QUALIFIED, BOUNDED,
+    #: FULL_CONTEXTUAL or REFINEMENT, and it may never be treated as evidence toward any of them:
+    #: several of its own required checks assert that no contextual model exists and that none was
+    #: loaded. CONTROLLER-FROZEN stays reserved for a controller with contextual capability and
+    #: therefore requires MODELS-QUALIFIED PASS, which does not exist.
+    #:
+    #: Prerequisites: BASELINE-QUALIFIED PASS + the L2-G terminal contextual-model HOLD/freeze +
+    #: a PASS safe-controller qualification report.
+    "SAFE-CONTROLLER-FROZEN": frozenset(
+        {
+            # ENTRY AUTHORITY
+            "exact_l1_entry_authority",
+            "exact_baseline_qualified_authority",
+            "exact_l2g_closure_identities",
+            "models_qualified_remains_hold",
+            # CAPABILITY SCOPE
+            "allowed_modes_exactly_safe_baseline",
+            "contextual_requests_typed_safe_baseline_forced",
+            "zero_contextual_model_loads",
+            "zero_candidate_generation",
+            "model_bundle_id_cannot_influence_the_config",
+            # SCIENTIFIC OUTPUT
+            "every_decision_selects_the_safe_baseline",
+            "zero_invalid_configs",
+            "zero_parameter_mutation",
+            "fallback_success_is_total",
+            # IDENTITY
+            "decision_manifest_canonical_and_deterministic",
+            "semantic_replay_identity_stable",
+            "owning_round_profile_cross_check",
+            "owned_corpus_admitted_by_accepted_authority",
+            # FAIL-CLOSED
+            "corrupted_global_authority_fails_closed",
+            "baseline_payload_tamper_fails_closed",
+            "parameter_space_mismatch_fails_closed",
+            "ownership_failures_are_authority_failures",
+            "low_time_request_still_deterministic",
+            # ISOLATION AND BOUNDARY
+            "no_truth_validation_or_test_dependency",
+            "decision_persistence_disposition_closed",
+            "publication_is_content_addressed_and_idempotent",
+            "select_config_public_boundary_blocked",
+        }
+    ),
 }
 
 

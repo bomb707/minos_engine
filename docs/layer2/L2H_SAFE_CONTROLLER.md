@@ -97,9 +97,9 @@ git ancestry. Profile identity is enforced only to the extent the contract enfor
 hashes and rejects a mismatch, so a request cannot carry an internally inconsistent profile. It is
 **not** cross-checked against an external profile manifest, and round/region identity is not
 cross-checked against a round-context document, because `DecisionRequest` carries neither. Closing
-that gap needs the ingest/admission surface (`layer2.ingest.validation.validate_admission`) and a
-profile document alongside the request. It is listed as a mandatory check below so the next task
-cannot inherit it silently.
+that gap needed the ingest/admission surface (`layer2.ingest.validation.validate_admission`) and
+the owning profile documents. **It is now closed — see §9.** The controller no longer accepts a
+request whose round and profile it cannot trace to a frozen snapshot member.
 
 ## 6. Two failure classes, kept apart
 
@@ -143,56 +143,112 @@ It contains **no** truth, mutation identity, hap.py output, score, VALIDATION ou
 outcome, and **no operational timestamps** — identical semantic input yields an identical decision
 identity, which is the only thing that makes the identity meaningful.
 
-## 9. Persistence audit (§14) — surface exists, schema is insufficient
+## 9. Round and profile ownership (gap #20 — CLOSED)
 
-`runtime.decisions` already exists (model `storage/models/runtime.py`, migration
-`0001_l2b_initial`), is append-only via the `audit.minos_reject_mutation` trigger, is granted
-`SELECT, INSERT` to `minos_live`, and currently holds **0 rows**. Its columns are:
+Proving a `Layer1ProfileReference` internally consistent shows only that a caller can compute a
+hash of its own four digests. Ownership is now established from committed, frozen, gate-backed
+documents by `layer2/round_profile_authority.py` (`l2h-round-profile-ownership-v1`):
 
-`id`, `round_id`, `decision_hash`, `decision_manifest_hash`, `config_id` (FK
-`catalog.gatk_configs`), `model_bundle_id` (FK `models.model_bundles`), `profile_id` (FK
-`profiling.profiles`), `created_at`.
+* `manifests/profile_snapshot_epoch1_members.json` (PROFILE-SNAPSHOT-FROZEN-1, snapshot
+  `cf717ebb…`, registry snapshot `3e60aa65…`) owns each member's `round_id` / `dataset_id` /
+  `profile_id` / `identity_tuple_hash` / `profile_manifest_sha256`;
+* `manifests/profile_snapshot_epoch1_artifact_inventory.json` owns the byte SHA-256 and size of
+  each member's four artifacts;
+* each member's `bam-profile-v1`, `profile-manifest-v1` and `input-integrity-attestation-v1`
+  documents are read from disk and required to hash to those recorded bytes **before** being
+  parsed as anything.
 
-**It can already store** round, decision identity, manifest hash, and — once the referenced rows
-exist — config and profile references.
+**The accepted L2-D admission authority is reused, not reimplemented.**
+`layer2.ingest.validation.validate_admission` is called unchanged for every member. What it cannot
+supply on its own is the identity it validates against — it takes `registry_identity` as a plain
+dict from its caller — so the registry identity is *reconstructed* from the member's own verified
+attestation bytes and cross-checked against the frozen membership row. There is no caller-supplied
+identity anywhere in the chain.
 
-**It cannot store**, and a controller write path would need: `mode` (`ControlMode`),
-`fallback_reason` (`FallbackReason`), `controller_version`, `controller_policy_hash`,
-`parameter_space_hash`, and the baseline authority identity. Two further operational facts: the
-operational store is at `0005_l2e_feature_view`, and `catalog.gatk_configs` and
-`profiling.profiles` are both empty, so the `config_id`/`profile_id` foreign keys have no rows to
-point at yet.
+`require_owned_request` then proves nine fields against the owning record: `profile_id`,
+`region_hash`, all four file digests, `identity_tuple_hash`, `fingerprint_hash` and
+`profile_manifest_sha256`. Every mismatch is an authority failure.
 
-**No migration is proposed or applied in this task.** The roadmap does not authorize one here, and
-inventing a schema for a controller that has not been qualified would fix the wrong shape first.
-This is the exact gap the next task must decide on.
+**Partition sealing.** The frozen snapshot's 75 members span train (50), TEST (15) and VALIDATION
+(10). TEST is sealed until L2-I *including identity enumeration*, and VALIDATION is not authorised
+for v2, so a member outside `train` is skipped on its partition label before any artifact is
+opened. Only a count survives, so the seal is auditable without enumerating what it covers. A test
+deletes every sealed member's directory and confirms the TRAIN corpus still loads — a stronger
+proof than asserting the loader does not touch them.
 
-## 10. Future controller qualification — mandatory checks (§16)
+Layer 2 still does not open the BAM.
 
-Not run here; this is the inventory the next task must satisfy.
+### A contract defect, recorded rather than reinterpreted
 
-1. Exact L1 entry authority — all 34 entry-gate checks true.
-2. Exact BASELINE-QUALIFIED authority — gate hash, qualification hash, baseline-selected identity.
-3. Exact L2-G v2 closure identity `42310a97…` and v1 `1c2039de…`.
-4. MODELS-QUALIFIED remains HOLD; no `gates/models-qualified.json` exists.
-5. Allowed mode set is exactly `{SAFE_BASELINE}`.
-6. 100% of decisions select the accepted safe baseline.
-7. 0 invalid CONFIGs emitted.
-8. 0 contextual model loads.
-9. 0 candidate generation events.
-10. 0 parameter mutations — emitted config byte-identical to the qualified payload.
-11. Decision manifest is canonical and deterministic.
-12. Same semantic request → same decision identity.
-13. Every contextual request → typed `SAFE_BASELINE_FORCED` fallback.
-14. Corrupted global authority → fail closed, nothing emitted.
-15. Baseline payload tamper → fail closed.
-16. Parameter-space mismatch → fail closed.
-17. Low remaining time → still a deterministic safe result while authority is valid.
-18. No truth, VALIDATION or TEST dependency anywhere in the path.
-19. Fallback success = 100%.
-20. **Profile and round/region identity cross-checked against their owning documents**, not only
-    against the request's own internal consistency — the scope limit recorded in §5.
-21. Decision persistence path closed (§9) or an explicit decision that decisions are not persisted.
+`Layer1ProfileReference.profile_manifest_hash` **has no canonical definition anywhere in this
+engine.** Nothing computes it, no manifest carries a field of that name, and its validator checks
+only that it is 64 lowercase hex characters. The nearest real quantity is a *different* one:
+`profile_manifest_sha256`, the SHA-256 of the owning manifest document's exact bytes, computed by
+`storage/profile_ingest.py` and recorded per member in the frozen snapshot.
+
+Silently deciding that the old field "means" the new one would be inventing a preimage nobody ever
+defined. So the smallest explicit typed correction was made instead: `profile_manifest_sha256` is
+added to the contract under its own name with an exact definition, the ownership authority requires
+it, and `profile_manifest_hash` is documented in the contract as unauthenticated and **removed from
+the decision manifest** — an opaque value with no definition has no place in a scientific identity.
+
+## 9a. Decision persistence (gap #21 — CLOSED as an explicit deferral)
+
+**Determination: OUTCOME B, scoped to the pre-activation stage.**
+
+The v2 build specification's §15 live decision algorithm does require persistence before the
+return — `return persist(SAFE_BASELINE)` on the degraded path, and
+`return exact canonical CONFIG bytes referenced by persisted hash` on the main one. That binds an
+*activated* controller. This one is not activated: `select_config` still raises, so there is no
+live round and no caller receiving a config.
+
+The database route is blocked structurally, not by preference:
+
+* `runtime.decisions` is a strict subset of the table the specification describes — no `mode`, no
+  `fallback_reason`, no `controller_version`, no `parameter_space_hash`, no `decision_manifest`,
+  no `decided_at`, and `profile_id` nullable — and its `config_id`/`profile_id` foreign keys point
+  at `catalog.gatk_configs` and `profiling.profiles`, which hold **0 rows**.
+* Alembic is one strictly linear chain with no branch labels anywhere. The operational store is at
+  `0005_l2e_feature_view`; the chain runs to `0026`, and every revision from `0006` on is an L2-F2
+  scientific-campaign migration. A new controller revision could only be reached by advancing the
+  operational database through **twenty-one unrelated scientific migrations**, which is explicitly
+  forbidden. Introducing a branch-labelled chain to dodge that is a far larger architectural change
+  than this task authorises.
+
+`docs/layer2/L2H_SAFE_CONTROLLER.md` §10 check 21 accepts "an explicit decision that decisions are
+not persisted" as a closure. **This is that decision, and it is a deferral, not a waiver:** database
+persistence remains a prerequisite for activating the public service, and the single-chain
+migration topology is the impediment that must be resolved first. "The table is inconvenient" is
+not the reason and would not be a good one.
+
+Meanwhile `layer2/decision_publication.py` publishes decisions the way this engine publishes all
+its other evidence: canonical bytes under a content-addressed name
+(`<identity>.json`, mode `0640`), staged in-directory, fsynced, atomically renamed, the directory
+fsynced, then **read back from the final path** before the call returns. `decide_and_publish`
+performs that publication before returning, so no caller can observe a decision that is not already
+durable — the property `persist(...)`-before-`return` exists to give.
+
+Idempotency is a property of the naming rather than a protocol: the same semantic decision has the
+same identity, hence the same path and the same bytes, so a retry converges and returns
+`reused=True`. Two different decisions can never contend for one name, and republishing different
+bytes under an existing identity is refused outright — a decision identity may never name two
+decisions.
+
+**No migration is proposed or applied. No database was written to.**
+
+## 10. Controller qualification — mandatory checks (§16)
+
+**Run.** `layer2/safe_controller_qualification.py` (`l2h-safe-controller-qualification-v1`) drives
+the real decision path over the real owned corpus and derives every verdict from observations it
+made itself; `TrustedSafeControllerQualification` can only be minted by running one, so a caller
+cannot pass `{"check": true}` and manufacture a PASS. `verify_qualification_report` re-derives
+every check from the report's own observations and refuses a status that disagrees with them.
+
+The 21 mandatory checks below are unchanged and all passed. Six further checks were added:
+`owned_corpus_admitted_by_accepted_authority`, `ownership_failures_are_authority_failures`,
+`model_bundle_id_cannot_influence_the_config`,
+`publication_is_content_addressed_and_idempotent`, `select_config_public_boundary_blocked`, and
+`sealed_partitions_never_enumerated`.
 
 **That result must not be called MODELS-QUALIFIED.**
 
@@ -206,7 +262,11 @@ No gate is issued in this task. The naming decision is recorded now so it cannot
 | `SAFE-CONTROLLER-FROZEN` | `SAFE_BASELINE` only, no learned inference | BASELINE-QUALIFIED PASS **+** L2-G terminal contextual-model HOLD/freeze |
 
 `CONTROLLER-FROZEN` would name a capability this controller does not possess, so it is reserved.
-The mode-scoped name is designed but deliberately **not issued**.
+`SAFE-CONTROLLER-FROZEN` is now **registered** in `gates/required_checks.py` with 26 required
+checks, every one of which the qualifier produces — and it is deliberately **not issued**. Four of
+its own required checks (`allowed_modes_exactly_safe_baseline`, `zero_contextual_model_loads`,
+`models_qualified_remains_hold`, `select_config_public_boundary_blocked`) assert the absence of
+contextual capability, so the gate cannot be read as implying any.
 
 The existing gate schema (`schemas/gate-artifact-v1.schema.json`, `additionalProperties: false`)
 has **no capability-scope field**, and adding one would change `gate_hash` for every gate already
