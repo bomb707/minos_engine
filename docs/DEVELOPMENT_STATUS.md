@@ -1186,7 +1186,7 @@ The gate binds the **qualified source**, not the evidence commit that carries it
 | Safe controller policy | `l2h-safe-controller-policy-v1`, hash `638d634834c921f5ba00220caaca59c4b317368767c38bd50cafaad232241fa3` |
 | Allowed control modes | exactly `{SAFE_BASELINE}` |
 | `Layer2Service.select_config` | **BLOCKED** (`StageNotReadyError`) |
-| Controller gate | **`SAFE-CONTROLLER-FROZEN` ISSUED** — PASS, 29 checks, gate hash `3c6d9b0b6f84ed017d577da77f39d87b19bc633e56a66f8c599f1a5f8cfc07ae`, capability `SAFE_BASELINE_ONLY`. `CONTROLLER-FROZEN` reserved for full contextual capability and unissued |
+| Controller gate | **`SAFE-CONTROLLER-FROZEN` ISSUED** — PASS, 29 checks, 19 authority bindings, gate hash `504e701fe77b651c919ebc015dc6911bbca880613014058979b18ab408f88add`, capability `SAFE_BASELINE_ONLY`. The first issuance (`3c6d9b0b…`) was superseded before activation and never accepted for promotion. `CONTROLLER-FROZEN` reserved for full contextual capability and unissued |
 | SAFE-controller qualification | **PASS** — `l2h-safe-controller-qualification-v3`, identity `a0e8840dbdad6beeca7e7548b500868a860438dbea5673b08b11dae70832ba8e`, 50 anchored TRAIN profiles / 200 decisions. v1 (`7d305bcd…`) and v2 (`8408630f…`) are historical, not valid for qualification |
 | Decision persistence | published content-addressed; DB persistence **deferred** to service activation (single-chain migration topology) |
 

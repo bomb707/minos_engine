@@ -26,9 +26,12 @@ from minos_engine.layer2.safe_controller_gate import (
 )
 from minos_engine.qualification.l2f_accepted_identities import repository_root
 
-GATE_HASH = "3c6d9b0b6f84ed017d577da77f39d87b19bc633e56a66f8c599f1a5f8cfc07ae"
-GATE_FILE_SHA = "bb26d7b24ee251e6eae51c5bf1f655a79554b53c64a27081c759b8c532d29962"
-ISSUING_ENGINE_COMMIT = "9d8864a2a5b906bed0e5989beff827b33bb568fa"
+GATE_HASH = "504e701fe77b651c919ebc015dc6911bbca880613014058979b18ab408f88add"
+GATE_FILE_SHA = "1bbc1b1b65b7759922d8501a256539850b5b5f95eaf1862a2cef22b9bf39e716"
+ISSUING_ENGINE_COMMIT = "6a3bedfa33581fde22e96d6739146c087c23ba79"
+ISSUING_ENGINE_TREE = "96e46249ff1dc39344127b9a8cb4daec07e0ab8d"
+#: The first issuance, superseded before activation and never accepted for promotion.
+SUPERSEDED_GATE_HASH = "3c6d9b0b6f84ed017d577da77f39d87b19bc633e56a66f8c599f1a5f8cfc07ae"
 SAFE_CONFIG = "157d88d1587c13be395c62d60e27d1becdada78fad45e65d883bc1190e51acea"
 
 
@@ -127,6 +130,37 @@ def test_the_gate_binds_every_required_authority(gate: dict[str, Any]) -> None:
         bound["ownership_corpus_identity"]
         == "9cc53b5d28c8a8da34c25095362c09d8cb1fb57533ff0a0b3e1fdf7000970b03"
     )
+
+
+def test_the_issuing_commit_is_provable(gate: dict[str, Any]) -> None:
+    """Not a length check: the commit must exist here with exactly this tree."""
+    from minos_engine.layer2.safe_controller_gate import verify_issuer_provenance
+
+    proved = verify_issuer_provenance(
+        repository_root(), commit=gate["engine_git_sha"], tree=ISSUING_ENGINE_TREE
+    )
+    assert proved["issuer_source_commit"] == ISSUING_ENGINE_COMMIT
+    assert proved["issuer_source_tree"] == ISSUING_ENGINE_TREE
+
+
+def test_the_superseded_first_issuance_is_not_reused(gate: dict[str, Any]) -> None:
+    """Its identity is not reclaimed and not pretended to be unchanged."""
+    assert gate["gate_hash"] != SUPERSEDED_GATE_HASH
+    assert gate["gate_hash"] == GATE_HASH
+
+
+def test_the_gate_binds_the_three_semantic_states(gate: dict[str, Any]) -> None:
+    from minos_engine.layer2.safe_controller_gate import (
+        capability_scope_hash,
+        contextual_model_status_hash,
+        publication_disposition_hash,
+    )
+
+    bound = gate["input_hashes"]
+    assert len(bound) == 19
+    assert bound["capability_scope_hash"] == capability_scope_hash()
+    assert bound["contextual_model_status_hash"] == contextual_model_status_hash()
+    assert bound["publication_disposition_hash"] == publication_disposition_hash()
 
 
 def test_the_gate_binds_no_operational_value(gate: dict[str, Any]) -> None:
