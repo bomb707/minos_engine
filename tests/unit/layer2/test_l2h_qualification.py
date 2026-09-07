@@ -705,11 +705,18 @@ def test_derive_checks_reads_no_verdict_from_its_input(qualification: dict[str, 
 # ---------------------------------------------------------------------------------------- #
 # §H the mode-scoped gate: designed, not issued
 # ---------------------------------------------------------------------------------------- #
-def test_the_gate_is_registered_but_not_issued() -> None:
+def test_the_gate_is_registered_and_now_issued() -> None:
+    """Issued in this task; the two contextual-capability gates stay absent."""
+    from minos_engine.layer2.safe_controller_gate import (
+        SAFE_CONTROLLER_FROZEN_GATE_PATH,
+        verify_safe_controller_frozen_gate,
+    )
+
     required = required_checks_for("SAFE-CONTROLLER-FROZEN")
     assert required, "the mode-scoped gate must be registered"
     assert required <= set(ALL_CHECKS), "the gate requires a check the qualifier cannot produce"
-    assert not (repository_root() / "gates/safe-controller-frozen.json").exists()
+    assert (repository_root() / SAFE_CONTROLLER_FROZEN_GATE_PATH).is_file()
+    assert verify_safe_controller_frozen_gate(repository_root())["ok"] is True
     assert not (repository_root() / "gates/controller-frozen.json").exists()
     assert not (repository_root() / "gates/models-qualified.json").exists()
 
