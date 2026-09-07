@@ -100,11 +100,23 @@ def _fsync_directory(directory: Path) -> None:
 def publish_safe_decision(
     *, manifest: dict[str, Any], identity: str, output_root: Any
 ) -> PublishedDecision:
-    """Publish one decision manifest under its own identity. Atomic, fsynced, read back.
+    """Publish one decision manifest under its OWN identity. Atomic, no-clobber, read back.
 
-    Returns only after the bytes are durable and have been re-read from their final path, so a
-    caller that sees success is looking at a decision that survived the write.
+    Two defects are closed here.
+
+    First, the identity is now *derived* rather than accepted: a caller cannot publish arbitrary
+    canonical bytes under an unrelated 64-hex name, because the manifest must hash to the name it
+    is filed under. A record whose name does not describe its contents is worse than no record.
+
+    Second, the old check-then-``os.replace`` sequence was overwrite-capable: two writers could
+    both see the target absent and both rename onto it, and the loser's bytes would vanish
+    silently. Creation is now no-clobber (``O_CREAT | O_EXCL`` via ``os.link``), which is atomic
+    across processes on a POSIX filesystem, so exactly one writer creates the immutable record and
+    every other writer converges to it -- or fails closed if its bytes differ. A process-local
+    lock would not do: nothing says one process publishes.
     """
+    from minos_engine.layer2.safe_controller import safe_decision_manifest_identity
+
     _require(
         isinstance(manifest, dict) and bool(manifest),
         "a decision manifest must be a non-empty document",
@@ -113,6 +125,11 @@ def publish_safe_decision(
         len(identity) == 64 and all(c in "0123456789abcdef" for c in identity),
         f"{identity!r} is not a decision identity",
     )
+    derived = safe_decision_manifest_identity(manifest)
+    _require(
+        derived == identity,
+        f"the manifest hashes to {derived}, so it may not be published as {identity}",
+    )
     payload = canonical_json_bytes(manifest)
     expected_sha = hashlib.sha256(payload).hexdigest()
 
@@ -120,10 +137,10 @@ def publish_safe_decision(
     root.mkdir(parents=True, exist_ok=True, mode=_DIRECTORY_MODE)
     target = root / f"{identity}.json"
 
-    if target.exists():
+    def _converge() -> PublishedDecision:
+        """An existing final record: identical bytes converge, different bytes fail closed."""
         _require(not target.is_symlink(), f"{target} is a symlink")
         existing = target.read_bytes()
-        # the same identity must mean the same bytes; anything else is a contradiction, not a retry
         _require(
             existing == payload,
             f"{identity} is already published with different bytes; a decision identity may "
@@ -137,6 +154,9 @@ def publish_safe_decision(
             reused=True,
         )
 
+    if target.exists():
+        return _converge()
+
     handle, staged_name = tempfile.mkstemp(dir=root, prefix=f".{identity}.", suffix=".tmp")
     staged = Path(staged_name)
     try:
@@ -145,11 +165,16 @@ def publish_safe_decision(
             stream.flush()
             os.fsync(stream.fileno())
         os.chmod(staged, _FILE_MODE)
-        os.replace(staged, target)
+        try:
+            # NO-CLOBBER: link() fails if the target exists, atomically, across processes.
+            os.link(staged, target)
+        except FileExistsError:
+            # another writer won the race; converge on the record that actually exists
+            staged.unlink(missing_ok=True)
+            return _converge()
         _fsync_directory(root)
-    except BaseException:
+    finally:
         staged.unlink(missing_ok=True)
-        raise
 
     # read back from the FINAL path: the bytes on disk are the record, not the ones we meant
     written = target.read_bytes()

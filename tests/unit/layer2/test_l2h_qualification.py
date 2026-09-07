@@ -8,7 +8,6 @@ asked for something no model can do" are different statements and must not produ
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -36,9 +35,9 @@ from minos_engine.layer2.decision_publication import (
     read_published_decision,
 )
 from minos_engine.layer2.round_profile_authority import (
-    ARTIFACT_INVENTORY_PATH,
     OWNERSHIP_SCHEMA,
-    SNAPSHOT_MEMBERS_PATH,
+    PHASE_A_AUTHORITY_PATH,
+    TRAIN_SCHEDULE_PATH,
     RoundProfileAuthorityError,
     VerifiedRoundProfileAuthority,
     load_verified_round_profile_corpus,
@@ -46,6 +45,7 @@ from minos_engine.layer2.round_profile_authority import (
 from minos_engine.layer2.safe_controller import (
     VerifiedSafeBaselineAuthority,
     load_verified_safe_baseline_authority,
+    safe_decision_manifest_content,
     safe_decision_manifest_identity,
     select_safe_baseline,
 )
@@ -60,6 +60,11 @@ from minos_engine.layer2.safe_controller_qualification import (
     qualification_report_identity,
     run_safe_controller_qualification,
     verify_qualification_report,
+)
+from minos_engine.layer2.sealed_access_guard import (
+    SEALED_IDENTITY_AUTHORITIES,
+    SealedAccessError,
+    sealed_access_guard,
 )
 from minos_engine.qualification.l2f_accepted_identities import repository_root
 
@@ -121,20 +126,27 @@ def _request(
 # ---------------------------------------------------------------------------------------- #
 # the owned corpus
 # ---------------------------------------------------------------------------------------- #
-def test_the_corpus_is_the_frozen_snapshot(ownership: VerifiedRoundProfileAuthority) -> None:
+def test_the_corpus_is_the_anchored_train_projection(
+    ownership: VerifiedRoundProfileAuthority,
+) -> None:
     assert len(ownership) == 50
+    assert ownership.partition == "train"
+    assert len(ownership.corpus_identity) == 64
+    anchors = ownership.anchors
     assert (
-        ownership.snapshot_hash
-        == "cf717ebb44e76a3408e975e027b51139df28d643dd1616c5edbce3643182c4c7"
-    )
-    assert (
-        ownership.registry_snapshot_hash
+        anchors["registry_snapshot_hash"]
         == "3e60aa65aeed8969e29ebeef83024f6fa2285a13c155d7d6dc0c601d1e94f675"
     )
-    assert len(ownership.corpus_identity) == 64
-    # TEST is sealed and VALIDATION is unauthorised, so neither is enumerated at all
-    assert all(ownership.owned(r).partition == "train" for r in ownership.rounds())
-    assert ownership.skipped_partition_counts == {"test": 15, "validation": 10}
+    assert (
+        anchors["baseline_protocol_hash"]
+        == "c548e190571f5e964560cf30021a520ea8aad6674569fa3202af880d7dff77d1"
+    )
+    assert (
+        anchors["train_schedule_manifest_sha256"]
+        == "694a8993ef64f72ca3705442c1bc070c0288d46e08e00e39bab1155d4415d454"
+    )
+    chromosomes = {ownership.owned(r).chromosome for r in ownership.rounds()}
+    assert chromosomes == {"chr18", "chr19", "chr20", "chr21", "chr22"}
 
 
 def test_a_caller_cannot_mint_a_corpus() -> None:
@@ -142,8 +154,7 @@ def test_a_caller_cannot_mint_a_corpus() -> None:
         VerifiedRoundProfileAuthority(
             object(),
             by_round={},
-            snapshot_hash="a" * 64,
-            registry_snapshot_hash="b" * 64,
+            anchors={"registry_snapshot_hash": "b" * 64},
             corpus_identity="c" * 64,
         )
 
@@ -267,6 +278,12 @@ def _corpus_copy(tmp_path: Path) -> tuple[Path, Path]:
     return repo, corpus
 
 
+def _train_rounds(repo: Path) -> list[str]:
+    """The 50 TRAIN round ids, from the TRAIN-ONLY schedule. Never from a sealed membership."""
+    schedule = json.loads((repo / TRAIN_SCHEDULE_PATH).read_bytes())
+    return [str(e["round_id"]) for batch in schedule["batches"] for e in batch]
+
+
 def test_the_untampered_copy_loads(tmp_path: Path) -> None:
     repo, corpus = _corpus_copy(tmp_path)
     assert len(load_verified_round_profile_corpus(root=repo, corpus_root=corpus)) == 50
@@ -275,20 +292,20 @@ def test_the_untampered_copy_loads(tmp_path: Path) -> None:
 def test_a_tampered_profile_document_is_refused(tmp_path: Path) -> None:
     """Bytes are checked against the frozen inventory before anything is parsed."""
     repo, corpus = _corpus_copy(tmp_path)
-    members = json.loads((repo / SNAPSHOT_MEMBERS_PATH).read_bytes())
-    victim = next(m for m in members["members"] if m["partition"] == "train")["round_id"]
+    victim = _train_rounds(repo)[0]
     path = corpus / victim / "bam-profile-v1.json"
     document = json.loads(path.read_bytes())
     document["status"] = "INCOMPLETE"
     path.write_bytes(canonical_json_bytes(document))
-    with pytest.raises(RoundProfileAuthorityError, match="hashes to"):
+    # the accepted admission authority binds the manifest to the profile BYTES, so an edited
+    # profile is refused without needing a separate artifact inventory
+    with pytest.raises(RoundProfileAuthorityError, match="not admissible"):
         load_verified_round_profile_corpus(root=repo, corpus_root=corpus)
 
 
 def test_a_tampered_attestation_is_refused(tmp_path: Path) -> None:
     repo, corpus = _corpus_copy(tmp_path)
-    members = json.loads((repo / SNAPSHOT_MEMBERS_PATH).read_bytes())
-    victim = next(m for m in members["members"] if m["partition"] == "train")["round_id"]
+    victim = _train_rounds(repo)[0]
     path = corpus / victim / "input-integrity-attestation-v1.json"
     attestation = json.loads(path.read_bytes())
     attestation["bam_sha256"] = "e" * 64
@@ -297,34 +314,47 @@ def test_a_tampered_attestation_is_refused(tmp_path: Path) -> None:
         load_verified_round_profile_corpus(root=repo, corpus_root=corpus)
 
 
-def test_an_inventory_rewritten_to_match_a_tampered_artifact_is_still_refused(
+def test_a_tampered_train_schedule_is_refused(tmp_path: Path) -> None:
+    """The schedule is anchored to the accepted Phase-A authority, so editing it fails closed."""
+    repo, corpus = _corpus_copy(tmp_path)
+    schedule = json.loads((repo / TRAIN_SCHEDULE_PATH).read_bytes())
+    schedule["batches"][0][0]["round_id"] = "smuggled-round"
+    (repo / TRAIN_SCHEDULE_PATH).write_bytes(canonical_json_bytes(schedule))
+    with pytest.raises(RoundProfileAuthorityError, match="hashes to"):
+        load_verified_round_profile_corpus(root=repo, corpus_root=corpus)
+
+
+def test_a_phase_a_authority_rewritten_to_match_a_tampered_schedule_is_still_refused(
     tmp_path: Path,
 ) -> None:
-    """Repairing the inventory does not repair the membership it disagrees with."""
+    """Repairing the anchor does not repair the accepted protocol the anchor must agree with."""
+    import hashlib as _hashlib
+
     repo, corpus = _corpus_copy(tmp_path)
-    members = json.loads((repo / SNAPSHOT_MEMBERS_PATH).read_bytes())
-    victim = next(m for m in members["members"] if m["partition"] == "train")["round_id"]
-    path = corpus / victim / "profile-manifest-v1.json"
-    document = json.loads(path.read_bytes())
-    document["windows_row_count"] = int(document["windows_row_count"]) + 1
-    raw = canonical_json_bytes(document)
-    path.write_bytes(raw)
-    inventory = json.loads((repo / ARTIFACT_INVENTORY_PATH).read_bytes())
-    for entry in inventory["entries"]:
-        if entry["round_id"] == victim:
-            entry["artifacts"]["profile-manifest-v1.json"] = {
-                "sha256": hashlib.sha256(raw).hexdigest(),
-                "size_bytes": len(raw),
-            }
-    (repo / ARTIFACT_INVENTORY_PATH).write_bytes(canonical_json_bytes(inventory))
-    with pytest.raises(RoundProfileAuthorityError, match="snapshot recorded"):
+    schedule = json.loads((repo / TRAIN_SCHEDULE_PATH).read_bytes())
+    schedule["batches"][0][0]["round_id"] = "smuggled-round"
+    raw = canonical_json_bytes(schedule)
+    (repo / TRAIN_SCHEDULE_PATH).write_bytes(raw)
+    authority = json.loads((repo / PHASE_A_AUTHORITY_PATH).read_bytes())
+    authority["content"]["train_schedule_manifest_sha256"] = _hashlib.sha256(raw).hexdigest()
+    (repo / PHASE_A_AUTHORITY_PATH).write_bytes(canonical_json_bytes(authority))
+    # the schedule now hashes correctly, so only the per-member attestation binding can catch it
+    with pytest.raises(RoundProfileAuthorityError):
+        load_verified_round_profile_corpus(root=repo, corpus_root=corpus)
+
+
+def test_a_phase_a_authority_citing_a_foreign_protocol_is_refused(tmp_path: Path) -> None:
+    repo, corpus = _corpus_copy(tmp_path)
+    authority = json.loads((repo / PHASE_A_AUTHORITY_PATH).read_bytes())
+    authority["content"]["baseline_protocol_hash"] = "e" * 64
+    (repo / PHASE_A_AUTHORITY_PATH).write_bytes(canonical_json_bytes(authority))
+    with pytest.raises(RoundProfileAuthorityError, match="cannot anchor anything"):
         load_verified_round_profile_corpus(root=repo, corpus_root=corpus)
 
 
 def test_a_missing_corpus_member_is_refused(tmp_path: Path) -> None:
     repo, corpus = _corpus_copy(tmp_path)
-    members = json.loads((repo / SNAPSHOT_MEMBERS_PATH).read_bytes())
-    victim = next(m for m in members["members"] if m["partition"] == "train")["round_id"]
+    victim = _train_rounds(repo)[0]
     (corpus / victim / "bam-profile-v1.json").unlink()
     with pytest.raises(RoundProfileAuthorityError, match="missing"):
         load_verified_round_profile_corpus(root=repo, corpus_root=corpus)
@@ -418,12 +448,81 @@ def test_a_mutated_published_decision_is_refused_on_read(
         read_published_decision(identity=published.identity, output_root=root)
 
 
-def test_publishing_different_bytes_under_one_identity_is_refused(tmp_path: Path) -> None:
+def test_a_manifest_cannot_be_published_under_a_name_it_does_not_hash_to(
+    tmp_path: Path,
+) -> None:
+    """§H(1): the identity is derived, never accepted from the caller."""
+    with pytest.raises(DecisionPublicationError, match="may not be published as"):
+        publish_safe_decision(
+            manifest={"schema_version": "not-a-decision"},
+            identity="a" * 64,
+            output_root=tmp_path / "decisions",
+        )
+
+
+def test_a_conflicting_record_under_an_existing_identity_is_refused(
+    authority: VerifiedSafeBaselineAuthority,
+    ownership: VerifiedRoundProfileAuthority,
+    tmp_path: Path,
+) -> None:
+    """§H(2): an existing final record is never overwritten, even by a well-formed writer."""
+    owned = ownership.owned(ownership.rounds()[0])
     root = tmp_path / "decisions"
-    identity = "a" * 64
-    publish_safe_decision(manifest={"a": 1}, identity=identity, output_root=root)
+    manifest = safe_decision_manifest_content(
+        request=_request(authority, owned), authority=authority, ownership=ownership
+    )
+    identity = safe_decision_manifest_identity(manifest)
+    first = publish_safe_decision(manifest=manifest, identity=identity, output_root=root)
+    original = first.path.read_bytes()
+    # a squatter puts different bytes under the same name, then a legitimate writer retries
+    first.path.write_bytes(canonical_json_bytes({"schema_version": "squatted"}))
     with pytest.raises(DecisionPublicationError, match="never name two decisions"):
-        publish_safe_decision(manifest={"a": 2}, identity=identity, output_root=root)
+        publish_safe_decision(manifest=manifest, identity=identity, output_root=root)
+    first.path.write_bytes(original)
+
+
+def test_concurrent_publishers_of_one_decision_converge(
+    authority: VerifiedSafeBaselineAuthority,
+    ownership: VerifiedRoundProfileAuthority,
+    tmp_path: Path,
+) -> None:
+    """Real threads, one record. No process-local lock is involved in the guarantee."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    owned = ownership.owned(ownership.rounds()[0])
+    root = tmp_path / "decisions"
+    manifest = safe_decision_manifest_content(
+        request=_request(authority, owned), authority=authority, ownership=ownership
+    )
+    identity = safe_decision_manifest_identity(manifest)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(
+            pool.map(
+                lambda _: publish_safe_decision(
+                    manifest=manifest, identity=identity, output_root=root
+                ),
+                range(24),
+            )
+        )
+    assert len(list(root.glob("*.json"))) == 1
+    assert sum(1 for r in results if not r.reused) == 1, "exactly one writer creates the record"
+    assert all(r.sha256 == results[0].sha256 for r in results)
+    assert not list(root.glob(".*.tmp")), "a staged file was left behind"
+
+
+def test_a_final_record_is_never_clobbered_by_a_second_writer(tmp_path: Path) -> None:
+    """The old check-then-replace sequence could lose a writer's bytes; link() cannot."""
+    import os
+
+    root = tmp_path / "decisions"
+    root.mkdir(parents=True)
+    target = root / "record.json"
+    target.write_bytes(b"first")
+    staged = root / ".staged"
+    staged.write_bytes(b"second")
+    with pytest.raises(FileExistsError):
+        os.link(staged, target)
+    assert target.read_bytes() == b"first"
 
 
 def test_the_disposition_is_named_not_inferred() -> None:
@@ -481,7 +580,6 @@ def test_the_qualification_passes_over_the_whole_owned_corpus(
         FallbackReason.SAFE_BASELINE_FORCED.value: 150,
     }
     assert observation["admitted_partition"] == "train"
-    assert observation["skipped_partition_counts"] == {"test": 15, "validation": 10}
 
 
 def test_all_twenty_one_mandatory_checks_are_present_and_true(
@@ -633,36 +731,142 @@ def test_the_additional_checks_are_declared_separately() -> None:
 
 
 def test_the_ownership_schema_is_named() -> None:
-    assert OWNERSHIP_SCHEMA == "l2h-round-profile-ownership-v1"
+    assert OWNERSHIP_SCHEMA == "l2h-round-profile-ownership-v2"
 
 
-def test_a_sealed_partition_member_is_never_opened(tmp_path: Path) -> None:
-    """Deleting a TEST member's artifacts entirely must not affect the TRAIN corpus.
+def test_no_sealed_authority_is_opened_while_loading_ownership() -> None:
+    """The corrective proof: a hard guard, not a claim about which fields were used."""
+    with sealed_access_guard() as observed:
+        loaded = load_verified_round_profile_corpus(root=repository_root())
+    assert len(loaded) == 50
+    assert observed.open_attempts == 0
+    assert observed.attempted_paths == []
 
-    If the loader ever touched a sealed partition, this would fail — which is a stronger proof
-    than asserting that it does not, because it fails for the right reason.
-    """
+
+def test_the_guard_actually_refuses_a_sealed_authority() -> None:
+    """A guard that never fires proves nothing, so prove it fires."""
+    sealed = repository_root() / "manifests" / "profile_snapshot_epoch1_members.json"
+    with (
+        sealed_access_guard() as observed,
+        pytest.raises(SealedAccessError, match="sealed member identities"),
+    ):
+        sealed.read_bytes()
+    assert observed.open_attempts == 1
+    assert observed.attempted_paths == ["profile_snapshot_epoch1_members.json"]
+
+
+def test_every_sealed_bearing_authority_is_guarded() -> None:
+    for name in SEALED_IDENTITY_AUTHORITIES:
+        path = repository_root() / "manifests" / name
+        if not path.is_file():
+            continue
+        with sealed_access_guard(), pytest.raises(SealedAccessError):
+            path.read_bytes()
+
+
+def test_ownership_loads_with_every_sealed_authority_removed(tmp_path: Path) -> None:
+    """Delete them outright. If the loader needed one, this fails for the right reason."""
+    repo, corpus = _corpus_copy(tmp_path)
+    removed = 0
+    for name in SEALED_IDENTITY_AUTHORITIES:
+        path = repo / "manifests" / name
+        if path.is_file():
+            path.unlink()
+            removed += 1
+    assert removed, "no sealed authority was present to remove"
+    assert len(load_verified_round_profile_corpus(root=repo, corpus_root=corpus)) == 50
+
+
+def test_ownership_loads_with_unscheduled_corpus_directories_removed(tmp_path: Path) -> None:
+    """Only the 50 scheduled directories are opened; the rest need not even exist."""
     import shutil
 
     repo, corpus = _corpus_copy(tmp_path)
-    members = json.loads((repo / SNAPSHOT_MEMBERS_PATH).read_bytes())
-    sealed = [m["round_id"] for m in members["members"] if m["partition"] != "train"]
-    assert sealed, "the snapshot has no sealed member to prove anything with"
-    for round_id in sealed:
-        shutil.rmtree(corpus / round_id)
-    loaded = load_verified_round_profile_corpus(root=repo, corpus_root=corpus)
-    assert len(loaded) == 50
-    assert set(loaded.rounds()).isdisjoint(sealed)
+    scheduled = set(_train_rounds(repo))
+    removed = 0
+    for directory in sorted(corpus.iterdir()):
+        if directory.is_dir() and directory.name not in scheduled:
+            shutil.rmtree(directory)
+            removed += 1
+    assert removed == 25
+    assert len(load_verified_round_profile_corpus(root=repo, corpus_root=corpus)) == 50
 
 
-def test_no_sealed_identity_reaches_the_qualification_report(
+def test_only_scheduled_train_identities_reach_the_qualification_report(
     qualification: dict[str, Any],
 ) -> None:
-    repo = repository_root()
-    members = json.loads((repo / SNAPSHOT_MEMBERS_PATH).read_bytes())
-    sealed = {m["round_id"] for m in members["members"] if m["partition"] != "train"} | {
-        m["profile_id"] for m in members["members"] if m["partition"] != "train"
-    }
+    """Containment proved from the TRAIN-only side.
+
+    The obvious test -- collect the sealed ids and assert their absence -- would itself have to
+    read the sealed membership, which is the defect this corrective exists to fix. So the proof
+    runs the other way: every round and profile identity the report mentions must be one this
+    authority owns.
+    """
+    from minos_engine.layer2.round_profile_authority import load_verified_round_profile_corpus
+
+    owned = load_verified_round_profile_corpus(root=repository_root())
+    allowed = (
+        {owned.owned(r).round_id for r in owned.rounds()}
+        | {owned.owned(r).profile_id for r in owned.rounds()}
+        | {owned.owned(r).dataset_id for r in owned.rounds()}
+    )
     body = json.dumps(qualification)
-    for identity in sealed:
-        assert identity not in body, f"a sealed identity {identity} reached the evidence"
+    # the report should not carry per-member identities at all; if it ever does, they must be ours
+    for token in body.replace('"', " ").split():
+        if token.startswith("minos-chr") and token not in allowed:
+            raise AssertionError(f"an unowned dataset identity reached the evidence: {token}")
+
+
+def test_the_report_records_why_v1_is_superseded(qualification: dict[str, Any]) -> None:
+    supersedes = qualification["supersedes"]
+    assert supersedes["schema"] == "l2h-safe-controller-qualification-v1"
+    assert (
+        supersedes["identity"] == "7d305bcd7c35c82389259ec1d88058ff9202ce454a0364d15e4b864345aaf821"
+    )
+    assert supersedes["status"] == "HISTORICAL_EVIDENCE_NOT_VALID_FOR_QUALIFICATION"
+    assert "enumerated" in supersedes["reason"]
+
+
+def test_the_isolation_flags_are_observed_not_authored(qualification: dict[str, Any]) -> None:
+    observation = qualification["observation"]
+    assert observation["forbidden_sealed_path_open_attempts"] == 0
+    assert observation["attempted_sealed_authorities"] == []
+    assert observation["sealed_identity_authorities"] == sorted(SEALED_IDENTITY_AUTHORITIES)
+    assert observation["materialized_round_count"] == observation["profile_count"] == 50
+    assert qualification["checks"]["sealed_authorities_never_opened"] is True
+
+
+def test_a_report_whose_isolation_observation_contradicts_its_flags_is_refused(
+    qualification: dict[str, Any],
+) -> None:
+    """§E: the verifier must reject a hard-coded access claim its observations do not support."""
+    forged = copy.deepcopy(qualification)
+    forged["observation"]["forbidden_sealed_path_open_attempts"] = 2
+    forged["observation"]["attempted_sealed_authorities"] = ["profile_snapshot_epoch1_members.json"]
+    with pytest.raises(SafeControllerQualificationError, match="sealed-authority open attempt"):
+        verify_qualification_report(forged)
+
+
+def test_a_report_claiming_a_sealed_partition_was_admitted_is_refused(
+    qualification: dict[str, Any],
+) -> None:
+    forged = copy.deepcopy(qualification)
+    forged["observation"]["admitted_partition"] = "test"
+    with pytest.raises(SafeControllerQualificationError):
+        verify_qualification_report(forged)
+
+
+def test_the_superseded_v1_report_cannot_pass_the_v2_verifier() -> None:
+    """§J: a future gate must not be authorizable by the superseded evidence."""
+    from minos_engine.layer2.safe_controller_qualification import (
+        SAFE_CONTROLLER_QUALIFICATION_SCHEMA,
+    )
+
+    v1 = json.loads(
+        (
+            repository_root() / "reports/layer2/l2h-safe-controller-qualification-v1.json"
+        ).read_bytes()
+    )
+    assert v1["schema_version"] != SAFE_CONTROLLER_QUALIFICATION_SCHEMA
+    with pytest.raises(SafeControllerQualificationError, match="unexpected qualification schema"):
+        verify_qualification_report(v1)

@@ -143,38 +143,56 @@ It contains **no** truth, mutation identity, hap.py output, score, VALIDATION ou
 outcome, and **no operational timestamps** — identical semantic input yields an identical decision
 identity, which is the only thing that makes the identity meaningful.
 
-## 9. Round and profile ownership (gap #20 — CLOSED)
+## 9. Round and profile ownership (gap #20 — CLOSED, corrected)
 
-Proving a `Layer1ProfileReference` internally consistent shows only that a caller can compute a
-hash of its own four digests. Ownership is now established from committed, frozen, gate-backed
-documents by `layer2/round_profile_authority.py` (`l2h-round-profile-ownership-v1`):
+**The first attempt breached the seal it claimed to honour.** v1 of this authority read the whole
+75-member profile snapshot, parsed it, and iterated every record before skipping non-TRAIN members.
+TEST is sealed until L2-I *including identity enumeration*, so reading all 75 and filtering was
+itself the breach — and the v1 report's `skipped_partition_counts` were derived by traversing the
+very records they claimed were untouched. A count of skipped members proves nothing about
+non-access. `l2h-safe-controller-qualification-v1.json` is preserved as history and is not valid
+for qualification.
 
-* `manifests/profile_snapshot_epoch1_members.json` (PROFILE-SNAPSHOT-FROZEN-1, snapshot
-  `cf717ebb…`, registry snapshot `3e60aa65…`) owns each member's `round_id` / `dataset_id` /
-  `profile_id` / `identity_tuple_hash` / `profile_manifest_sha256`;
-* `manifests/profile_snapshot_epoch1_artifact_inventory.json` owns the byte SHA-256 and size of
-  each member's four artifacts;
-* each member's `bam-profile-v1`, `profile-manifest-v1` and `input-integrity-attestation-v1`
-  documents are read from disk and required to hash to those recorded bytes **before** being
-  parsed as anything.
+`l2h-round-profile-ownership-v2` never opens a document carrying a sealed identity. The TRAIN round
+list comes from `manifests/l2f2_train_schedule_v1.json` — the frozen TRAIN-ONLY projection the
+accepted L2-F2 campaign already ran on: 50 entries of `{chromosome, dataset_id, round_id}`, no
+sealed row.
 
-**The accepted L2-D admission authority is reused, not reimplemented.**
-`layer2.ingest.validation.validate_admission` is called unchanged for every member. What it cannot
-supply on its own is the identity it validates against — it takes `registry_identity` as a plain
-dict from its caller — so the registry identity is *reconstructed* from the member's own verified
-attestation bytes and cross-checked against the frozen membership row. There is no caller-supplied
-identity anywhere in the chain.
+**The schedule is not trusted for being present.** Its anchor chain is pure source and opens
+nothing:
 
-`require_owned_request` then proves nine fields against the owning record: `profile_id`,
-`region_hash`, all four file digests, `identity_tuple_hash`, `fingerprint_hash` and
-`profile_manifest_sha256`. Every mismatch is an authority failure.
+1. `compute_baseline_selected_hash()` must equal the accepted `BASELINE_SELECTED_HASH`
+   (`b13aef13…`), which the accepted L2-H policy and the verified BASELINE-QUALIFIED evidence both
+   bind;
+2. its content yields `baseline_protocol_hash = c548e190…`;
+3. the accepted Phase-A execution authority must cite that same protocol hash, and it records
+   `train_schedule_manifest_sha256 = 694a8993…`;
+4. the schedule's bytes must hash to it;
+5. the schedule's declared shape — 50 TRAIN, 10 per chromosome, 10 batches, that chromosome list —
+   must equal the **source constants** in `baseline/schedule.py`, not a local document.
 
-**Partition sealing.** The frozen snapshot's 75 members span train (50), TEST (15) and VALIDATION
-(10). TEST is sealed until L2-I *including identity enumeration*, and VALIDATION is not authorised
-for v2, so a member outside `train` is skipped on its partition label before any artifact is
-opened. Only a count survives, so the seal is auditable without enumerating what it covers. A test
-deletes every sealed member's directory and confirms the TRAIN corpus still loads — a stronger
-proof than asserting the loader does not touch them.
+Recomputing the protocol via `build_baseline_protocol` would have hashed the split manifest, which
+carries sealed rows. The seal guard caught exactly that during development, which is why the anchor
+runs through `baseline_selected_content()` instead.
+
+Per-member identity then comes from the member's own three documents, opened **by name** from the
+50 scheduled round ids. The corpus directory is never listed, so a sealed directory is never even
+observed to exist. Byte integrity needs no artifact inventory: the accepted L2-D admission
+authority binds the manifest to the profile and windows bytes, the attestation re-hashes to its own
+`attestation_hash`, its identity tuple recomputes, and its `registry_snapshot_hash` must equal the
+accepted `PROFILE_SNAPSHOT_1_REGISTRY_SNAPSHOT_HASH` constant.
+
+`validate_admission` is called unchanged. What it cannot supply on its own is the identity it
+validates against — it takes `registry_identity` as a caller dict — so that identity is
+reconstructed from the member's own verified attestation and cross-checked against the anchored
+schedule row.
+
+**Isolation is enforced and observed, not asserted.** `layer2/sealed_access_guard.py` patches
+`io.open` for the duration of a qualification and refuses any open of a sealed-identity-bearing
+authority, counting attempts. The qualification derives its isolation checks from that counter;
+`test_accessed: false` as a constant would prove nothing. Tests confirm the guard actually fires,
+that ownership loads with every sealed authority deleted, and that it loads with the 25
+unscheduled corpus directories removed entirely.
 
 Layer 2 still does not open the BAM.
 
@@ -222,17 +240,20 @@ migration topology is the impediment that must be resolved first. "The table is 
 not the reason and would not be a good one.
 
 Meanwhile `layer2/decision_publication.py` publishes decisions the way this engine publishes all
-its other evidence: canonical bytes under a content-addressed name
-(`<identity>.json`, mode `0640`), staged in-directory, fsynced, atomically renamed, the directory
-fsynced, then **read back from the final path** before the call returns. `decide_and_publish`
-performs that publication before returning, so no caller can observe a decision that is not already
-durable — the property `persist(...)`-before-`return` exists to give.
+its other evidence: canonical bytes under a content-addressed name (`<identity>.json`, mode
+`0640`), staged in-directory, fsynced, linked into place, the directory fsynced, then **read back
+from the final path** before the call returns. `decide_and_publish` performs that publication
+before returning, so no caller can observe a decision that is not already durable.
 
-Idempotency is a property of the naming rather than a protocol: the same semantic decision has the
-same identity, hence the same path and the same bytes, so a retry converges and returns
-`reused=True`. Two different decisions can never contend for one name, and republishing different
-bytes under an existing identity is refused outright — a decision identity may never name two
-decisions.
+Two corrections were made here. The identity is now **derived, not accepted**: a manifest must hash
+to the name it is filed under, so a caller cannot publish arbitrary canonical bytes under an
+unrelated 64-hex name. And creation is now **no-clobber** — `os.link` rather than check-then-
+`os.replace`, which was overwrite-capable: two writers could both see the target absent and both
+rename onto it, losing one writer's bytes silently. `link()` is atomic across processes, so exactly
+one writer creates the record and the rest converge on it; a process-local lock would not do,
+because nothing says one process publishes. Same identity and same bytes converge (`reused=True`);
+same identity and different bytes fail closed. A 24-thread test confirms exactly one creation, one
+file, and no staged remnant.
 
 **No migration is proposed or applied. No database was written to.**
 

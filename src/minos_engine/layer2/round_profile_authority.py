@@ -1,34 +1,42 @@
-"""``l2h-round-profile-ownership-v1`` — proving a decision request names a real round and profile.
+"""``l2h-round-profile-ownership-v2`` — TRAIN-only proof that a request names a real round.
 
-Before this module the safe controller proved only that a ``Layer1ProfileReference`` was
-*internally* consistent: its ``identity_tuple_hash`` recomputed from its own four file hashes and
-region hash. That is not ownership. A caller could invent a round id, a profile id, a region and
-four plausible-looking digests, satisfy the tuple by construction, and receive a production
-decision for a profile that never existed.
+**Why v2 exists.** v1 read the whole 75-member profile snapshot, parsed it, and iterated every
+record before skipping non-TRAIN members. TEST is sealed until L2-I *including identity
+enumeration*, so reading all 75 and filtering was itself the breach; worse, v1's
+"skipped_partition_counts" were derived by traversing the very records it claimed not to touch.
+A count of skipped members proves nothing about non-access.
 
-Ownership is established from committed, frozen, gate-backed documents:
+v2 never opens a document that carries a sealed identity. The TRAIN round list comes from
+``manifests/l2f2_train_schedule_v1.json``, the frozen TRAIN-ONLY projection the accepted L2-F2
+campaign already ran on: 50 entries of ``{chromosome, dataset_id, round_id}`` and no sealed row.
 
-* ``manifests/profile_snapshot_epoch1_members.json`` — the PROFILE-SNAPSHOT-FROZEN-1 membership,
-  which owns the ``round_id`` / ``dataset_id`` / ``profile_id`` / ``identity_tuple_hash`` /
-  ``profile_manifest_sha256`` binding for each member;
-* ``manifests/profile_snapshot_epoch1_artifact_inventory.json`` — the byte SHA-256 and size of
-  each member's four on-disk artifacts;
-* the member's own ``bam-profile-v1``, ``profile-manifest-v1`` and
-  ``input-integrity-attestation-v1`` documents, each read from disk and required to hash to the
-  inventory's recorded bytes before it is parsed as anything.
+**The schedule is not trusted for being present.** It is anchored to authority that is
+already accepted and recomputable from source:
 
-The admission logic itself is NOT reimplemented here. ``layer2.ingest.validation.validate_admission``
-is the accepted L2-D authority for whether a profile, its manifest, its attestation and a registry
-identity are mutually consistent, and it is called unchanged. What this module adds is the piece it
-cannot supply on its own: ``validate_admission`` takes ``registry_identity`` as a plain dict from
-its caller, so on its own it proves consistency with whatever identity the caller passed. Here the
-registry identity is *reconstructed* from the member's own verified attestation bytes and then
-cross-checked against the frozen membership row, so there is no caller-supplied identity anywhere
-in the chain.
+* ``compute_protocol_hash(build_baseline_protocol(root))`` re-derives the baseline protocol
+  identity from source, and that identity is what the verified BASELINE-QUALIFIED evidence binds;
+* the accepted Phase-A execution authority must cite that same protocol hash and the same split
+  manifest SHA, so it cannot be a stray local file agreeing only with itself;
+* the schedule's bytes must hash to the ``train_schedule_manifest_sha256`` that authority records;
+* and the schedule's own declared shape -- 50 TRAIN, 10 per chromosome, 10 batches of 5, that
+  chromosome list -- must equal the protocol's ``train_schedule`` block, so it cannot describe a
+  different design than the accepted science.
 
-Layer 2 still does not open the BAM. Nothing here reads truth, mutations, scores, VALIDATION or
-TEST: the profile document is consumed only for its identity sections and eligible feature values,
-exactly as L2-D already does.
+Per-member identity then comes from the member's own three documents, opened by name from the 50
+scheduled round ids. The corpus directory is never listed, so a sealed directory is never even
+observed to exist. Byte integrity does not need the (sealed-bearing) artifact inventory: the
+accepted L2-D admission authority already binds the manifest to the profile and windows bytes, the
+attestation re-hashes to its own ``attestation_hash``, its identity tuple recomputes, and its
+``registry_snapshot_hash`` must equal the accepted ``PROFILE_SNAPSHOT_1_REGISTRY_SNAPSHOT_HASH``
+constant in ``layer2/prerequisites.py``.
+
+``validate_admission`` is called unchanged rather than reimplemented. What it cannot supply on its
+own is the identity it validates against -- it takes ``registry_identity`` as a caller dict -- so
+that identity is reconstructed from the member's own verified attestation and cross-checked
+against the anchored schedule row.
+
+Layer 2 still does not open the BAM, and nothing here reads truth, mutations, scores, VALIDATION
+or TEST.
 """
 
 from __future__ import annotations
@@ -41,25 +49,34 @@ from typing import Any, Final
 from minos_engine.common.canonical_json import canonical_json_bytes
 from minos_engine.common.errors import MinosEngineError
 from minos_engine.common.hashing import sha256_hex
+from minos_engine.layer2.prerequisites import (
+    PROFILE_SNAPSHOT_1_REGISTRY_SNAPSHOT_HASH as ACCEPTED_REGISTRY_SNAPSHOT_HASH,
+)
+from minos_engine.models.contract import (
+    BASELINE_SELECTED_HASH as ACCEPTED_BASELINE_SELECTED_IDENTITY,
+)
 
 __all__ = [
     "ADMITTED_PARTITION",
-    "ARTIFACT_INVENTORY_PATH",
+    "PHASE_A_AUTHORITY_PATH",
     "PROFILE_CORPUS_ROOT",
+    "TRAIN_SCHEDULE_PATH",
     "OWNERSHIP_DOMAIN",
     "OWNERSHIP_SCHEMA",
-    "SNAPSHOT_MEMBERS_PATH",
     "OwnedRoundProfile",
     "RoundProfileAuthorityError",
     "VerifiedRoundProfileAuthority",
     "load_verified_round_profile_corpus",
 ]
 
-OWNERSHIP_SCHEMA: Final = "l2h-round-profile-ownership-v1"
-OWNERSHIP_DOMAIN: Final = "minos:l2h-round-profile-ownership:v1\n"
+OWNERSHIP_SCHEMA: Final = "l2h-round-profile-ownership-v2"
+OWNERSHIP_DOMAIN: Final = "minos:l2h-round-profile-ownership:v2\n"
 
-SNAPSHOT_MEMBERS_PATH: Final = "manifests/profile_snapshot_epoch1_members.json"
-ARTIFACT_INVENTORY_PATH: Final = "manifests/profile_snapshot_epoch1_artifact_inventory.json"
+#: The frozen TRAIN-ONLY projection. Contains no TEST or VALIDATION row.
+TRAIN_SCHEDULE_PATH: Final = "manifests/l2f2_train_schedule_v1.json"
+
+#: The accepted Phase-A execution authority, which records the schedule's byte SHA.
+PHASE_A_AUTHORITY_PATH: Final = "manifests/l2f2_phase_a_execution_authority_v1.json"
 
 #: The accepted local profile corpus. An operational handle only, in the same spirit as
 #: ``CONFIG_PAYLOAD_ROOT``: every byte read from it is verified against the frozen inventory, so a
@@ -164,25 +181,16 @@ class VerifiedRoundProfileAuthority:
     artifacts against the frozen inventory and runs the accepted admission authority over each.
     """
 
-    __slots__ = (
-        "_by_round",
-        "corpus_identity",
-        "partition",
-        "registry_snapshot_hash",
-        "skipped_partition_counts",
-        "snapshot_hash",
-    )
+    __slots__ = ("_anchors", "_by_round", "corpus_identity", "partition")
 
     def __init__(
         self,
         token: object,
         *,
         by_round: dict[str, OwnedRoundProfile],
-        snapshot_hash: str,
-        registry_snapshot_hash: str,
+        anchors: dict[str, str],
         corpus_identity: str,
         partition: str = ADMITTED_PARTITION,
-        skipped_partition_counts: dict[str, int] | None = None,
     ) -> None:
         if token is not _CORPUS_TOKEN:
             raise RoundProfileAuthorityError(
@@ -190,11 +198,18 @@ class VerifiedRoundProfileAuthority:
                 "dictionary has not been verified against anything"
             )
         self._by_round = dict(by_round)
-        self.snapshot_hash = snapshot_hash
-        self.registry_snapshot_hash = registry_snapshot_hash
+        self._anchors = dict(anchors)
         self.corpus_identity = corpus_identity
         self.partition = partition
-        self.skipped_partition_counts = dict(skipped_partition_counts or {})
+
+    @property
+    def anchors(self) -> dict[str, str]:
+        """The already-accepted authorities this corpus hangs from."""
+        return dict(self._anchors)
+
+    @property
+    def registry_snapshot_hash(self) -> str:
+        return self._anchors["registry_snapshot_hash"]
 
     def __len__(self) -> int:
         return len(self._by_round)
@@ -245,8 +260,7 @@ class VerifiedRoundProfileAuthority:
         return {
             "schema_version": OWNERSHIP_SCHEMA,
             "partition": self.partition,
-            "snapshot_hash": self.snapshot_hash,
-            "registry_snapshot_hash": self.registry_snapshot_hash,
+            "anchors": dict(sorted(self._anchors.items())),
             "member_count": len(self._by_round),
             "members": [self._by_round[r].content() for r in sorted(self._by_round)],
         }
@@ -269,157 +283,230 @@ def _read_exact(path: Path, *, expected_sha: str, expected_size: int) -> bytes:
     return raw
 
 
+def _anchored_train_schedule(base: Path) -> tuple[list[dict[str, str]], dict[str, str]]:
+    """Return the 50 anchored TRAIN rows and the anchors that made them trustworthy.
+
+    Nothing here opens a document that carries a sealed identity, and the schedule is believed
+    only after it agrees with authority that is recomputable from source.
+    """
+    from minos_engine.baseline.baseline_selected import (
+        baseline_selected_content,
+        compute_baseline_selected_hash,
+    )
+    from minos_engine.baseline.schedule import (
+        BATCH_COUNT,
+        CHROMOSOMES,
+        TRAIN_COUNT,
+        TRAIN_PER_CHROMOSOME,
+    )
+
+    schedule_path = base / TRAIN_SCHEDULE_PATH
+    authority_path = base / PHASE_A_AUTHORITY_PATH
+    _require(schedule_path.is_file(), f"the TRAIN schedule is missing: {schedule_path}")
+    _require(
+        authority_path.is_file(), f"the Phase-A execution authority is missing: {authority_path}"
+    )
+
+    # The anchor is PURE SOURCE and opens nothing. Recomputing the baseline protocol from
+    # `build_baseline_protocol` would have hashed the split manifest, which carries sealed rows --
+    # the seal guard caught exactly that during development, which is why this route exists.
+    selected = baseline_selected_content()
+    _require(
+        compute_baseline_selected_hash() == ACCEPTED_BASELINE_SELECTED_IDENTITY,
+        "the baseline-selected authority this source computes is not the accepted one",
+    )
+    protocol_hash = str(selected["baseline_protocol_hash"])
+
+    authority = json.loads(authority_path.read_bytes())
+    content = authority["content"]
+    _require(
+        content.get("baseline_protocol_hash") == protocol_hash,
+        "the Phase-A authority cites a protocol other than the accepted baseline protocol, so it "
+        "cannot anchor anything",
+    )
+    expected_schedule_sha = str(content["train_schedule_manifest_sha256"])
+    expected_split_sha = str(content["split_manifest_sha256"])
+
+    raw = schedule_path.read_bytes()
+    actual = hashlib.sha256(raw).hexdigest()
+    _require(
+        actual == expected_schedule_sha,
+        f"the TRAIN schedule hashes to {actual}, but the accepted Phase-A authority records "
+        f"{expected_schedule_sha}",
+    )
+    schedule = json.loads(raw)
+
+    # the schedule's shape is checked against SOURCE constants, never against a local document
+    for field, expected in (
+        ("train_count", TRAIN_COUNT),
+        ("train_per_chromosome", TRAIN_PER_CHROMOSOME),
+        ("batch_count", BATCH_COUNT),
+        ("split_manifest_sha256", expected_split_sha),
+    ):
+        _require(
+            schedule.get(field) == expected,
+            f"the TRAIN schedule's {field} is {schedule.get(field)!r}, expected {expected!r}",
+        )
+    _require(
+        list(schedule["chromosomes"]) == list(CHROMOSOMES),
+        "the TRAIN schedule spans different chromosomes than this source accepts",
+    )
+    batch_size = int(schedule["batch_size"])
+    _require(
+        batch_size * BATCH_COUNT == TRAIN_COUNT,
+        "the TRAIN schedule's batching does not cover exactly the accepted TRAIN count",
+    )
+
+    rows: list[dict[str, str]] = []
+    for batch in schedule["batches"]:
+        _require(len(batch) == batch_size, "a TRAIN batch is not the declared batch size")
+        for entry in batch:
+            rows.append(
+                {
+                    "round_id": str(entry["round_id"]),
+                    "dataset_id": str(entry["dataset_id"]),
+                    "chromosome": str(entry["chromosome"]),
+                }
+            )
+    _require(
+        len(rows) == TRAIN_COUNT,
+        f"the TRAIN schedule holds {len(rows)} rounds, expected {TRAIN_COUNT}",
+    )
+    _require(
+        len({r["round_id"] for r in rows}) == len(rows),
+        "the TRAIN schedule repeats a round",
+    )
+    per_chromosome: dict[str, int] = {}
+    for row in rows:
+        per_chromosome[row["chromosome"]] = per_chromosome.get(row["chromosome"], 0) + 1
+    _require(
+        set(per_chromosome) == set(CHROMOSOMES)
+        and all(n == TRAIN_PER_CHROMOSOME for n in per_chromosome.values()),
+        "the TRAIN schedule is not balanced as this source accepts",
+    )
+    anchors = {
+        "baseline_protocol_hash": protocol_hash,
+        "phase_a_authority_hash": str(authority["authority_hash"]),
+        "train_schedule_manifest_sha256": expected_schedule_sha,
+        "split_manifest_sha256": expected_split_sha,
+        "registry_snapshot_hash": ACCEPTED_REGISTRY_SNAPSHOT_HASH,
+    }
+    return sorted(rows, key=lambda r: r["round_id"]), anchors
+
+
 def load_verified_round_profile_corpus(
     *, root: Any = None, corpus_root: Any = None
 ) -> VerifiedRoundProfileAuthority:
-    """Verify the frozen snapshot, every member's artifacts, and every member's admission."""
+    """Prove ownership for exactly the 50 anchored TRAIN rounds. Opens no sealed authority."""
+    from minos_engine.common.hashing import canonical_hash
     from minos_engine.layer2.ingest.validation import validate_admission
     from minos_engine.layer2.safe_controller_policy import _resolve_root
 
     base = _resolve_root(root)
     corpus = Path(corpus_root) if corpus_root is not None else PROFILE_CORPUS_ROOT
 
-    members_path = base / SNAPSHOT_MEMBERS_PATH
-    inventory_path = base / ARTIFACT_INVENTORY_PATH
-    _require(members_path.is_file(), f"the frozen snapshot membership is missing: {members_path}")
-    _require(
-        inventory_path.is_file(), f"the frozen artifact inventory is missing: {inventory_path}"
-    )
-    membership = json.loads(members_path.read_bytes())
-    inventory = json.loads(inventory_path.read_bytes())
-
-    members = list(membership["members"])
-    _require(
-        len(members) == int(membership["member_count"]),
-        "the frozen snapshot's member_count disagrees with its own member list",
-    )
-    snapshot_hash = str(membership["snapshot_hash"])
-    registry_snapshot_hash = str(membership["registry_snapshot_hash"])
-
-    by_round_inventory = {str(e["round_id"]): e for e in inventory["entries"]}
-    _require(
-        len(by_round_inventory) == len(inventory["entries"]),
-        "the frozen artifact inventory repeats a round",
-    )
+    rows, anchors = _anchored_train_schedule(base)
 
     owned: dict[str, OwnedRoundProfile] = {}
-    skipped: dict[str, int] = {}
-    for member in members:
-        partition = str(member["partition"])
-        if partition != ADMITTED_PARTITION:
-            # skipped BEFORE any artifact is opened: a sealed partition is not read, not admitted,
-            # and not retained. Only the count survives, so the seal is auditable without
-            # enumerating what it covers.
-            skipped[partition] = skipped.get(partition, 0) + 1
-            continue
-        round_id = str(member["round_id"])
-        _require(round_id not in owned, f"the frozen snapshot repeats round {round_id}")
-        _require(
-            str(member["registry_snapshot_hash"]) == registry_snapshot_hash,
-            f"{round_id} cites a different registry snapshot than its own membership",
-        )
-        entry = by_round_inventory.get(round_id)
-        _require(entry is not None, f"{round_id} has no entry in the frozen artifact inventory")
-        assert entry is not None
-        _require(
-            str(entry["dataset_id"]) == str(member["dataset_id"]),
-            f"{round_id}: the inventory and the membership disagree on the dataset",
-        )
-        artifacts = entry["artifacts"]
+    for row in rows:
+        round_id = row["round_id"]
+        # opened BY NAME. The corpus directory is never listed, so a sealed member is never even
+        # observed to exist, let alone read.
         directory = corpus / round_id
+        raw: dict[str, bytes] = {}
+        for name in (PROFILE_DOCUMENT, MANIFEST_DOCUMENT, ATTESTATION_DOCUMENT, WINDOWS_ARTIFACT):
+            path = directory / name
+            _require(path.is_file(), f"a corpus artifact is missing: {path}")
+            _require(not path.is_symlink(), f"{path} is a symlink")
+            raw[name] = path.read_bytes()
 
-        raw = {
-            name: _read_exact(
-                directory / name,
-                expected_sha=str(artifacts[name]["sha256"]),
-                expected_size=int(artifacts[name]["size_bytes"]),
-            )
-            for name in (
-                PROFILE_DOCUMENT,
-                MANIFEST_DOCUMENT,
-                ATTESTATION_DOCUMENT,
-                WINDOWS_ARTIFACT,
-            )
-        }
         profile_document = json.loads(raw[PROFILE_DOCUMENT])
         manifest_document = json.loads(raw[MANIFEST_DOCUMENT])
         attestation = json.loads(raw[ATTESTATION_DOCUMENT])
+        profile_sha = hashlib.sha256(raw[PROFILE_DOCUMENT]).hexdigest()
+        windows_sha = hashlib.sha256(raw[WINDOWS_ARTIFACT]).hexdigest()
+        manifest_sha = hashlib.sha256(raw[MANIFEST_DOCUMENT]).hexdigest()
 
-        # the membership owns these bindings; the bytes must agree with what it recorded
-        _require(
-            hashlib.sha256(raw[MANIFEST_DOCUMENT]).hexdigest()
-            == str(member["profile_manifest_sha256"]),
-            f"{round_id}: the manifest bytes are not the ones the snapshot recorded",
+        # the attestation is self-anchoring, and anchored to the accepted registry snapshot
+        recomputed_attestation = canonical_hash(
+            {k: v for k, v in sorted(attestation.items()) if k != "attestation_hash"}
         )
         _require(
-            hashlib.sha256(raw[PROFILE_DOCUMENT]).hexdigest() == str(member["profile_sha256"]),
-            f"{round_id}: the profile bytes are not the ones the snapshot recorded",
+            recomputed_attestation == str(attestation["attestation_hash"]),
+            f"{round_id}: the attestation does not hash to its own recorded identity",
         )
         _require(
-            str(profile_document["profile_id"]) == str(member["profile_id"]),
-            f"{round_id}: the profile document names another profile than the snapshot",
+            str(attestation["registry_snapshot_hash"]) == ACCEPTED_REGISTRY_SNAPSHOT_HASH,
+            f"{round_id}: the attestation cites a foreign registry snapshot",
+        )
+        _require(
+            canonical_hash(
+                {
+                    "bam_sha256": attestation["bam_sha256"],
+                    "bai_sha256": attestation["bai_sha256"],
+                    "reference_sha256": attestation["reference_sha256"],
+                    "fai_sha256": attestation["fai_sha256"],
+                    "region_hash": attestation["region_hash"],
+                }
+            )
+            == str(attestation["identity_tuple_hash"]),
+            f"{round_id}: the attestation's identity tuple does not recompute",
+        )
+        # ... and bound to the ANCHORED schedule row, not to itself
+        _require(
+            str(attestation["round_id"]) == round_id
+            and str(attestation["dataset_id"]) == row["dataset_id"]
+            and str(attestation["chromosome"]) == row["chromosome"],
+            f"{round_id}: the attestation does not describe the round the schedule anchors",
         )
 
         # RECONSTRUCTED from the verified attestation, never supplied by a caller
         registry_identity = {key: attestation[key] for key in REGISTRY_IDENTITY_KEYS}
-        _require(
-            registry_identity["round_id"] == round_id
-            and registry_identity["dataset_id"] == str(member["dataset_id"])
-            and registry_identity["identity_tuple_hash"] == str(member["identity_tuple_hash"])
-            and registry_identity["registry_snapshot_hash"] == registry_snapshot_hash
-            and registry_identity["chromosome"] == str(member["chromosome"]),
-            f"{round_id}: the attestation's identity disagrees with the frozen membership",
-        )
 
-        # THE accepted L2-D admission authority, unchanged and not reimplemented
+        # THE accepted L2-D admission authority, unchanged and not reimplemented. It binds the
+        # manifest to the profile and windows BYTES, which is why no artifact inventory is needed.
         decision = validate_admission(
             profile_document=profile_document,
             manifest_document=manifest_document,
             attestation=attestation,
             registry_identity=registry_identity,
-            profile_artifact_sha256=str(member["profile_sha256"]),
-            windows_artifact_sha256=str(member["windows_sha256"]),
+            profile_artifact_sha256=profile_sha,
+            windows_artifact_sha256=windows_sha,
         )
         _require(
             decision.admissible,
             f"{round_id} is not admissible: {'; '.join(decision.reasons) or 'no reason given'}",
         )
-        _require(
-            decision.feature_values_hash == str(member["feature_values_hash"]),
-            f"{round_id}: admission recomputes a different feature-values identity",
-        )
 
         owned[round_id] = OwnedRoundProfile(
             round_id=round_id,
-            dataset_id=str(member["dataset_id"]),
-            chromosome=str(member["chromosome"]),
-            partition=str(member["partition"]),
-            profile_id=str(member["profile_id"]),
-            profile_sha256=str(member["profile_sha256"]),
-            profile_manifest_sha256=str(member["profile_manifest_sha256"]),
+            dataset_id=row["dataset_id"],
+            chromosome=row["chromosome"],
+            partition=ADMITTED_PARTITION,
+            profile_id=str(profile_document["profile_id"]),
+            profile_sha256=profile_sha,
+            profile_manifest_sha256=manifest_sha,
             fingerprint_hash=str(manifest_document["fingerprint_hash"]),
             attestation_hash=str(attestation["attestation_hash"]),
-            registry_snapshot_hash=registry_snapshot_hash,
-            identity_tuple_hash=str(member["identity_tuple_hash"]),
+            registry_snapshot_hash=ACCEPTED_REGISTRY_SNAPSHOT_HASH,
+            identity_tuple_hash=str(attestation["identity_tuple_hash"]),
             region_hash=str(attestation["region_hash"]),
             bam_sha256=str(attestation["bam_sha256"]),
             bai_sha256=str(attestation["bai_sha256"]),
             reference_sha256=str(attestation["reference_sha256"]),
             fai_sha256=str(attestation["fai_sha256"]),
-            integrity_degraded=bool(member["integrity_degraded"]),
+            integrity_degraded=bool(decision.integrity_degraded),
         )
 
-    _require(bool(owned), f"the frozen snapshot has no {ADMITTED_PARTITION} member")
+    _require(len(owned) == len(rows), "a scheduled TRAIN round produced no owned profile")
     identity = sha256_hex(
         OWNERSHIP_DOMAIN.encode("utf-8")
         + canonical_json_bytes(
             {
                 "schema_version": OWNERSHIP_SCHEMA,
                 "partition": ADMITTED_PARTITION,
-                "snapshot_hash": snapshot_hash,
-                "registry_snapshot_hash": registry_snapshot_hash,
+                "anchors": dict(sorted(anchors.items())),
                 "member_count": len(owned),
-                "skipped_partition_counts": dict(sorted(skipped.items())),
                 "members": [owned[r].content() for r in sorted(owned)],
             }
         )
@@ -427,9 +514,6 @@ def load_verified_round_profile_corpus(
     return VerifiedRoundProfileAuthority(
         _CORPUS_TOKEN,
         by_round=owned,
-        snapshot_hash=snapshot_hash,
-        registry_snapshot_hash=registry_snapshot_hash,
+        anchors=anchors,
         corpus_identity=identity,
-        partition=ADMITTED_PARTITION,
-        skipped_partition_counts=skipped,
     )

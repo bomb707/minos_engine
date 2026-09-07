@@ -297,7 +297,7 @@ def safe_decision_manifest_content(
         "attestation_hash": proven.attestation_hash,
         "registry_snapshot_hash": proven.registry_snapshot_hash,
         "profile_corpus_identity": ownership.corpus_identity,
-        "profile_snapshot_hash": ownership.snapshot_hash,
+        "profile_ownership_anchors": dict(sorted(ownership.anchors.items())),
         "region_hash": proven.region_hash,
         "parameter_space_hash": authority.parameter_space_hash,
         "caller": request.parameter_space.caller,

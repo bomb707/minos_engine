@@ -400,7 +400,7 @@ MANIFEST_KEYS = frozenset(
         "profile_identity_tuple_hash",
         "profile_manifest_sha256",
         "profile_sha256",
-        "profile_snapshot_hash",
+        "profile_ownership_anchors",
         "region_hash",
         "registry_snapshot_hash",
         "request_controller_version",

@@ -50,13 +50,13 @@ __all__ = [
     "verify_qualification_report",
 ]
 
-SAFE_CONTROLLER_QUALIFICATION_SCHEMA: Final = "l2h-safe-controller-qualification-v1"
-SAFE_CONTROLLER_QUALIFICATION_DOMAIN: Final = "minos:l2h-safe-controller-qualification:v1\n"
+SAFE_CONTROLLER_QUALIFICATION_SCHEMA: Final = "l2h-safe-controller-qualification-v2"
+SAFE_CONTROLLER_QUALIFICATION_DOMAIN: Final = "minos:l2h-safe-controller-qualification:v2\n"
 SAFE_CONTROLLER_QUALIFICATION_PATH: Final = (
-    "reports/layer2/l2h-safe-controller-qualification-v1.json"
+    "reports/layer2/l2h-safe-controller-qualification-v2.json"
 )
 
-QUALIFICATION_TOOL_VERSION: Final = "l2h-safe-controller-qualifier-v1"
+QUALIFICATION_TOOL_VERSION: Final = "l2h-safe-controller-qualifier-v2"
 
 #: The capability this qualification covers. Named so nobody has to infer it.
 CAPABILITY_SCOPE: Final = "SAFE_BASELINE_ONLY"
@@ -94,8 +94,24 @@ ADDITIONAL_CHECKS: Final[tuple[str, ...]] = (
     "model_bundle_id_cannot_influence_the_config",
     "publication_is_content_addressed_and_idempotent",
     "select_config_public_boundary_blocked",
-    "sealed_partitions_never_enumerated",
+    "sealed_authorities_never_opened",
+    "train_ownership_anchored_to_accepted_authority",
+    "publication_identity_is_derived_not_declared",
 )
+
+#: Why the v1 report may not be used for qualification. Recorded in the evidence itself so a
+#: future reader does not have to reconstruct it.
+SUPERSEDES: Final[dict[str, str]] = {
+    "schema": "l2h-safe-controller-qualification-v1",
+    "identity": "7d305bcd7c35c82389259ec1d88058ff9202ce454a0364d15e4b864345aaf821",
+    "reason": (
+        "its sealed-partition isolation proof was insufficient: the ownership loader read, "
+        "parsed and traversed the whole 75-member profile snapshot before skipping non-TRAIN "
+        "members, so TEST identities were enumerated, and the report's skipped_partition_counts "
+        "were derived by traversing the very records they claimed were untouched"
+    ),
+    "status": "HISTORICAL_EVIDENCE_NOT_VALID_FOR_QUALIFICATION",
+}
 
 ALL_CHECKS: Final[tuple[str, ...]] = MANDATORY_CHECKS + ADDITIONAL_CHECKS
 
@@ -196,6 +212,7 @@ def run_safe_controller_qualification(
     )
     from minos_engine.layer2.entry_gate import EntryGateRequest, verify_l2_entry_gate
     from minos_engine.layer2.round_profile_authority import (
+        OWNERSHIP_SCHEMA,
         load_verified_round_profile_corpus,
     )
     from minos_engine.layer2.safe_controller import (
@@ -208,6 +225,10 @@ def run_safe_controller_qualification(
         ALLOWED_MODES,
         _resolve_root,
         compute_safe_controller_policy_hash,
+    )
+    from minos_engine.layer2.sealed_access_guard import (
+        SEALED_IDENTITY_AUTHORITIES,
+        sealed_access_guard,
     )
     from minos_engine.layer2.service import Layer2Service
     from minos_engine.models.campaign_freeze import (
@@ -227,8 +248,13 @@ def run_safe_controller_qualification(
     root = _resolve_root(repo_root)
     published_root = Path(output_root)
 
-    authority = load_verified_safe_baseline_authority(repo_root=root)
-    ownership = load_verified_round_profile_corpus(root=root, corpus_root=corpus_root)
+    # Isolation is OBSERVED, not authored. Every authority document that carries a sealed member
+    # identity is un-openable inside this block, and the attempt counter is what the checks are
+    # derived from -- a constant `test_accessed: false` proves nothing.
+    with sealed_access_guard() as sealed:
+        authority = load_verified_safe_baseline_authority(repo_root=root)
+        ownership = load_verified_round_profile_corpus(root=root, corpus_root=corpus_root)
+        materialized_rounds = set(ownership.rounds())
     policy = authority.policy
 
     gate = verify_l2_entry_gate(EntryGateRequest(repo_root=str(root)))
@@ -472,6 +498,15 @@ def run_safe_controller_qualification(
         {"default_rng", "shuffle", "predict", "fit", "sample", "choice", "randint"} & called
     )
 
+    # OBSERVED: publishing a manifest under a name it does not hash to must be refused
+    publication_identity_derived = _drill(
+        lambda: publish_safe_decision(
+            manifest={"schema_version": "not-a-decision"},
+            identity="b" * 64,
+            output_root=published_root,
+        )
+    )
+
     service_blocked = False
     try:
         Layer2Service().select_config(
@@ -498,13 +533,15 @@ def run_safe_controller_qualification(
         "models_qualified_gate_present": (root / "gates/models-qualified.json").exists(),
         "allowed_modes": list(policy["allowed_modes"]),
         "accepted_allowed_modes": list(ALLOWED_MODES),
-        "profile_ownership_schema": "l2h-round-profile-ownership-v1",
+        "profile_ownership_schema": OWNERSHIP_SCHEMA,
+        "profile_ownership_anchors": dict(sorted(ownership.anchors.items())),
         "profile_corpus_identity": ownership.corpus_identity,
-        "profile_snapshot_hash": ownership.snapshot_hash,
         "registry_snapshot_hash": ownership.registry_snapshot_hash,
         "profile_count": len(ownership),
         "admitted_partition": ownership.partition,
-        "skipped_partition_counts": dict(sorted(ownership.skipped_partition_counts.items())),
+        "materialized_round_count": len(materialized_rounds),
+        "sealed_identity_authorities": sorted(SEALED_IDENTITY_AUTHORITIES),
+        **sealed.content(),
         "decision_count": decision_count,
         "requested_mode_counts": dict(sorted(requested_counts.items())),
         "actual_mode_counts": dict(sorted(actual_counts.items())),
@@ -523,6 +560,7 @@ def run_safe_controller_qualification(
         "forbidden_calls": forbidden_calls,
         "publication_disposition": DECISION_PUBLICATION_DISPOSITION,
         "publication_idempotent_retries": publication_reused,
+        "publication_identity_derived": publication_identity_derived,
         "select_config_public_boundary_blocked": service_blocked,
         "source_commit": authority.source_commit,
         "source_tree": authority.source_tree,
@@ -623,11 +661,24 @@ def derive_checks(observation: dict[str, Any]) -> dict[str, bool]:
         "select_config_public_boundary_blocked": bool(
             observation["select_config_public_boundary_blocked"]
         ),
-        # TEST is sealed until L2-I, identity enumeration included, and VALIDATION is not
-        # authorised for v2. Both must have been skipped on their labels, not merely unused.
-        "sealed_partitions_never_enumerated": observation["admitted_partition"] == "train"
-        and int(observation["skipped_partition_counts"].get("test", 0)) > 0
-        and int(observation["skipped_partition_counts"].get("validation", 0)) > 0,
+        # OBSERVED, not authored: the guard refuses every sealed-identity authority, so a zero
+        # here means none was opened rather than that none was used.
+        "sealed_authorities_never_opened": observation["admitted_partition"] == "train"
+        and int(observation["forbidden_sealed_path_open_attempts"]) == 0
+        and observation["attempted_sealed_authorities"] == []
+        and bool(observation["sealed_identity_authorities"])
+        and int(observation["materialized_round_count"]) == int(observation["profile_count"]),
+        "train_ownership_anchored_to_accepted_authority": (
+            observation["profile_ownership_schema"] == "l2h-round-profile-ownership-v2"
+            and observation["profile_ownership_anchors"].get("registry_snapshot_hash")
+            == "3e60aa65aeed8969e29ebeef83024f6fa2285a13c155d7d6dc0c601d1e94f675"
+            and observation["profile_ownership_anchors"].get("baseline_protocol_hash")
+            == "c548e190571f5e964560cf30021a520ea8aad6674569fa3202af880d7dff77d1"
+            and bool(observation["profile_ownership_anchors"].get("train_schedule_manifest_sha256"))
+        ),
+        "publication_identity_is_derived_not_declared": bool(
+            observation["publication_identity_derived"]
+        ),
     }
 
 
@@ -652,6 +703,7 @@ def assemble_qualification_report(trusted: Any) -> dict[str, Any]:
     content = {
         "schema_version": SAFE_CONTROLLER_QUALIFICATION_SCHEMA,
         "capability_scope": CAPABILITY_SCOPE,
+        "supersedes": dict(sorted(SUPERSEDES.items())),
         "mandatory_checks": list(MANDATORY_CHECKS),
         "additional_checks": list(ADDITIONAL_CHECKS),
         "checks": dict(sorted(checks.items())),
@@ -686,6 +738,23 @@ def verify_qualification_report(content: dict[str, Any]) -> dict[str, Any]:
     _require(
         list(content.get("mandatory_checks") or ()) == list(MANDATORY_CHECKS),
         "the report does not carry exactly the mandatory check set, in order",
+    )
+    _require(
+        dict(content.get("supersedes") or {}) == dict(sorted(SUPERSEDES.items())),
+        "the report does not record why the v1 qualification is superseded",
+    )
+    # the isolation flags may not contradict the observations they claim to summarise
+    observed = dict(content["observation"])
+    _require(
+        int(observed["forbidden_sealed_path_open_attempts"]) == 0
+        and observed["attempted_sealed_authorities"] == [],
+        "the report records a sealed-authority open attempt",
+    )
+    _require(
+        content.get("test_accessed") is False
+        and content.get("validation_read") is False
+        and observed["admitted_partition"] == "train",
+        "the isolation flags contradict the observed partition and access counters",
     )
     checks = dict(content["checks"])
     _require(
