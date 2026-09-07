@@ -32,6 +32,12 @@ ISSUING_ENGINE_COMMIT = "9d8864a2a5b906bed0e5989beff827b33bb568fa"
 SAFE_CONFIG = "157d88d1587c13be395c62d60e27d1becdada78fad45e65d883bc1190e51acea"
 
 
+pytestmark = pytest.mark.skipif(
+    not (repository_root() / SAFE_CONTROLLER_FROZEN_GATE_PATH).is_file(),
+    reason="no gate artifact is committed yet (it is written by the evidence commit)",
+)
+
+
 @pytest.fixture(scope="module")
 def gate() -> dict[str, Any]:
     return dict(json.loads((repository_root() / SAFE_CONTROLLER_FROZEN_GATE_PATH).read_bytes()))

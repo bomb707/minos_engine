@@ -506,21 +506,24 @@ def test_copy_does_not_leak_the_authenticated_report(
 # verifying the issued gate
 # ---------------------------------------------------------------------------------------- #
 def _issued_repo(tmp_path: Path) -> Path:
-    """A copy carrying the real issued gate, so tampering is isolated."""
-    return _repo_copy(tmp_path)
+    """A copy carrying a freshly issued gate, so tampering is isolated.
 
+    The gate is issued here rather than copied, because the committed artifact belongs to the
+    evidence commit and this file must work before that commit exists.
+    """
+    from minos_engine.gates.verifier import write_gate
+    from minos_engine.layer2.safe_controller_gate import SAFE_CONTROLLER_FROZEN_GATE_PATH
 
-def test_the_committed_gate_verifies() -> None:
-    from minos_engine.layer2.safe_controller_gate import verify_safe_controller_frozen_gate
-
-    report = verify_safe_controller_frozen_gate(repository_root())
-    assert report["ok"] is True
-    assert report["gate_name"] == SAFE_CONTROLLER_FROZEN_GATE
-    assert report["capability_scope"] == CAPABILITY_SCOPE
-    assert report["check_count"] == 29
-    assert report["qualified_source_git_sha"] == ACCEPTED_V3_SOURCE_COMMIT
-    assert report["qualified_source_tree_sha"] == ACCEPTED_V3_SOURCE_TREE
-    assert report["engine_git_sha"] != ACCEPTED_V3_SOURCE_COMMIT
+    repo = _repo_copy(tmp_path)
+    commit, _ = _head()
+    gate = assemble_safe_controller_frozen_gate(
+        authenticate_v3_qualification(repo),
+        reverify_controller_authorities(repo),
+        engine_git_sha=commit,
+        root=repo,
+    )
+    write_gate(gate, repo / SAFE_CONTROLLER_FROZEN_GATE_PATH)
+    return repo
 
 
 def _write_gate_document(repo: Path, document: dict[str, Any]) -> None:
@@ -671,8 +674,153 @@ def test_a_substituted_v1_or_v2_report_refuses_the_gate(tmp_path: Path) -> None:
 def test_the_gate_is_the_only_issued_controller_gate() -> None:
     from minos_engine.layer2.safe_controller_gate import SAFE_CONTROLLER_FROZEN_GATE_PATH
 
+    if not (repository_root() / SAFE_CONTROLLER_FROZEN_GATE_PATH).is_file():
+        pytest.skip("no gate artifact is committed yet (written by the evidence commit)")
     gates = sorted(p.name for p in (repository_root() / "gates").glob("*.json"))
     assert "safe-controller-frozen.json" in gates
     assert "controller-frozen.json" not in gates
     assert "models-qualified.json" not in gates
     assert (repository_root() / SAFE_CONTROLLER_FROZEN_GATE_PATH).is_file()
+
+
+# ---------------------------------------------------------------------------------------- #
+# semantic bindings: identities, not prose
+# ---------------------------------------------------------------------------------------- #
+def test_the_semantic_states_are_bound_as_identities() -> None:
+    """A field holding a sentence can be reworded; a domain-separated hash cannot."""
+    from minos_engine.layer2.safe_controller_gate import (
+        capability_scope_hash,
+        contextual_model_status_hash,
+        publication_disposition_hash,
+    )
+
+    for value in (
+        capability_scope_hash(),
+        contextual_model_status_hash(),
+        publication_disposition_hash(),
+    ):
+        assert len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+    assert (
+        len(
+            {
+                capability_scope_hash(),
+                contextual_model_status_hash(),
+                publication_disposition_hash(),
+            }
+        )
+        == 3
+    )
+
+
+def test_the_semantic_bindings_are_domain_separated() -> None:
+    """Same content under a different domain must not collide."""
+    from minos_engine.common.hashing import sha256_hex
+    from minos_engine.layer2.safe_controller_gate import (
+        CAPABILITY_SCOPE,
+        CAPABILITY_SCOPE_DOMAIN,
+        NOT_AUTHORIZED,
+        capability_scope_hash,
+    )
+
+    body = canonical_json_bytes(
+        {
+            "capability_scope": CAPABILITY_SCOPE,
+            "authorized_modes": ["SAFE_BASELINE"],
+            "not_authorized": list(NOT_AUTHORIZED),
+        }
+    )
+    assert capability_scope_hash() == sha256_hex(CAPABILITY_SCOPE_DOMAIN.encode("utf-8") + body)
+    assert capability_scope_hash() != sha256_hex(body)
+
+
+def test_the_gate_binds_the_three_semantic_states(
+    authenticated: AuthenticatedSafeControllerQualification, authorities: dict[str, Any]
+) -> None:
+    from minos_engine.layer2.safe_controller_gate import (
+        capability_scope_hash,
+        contextual_model_status_hash,
+        publication_disposition_hash,
+    )
+
+    gate = assemble_safe_controller_frozen_gate(
+        authenticated, authorities, engine_git_sha=ISSUING_COMMIT
+    )
+    bound = gate.input_hashes
+    assert bound["capability_scope_hash"] == capability_scope_hash()
+    assert bound["contextual_model_status_hash"] == contextual_model_status_hash()
+    assert bound["publication_disposition_hash"] == publication_disposition_hash()
+    # and the earlier authority bindings are not weakened
+    assert len(bound) == 19
+
+
+# ---------------------------------------------------------------------------------------- #
+# issuer provenance is proved, not length-checked
+# ---------------------------------------------------------------------------------------- #
+def _head() -> tuple[str, str]:
+    import subprocess
+
+    root = str(repository_root())
+    commit = subprocess.run(
+        ["git", "-C", root, "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    tree = subprocess.run(
+        ["git", "-C", root, "rev-parse", "HEAD^{tree}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    return commit, tree
+
+
+def test_a_real_commit_with_its_own_tree_is_proved() -> None:
+    from minos_engine.layer2.safe_controller_gate import verify_issuer_provenance
+
+    commit, tree = _head()
+    proved = verify_issuer_provenance(repository_root(), commit=commit, tree=tree)
+    assert proved["issuer_source_commit"] == commit
+    assert proved["issuer_source_tree"] == tree
+
+
+def test_an_arbitrary_forty_hex_value_is_refused() -> None:
+    from minos_engine.layer2.safe_controller_gate import verify_issuer_provenance
+
+    _, tree = _head()
+    with pytest.raises(SafeControllerGateError, match="not a commit"):
+        verify_issuer_provenance(repository_root(), commit="a" * 40, tree=tree)
+
+
+def test_a_short_or_malformed_commit_is_refused() -> None:
+    from minos_engine.layer2.safe_controller_gate import verify_issuer_provenance
+
+    _, tree = _head()
+    for bad in ("abc1234", "z" * 40, ""):
+        with pytest.raises(SafeControllerGateError, match="not a git object name"):
+            verify_issuer_provenance(repository_root(), commit=bad, tree=tree)
+
+
+def test_a_real_commit_with_a_foreign_tree_is_refused() -> None:
+    from minos_engine.layer2.safe_controller_gate import verify_issuer_provenance
+
+    commit, _ = _head()
+    with pytest.raises(SafeControllerGateError, match="has tree"):
+        verify_issuer_provenance(repository_root(), commit=commit, tree="b" * 40)
+
+
+def test_a_real_but_wrong_repository_commit_is_refused() -> None:
+    """A commit that exists but predates the issuer source has a different tree."""
+    from minos_engine.layer2.safe_controller_gate import verify_issuer_provenance
+
+    commit, tree = _head()
+    with pytest.raises(SafeControllerGateError, match="has tree"):
+        verify_issuer_provenance(repository_root(), commit=ACCEPTED_V3_SOURCE_COMMIT, tree=tree)
+
+
+def test_an_issuer_commit_without_the_gate_source_is_refused() -> None:
+    """A commit from before this module existed cannot have issued the gate."""
+    from minos_engine.layer2.safe_controller_gate import verify_issuer_provenance
+    from minos_engine.qualification.git_tree import commit_tree_sha
+
+    early = ACCEPTED_V3_SOURCE_COMMIT  # S3: the gate issuer did not exist yet
+    tree = str(commit_tree_sha(repository_root(), early))
+    with pytest.raises(SafeControllerGateError, match="unreachable|does not stamp"):
+        verify_issuer_provenance(repository_root(), commit=early, tree=tree)

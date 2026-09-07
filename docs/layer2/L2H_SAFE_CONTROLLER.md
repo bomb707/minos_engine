@@ -412,3 +412,36 @@ production persistence problem closed: the disposition remains
 `FILE_PUBLISHED_DB_PERSISTENCE_DEFERRED_TO_ACTIVATION`, and PostgreSQL decision persistence stays a
 prerequisite. No migration; operational DB `0005`, TRAIN `0020`, VALIDATION `0026`,
 `runtime.decisions` unchanged.
+
+
+## 15. Final acceptance corrective — issuer provenance and semantic bindings
+
+**The defect.** The issued gate recorded `engine_git_sha`, but the verifier only length-checked it,
+and `GateArtifact` requires merely a non-empty string. A forged gate could name any forty-character
+value, recompute `gate_hash`, and pass every other check with the science untouched — changing who
+is accountable for the artifact without changing anything about what it attests. A unit test pinned
+the value, but a unit test is not a runtime authority.
+
+`verify_issuer_provenance` now proves the issuing commit is a real commit **in this repository**,
+that its tree is exactly the accepted one, and that `safe_controller_gate.py` at that commit is the
+version stamping this `GATE_TOOL_VERSION`. An arbitrary hex string, a malformed value, a real
+commit with a foreign tree, and a real commit predating the issuer all fail.
+
+**Three semantic states are now identities, not prose.** Capability scope, contextual-model status
+and publication disposition are bound as domain-separated hashes over canonical documents
+(`minos:l2h-safe-controller-capability-scope:v1`, `…-contextual-model-status:v1`,
+`…-decision-publication-disposition:v1`) and re-derived at verification. A field holding a sentence
+can be reworded without a verifier noticing; a hash cannot. `input_hashes` grows from 16 to 19
+bindings; none of the original 16 is weakened.
+
+**The first gate is superseded.** Adding those bindings changes gate content, so
+`3c6d9b0b6f84ed017d577da77f39d87b19bc633e56a66f8c599f1a5f8cfc07ae` is historical issuance evidence:
+it was superseded **before service activation** and was never accepted for production promotion.
+Its identity is not reused and not pretended to be unchanged; git history preserves it, and the
+unverifiable artifact is removed from the tree rather than left standing as a PASS document no
+verifier accepts.
+
+**Non-circular acceptance.** The accepted gate hash, gate file SHA and issuer commit/tree are
+pinned by a **later** source module — the same pattern by which `BASELINE_QUALIFIED_GATE_HASH` pins
+an earlier gate. Hardcoding the issuer commit into the very commit it is supposed to identify would
+be self-referential, so the acceptance authority is a separate, strictly later commit.

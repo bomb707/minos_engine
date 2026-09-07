@@ -33,10 +33,12 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+from pathlib import Path
 from typing import Any, Final
 
 from minos_engine.common.canonical_json import canonical_json_bytes
 from minos_engine.common.errors import MinosEngineError
+from minos_engine.common.hashing import sha256_hex
 
 __all__ = [
     "ACCEPTED_V3_FILE_SHA256",
@@ -44,12 +46,18 @@ __all__ = [
     "ACCEPTED_V3_SOURCE_COMMIT",
     "ACCEPTED_V3_SOURCE_TREE",
     "CAPABILITY_SCOPE",
+    "CONTEXTUAL_MODEL_STATUS",
+    "PUBLICATION_DISPOSITION",
     "SAFE_CONTROLLER_FROZEN_GATE",
     "SAFE_CONTROLLER_FROZEN_GATE_PATH",
     "AuthenticatedSafeControllerQualification",
     "SafeControllerGateError",
     "assemble_safe_controller_frozen_gate",
     "authenticate_v3_qualification",
+    "capability_scope_hash",
+    "contextual_model_status_hash",
+    "publication_disposition_hash",
+    "verify_issuer_provenance",
     "derive_gate_checks",
     "reverify_controller_authorities",
     "verify_safe_controller_frozen_gate",
@@ -79,6 +87,108 @@ NOT_AUTHORIZED: Final[tuple[str, ...]] = (
     "FULL_CONTEXTUAL",
     "REFINEMENT",
 )
+
+CONTEXTUAL_MODEL_STATUS: Final = "HOLD_NO_TRAIN_PROMOTABLE_CONTEXTUAL_MODEL"
+PUBLICATION_DISPOSITION: Final = "FILE_PUBLISHED_DB_PERSISTENCE_DEFERRED_TO_ACTIVATION"
+
+#: Three semantic states the gate must bind as identities rather than as prose. A field holding a
+#: sentence can be reworded without changing anything a verifier notices; a domain-separated hash
+#: over a canonical document cannot.
+CAPABILITY_SCOPE_DOMAIN: Final = "minos:l2h-safe-controller-capability-scope:v1\n"
+CONTEXTUAL_MODEL_STATUS_DOMAIN: Final = "minos:l2h-contextual-model-status:v1\n"
+PUBLICATION_DISPOSITION_DOMAIN: Final = "minos:l2h-decision-publication-disposition:v1\n"
+
+
+def capability_scope_hash() -> str:
+    """Identity of the capability this gate confers -- and of the ones it refuses."""
+    return sha256_hex(
+        CAPABILITY_SCOPE_DOMAIN.encode("utf-8")
+        + canonical_json_bytes(
+            {
+                "capability_scope": CAPABILITY_SCOPE,
+                "authorized_modes": ["SAFE_BASELINE"],
+                "not_authorized": list(NOT_AUTHORIZED),
+            }
+        )
+    )
+
+
+def contextual_model_status_hash() -> str:
+    """Identity of the contextual-model state this gate is issued under."""
+    return sha256_hex(
+        CONTEXTUAL_MODEL_STATUS_DOMAIN.encode("utf-8")
+        + canonical_json_bytes(
+            {
+                "models_qualified_status": CONTEXTUAL_MODEL_STATUS,
+                "models_qualified_gate_present": False,
+                "contextual_research_closed": True,
+            }
+        )
+    )
+
+
+def publication_disposition_hash() -> str:
+    """Identity of the persistence disposition. Issuing a gate does not waive persist-before-return."""
+    return sha256_hex(
+        PUBLICATION_DISPOSITION_DOMAIN.encode("utf-8")
+        + canonical_json_bytes(
+            {
+                "disposition": PUBLICATION_DISPOSITION,
+                "db_persistence_required_for_activation": True,
+                "service_activated": False,
+            }
+        )
+    )
+
+
+def verify_issuer_provenance(base: Any, *, commit: str, tree: str) -> dict[str, str]:
+    """Prove the issuing commit is a real commit here, with that exact tree.
+
+    ``engine_git_sha`` was previously length-checked only, so a forged gate could name any
+    forty-character string, recompute its hash, and pass while leaving every scientific binding
+    untouched. That is the one attack a gate verifier most needs to refuse, because it changes who
+    is accountable for the artifact without changing anything about the science.
+    """
+    from minos_engine.qualification.git_tree import commit_tree_sha, is_commit
+
+    root = Path(base)
+    _require(
+        len(commit) == 40 and all(c in "0123456789abcdef" for c in commit),
+        f"{commit!r} is not a git object name",
+    )
+    _require(
+        is_commit(root, commit),
+        f"the issuing commit {commit} is not a commit in this repository",
+    )
+    actual_tree = str(commit_tree_sha(root, commit) or "")
+    _require(
+        actual_tree == tree,
+        f"the issuing commit {commit} has tree {actual_tree}, not the accepted {tree}",
+    )
+    # and the issuer source at that commit must be the version that stamps this tool version
+    import subprocess  # noqa: S404 - reads one blob from this repository
+
+    try:
+        blob = subprocess.run(  # noqa: S603
+            [
+                "git",
+                "-C",
+                str(root),
+                "show",
+                f"{commit}:src/minos_engine/layer2/safe_controller_gate.py",
+            ],
+            capture_output=True,
+            check=True,
+        ).stdout.decode("utf-8")
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise SafeControllerGateError(
+            f"the gate issuer source is unreachable at the issuing commit {commit}: {error}"
+        ) from None
+    _require(
+        f'GATE_TOOL_VERSION: Final = "{GATE_TOOL_VERSION}"' in blob,
+        f"the issuer source at {commit} does not stamp {GATE_TOOL_VERSION}",
+    )
+    return {"issuer_source_commit": commit, "issuer_source_tree": actual_tree}
 
 
 class SafeControllerGateError(MinosEngineError):
@@ -440,6 +550,8 @@ def _gate_input_hashes(
     anchors = observation["profile_ownership_anchors"]
     return {
         "baseline_qualification_hash": authorities["baseline_qualification_hash"],
+        "capability_scope_hash": capability_scope_hash(),
+        "contextual_model_status_hash": contextual_model_status_hash(),
         "baseline_qualified_gate_hash": authorities["baseline_qualified_gate_hash"],
         "baseline_selected_identity": authorities["baseline_selected_identity"],
         "l2g_v1_campaign_freeze_identity": authorities["l2g_v1_campaign_freeze_identity"],
@@ -447,6 +559,7 @@ def _gate_input_hashes(
         "ownership_corpus_identity": str(observation["profile_corpus_identity"]),
         "parameter_space_hash": authorities["parameter_space_hash"],
         "phase_a_authority_identity": str(anchors["phase_a_authority_hash"]),
+        "publication_disposition_hash": publication_disposition_hash(),
         "qualification_file_sha256": authenticated.file_sha256,
         "qualification_identity": authenticated.identity,
         "qualification_source_commit": authenticated.source_commit,
