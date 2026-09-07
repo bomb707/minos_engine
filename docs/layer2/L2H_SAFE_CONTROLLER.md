@@ -445,3 +445,38 @@ verifier accepts.
 pinned by a **later** source module — the same pattern by which `BASELINE_QUALIFIED_GATE_HASH` pins
 an earlier gate. Hardcoding the issuer commit into the very commit it is supposed to identify would
 be self-referential, so the acceptance authority is a separate, strictly later commit.
+
+
+## 16. Final acceptance authority
+
+`layer2/safe_controller_frozen_acceptance.py` (`l2h-safe-controller-frozen-acceptance-v1`) is the
+final authority. It runs the structural verifier and then requires the artifact to be *the accepted
+one*:
+
+| Pinned | Value |
+|---|---|
+| gate hash | `504e701fe77b651c919ebc015dc6911bbca880613014058979b18ab408f88add` |
+| gate file SHA-256 | `1bbc1b1b65b7759922d8501a256539850b5b5f95eaf1862a2cef22b9bf39e716` |
+| issuer source commit / tree | `6a3bedfa33581fde22e96d6739146c087c23ba79` / `96e46249ff1dc39344127b9a8cb4daec07e0ab8d` |
+| qualified controller source commit / tree | `7d064fe8bc7185bd5c07d16f1fec9dfdd21970b0` / `799cd5cc493bd79f5ad6e5ecc78033eada5a9f5b` |
+| v3 qualification identity / file SHA | `a0e8840d…` / `90fb7b5f…` |
+
+**Why this is non-circular.** These constants live in a module committed *strictly after* the
+artifact they pin — the same pattern by which `BASELINE_QUALIFIED_GATE_HASH` in `models/contract.py`
+pins an earlier gate. Hardcoding the issuer commit into the very commit it is meant to identify
+would be self-referential and would prove nothing, which is why the corrective source, the reissued
+gate and this acceptance are three separate commits. A test asserts the pinned issuer commit is a
+strict ancestor of HEAD and not HEAD itself.
+
+**The attack it closes.** Change `engine_git_sha`, recompute `gate_hash`, leave every scientific
+binding untouched. Nothing inside the gate can refuse that, because the gate is what is lying. Four
+parametrised tests perform exactly that forgery — arbitrary hex, the evidence commit, the qualified
+controller source, and the superseded issuer — first asserting that the checks and `input_hashes`
+really are unchanged, then requiring refusal.
+
+The superseded first issuance `3c6d9b0b…` is recorded in `SUPERSEDED_ISSUANCES` with its reason and
+the status `SUPERSEDED_BEFORE_SERVICE_ACTIVATION_NEVER_ACCEPTED_FOR_PROMOTION`, and acceptance
+refuses it by identity so it cannot be quietly reclaimed.
+
+Acceptance changes nothing about activation: `select_config` still raises, and persistence remains
+`FILE_PUBLISHED_DB_PERSISTENCE_DEFERRED_TO_ACTIVATION`.
