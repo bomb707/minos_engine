@@ -353,3 +353,62 @@ verifier refuses them on schema.
 **This is not MODELS-QUALIFIED and cannot become it.** Several of its own checks assert the absence
 of contextual capability. No gate artifact was issued, and `Layer2Service.select_config` still
 raises `StageNotReadyError`.
+
+## 14. SAFE-CONTROLLER-FROZEN — the mode-scoped gate
+
+**Capability: `SAFE_BASELINE` only.** The gate does **not** authorize `BOUNDED`,
+`FULL_CONTEXTUAL`, `REFINEMENT`, contextual inference or a model bundle, and it does **not**
+satisfy MODELS-QUALIFIED — which does not exist. `SAFE-CONTROLLER-FROZEN` is **not**
+`CONTROLLER-FROZEN`: that name would claim contextual capability and therefore require
+MODELS-QUALIFIED PASS, so it stays reserved and unissued. Several of this gate's own required
+checks assert the *absence* of contextual capability, so reading it as evidence of one inverts it.
+
+### Why a dedicated issuer
+
+`GateArtifact` already refuses a PASS gate with a missing or false required check. What it cannot
+ask is *where those booleans came from*. Building the gate from `qualification["checks"]` would
+make "a document containing 29 true values" the entire authority — and the superseded v2 report
+carries several identically named corrected checks, all true. It would mint this gate. So the
+generic path is insufficient, and `layer2/safe_controller_gate.py` exists to close that.
+
+The only path to a gate runs forwards from bytes:
+
+```
+accepted v3 bytes → exact file SHA → canonical bytes → domain-separated identity
+  → exact schema → exact S3 source commit/tree → current v3 verifier PASS
+  → capability SAFE_BASELINE_ONLY → DERIVE the 29 checks
+```
+
+Every check is derived either from an authenticated v3 observation or from an authority recomputed
+independently in this process (policy, baseline-selected, SAFE config, parameter space,
+BASELINE-QUALIFIED gate and qualification hash, both L2-G freezes, MODELS-QUALIFIED absence, the
+live `select_config` boundary). A disagreement between the report and this process makes a check
+false rather than being ignored, and `AuthenticatedSafeControllerQualification` is token-minted, so
+a caller-supplied `{"everything": True}` reaches nothing. A test proves structurally, by AST, that
+the deriver never reads `report["checks"]`.
+
+### Two different sources, kept apart
+
+| Field | Meaning |
+|---|---|
+| `qualified_source_git_sha` / `qualified_source_tree_sha` | the controller source that actually underwent the 200-decision qualification — S3 `7d064fe8…` / `799cd5cc…` |
+| `engine_git_sha` | the checkout that issued the gate |
+
+The repository already separates these; the issuer keeps them separate rather than letting the
+issuing commit quietly become the qualified one. `created_at` is excluded from `compute_hash`, so
+no timestamp enters the gate's scientific identity, and no host, PID, path or credential is bound.
+
+### Evidence and non-circularity
+
+The single evidence item is `reports/layer2/l2h-safe-controller-qualification-v3.json`, rehashed
+during verification. The gate does not hash itself, and the evidence does not reference the commit
+that will carry the gate — the qualified source stays S3.
+
+### What issuance does not change
+
+`Layer2Service.select_config` still raises `StageNotReadyError`, and the gate's own
+`select_config_public_boundary_blocked` check requires that. Public activation still needs the
+production persistence problem closed: the disposition remains
+`FILE_PUBLISHED_DB_PERSISTENCE_DEFERRED_TO_ACTIVATION`, and PostgreSQL decision persistence stays a
+prerequisite. No migration; operational DB `0005`, TRAIN `0020`, VALIDATION `0026`,
+`runtime.decisions` unchanged.
