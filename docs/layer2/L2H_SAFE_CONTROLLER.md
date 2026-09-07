@@ -320,30 +320,36 @@ and this task does not touch it.
 
 ## 13. Qualification result
 
-`reports/layer2/l2h-safe-controller-qualification-v2.json` — schema
-`l2h-safe-controller-qualification-v2`, domain `minos:l2h-safe-controller-qualification:v2\n`,
-identity **`8408630ffb130afeb22bf08dc47b78f3be5bbeef3dc102c2c3b5265f3431d286`**, file SHA
-`483f77c63938331b4930439a244e8db8992049d7a4fab75faf76629ed5975e9d`, 7544 bytes. Produced from
-source commit `23b360562b317467a542ee722341fc2d0931bfed`. Ownership corpus identity
-`dd1bd330b859f28f6617b05702ef80b159e863d4cd67c5610210d897bd82f307`.
+`reports/layer2/l2h-safe-controller-qualification-v3.json` — schema
+`l2h-safe-controller-qualification-v3`, domain `minos:l2h-safe-controller-qualification:v3\n`,
+identity **`a0e8840dbdad6beeca7e7548b500868a860438dbea5673b08b11dae70832ba8e`**, file SHA
+`90fb7b5f819eee2f414d8b55adfa7bbbd8164eadd874d3354393bb8f093ec7da`, 8602 bytes. Produced from
+source commit `7d064fe8bc7185bd5c07d16f1fec9dfdd21970b0` (tree `799cd5cc…`). Ownership corpus
+identity `9cc53b5d28c8a8da34c25095362c09d8cb1fb57533ff0a0b3e1fdf7000970b03`.
 
 **Status PASS.** 50 anchored TRAIN profiles × 4 requested modes = **200 decisions**, every one
 selecting `157d88d1…`; 50 `NONE` and 150 `SAFE_BASELINE_FORCED`; 0 invalid configs, 0 model loads,
-0 candidate generations, 0 parameter mutations. All 21 mandatory checks and all 8 additional
-checks true, including `sealed_authorities_never_opened`,
-`train_ownership_anchored_to_accepted_authority` and
-`publication_identity_is_derived_not_declared`.
+0 candidate generations, 0 parameter mutations. All 21 mandatory checks and all 8 additional checks
+true.
 
-`forbidden_sealed_path_open_attempts = 0` and `attempted_sealed_authorities = []` are **observed
-by the guard**, not written as constants, and the verifier refuses a report whose isolation flags
-contradict them. The report deliberately no longer carries `skipped_partition_counts`: counts
-derived by traversing sealed records are precisely what v1 got wrong.
+Observed isolation, over the whole run and every file-open API:
+`forbidden_sealed_path_open_attempts = 0`, `test_identity_authority_open_attempts = 0`,
+`validation_identity_authority_open_attempts = 0`, `attempted_sealed_authorities = []`,
+`guarded_file_apis = [builtins.open, io.open, os.open]`. `test_accessed` and `validation_read` are
+derived from those counters and recomputed by the verifier.
 
-**`l2h-safe-controller-qualification-v1.json` (`7d305bcd…`) is preserved as history and is not
-valid for qualification.** The v2 verifier refuses it on schema, and the v2 report records the
-reason in its own `supersedes` block. A future SAFE-CONTROLLER-FROZEN gate must be issued against
-v2 evidence.
+### Supersession
 
-**This is not MODELS-QUALIFIED and cannot become it.** Four of its own checks assert the absence of
-contextual capability. No gate artifact was issued, and `Layer2Service.select_config` still raises
-`StageNotReadyError`.
+| Report | Identity | Status |
+|---|---|---|
+| v1 | `7d305bcd…` | historical — sealed-partition isolation proof was insufficient |
+| v2 | `8408630f…` | historical — TRAIN-schedule anchor incompletely authenticated; guard covered only `io.open` and only the ownership load |
+| **v3** | **`a0e8840d…`** | **current** |
+
+Neither predecessor is invalid science: each recorded a real run of the controller it was written
+against. What neither can do is authorize a gate. Both are preserved byte-identical, and the v3
+verifier refuses them on schema.
+
+**This is not MODELS-QUALIFIED and cannot become it.** Several of its own checks assert the absence
+of contextual capability. No gate artifact was issued, and `Layer2Service.select_config` still
+raises `StageNotReadyError`.
