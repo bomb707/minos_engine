@@ -32,16 +32,23 @@ from minos_engine.storage.decision_persistence_qualification import (
 from minos_engine.storage.runtime_decision_contract import (
     ADDED_CHECK_CONSTRAINTS,
     FROZEN_INVENTORY,
+    LIVE_PROFILE_RESOLVER_COLUMNS,
+    R0002_FROZEN_INVENTORY,
+    R0002_MIGRATION_PATH,
+    R0002_REVISION,
     REQUIRED_MAIN_REVISION,
+    REVOKED_IDENTITY_TABLE_GRANTS,
+    RUNTIME_OVERLAY_HEAD_REVISION,
     RUNTIME_OVERLAY_MIGRATION_PATH,
     RUNTIME_OVERLAY_REVISION,
     RUNTIME_OVERLAY_VERSION_TABLE,
     RUNTIME_OVERLAY_VERSION_TABLE_SCHEMA,
     decisions_table,
     runtime_overlay_contract_hash,
+    runtime_overlay_head_contract_hash,
 )
 
-REPORT_PATH = REPO_ROOT / "reports/layer2/l2h-decision-persistence-qualification-v1.json"
+REPORT_PATH = REPO_ROOT / "reports/layer2/l2h-decision-persistence-qualification-v2.json"
 MIGRATION = REPO_ROOT / RUNTIME_OVERLAY_MIGRATION_PATH
 
 
@@ -322,9 +329,11 @@ def test_the_report_binds_the_accepted_frozen_controller_and_this_source():
 def test_the_report_binds_the_overlay_identity():
     report = _report()
     schema = report["observation"]["persistence_schema"]
-    assert schema["overlay_revision"] == RUNTIME_OVERLAY_REVISION
+    assert schema["overlay_base_revision"] == RUNTIME_OVERLAY_REVISION
+    assert schema["overlay_head_revision"] == RUNTIME_OVERLAY_HEAD_REVISION
     assert schema["requires_main_revision"] == REQUIRED_MAIN_REVISION
-    assert schema["overlay_contract_hash"] == runtime_overlay_contract_hash()
+    assert schema["overlay_base_contract_hash"] == runtime_overlay_contract_hash()
+    assert schema["overlay_head_contract_hash"] == runtime_overlay_head_contract_hash()
 
 
 def test_the_report_issues_no_gate_and_activates_nothing():
@@ -369,3 +378,133 @@ def test_the_accepted_frozen_gate_still_verifies_unchanged():
     assert result["gate_hash"] == (
         "504e701fe77b651c919ebc015dc6911bbca880613014058979b18ab408f88add"
     )
+
+
+# --------------------------------------------------------------------------- #
+# r0002: the privilege corrective, structurally
+# --------------------------------------------------------------------------- #
+R0002 = REPO_ROOT / R0002_MIGRATION_PATH
+
+
+def test_r0001_is_never_rewritten_by_the_corrective():
+    """r0001 is committed, qualified and applied; the corrective is additive."""
+    assert R0002_FROZEN_INVENTORY["down_revision"] == RUNTIME_OVERLAY_REVISION
+    assert f'down_revision: str | None = "{RUNTIME_OVERLAY_REVISION}"' in R0002.read_text()
+    # r0001's own contract hash is a function of its bytes; it must still be what it was
+    assert (
+        runtime_overlay_contract_hash()
+        == "4265fe13583344ebf0f6d1404a9a2fc0e4556096122e060442e5aaf87f8fef25"
+    )
+
+
+def test_the_corrective_revision_fits_alembics_version_column():
+    """Alembic stores the revision in varchar(32); a longer id fails only at apply time."""
+    assert len(R0002_REVISION) <= 32
+    assert len(RUNTIME_OVERLAY_REVISION) <= 32
+
+
+def test_the_corrective_revokes_both_raw_identity_table_grants():
+    source = R0002.read_text()
+    assert REVOKED_IDENTITY_TABLE_GRANTS == (
+        "catalog.dataset_registry",
+        "profiling.bam_profiles",
+    )
+    for table in REVOKED_IDENTITY_TABLE_GRANTS:
+        assert f'"{table}"' in source, table
+    assert "REVOKE SELECT ON {table} FROM minos_live;" in source
+    assert R0002_FROZEN_INVENTORY["revoked_grants"] == [
+        "SELECT ON catalog.dataset_registry FROM minos_live",
+        "SELECT ON profiling.bam_profiles FROM minos_live",
+    ]
+
+
+def test_the_narrow_surface_is_a_hardened_definer_by_construction():
+    source = R0002.read_text()
+    assert "SECURITY DEFINER" in source
+    assert "SET search_path = pg_catalog, pg_temp" in source or (
+        "SET search_path = {RESOLVER_SEARCH_PATH}" in source
+    )
+    assert "SET ROLE minos_admin" in source, "the function must be owned by minos_admin"
+    assert "REVOKE ALL ON FUNCTION {RESOLVER_SIGNATURE} FROM PUBLIC;" in source
+    assert "GRANT EXECUTE ON FUNCTION {RESOLVER_SIGNATURE} TO minos_live;" in source
+    # no dynamic SQL anywhere in the function body
+    for token in ("EXECUTE format", "quote_ident", "EXECUTE '"):
+        assert token not in source, token
+    # absent arguments are refused rather than treated as a wildcard
+    assert "null_value_not_allowed" in source
+    assert "cardinality_violation" in source
+    assert R0002_FROZEN_INVENTORY["function_uses_dynamic_sql"] is False
+    assert R0002_FROZEN_INVENTORY["function_public_execute"] is False
+    assert R0002_FROZEN_INVENTORY["function_owner"] == "minos_admin"
+
+
+def test_the_resolver_returns_exactly_the_cross_checked_identity_and_no_document():
+    """``profile_document`` is never exposed: the write path does not read it."""
+    assert "profile_document" not in LIVE_PROFILE_RESOLVER_COLUMNS
+    assert "p.profile_document" not in R0002.read_text(), "the SELECT list must not reach it"
+    checked = {c for c, _ in PROFILE_IDENTITY_FIELDS} | {c for c, _ in REGISTRY_IDENTITY_FIELDS}
+    assert checked <= set(LIVE_PROFILE_RESOLVER_COLUMNS)
+    assert "profile_row_id" in LIVE_PROFILE_RESOLVER_COLUMNS
+
+
+def test_the_write_path_no_longer_reads_the_raw_identity_tables():
+    """Checked against the module's real string literals, not its prose."""
+    source = (REPO_ROOT / "src/minos_engine/storage/decision_persistence.py").read_text()
+    tree = ast.parse(source)
+    docstrings = {
+        id(node.body[0].value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
+        and node.body
+        and isinstance(node.body[0], ast.Expr)
+        and isinstance(node.body[0].value, ast.Constant)
+        and isinstance(node.body[0].value.value, str)
+    }
+    literals = [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in docstrings
+    ]
+    for table in REVOKED_IDENTITY_TABLE_GRANTS:
+        for literal in literals:
+            assert table not in literal, f"{table} still appears in executable SQL"
+    # the surface is referenced by its frozen constant, never spelled out inline
+    names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    assert "LIVE_PROFILE_RESOLVER" in names
+
+
+def test_the_corrective_downgrade_restores_the_prior_grants():
+    source = R0002.read_text()
+    assert "GRANT SELECT ON {table} TO minos_live;" in source
+    assert "DROP FUNCTION IF EXISTS" in source
+    assert "REVOKE SELECT ON {table} FROM minos_live;" in source
+
+
+def test_the_corrective_still_requires_the_accepted_operational_revision():
+    source = R0002.read_text()
+    assert f'REQUIRED_MAIN_REVISION = "{REQUIRED_MAIN_REVISION}"' in source
+    assert "revisions != (REQUIRED_MAIN_REVISION,)" in source
+    assert R0002_FROZEN_INVENTORY["requires_main_revision"] == REQUIRED_MAIN_REVISION
+
+
+def test_the_main_lineage_is_still_untouched_and_single_headed():
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config(str(REPO_ROOT / "alembic.ini")))
+    assert list(script.get_heads()) == ["0026_l2f2_phase_d_closure"]
+    revisions = {r.revision for r in script.walk_revisions()}
+    assert R0002_REVISION not in revisions
+    assert RUNTIME_OVERLAY_REVISION not in revisions
+
+
+def test_the_overlay_lineage_has_exactly_one_head_and_it_is_the_corrective():
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    config = Config()
+    config.set_main_option("script_location", str(REPO_ROOT / "migrations_runtime"))
+    script = ScriptDirectory.from_config(config)
+    assert list(script.get_heads()) == [RUNTIME_OVERLAY_HEAD_REVISION]

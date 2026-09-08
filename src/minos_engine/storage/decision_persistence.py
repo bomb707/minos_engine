@@ -44,8 +44,9 @@ from minos_engine.common.canonical_json import canonical_json_bytes
 from minos_engine.common.errors import MinosEngineError
 from minos_engine.layer2.contracts import ControlMode, FallbackReason
 from minos_engine.storage.runtime_decision_contract import (
+    LIVE_PROFILE_RESOLVER,
     REQUIRED_MAIN_REVISION,
-    RUNTIME_OVERLAY_REVISION,
+    RUNTIME_OVERLAY_HEAD_REVISION,
     decisions_table,
     runtime_overlay_revision,
 )
@@ -164,9 +165,10 @@ def require_persistence_prerequisites(conn: Any) -> dict[str, str]:
     )
     overlay = runtime_overlay_revision(conn)
     _require(
-        overlay == RUNTIME_OVERLAY_REVISION,
-        f"the runtime overlay is at {overlay}, not {RUNTIME_OVERLAY_REVISION}; "
-        "runtime.decisions cannot hold a complete decision until it is applied",
+        overlay == RUNTIME_OVERLAY_HEAD_REVISION,
+        f"the runtime overlay is at {overlay}, not {RUNTIME_OVERLAY_HEAD_REVISION}; a store at "
+        "r0001 still grants the live role raw identity tables, and one before that cannot hold a "
+        "complete decision at all",
     )
     return {
         "database": database,
@@ -207,7 +209,7 @@ def resolve_safe_config_row(conn: Any, *, config_hash: str, parameter_space_hash
     return str(row[0])
 
 
-#: Identity fields ``profiling.bam_profiles`` owns, mapped to the proven owned-profile attribute.
+#: Identity fields the resolver returns, mapped to the proven owned-profile attribute.
 #: ``profile_manifest_hash`` is deliberately absent: nothing in this engine defines its preimage
 #: (see ``Layer1ProfileReference``), so requiring agreement on it would dress an unauthenticated
 #: value up as a cross-check. ``profile_sha256`` is here instead and is stronger -- it is the hash
@@ -225,69 +227,71 @@ PROFILE_IDENTITY_FIELDS: Final[tuple[tuple[str, str], ...]] = (
     ("registry_snapshot_hash", "registry_snapshot_hash"),
 )
 
-#: Identity fields reached through the schema's own FK into ``catalog.dataset_registry``.
+#: Identity fields the resolver reaches through the schema's own FK into the dataset registry.
 REGISTRY_IDENTITY_FIELDS: Final[tuple[tuple[str, str], ...]] = (
     ("chromosome", "chromosome"),
     ("dataset_id", "dataset_id"),
     ("round_id", "round_id"),
 )
 
-_PROFILE_QUERY: Final = sa.text(
-    "SELECT p.id, "
-    + ", ".join(f"p.{column}" for column, _ in PROFILE_IDENTITY_FIELDS)
-    + ", p.integrity_degraded, "
-    + ", ".join(f"r.{column} AS registry_{column}" for column, _ in REGISTRY_IDENTITY_FIELDS)
-    + " FROM profiling.bam_profiles AS p "
-    "JOIN catalog.dataset_registry AS r ON r.id = p.dataset_registry_id "
-    "WHERE p.profile_id = :pid"
-)
+_PROFILE_QUERY: Final = sa.text(f"SELECT * FROM {LIVE_PROFILE_RESOLVER}(:profile_id, :round_id)")
 
 
 def resolve_owned_profile_row(conn: Any, *, owned: Any) -> str:
-    """Resolve the operational profile row by the PROVEN logical profile id, then cross-check it.
+    """Resolve the operational profile row through the NARROW live lookup authority.
 
-    **Which table.** ``0001`` aimed the decision FK at ``profiling.profiles``;
-    ``0004_l2d_profile_ingestion`` built the real ingestion on ``profiling.bam_profiles``, and
-    that is where the operational L1 pipeline puts profiles -- 75 rows there, none in the older
-    table, and no code path anywhere writes the older one. The overlay re-aims the foreign key
-    accordingly, so this resolves against the table production actually populates.
+    **Why not the tables.** ``r0001`` granted the live role SELECT on
+    ``profiling.bam_profiles`` and ``catalog.dataset_registry`` and this function read them
+    directly. Those are the raw identity tables -- between them they carry the profile and
+    dataset identities of every partition, TEST included -- and a grant is a *capability*: it did
+    not matter that this code only ever queried by ``profile_id``, because with the grant in place
+    ``SELECT * FROM profiling.bam_profiles`` was available to anything holding the live role.
+    ``r0002`` revokes both and replaces them with
+    ``runtime.l2h_resolve_owned_profile``: two mandatory scalar arguments, equality on a UNIQUE
+    column and its owning round, at most one row, no list, no count, no predicate of the caller's
+    choosing.
 
-    **Opened by name, never enumerated.** The lookup is a single equality on the proven
-    ``profile_id``. The table also holds VALIDATION and TEST members; they are not listed,
-    counted, filtered or observed to exist.
+    The function is an exact-lookup surface, not an authorization surface. Whether a round may be
+    decided for at all is settled upstream by the verified round/profile ownership authority --
+    which is also why the function is not partition-scoped: scoping it to ``train`` would bake a
+    research partition into the live production path.
 
     The row must agree with the verified request on every identity field the production schema
-    owns, including the dataset, round and chromosome reached through the schema's own foreign
-    key. Disagreement is an authority failure, never a fallback: a decision recorded against the
-    wrong profile row is worse than no decision.
+    owns, including the dataset, round and chromosome the registry holds. Disagreement is an
+    authority failure, never a fallback: a decision recorded against the wrong profile row is
+    worse than no decision.
     """
-    row = conn.execute(_PROFILE_QUERY, {"pid": owned.profile_id}).mappings().first()
-    _require(
-        row is not None,
-        f"profile {owned.profile_id!r} has no row in profiling.bam_profiles; the operational "
-        "Layer 1 ingestion has not populated the profile this decision is about",
+    rows = (
+        conn.execute(
+            _PROFILE_QUERY,
+            {"profile_id": owned.profile_id, "round_id": owned.round_id},
+        )
+        .mappings()
+        .all()
     )
-    assert row is not None
-    for column, attribute in PROFILE_IDENTITY_FIELDS:
+    _require(
+        bool(rows),
+        f"profile {owned.profile_id!r} does not resolve for round {owned.round_id!r}; the "
+        "operational Layer 1 ingestion has not populated the profile this decision is about",
+    )
+    _require(
+        len(rows) == 1,
+        f"profile {owned.profile_id!r} resolved to {len(rows)} rows; one identity names one "
+        "profile",
+    )
+    row = rows[0]
+    for column, attribute in PROFILE_IDENTITY_FIELDS + REGISTRY_IDENTITY_FIELDS:
         expected = str(getattr(owned, attribute))
         actual = "" if row[column] is None else str(row[column])
         _require(
             actual == expected,
-            f"the stored profile row disagrees on {column}: {actual!r} != proven {expected!r}",
+            f"the resolved profile disagrees on {column}: {actual!r} != proven {expected!r}",
         )
     _require(
         bool(row["integrity_degraded"]) == bool(owned.integrity_degraded),
-        "the stored profile row disagrees on integrity_degraded",
+        "the resolved profile disagrees on integrity_degraded",
     )
-    for column, attribute in REGISTRY_IDENTITY_FIELDS:
-        expected = str(getattr(owned, attribute))
-        actual = str(row[f"registry_{column}"] or "")
-        _require(
-            actual == expected,
-            f"the profile's dataset registry row disagrees on {column}: {actual!r} != proven "
-            f"{expected!r}",
-        )
-    return str(row["id"])
+    return str(row["profile_row_id"])
 
 
 def provision_safe_config_row(

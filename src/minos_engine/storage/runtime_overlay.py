@@ -24,6 +24,7 @@ from minos_engine.storage.constants import ENV_DATABASE_URL
 from minos_engine.storage.database import create_db_engine, normalize_database_url
 from minos_engine.storage.runtime_decision_contract import (
     REQUIRED_MAIN_REVISION,
+    RUNTIME_OVERLAY_HEAD_REVISION,
     RUNTIME_OVERLAY_REVISION,
     RUNTIME_OVERLAY_SCRIPT_LOCATION,
     RUNTIME_OVERLAY_VERSION_TABLE,
@@ -122,7 +123,8 @@ def observed_overlay_state(url: str) -> dict[str, Any]:
             "main_revision": main,
             "main_revision_required_by_overlay": REQUIRED_MAIN_REVISION,
             "overlay_revision": overlay,
-            "overlay_head_revision": RUNTIME_OVERLAY_REVISION,
+            "overlay_base_revision": RUNTIME_OVERLAY_REVISION,
+            "overlay_head_revision": RUNTIME_OVERLAY_HEAD_REVISION,
             "overlay_version_table": (
                 f"{RUNTIME_OVERLAY_VERSION_TABLE_SCHEMA}.{RUNTIME_OVERLAY_VERSION_TABLE}"
             ),

@@ -128,11 +128,60 @@ profiles: the operational store holds **75 rows** in `profiling.bam_profiles` an
 therefore never have satisfied `profile_id NOT NULL`, not because the development database happens
 to be empty but because the referenced table is a superseded L2-B placeholder.
 
-The overlay re-aims the foreign key at `profiling.bam_profiles` and adds `NOT NULL` at the same
-time. That is a strengthened FK, not a weakened one. `minos_live` gains `SELECT` on
-`profiling.bam_profiles` and `catalog.dataset_registry` — the minimum needed to resolve and
-cross-check the owning profile — and nothing else; the downgrade restores both the old FK and the
-exact previous grant shape.
+`r0001` re-aims the foreign key at `profiling.bam_profiles` and adds `NOT NULL` at the same time.
+That is a strengthened FK, not a weakened one.
+
+## 5a. The privilege defect `r0002` closes
+
+`r0001` also granted `minos_live` **SELECT on `profiling.bam_profiles` and
+`catalog.dataset_registry`**, because the write path needed to resolve the owning profile. Those
+are the raw identity tables. Between them they carry the profile and dataset identities of every
+partition, **TEST included**, and the L2-D architecture deliberately never grants an application
+role a raw identity table — it exposes partition-scoped views instead, and
+`evaluation.sealed_test_profile_members` is granted to no application role at all.
+
+The v1 qualification then certified those grants as least privilege on the strength of a SQL
+recorder showing the code only ever queried by `profile_id`. **That is a statement about
+behaviour. Least privilege is a statement about capability.** With the grants in place:
+
+```
+SET ROLE minos_live;
+SELECT count(*) FROM profiling.bam_profiles;   -- 75, every partition
+```
+
+`r0002` revokes both grants and replaces them with a narrow lookup surface:
+
+| | |
+|---|---|
+| function | `runtime.l2h_resolve_owned_profile(text, text)` |
+| owner | `minos_admin` (NOLOGIN, **not** a superuser) |
+| security | `SECURITY DEFINER`, `SET search_path = pg_catalog, pg_temp` |
+| language | `plpgsql`, no dynamic SQL, no caller predicate |
+| arguments | two mandatory scalars; NULL or empty **raises** (`null_value_not_allowed`) rather than matching everything |
+| result | at most one identity row; more than one **raises** (`cardinality_violation`) |
+| grants | `PUBLIC` EXECUTE revoked; EXECUTE to `minos_live` alone |
+| returns | exactly the fields the resolver cross-checks, plus the row id — **never** `profile_document` |
+
+Afterwards every enumeration attempt is refused by PostgreSQL with SQLSTATE `42501`, and
+`has_table_privilege('minos_live', …, 'SELECT')` is false for all seven partition-bearing
+relations — the sealed ones probed *by privilege*, never by reading a row.
+
+The function is an **exact-lookup surface, not an authorization surface**. Whether a round may be
+decided for at all is settled upstream by the verified round/profile ownership authority, which
+is why the function is deliberately not partition-scoped: scoping it to `train` would bake a
+research partition into the live production path. A caller who already holds a 32-hex profile id
+can confirm that profile exists; what the seal protects against — and what `r0002` restores — is
+*enumeration*.
+
+`r0002` also grants `minos_live` SELECT on `public.alembic_version` and
+`runtime.alembic_version_runtime`. Those are different in kind: one revision string each, no
+identity, no partition, nothing sealed. Without them the live path could not read its own schema
+version, and under a real least-privilege connection it could never have run at all — a second
+thing v1 could not see, because v1 ran its entire campaign as the superuser.
+
+`r0001` is **not rewritten**. It is committed, qualified and applied; the corrective is additive,
+with `down_revision = r0001_l2h_runtime_decisions`, and its downgrade restores r0001's exact
+privilege and function shape.
 
 ## 6. Nothing is trusted from the caller
 
@@ -140,13 +189,14 @@ exact previous grant shape.
 |---|---|
 | the decision | **made here** from verified capabilities, never accepted as a parameter |
 | the config row | resolved from `catalog.gatk_configs` **by accepted config hash**; absent or ambiguous fails closed; the row's `parameter_space_hash` must be the accepted one |
-| the profile row | resolved by the **proven** logical `profile_id`, then cross-checked on ten identity fields plus `dataset_id`/`round_id`/`chromosome` reached through the schema's own FK |
+| the profile row | resolved through `runtime.l2h_resolve_owned_profile` by the **proven** `profile_id` *and* `round_id`, then cross-checked on ten identity fields plus `dataset_id`/`round_id`/`chromosome` |
 | provisioning | `catalog.gatk_configs` is provisioned by an **administrative**, idempotent step that verifies the frozen payload bytes hash to the accepted config hash. `minos_live` holds only SELECT there and must: a live path that could insert catalog rows could insert a config nobody accepted and then decide in favour of it. |
 | profiles | never provisioned by this engine. If Layer 1 ingestion has not written the row, persistence **fails closed** and names that production prerequisite. |
 
-`profiling.bam_profiles` also holds VALIDATION and TEST members. It is opened **by name** — a
-single equality on the proven `profile_id` — never listed, counted or filtered. The qualification
-observes every statement the path issues and derives its isolation checks from that.
+`profiling.bam_profiles` also holds VALIDATION and TEST members. After `r0002` the live role
+cannot read it at all; the only way in is the narrow function, by exact name. The qualification
+proves this by *executing* enumeration attempts as the live role and requiring SQLSTATE `42501`,
+not by observing that the code did not try.
 
 `profile_manifest_hash` is deliberately **not** cross-checked: nothing in this engine defines its
 preimage (see `Layer1ProfileReference`), and requiring agreement on it would dress an
@@ -183,11 +233,18 @@ the hash of the whole profile document.
 ## 8. Privileges
 
 `minos_live` holds `SELECT`/`INSERT` and nothing else, anywhere. Its only write targets are
-`runtime.decisions` and `audit.events`. It cannot UPDATE, DELETE or TRUNCATE a decision (by grant
-*and* by the append-only trigger), cannot write `catalog`, `profiling` or `evaluation`, and cannot
-read `evaluation` at all. `minos_runner`, `minos_evaluator` and `minos_trainer` have no USAGE on
-`runtime` and cannot forge a decision. PUBLIC holds nothing in the seven application schemas. The
-owner is `minos_admin`, a NOLOGIN non-superuser. No SECURITY DEFINER function is introduced.
+`runtime.decisions` and `audit.events`. After `r0002` it holds **no raw identity table at all**:
+its complete grant set is `audit.events:INSERT`, `catalog.artifacts:SELECT`,
+`catalog.datasets:SELECT`, `catalog.gatk_configs:SELECT`, `models.model_bundles:SELECT`,
+`public.alembic_version:SELECT`, `runtime.alembic_version_runtime:SELECT`,
+`runtime.decisions:INSERT`, `runtime.decisions:SELECT`, plus EXECUTE on the one narrow function.
+
+It cannot UPDATE, DELETE or TRUNCATE a decision (by grant *and* by the append-only trigger),
+cannot write `catalog`, `profiling` or `evaluation`, and cannot read `evaluation` at all.
+`minos_runner`, `minos_evaluator` and `minos_trainer` have no USAGE on `runtime`, cannot forge a
+decision, and cannot execute the resolver. PUBLIC holds nothing in the seven application schemas
+and cannot execute the resolver. The owner is `minos_admin`, a NOLOGIN non-superuser. Exactly one
+SECURITY DEFINER function exists and it is the resolver.
 
 Even the owner cannot rewrite a persisted decision: `audit.minos_reject_mutation` refuses UPDATE
 and DELETE with `restrict_violation`.
@@ -197,25 +254,11 @@ and DELETE with `restrict_violation`.
 `l2h-decision-persistence-qualification-v1` runs the real write path against real PostgreSQL 16:
 a scratch database at the accepted schema plus the overlay, provisioned with the accepted SAFE
 config row and the fifty TRAIN-owned identity rows carried across from the operational store by
-name, then 49 rounds × 4 requested modes = **196 decisions** actually persisted, plus the failure
-drills on a fiftieth round held back for exactly that purpose. Thirty checks, every one derived
+name, then 49 rounds × 4 requested modes = **196 decisions** actually persisted — on a connection that
+has **assumed `minos_live`**, so every statement is bounded by the live role's real grants — plus
+the failure drills on a fiftieth round held back for exactly that purpose, and a capability audit
+that executes every enumeration attempt as the live role and requires SQLSTATE `42501`. Forty-one checks, every one derived
 from the observation rather than recorded. No truth, no scores, no VALIDATION, no TEST.
-
-| | |
-|---|---|
-| qualification identity | `e88f6cf83063905e1608c9583185b30d09f9943e3abfa92a0508858f8d617f20` |
-| file SHA-256 | `9bb98d5106f239e596715d79e91c8dee2055b2cc3f2b2a860eb625b2b5400775` (49 887 bytes) |
-| qualified source commit / tree | `1b67ee2f755b82526028d97aca7e8fe8db56e816` / `e5de947544241edeb83527c59de61792e0c18bb5` |
-| overlay contract hash | `4265fe13583344ebf0f6d1404a9a2fc0e4556096122e060442e5aaf87f8fef25` |
-| accepted SAFE-CONTROLLER-FROZEN | `504e701fe77b651c919ebc015dc6911bbca880613014058979b18ab408f88add` |
-
-`verify_persistence_report` re-derives all thirty checks and the status from the observation,
-refuses any operational value (URL, host, path, credential) anywhere in the document, and
-**proves** the qualified source commit against git rather than length-checking it — shape is not
-provenance. The pinned constants live in the commit *after* the one that ran the campaign, so
-nothing identifies itself.
-
-
 
 ## 10. Where the code lives
 
@@ -232,11 +275,46 @@ untouched.
 | `storage/runtime_overlay.py` | apply / revert / inspect the overlay lineage |
 | `storage/decision_persistence.py` | the write path |
 | `storage/decision_persistence_qualification.py` | the campaign and its verifier |
-| `migrations_runtime/` + `alembic_runtime.ini` | the overlay lineage itself |
+| `migrations_runtime/` + `alembic_runtime.ini` | the overlay lineage: `r0001` then the `r0002` privilege corrective |
 
-## 11. What this stage does not do
+## 11. What this stage does not do, and what activation still needs
 
-No gate is issued. `Layer2Service.select_config` still raises `StageNotReadyError`. Activation is
-a separate, deliberately small step: verify the accepted frozen controller, verify the accepted
-persistence authority, verify request ownership, select SAFE, persist transactionally, return the
-exact CONFIG bytes.
+No gate is issued. `Layer2Service.select_config` still raises `StageNotReadyError`.
+
+Two prerequisites remain, and the second is the larger one:
+
+**1. The SAFE config row is not provisioned.** `catalog.gatk_configs` is empty in the operational
+store, so the live path fails closed there today. `provision_safe_config_row` is the administrative
+step that binds it — idempotent, keyed on the accepted config hash, payload-byte verified, and
+deliberately outside the live decision transaction. It is a separately authorized activation step
+and is **not** run merely because a corrective ran.
+
+**2. No genuinely new LIVE round can obtain a `VerifiedRoundProfileAuthority`.**
+`l2h-round-profile-ownership-v2` is TRAIN-only by construction: `load_verified_round_profile_corpus`
+builds the corpus from the frozen fifty-row TRAIN schedule (`manifests/l2f2_train_schedule_v1.json`)
+against `/home/hr/bittensor/minos_l2d_corpus`, and `owned()` refuses any round outside it —
+
+```
+c.owned("a-brand-new-live-round-2026")
+RoundProfileAuthorityError: round '...' is not in the accepted profile snapshot
+```
+
+`select_safe_baseline` requires an instance of that exact class, whose constructor token only the
+TRAIN loader holds, and the decision manifest records `profile_corpus_identity` and
+`profile_ownership_anchors` that are TRAIN-campaign anchors (TRAIN schedule, Phase-A authority,
+split manifest, registry snapshot). Nor can production ingestion route around it: `ingest_profile`
+requires the dataset to be a member of the requested split epoch's allocation set, so a brand-new
+BAM cannot be ingested without a new split epoch either.
+
+**Supporting LIVE rounds will therefore require changing and requalifying the frozen controller
+source.** `round_profile_authority.py` must be able to mint an authority for a round that is not a
+TRAIN snapshot member, and `safe_controller.py` must accept it; both are inside the qualified S3
+source `7d064fe8…` that the accepted SAFE-CONTROLLER-FROZEN gate binds. It will very likely also
+need a decision-manifest v2 whose ownership anchors mean something for a live round — which in
+turn needs a further runtime-overlay revision, because `r0001`'s
+`ck_decisions_manifest_schema` pins `l2h-safe-decision-manifest-v1`. That work is deliberately
+**not** done here, and no part of the S3 source was touched to make LIVE fit.
+
+Activation, once both are resolved, should still be small: verify the accepted frozen controller,
+verify the accepted persistence authority, verify request ownership, select SAFE, persist
+transactionally, return the exact CONFIG bytes.

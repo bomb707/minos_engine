@@ -34,7 +34,10 @@ from minos_engine.storage.decision_persistence import (
     resolve_owned_profile_row,
     resolve_safe_config_row,
 )
-from minos_engine.storage.runtime_decision_contract import REQUIRED_MAIN_REVISION
+from minos_engine.storage.runtime_decision_contract import (
+    REQUIRED_MAIN_REVISION,
+    RUNTIME_OVERLAY_REVISION,
+)
 from minos_engine.storage.runtime_overlay import upgrade_runtime_overlay
 from tests.conftest import REPO_ROOT
 
@@ -153,24 +156,59 @@ def ownership():
     return load_verified_round_profile_corpus(root=REPO_ROOT)
 
 
+def _live_role_url(url: str) -> str:
+    """The same database on a connection that has ASSUMED minos_live."""
+    from sqlalchemy.engine import make_url
+
+    from minos_engine.storage.database import normalize_database_url
+
+    return (
+        make_url(normalize_database_url(url))
+        .update_query_dict({"options": "-c role=minos_live"})
+        .render_as_string(hide_password=False)
+    )
+
+
 @pytest.fixture
-def live(isolated_pg_base_url: str, authority, ownership):
-    """A provisioned operational store: accepted schema, overlay, SAFE config, three profiles."""
+def store(isolated_pg_base_url: str, authority, ownership):
+    """A provisioned operational store at the overlay HEAD, plus an admin engine for drills."""
     with scratch_database(isolated_pg_base_url, "minos_engine_db") as url:
         alembic_upgrade(url, REQUIRED_MAIN_REVISION)
         upgrade_runtime_overlay(url)
-        engine = create_db_engine(url)
+        admin = create_db_engine(url)
         try:
             provision_safe_config_row(
-                engine,
+                admin,
                 config_hash=authority.baseline_config_hash,
                 parameter_space_hash=authority.parameter_space_hash,
             )
             for round_id in ownership.rounds()[:3]:
-                _seed_owned_profile(engine, ownership.owned(round_id))
-            yield engine
+                _seed_owned_profile(admin, ownership.owned(round_id))
+            yield url, admin
         finally:
-            engine.dispose()
+            admin.dispose()
+
+
+@pytest.fixture
+def live(store):
+    """The engine the write path actually runs on: least privilege, not superuser.
+
+    v1 ran its whole campaign as the owner. That is why it could certify grants it had never
+    exercised, and why it never noticed that the live role could not read the schema-version
+    tables at all.
+    """
+    url, _admin = store
+    engine = create_db_engine(_live_role_url(url))
+    try:
+        yield engine
+    finally:
+        engine.dispose()
+
+
+@pytest.fixture
+def admin(store):
+    _url, engine = store
+    return engine
 
 
 def _persist(engine, authority, ownership, round_id, mode=ControlMode.SAFE_BASELINE):
@@ -300,7 +338,7 @@ def test_a_missing_safe_config_row_fails_closed(isolated_pg_base_url, authority,
 
 def test_a_missing_profile_row_fails_closed(live, authority, ownership):
     unseeded = ownership.rounds()[10]
-    with pytest.raises(SafeDecisionPersistenceError, match="profiling.bam_profiles"):
+    with pytest.raises(SafeDecisionPersistenceError, match="does not resolve for round"):
         _persist(live, authority, ownership, unseeded)
 
 
@@ -350,7 +388,7 @@ def test_the_write_path_refuses_a_database_that_is_not_the_operational_store(
     with scratch_database(pg_base_url, "minos_not_the_operational_store") as url:
         alembic_upgrade(url, REQUIRED_MAIN_REVISION)
         upgrade_runtime_overlay(url)
-        engine = create_db_engine(url)
+        engine = create_db_engine(_live_role_url(url))
         try:
             with pytest.raises(SafeDecisionPersistenceError, match="canonical operational store"):
                 _persist(engine, authority, ownership, ownership.rounds()[0])
@@ -358,11 +396,15 @@ def test_the_write_path_refuses_a_database_that_is_not_the_operational_store(
             engine.dispose()
 
 
-def test_the_write_path_refuses_a_store_without_the_overlay(
-    isolated_pg_base_url, authority, ownership
+@pytest.mark.parametrize("stop_at", [None, RUNTIME_OVERLAY_REVISION])
+def test_the_write_path_refuses_a_store_below_the_overlay_head(
+    isolated_pg_base_url, authority, ownership, stop_at
 ):
+    """Including r0001: a store there still grants the live role the raw identity tables."""
     with scratch_database(isolated_pg_base_url, "minos_engine_db") as url:
         alembic_upgrade(url, REQUIRED_MAIN_REVISION)
+        if stop_at is not None:
+            upgrade_runtime_overlay(url, stop_at)
         engine = create_db_engine(url)
         try:
             with pytest.raises(SafeDecisionPersistenceError, match="runtime overlay"):
@@ -371,7 +413,9 @@ def test_the_write_path_refuses_a_store_without_the_overlay(
             engine.dispose()
 
 
-def test_a_divergent_stored_row_under_the_same_identity_fails_closed(live, authority, ownership):
+def test_a_divergent_stored_row_under_the_same_identity_fails_closed(
+    live, admin, authority, ownership
+):
     round_id = ownership.rounds()[1]
     owned = ownership.owned(round_id)
     from minos_engine.layer2.safe_controller import safe_decision_manifest_content
@@ -389,7 +433,7 @@ def test_a_divergent_stored_row_under_the_same_identity_fails_closed(live, autho
             parameter_space_hash=authority.parameter_space_hash,
         )
         profile_id = resolve_owned_profile_row(conn, owned=owned)
-    with live.begin() as conn:
+    with admin.begin() as conn:
         conn.execute(text("SET LOCAL ROLE minos_admin"))
         conn.execute(
             text(
@@ -418,7 +462,7 @@ def test_a_divergent_stored_row_under_the_same_identity_fails_closed(live, autho
         _persist(live, authority, ownership, round_id, ControlMode.REFINEMENT)
 
 
-def test_one_decision_identity_may_name_only_one_decision(live, authority, ownership):
+def test_one_decision_identity_may_name_only_one_decision(live, admin, authority, ownership):
     from sqlalchemy.exc import IntegrityError
 
     persisted = _persist(live, authority, ownership, ownership.rounds()[0])
@@ -434,7 +478,7 @@ def test_one_decision_identity_may_name_only_one_decision(live, authority, owner
     assert row is not None
     with (
         pytest.raises(IntegrityError, match="uq_decisions_decision_hash"),
-        live.begin() as conn,
+        admin.begin() as conn,
     ):
         conn.execute(text("SET LOCAL ROLE minos_admin"))
         conn.execute(
@@ -537,8 +581,8 @@ def test_the_live_role_can_append_a_decision_and_do_nothing_else_to_it(live, aut
 
 
 @pytest.mark.parametrize("role", ["minos_runner", "minos_evaluator", "minos_trainer"])
-def test_no_other_role_can_forge_a_live_decision(live, role: str):
-    with live.connect() as conn:
+def test_no_other_role_can_forge_a_live_decision(admin, role: str):
+    with admin.connect() as conn:
         transaction = conn.begin()
         try:
             assert _denied(conn, role, "INSERT INTO runtime.decisions (round_id) VALUES ('forged')")
@@ -547,9 +591,9 @@ def test_no_other_role_can_forge_a_live_decision(live, role: str):
             transaction.rollback()
 
 
-def test_even_the_owner_cannot_rewrite_a_persisted_decision(live, authority, ownership):
+def test_even_the_owner_cannot_rewrite_a_persisted_decision(live, admin, authority, ownership):
     _persist(live, authority, ownership, ownership.rounds()[0])
-    with live.connect() as conn:
+    with admin.connect() as conn:
         transaction = conn.begin()
         try:
             assert _denied(
@@ -560,8 +604,8 @@ def test_even_the_owner_cannot_rewrite_a_persisted_decision(live, authority, own
             transaction.rollback()
 
 
-def test_public_holds_nothing_in_the_application_schemas(live):
-    with live.connect() as conn:
+def test_public_holds_nothing_in_the_application_schemas(admin):
+    with admin.connect() as conn:
         rows = list(
             conn.execute(
                 text(

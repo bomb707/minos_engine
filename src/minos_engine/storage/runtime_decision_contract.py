@@ -25,6 +25,17 @@ from minos_engine.common.hashing import canonical_hash
 
 __all__ = [
     "ADDED_CHECK_CONSTRAINTS",
+    "LIVE_PROFILE_RESOLVER",
+    "LIVE_PROFILE_RESOLVER_COLUMNS",
+    "LIVE_PROFILE_RESOLVER_SEARCH_PATH",
+    "LIVE_PROFILE_RESOLVER_SIGNATURE",
+    "LIVE_VERSION_TABLE_GRANTS",
+    "R0002_FROZEN_INVENTORY",
+    "R0002_MIGRATION_PATH",
+    "R0002_REVISION",
+    "REVOKED_IDENTITY_TABLE_GRANTS",
+    "RUNTIME_OVERLAY_HEAD_REVISION",
+    "runtime_overlay_head_contract_hash",
     "FROZEN_INVENTORY",
     "REQUIRED_MAIN_REVISION",
     "RUNTIME_OVERLAY_MIGRATION_PATH",
@@ -42,6 +53,74 @@ RUNTIME_OVERLAY_SCHEMA: Final = "l2h-operational-runtime-overlay-v1"
 RUNTIME_OVERLAY_REVISION: Final = "r0001_l2h_runtime_decisions"
 RUNTIME_OVERLAY_SCRIPT_LOCATION: Final = "migrations_runtime"
 RUNTIME_OVERLAY_MIGRATION_PATH: Final = "migrations_runtime/versions/r0001_l2h_runtime_decisions.py"
+
+#: The corrective revision. r0001 stays exactly as it was issued, qualified and applied; the
+#: privilege defect is closed additively on top of it.
+R0002_REVISION: Final = "r0002_l2h_live_profile_lookup"
+R0002_MIGRATION_PATH: Final = "migrations_runtime/versions/r0002_l2h_live_profile_lookup.py"
+
+#: The head of the overlay lineage: what an operational store must be at.
+RUNTIME_OVERLAY_HEAD_REVISION: Final = R0002_REVISION
+
+#: The narrow live lookup surface that replaces the raw identity-table grants.
+LIVE_PROFILE_RESOLVER: Final = "runtime.l2h_resolve_owned_profile"
+LIVE_PROFILE_RESOLVER_SIGNATURE: Final = f"{LIVE_PROFILE_RESOLVER}(text, text)"
+LIVE_PROFILE_RESOLVER_SEARCH_PATH: Final = "pg_catalog, pg_temp"
+LIVE_PROFILE_RESOLVER_COLUMNS: Final[tuple[str, ...]] = (
+    "profile_row_id",
+    "attestation_hash",
+    "bai_sha256",
+    "bam_sha256",
+    "fai_sha256",
+    "identity_tuple_hash",
+    "profile_manifest_sha256",
+    "profile_sha256",
+    "reference_sha256",
+    "region_hash",
+    "registry_snapshot_hash",
+    "integrity_degraded",
+    "dataset_id",
+    "round_id",
+    "chromosome",
+)
+
+#: Raw identity tables the live role must NOT be able to read. Between them they carry the
+#: profile and dataset identities of every partition, TEST included.
+REVOKED_IDENTITY_TABLE_GRANTS: Final[tuple[str, ...]] = (
+    "catalog.dataset_registry",
+    "profiling.bam_profiles",
+)
+
+#: One revision string each: no identity, no partition, nothing sealed.
+LIVE_VERSION_TABLE_GRANTS: Final[tuple[str, ...]] = (
+    "public.alembic_version",
+    "runtime.alembic_version_runtime",
+)
+
+R0002_FROZEN_INVENTORY: dict[str, object] = {
+    "schema_version": "l2h-operational-runtime-overlay-v2",
+    "revision": R0002_REVISION,
+    "down_revision": "r0001_l2h_runtime_decisions",
+    "requires_main_revision": "0005_l2e_feature_view",
+    "revoked_grants": [
+        f"SELECT ON {table} FROM minos_live" for table in REVOKED_IDENTITY_TABLE_GRANTS
+    ],
+    "added_grants": [f"SELECT ON {table} TO minos_live" for table in LIVE_VERSION_TABLE_GRANTS]
+    + [f"EXECUTE ON FUNCTION {LIVE_PROFILE_RESOLVER_SIGNATURE} TO minos_live"],
+    "added_functions": [LIVE_PROFILE_RESOLVER_SIGNATURE],
+    "function_owner": "minos_admin",
+    "function_security": "DEFINER",
+    "function_search_path": LIVE_PROFILE_RESOLVER_SEARCH_PATH,
+    "function_language": "plpgsql",
+    "function_uses_dynamic_sql": False,
+    "function_returns_at_most_one_row": True,
+    "function_public_execute": False,
+    "added_columns": [],
+    "added_tables": [],
+    "added_check_constraints": [],
+    "added_indexes": [],
+    "counts": {"revoked_grants": 2, "added_grants": 3, "added_functions": 1},
+}
 
 #: The overlay's own version tracking, deliberately NOT ``public.alembic_version``.
 RUNTIME_OVERLAY_VERSION_TABLE: Final = "alembic_version_runtime"
@@ -140,6 +219,32 @@ def runtime_overlay_contract_hash(root: Any = None) -> str:
     base = Path(root) if root is not None else _repo_root()
     digest = hashlib.sha256((base / RUNTIME_OVERLAY_MIGRATION_PATH).read_bytes()).hexdigest()
     return canonical_hash({"migration_file_sha256": digest, "frozen_inventory": FROZEN_INVENTORY})
+
+
+def runtime_overlay_head_contract_hash(root: Any = None) -> str:
+    """Bind BOTH committed overlay revisions to their frozen inventories.
+
+    r0001's own hash is unchanged and still verifiable on its own; this is the identity of the
+    lineage as a whole, which is what an operational store is actually at.
+    """
+    base = Path(root) if root is not None else _repo_root()
+    return canonical_hash(
+        {
+            "r0001": {
+                "migration_file_sha256": hashlib.sha256(
+                    (base / RUNTIME_OVERLAY_MIGRATION_PATH).read_bytes()
+                ).hexdigest(),
+                "frozen_inventory": FROZEN_INVENTORY,
+            },
+            "r0002": {
+                "migration_file_sha256": hashlib.sha256(
+                    (base / R0002_MIGRATION_PATH).read_bytes()
+                ).hexdigest(),
+                "frozen_inventory": R0002_FROZEN_INVENTORY,
+            },
+            "head": RUNTIME_OVERLAY_HEAD_REVISION,
+        }
+    )
 
 
 def runtime_overlay_revision(conn: Any) -> str | None:

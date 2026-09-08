@@ -10,7 +10,10 @@ from minos_engine.storage.database import normalize_database_url
 from minos_engine.storage.runtime_decision_contract import (
     ADDED_CHECK_CONSTRAINTS,
     FROZEN_INVENTORY,
+    R0002_FROZEN_INVENTORY,
+    R0002_REVISION,
     REQUIRED_MAIN_REVISION,
+    RUNTIME_OVERLAY_HEAD_REVISION,
     RUNTIME_OVERLAY_REVISION,
     runtime_overlay_revision,
 )
@@ -31,7 +34,9 @@ _GRANT_QUERY = (
     "SELECT table_schema || '.' || table_name || ':' || grantee || ':' || privilege_type "
     "FROM information_schema.role_table_grants WHERE grantee LIKE 'minos_%' "
     "AND table_schema IN ('catalog','profiling','experiments','evaluation','models','runtime',"
-    "'audit')"
+    # 'public' too: Alembic keeps the two version tables there, and a snapshot blind to it
+    # cannot see the whole privilege matrix.
+    "'audit','public')"
 )
 
 
@@ -82,7 +87,7 @@ def operational_url(pg_base_url: str):
 
 def test_the_overlay_completes_the_table_to_the_contract(operational_url: str):
     before = _snapshot(operational_url)
-    upgrade_runtime_overlay(operational_url)
+    upgrade_runtime_overlay(operational_url, RUNTIME_OVERLAY_REVISION)
     after = _snapshot(operational_url)
 
     added = {c.split(":")[0] for c in after["columns"]} - {
@@ -107,7 +112,7 @@ def test_the_overlay_completes_the_table_to_the_contract(operational_url: str):
 
 def test_the_overlay_widens_the_privilege_matrix_by_exactly_two_reads(operational_url: str):
     before = _snapshot(operational_url)["grants"]
-    upgrade_runtime_overlay(operational_url)
+    upgrade_runtime_overlay(operational_url, RUNTIME_OVERLAY_REVISION)
     after = _snapshot(operational_url)["grants"]
     assert sorted(set(after) - set(before)) == [
         "catalog.dataset_registry:minos_live:SELECT",
@@ -122,7 +127,7 @@ def test_the_overlay_never_advances_the_main_lineage(operational_url: str):
         with engine.connect() as conn:
             assert main_lineage_revision(conn) == REQUIRED_MAIN_REVISION
             assert runtime_overlay_revision(conn) is None
-        upgrade_runtime_overlay(operational_url)
+        upgrade_runtime_overlay(operational_url, RUNTIME_OVERLAY_REVISION)
         with engine.connect() as conn:
             assert main_lineage_revision(conn) == REQUIRED_MAIN_REVISION
             assert runtime_overlay_revision(conn) == RUNTIME_OVERLAY_REVISION
@@ -136,13 +141,117 @@ def test_the_overlay_never_advances_the_main_lineage(operational_url: str):
 
 def test_downgrade_restores_the_schema_and_the_grants_exactly(operational_url: str):
     before = _snapshot(operational_url)
-    upgrade_runtime_overlay(operational_url)
+    upgrade_runtime_overlay(operational_url, RUNTIME_OVERLAY_REVISION)
     downgrade_runtime_overlay(operational_url)
     assert _snapshot(operational_url) == before
     assert observed_overlay_state(operational_url)["overlay_revision"] is None
     # and it can be applied again afterwards
-    upgrade_runtime_overlay(operational_url)
+    upgrade_runtime_overlay(operational_url, RUNTIME_OVERLAY_REVISION)
     assert observed_overlay_state(operational_url)["overlay_revision"] == RUNTIME_OVERLAY_REVISION
+
+
+# --------------------------------------------------------------------------- #
+# r0002: the privilege corrective
+# --------------------------------------------------------------------------- #
+def test_the_corrective_takes_back_exactly_the_two_identity_table_grants(operational_url: str):
+    upgrade_runtime_overlay(operational_url, RUNTIME_OVERLAY_REVISION)
+    at_r0001 = _snapshot(operational_url)
+    upgrade_runtime_overlay(operational_url, R0002_REVISION)
+    at_r0002 = _snapshot(operational_url)
+
+    assert sorted(set(at_r0001["grants"]) - set(at_r0002["grants"])) == [
+        "catalog.dataset_registry:minos_live:SELECT",
+        "profiling.bam_profiles:minos_live:SELECT",
+    ]
+    assert sorted(set(at_r0002["grants"]) - set(at_r0001["grants"])) == [
+        "public.alembic_version:minos_live:SELECT",
+        "runtime.alembic_version_runtime:minos_live:SELECT",
+    ]
+    # the decision schema itself is untouched: this revision is about privilege only
+    assert at_r0002["columns"] == at_r0001["columns"]
+    assert at_r0002["constraints"] == at_r0001["constraints"]
+    assert at_r0002["indexes"] == at_r0001["indexes"]
+
+
+def test_the_full_lifecycle_restores_every_boundary_exactly(operational_url: str):
+    """0005 -> r0001 -> r0002 -> r0001 -> base, compared at each expected boundary."""
+    at_0005 = _snapshot(operational_url)
+    upgrade_runtime_overlay(operational_url, RUNTIME_OVERLAY_REVISION)
+    at_r0001 = _snapshot(operational_url)
+    upgrade_runtime_overlay(operational_url, R0002_REVISION)
+    at_r0002 = _snapshot(operational_url)
+
+    downgrade_runtime_overlay(operational_url, RUNTIME_OVERLAY_REVISION)
+    assert _snapshot(operational_url) == at_r0001
+    assert observed_overlay_state(operational_url)["overlay_revision"] == RUNTIME_OVERLAY_REVISION
+
+    downgrade_runtime_overlay(operational_url, "base")
+    assert _snapshot(operational_url) == at_0005
+    assert observed_overlay_state(operational_url)["overlay_revision"] is None
+
+    # and the whole chain re-applies to exactly the same head state
+    upgrade_runtime_overlay(operational_url)
+    assert _snapshot(operational_url) == at_r0002
+    assert (
+        observed_overlay_state(operational_url)["overlay_revision"] == RUNTIME_OVERLAY_HEAD_REVISION
+    )
+
+
+def test_the_corrective_drops_its_function_on_downgrade(operational_url: str):
+    upgrade_runtime_overlay(operational_url)
+    engine = create_engine(normalize_database_url(operational_url))
+    try:
+
+        def _functions() -> list[str]:
+            with engine.connect() as conn:
+                return sorted(
+                    str(r[0])
+                    for r in conn.execute(
+                        text(
+                            "SELECT proname FROM pg_proc p JOIN pg_namespace n "
+                            "ON n.oid = p.pronamespace WHERE n.nspname = 'runtime'"
+                        )
+                    )
+                )
+
+        assert _functions() == ["l2h_resolve_owned_profile"]
+        downgrade_runtime_overlay(operational_url, RUNTIME_OVERLAY_REVISION)
+        assert _functions() == []
+    finally:
+        engine.dispose()
+
+
+def test_the_corrective_head_is_what_upgrade_head_reaches(operational_url: str):
+    upgrade_runtime_overlay(operational_url)
+    assert (
+        observed_overlay_state(operational_url)["overlay_revision"]
+        == RUNTIME_OVERLAY_HEAD_REVISION
+        == R0002_REVISION
+    )
+    assert R0002_FROZEN_INVENTORY["down_revision"] == RUNTIME_OVERLAY_REVISION
+
+
+@pytest.mark.parametrize(
+    "revision",
+    ["0001_l2b_initial", "0020_l2f2_phase_c_execution", "0026_l2f2_phase_d_closure"],
+)
+def test_the_corrective_also_refuses_a_foreign_schema(pg_base_url: str, revision: str):
+    with scratch_database(pg_base_url, "minos_l2h_foreign_r2") as url:
+        alembic_upgrade(url, revision)
+        with pytest.raises(REFUSALS):
+            upgrade_runtime_overlay(url)
+        engine = create_engine(normalize_database_url(url))
+        try:
+            with engine.connect() as conn:
+                assert runtime_overlay_revision(conn) is None
+                assert (
+                    conn.execute(
+                        text("SELECT to_regclass('runtime.l2h_resolve_owned_profile')")
+                    ).scalar()
+                    is None
+                )
+        finally:
+            engine.dispose()
 
 
 @pytest.mark.parametrize(
@@ -156,7 +265,7 @@ def test_the_overlay_refuses_every_schema_that_is_not_the_accepted_one(
     with scratch_database(pg_base_url, "minos_l2h_foreign") as url:
         alembic_upgrade(url, revision)
         with pytest.raises(REFUSALS):
-            upgrade_runtime_overlay(url)
+            upgrade_runtime_overlay(url, RUNTIME_OVERLAY_REVISION)
         engine = create_engine(normalize_database_url(url))
         try:
             with engine.connect() as conn:
@@ -189,7 +298,7 @@ def test_the_overlay_refuses_a_table_that_already_holds_decisions(operational_ur
                 )
             )
         with pytest.raises(REFUSALS):
-            upgrade_runtime_overlay(operational_url)
+            upgrade_runtime_overlay(operational_url, RUNTIME_OVERLAY_REVISION)
         with engine.connect() as conn:
             assert runtime_overlay_revision(conn) is None
     finally:
@@ -197,7 +306,7 @@ def test_the_overlay_refuses_a_table_that_already_holds_decisions(operational_ur
 
 
 def test_the_overlay_objects_are_owned_by_the_non_superuser_admin_role(operational_url: str):
-    upgrade_runtime_overlay(operational_url)
+    upgrade_runtime_overlay(operational_url, RUNTIME_OVERLAY_REVISION)
     engine = create_engine(normalize_database_url(operational_url))
     try:
         with engine.connect() as conn:
@@ -240,7 +349,7 @@ def test_the_overlay_objects_are_owned_by_the_non_superuser_admin_role(operation
 
 def test_the_database_refuses_a_row_that_disagrees_with_its_own_manifest(operational_url: str):
     """The manifest bindings are CHECK constraints, not writer discipline."""
-    upgrade_runtime_overlay(operational_url)
+    upgrade_runtime_overlay(operational_url, RUNTIME_OVERLAY_REVISION)
     engine = create_engine(normalize_database_url(operational_url))
     base = {
         "round_id": "r-1",
@@ -309,7 +418,7 @@ def test_the_database_refuses_a_row_that_disagrees_with_its_own_manifest(operati
 
 
 def test_safe_mode_can_never_imply_that_a_contextual_model_executed(operational_url: str):
-    upgrade_runtime_overlay(operational_url)
+    upgrade_runtime_overlay(operational_url, RUNTIME_OVERLAY_REVISION)
     engine = create_engine(normalize_database_url(operational_url))
     try:
         with (

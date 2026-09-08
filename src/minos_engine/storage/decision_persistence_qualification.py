@@ -29,10 +29,15 @@ import sqlalchemy as sa
 from minos_engine.common.errors import MinosEngineError
 from minos_engine.layer2.contracts import ControlMode
 from minos_engine.storage.runtime_decision_contract import (
+    LIVE_PROFILE_RESOLVER,
+    LIVE_PROFILE_RESOLVER_SIGNATURE,
+    R0002_REVISION,
     REQUIRED_MAIN_REVISION,
+    RUNTIME_OVERLAY_HEAD_REVISION,
     RUNTIME_OVERLAY_REVISION,
     RUNTIME_OVERLAY_SCHEMA,
     runtime_overlay_contract_hash,
+    runtime_overlay_head_contract_hash,
 )
 
 __all__ = [
@@ -49,17 +54,49 @@ __all__ = [
     "verify_persistence_report",
 ]
 
-PERSISTENCE_QUALIFICATION_SCHEMA: Final = "l2h-decision-persistence-qualification-v1"
-PERSISTENCE_QUALIFICATION_DOMAIN: Final = "minos:l2h-decision-persistence-qualification:v1\n"
+PERSISTENCE_QUALIFICATION_SCHEMA: Final = "l2h-decision-persistence-qualification-v2"
+PERSISTENCE_QUALIFICATION_DOMAIN: Final = "minos:l2h-decision-persistence-qualification:v2\n"
 DECISION_PERSISTENCE_QUALIFICATION_PATH: Final = (
-    "reports/layer2/l2h-decision-persistence-qualification-v1.json"
+    "reports/layer2/l2h-decision-persistence-qualification-v2.json"
 )
-QUALIFICATION_TOOL_VERSION: Final = "l2h-decision-persistence-qualifier-v1"
+QUALIFICATION_TOOL_VERSION: Final = "l2h-decision-persistence-qualifier-v2"
+
+#: v1 stands on disk as historical evidence and is never edited. It is superseded because it
+#: certified a privilege surface it had only measured, not bounded: the SQL recorder showed the
+#: code never scanned the raw identity tables, which is not the same claim as the live role being
+#: unable to. It was never accepted for service activation.
+HISTORICAL_V1_PATH: Final = "reports/layer2/l2h-decision-persistence-qualification-v1.json"
+SUPERSEDED_QUALIFICATIONS: Final[tuple[dict[str, str], ...]] = (
+    {
+        "schema": "l2h-decision-persistence-qualification-v1",
+        "identity": "e88f6cf83063905e1608c9583185b30d09f9943e3abfa92a0508858f8d617f20",
+        "file_sha256": "9bb98d5106f239e596715d79e91c8dee2055b2cc3f2b2a860eb625b2b5400775",
+        "reason": (
+            "it derived least privilege from observed query behaviour rather than from database "
+            "capability, and so certified r0001's raw SELECT grants on profiling.bam_profiles "
+            "and catalog.dataset_registry -- which let the live role enumerate the profile "
+            "identities of every partition, TEST included"
+        ),
+        "status": "SUPERSEDED_BEFORE_SERVICE_ACTIVATION_NEVER_ACCEPTED_FOR_PROMOTION",
+    },
+)
 
 #: Every check must be true for PASS. Named here so a caller cannot supply its own check set.
 MANDATORY_CHECKS: Final[tuple[str, ...]] = (
     "accepted_safe_controller_frozen_gate",
     "execution_source_is_a_real_checkout",
+    # --- capability, not behaviour: the corrective this qualification exists for -------------
+    "live_role_cannot_enumerate_profile_table",
+    "live_role_cannot_enumerate_registry_table",
+    "live_role_cannot_read_any_partition_bearing_relation",
+    "live_role_can_resolve_one_owned_profile",
+    "public_cannot_execute_profile_resolver",
+    "nonlive_roles_cannot_execute_profile_resolver",
+    "resolver_security_definer_is_hardened",
+    "resolver_refuses_absent_arguments",
+    "campaign_executed_under_the_live_role",
+    "overlay_head_is_the_corrective_revision",
+    "corrective_downgrade_restores_the_prior_revision",
     "exact_operational_schema_prerequisite",
     "exact_runtime_overlay_identity",
     "overlay_refuses_a_foreign_schema",
@@ -94,12 +131,23 @@ MANDATORY_CHECKS: Final[tuple[str, ...]] = (
 #: an isolation violation, whatever it claims to be for.
 ALLOWED_RELATIONS: Final[frozenset[str]] = frozenset(
     {
-        "catalog.dataset_registry",
         "catalog.gatk_configs",
-        "profiling.bam_profiles",
+        # the narrow lookup surface -- NOT the raw identity tables it replaced
+        "runtime.l2h_resolve_owned_profile",
         "public.alembic_version",
         "runtime.alembic_version_runtime",
         "runtime.decisions",
+    }
+)
+
+#: Relations the live path must not so much as name. The first two are the raw identity tables
+#: r0001 granted and r0002 takes back.
+FORBIDDEN_RELATIONS: Final[frozenset[str]] = frozenset(
+    {
+        "catalog.dataset_registry",
+        "profiling.bam_profiles",
+        "profiling.profile_snapshot_members",
+        "evaluation.sealed_test_profile_members",
     }
 )
 
@@ -116,6 +164,8 @@ FORBIDDEN_SQL_TOKENS: Final[tuple[str, ...]] = (
     "mutation",
     "experiments.",
     "models.model_bundles",
+    "profiling.bam_profiles",
+    "catalog.dataset_registry",
 )
 
 
@@ -152,7 +202,9 @@ class TrustedPersistenceQualification:
 # --------------------------------------------------------------------------- #
 # SQL observation
 # --------------------------------------------------------------------------- #
-_RELATION = re.compile(r"\b(?:FROM|JOIN|INTO|UPDATE)\s+([a-z_]+)\.([a-z_]+)", re.IGNORECASE)
+_RELATION = re.compile(
+    r"\b(?:FROM|JOIN|INTO|UPDATE)\s+([a-z_][a-z0-9_]*)\.([a-z_][a-z0-9_]*)", re.IGNORECASE
+)
 
 
 class StatementRecorder:
@@ -191,19 +243,23 @@ class StatementRecorder:
         for token in FORBIDDEN_SQL_TOKENS:
             if token in lowered:
                 self.forbidden_tokens.append(token)
-        if "profiling.bam_profiles" in lowered:
-            # the production profile table also holds VALIDATION and TEST members: it may only
-            # ever be opened by name, never scanned, counted or filtered.
-            if "where p.profile_id = " not in lowered:
-                self.unqualified_scans.append(lowered[:120])
-            if isinstance(parameters, dict) and "pid" in parameters:
-                self.profile_ids.add(str(parameters["pid"]))
+        if "profiling.bam_profiles" in lowered or "catalog.dataset_registry" in lowered:
+            # after r0002 the live role cannot read these at all; naming one is a finding.
+            self.unqualified_scans.append(lowered[:120])
+        # the narrow surface takes an exact profile id: record which ones were asked for.
+        if (
+            LIVE_PROFILE_RESOLVER in lowered
+            and isinstance(parameters, dict)
+            and "profile_id" in parameters
+        ):
+            self.profile_ids.add(str(parameters["profile_id"]))
 
     def content(self) -> dict[str, Any]:
         return {
             "observed_statements": self.statements,
             "observed_relations": sorted(self.relations),
             "relations_outside_the_allowed_set": sorted(self.relations - ALLOWED_RELATIONS),
+            "forbidden_relations_named": sorted(self.relations & FORBIDDEN_RELATIONS),
             "unqualified_profile_scans": len(self.unqualified_scans),
             "forbidden_sql_tokens_seen": sorted(set(self.forbidden_tokens)),
             "distinct_profiles_opened_by_name": len(self.profile_ids),
@@ -211,6 +267,24 @@ class StatementRecorder:
             "profiles_opened_outside_the_train_corpus": sorted(self.profile_ids - self.corpus_ids),
             "declared_negative_probes": sorted(self.negative_probes),
         }
+
+
+def _live_role_url(url: str) -> str:
+    """The same database, reached on a connection that has assumed ``minos_live``.
+
+    ``minos_live`` is NOLOGIN by design, so a deployment connects as a login role that is a
+    member of it. ``options=-c role=minos_live`` reproduces exactly that: the session's effective
+    role is the live role, and every statement is bounded by its grants.
+    """
+    from sqlalchemy.engine import make_url
+
+    from minos_engine.storage.database import normalize_database_url
+
+    return (
+        make_url(normalize_database_url(url))
+        .update_query_dict({"options": "-c role=minos_live"})
+        .render_as_string(hide_password=False)
+    )
 
 
 def _attach(engine: Any, recorder: StatementRecorder) -> None:
@@ -342,10 +416,13 @@ _APPLICATION_SCHEMAS: Final = (
     "runtime",
     "audit",
 )
+#: The application schemas plus ``public``, where Alembic keeps the two version tables the
+#: live path reads. A grant snapshot blind to ``public`` cannot see the whole matrix.
+_GRANT_SCAN_SCHEMAS: Final = (*_APPLICATION_SCHEMAS, "public")
 _APPLICATION_GRANTS: Final = (
     "SELECT table_schema, table_name, grantee, privilege_type "
     "FROM information_schema.role_table_grants WHERE grantee LIKE 'minos_%' "
-    "AND table_schema IN (" + ", ".join(f"'{s}'" for s in _APPLICATION_SCHEMAS) + ")"
+    "AND table_schema IN (" + ", ".join(f"'{s}'" for s in _GRANT_SCAN_SCHEMAS) + ")"
 )
 
 
@@ -472,6 +549,147 @@ def _overlay_refusal_drill(url: str, *, root: Any) -> dict[str, Any]:
     return {"refused": bool(error), "error": error, "applied": applied, "added_columns": columns}
 
 
+#: Every way a role could try to LIST the raw identity tables. All must be refused by privilege.
+ENUMERATION_PROBES: Final[tuple[tuple[str, str], ...]] = (
+    ("profile_select_star", "SELECT * FROM profiling.bam_profiles"),
+    ("profile_count", "SELECT count(*) FROM profiling.bam_profiles"),
+    ("profile_single_column", "SELECT profile_id FROM profiling.bam_profiles LIMIT 1"),
+    ("profile_exists", "SELECT EXISTS (SELECT 1 FROM profiling.bam_profiles)"),
+    ("registry_select_star", "SELECT * FROM catalog.dataset_registry"),
+    ("registry_count", "SELECT count(*) FROM catalog.dataset_registry"),
+    ("registry_single_column", "SELECT round_id FROM catalog.dataset_registry LIMIT 1"),
+)
+
+#: Other partition-bearing relations the live role must not reach either. The sealed TEST view is
+#: probed the ONLY safe way: by asking whether the privilege exists, never by reading a row.
+PARTITION_BEARING_RELATIONS: Final[tuple[str, ...]] = (
+    "profiling.bam_profiles",
+    "profiling.profile_snapshot_members",
+    "profiling.training_profile_members",
+    "catalog.dataset_registry",
+    "catalog.split_allocations",
+    "evaluation.sealed_test_profile_members",
+    "evaluation.validation_profile_members",
+)
+
+
+def _capability_audit(*, live_engine: Any, admin_engine: Any) -> dict[str, Any]:
+    """What the LIVE ROLE can do, executed as the live role on its own connection.
+
+    This is the correction. v1 attached a recorder to the engine and showed the code never
+    scanned the raw identity tables; that is a fact about the code, and it left untouched the
+    fact that ``SET ROLE minos_live; SELECT * FROM profiling.bam_profiles`` returned every
+    identity in the store. Here each probe is actually run under the live role and must come back
+    with SQLSTATE 42501 -- a privilege refusal, not a constraint failure and not an empty result.
+    """
+    refusals: dict[str, str] = {}
+    for name, sql in ENUMERATION_PROBES:
+        with live_engine.connect() as conn:
+            try:
+                conn.execute(sa.text(sql))
+                refusals[name] = "NOT_REFUSED"
+            except Exception as error:
+                refusals[name] = str(getattr(getattr(error, "orig", None), "sqlstate", "unknown"))
+    # the sealed relations are probed by PRIVILEGE, never by reading a row: asking PostgreSQL
+    # whether the grant exists tells us what we need and observes no identity at all.
+    with admin_engine.connect() as conn:
+        readable = sorted(
+            relation
+            for relation in PARTITION_BEARING_RELATIONS
+            if conn.execute(
+                sa.text("SELECT has_table_privilege('minos_live', :r, 'SELECT')"),
+                {"r": relation},
+            ).scalar()
+        )
+        resolver = (
+            conn.execute(
+                sa.text(
+                    "SELECT pg_get_userbyid(p.proowner), p.prosecdef, p.proconfig::text, "
+                    "l.lanname, p.prosrc, coalesce(p.proacl::text, '') "
+                    "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+                    "JOIN pg_language l ON l.oid = p.prolang "
+                    "WHERE n.nspname = :schema AND p.proname = :name"
+                ),
+                {
+                    "schema": LIVE_PROFILE_RESOLVER.split(".")[0],
+                    "name": LIVE_PROFILE_RESOLVER.split(".")[1],
+                },
+            )
+            .mappings()
+            .first()
+        )
+        _require(resolver is not None, "the narrow live lookup surface does not exist")
+        assert resolver is not None
+        body = str(resolver["prosrc"])
+        executors = {
+            role: bool(
+                conn.execute(
+                    sa.text("SELECT has_function_privilege(:r, :f, 'EXECUTE')"),
+                    {"r": role, "f": LIVE_PROFILE_RESOLVER_SIGNATURE},
+                ).scalar()
+            )
+            for role in ("public", "minos_live", "minos_runner", "minos_evaluator", "minos_trainer")
+        }
+    denied_execute: dict[str, str] = {}
+    for role in ("minos_runner", "minos_evaluator", "minos_trainer"):
+        with admin_engine.connect() as conn:
+            transaction = conn.begin()
+            try:
+                conn.execute(sa.text(f"SET ROLE {role}"))
+                conn.execute(sa.text(f"SELECT * FROM {LIVE_PROFILE_RESOLVER}('probe', 'probe')"))
+                denied_execute[role] = "NOT_REFUSED"
+            except Exception as error:
+                denied_execute[role] = str(
+                    getattr(getattr(error, "orig", None), "sqlstate", "unknown")
+                )
+            finally:
+                transaction.rollback()
+    absent: dict[str, str] = {}
+    for label, arguments in (
+        ("both_null", "NULL, NULL"),
+        ("both_empty", "'', ''"),
+        ("profile_null", "NULL, 'a-round'"),
+        ("round_empty", "'a-profile', ''"),
+    ):
+        with live_engine.connect() as conn:
+            try:
+                conn.execute(sa.text(f"SELECT * FROM {LIVE_PROFILE_RESOLVER}({arguments})"))
+                absent[label] = "NOT_REFUSED"
+            except Exception as error:
+                absent[label] = str(getattr(getattr(error, "orig", None), "sqlstate", "unknown"))
+    with live_engine.connect() as conn:
+        unknown_rows = len(
+            conn.execute(
+                sa.text(f"SELECT * FROM {LIVE_PROFILE_RESOLVER}(:p, :r)"),
+                {"p": "0" * 32, "r": "a-round-that-does-not-exist"},
+            ).all()
+        )
+        live_role = str(conn.execute(sa.text("SELECT current_user")).scalar())
+    return {
+        "enumeration_probe_sqlstates": dict(sorted(refusals.items())),
+        "partition_bearing_relations_probed": list(PARTITION_BEARING_RELATIONS),
+        "partition_bearing_relations_readable_by_live": readable,
+        "resolver": {
+            "name": LIVE_PROFILE_RESOLVER,
+            "signature": LIVE_PROFILE_RESOLVER_SIGNATURE,
+            "owner": str(resolver["pg_get_userbyid"]),
+            "security_definer": bool(resolver["prosecdef"]),
+            "search_path_setting": str(resolver["proconfig"]),
+            "language": str(resolver["lanname"]),
+            "uses_dynamic_sql": any(
+                token in body.upper() for token in ("EXECUTE ", "FORMAT(", "QUOTE_IDENT")
+            ),
+            "returns_at_most_one_row": "cardinality_violation" in body,
+            "refuses_absent_arguments": "null_value_not_allowed" in body,
+            "execute_privilege": dict(sorted(executors.items())),
+            "nonlive_execute_sqlstates": dict(sorted(denied_execute.items())),
+            "absent_argument_sqlstates": dict(sorted(absent.items())),
+            "unknown_profile_row_count": unknown_rows,
+        },
+        "campaign_connection_role": live_role,
+    }
+
+
 def _no_truth_or_scoring_imports(root: Any) -> dict[str, Any]:
     """AST proof that the write path imports nothing that reads truth or computes a score."""
     import ast
@@ -566,9 +784,13 @@ def run_decision_persistence_qualification(
     }
     observation["persistence_schema"] = {
         "overlay_schema": RUNTIME_OVERLAY_SCHEMA,
-        "overlay_revision": RUNTIME_OVERLAY_REVISION,
-        "overlay_contract_hash": runtime_overlay_contract_hash(base),
+        "overlay_base_revision": RUNTIME_OVERLAY_REVISION,
+        "overlay_head_revision": RUNTIME_OVERLAY_HEAD_REVISION,
+        "overlay_base_contract_hash": runtime_overlay_contract_hash(base),
+        "overlay_head_contract_hash": runtime_overlay_head_contract_hash(base),
         "requires_main_revision": REQUIRED_MAIN_REVISION,
+        "live_lookup_surface": LIVE_PROFILE_RESOLVER_SIGNATURE,
+        "supersedes": [dict(sorted(entry.items())) for entry in SUPERSEDED_QUALIFICATIONS],
     }
 
     def _alembic(url: str, revision: str) -> None:
@@ -593,7 +815,8 @@ def run_decision_persistence_qualification(
         before_engine.dispose()
     observation["state_before_overlay"] = observed_overlay_state(target_url)
 
-    upgrade_runtime_overlay(target_url, root=base)
+    # r0001 first, so the corrective's effect on the privilege matrix is an observed DIFF
+    upgrade_runtime_overlay(target_url, RUNTIME_OVERLAY_REVISION, root=base)
     observation["state_after_overlay"] = observed_overlay_state(target_url)
 
     engine = create_db_engine(target_url)
@@ -603,7 +826,23 @@ def run_decision_persistence_qualification(
             post_overlay = _schema_snapshot(conn)
         observation["schema_after_overlay"] = post_overlay
 
-        # ---- 4. downgrade is exact, then re-upgrade ---------------------------------------
+        upgrade_runtime_overlay(target_url, R0002_REVISION, root=base)
+        with engine.connect() as conn:
+            post_corrective = _schema_snapshot(conn)
+        observation["state_after_corrective"] = observed_overlay_state(target_url)
+        observation["corrective"] = {
+            "revision": R0002_REVISION,
+            "grants_revoked": sorted(set(post_overlay["grants"]) - set(post_corrective["grants"])),
+            "grants_added": sorted(set(post_corrective["grants"]) - set(post_overlay["grants"])),
+            "columns_unchanged": post_corrective["columns"] == post_overlay["columns"],
+            "constraints_unchanged": post_corrective["constraints"] == post_overlay["constraints"],
+            "indexes_unchanged": post_corrective["indexes"] == post_overlay["indexes"],
+        }
+
+        # ---- 4. every downgrade boundary is exact -----------------------------------------
+        downgrade_runtime_overlay(target_url, RUNTIME_OVERLAY_REVISION, root=base)
+        with engine.connect() as conn:
+            back_to_r0001 = _schema_snapshot(conn)
         downgrade_runtime_overlay(target_url, root=base)
         with engine.connect() as conn:
             reverted = _schema_snapshot(conn)
@@ -612,12 +851,21 @@ def run_decision_persistence_qualification(
             and reverted["constraints"] == pre_overlay["constraints"]
             and reverted["indexes"] == pre_overlay["indexes"],
             "grants_restored": reverted["grants"] == pre_overlay["grants"],
+            "corrective_restores_the_prior_revision": back_to_r0001 == post_overlay,
             "grant_shape_before": pre_overlay["grants"],
             "grant_shape_after_overlay": post_overlay["grants"],
+            "grant_shape_after_corrective": post_corrective["grants"],
         }
         upgrade_runtime_overlay(target_url, root=base)
+        observation["state_final_overlay"] = observed_overlay_state(target_url)
 
         # ---- 5. the two prerequisites the LIVE path must not provision itself -------------
+        # From here the write path runs on a connection that has ASSUMED minos_live, so every
+        # statement it issues is bounded by the live role's actual grants rather than by a
+        # superuser's. v1 ran the whole campaign as the owner, which is why it could not have
+        # noticed that the live role cannot even read the two schema-version tables.
+        live_engine = create_db_engine(_live_role_url(target_url))
+        _attach(live_engine, recorder)
         authority = load_verified_safe_baseline_authority(
             repo_root=base, config_payload_root=config_payload_root
         )
@@ -634,7 +882,7 @@ def run_decision_persistence_qualification(
                     request=request,
                     authority=authority,
                     ownership=ownership,
-                    engine=engine,
+                    engine=live_engine,
                     root=base,
                 )
 
@@ -672,7 +920,6 @@ def run_decision_persistence_qualification(
             # ---- 6. the real campaign: every accepted decision, persisted ------------------
             # One round is HELD BACK for the failure drills, so no drill ever has to delete or
             # rewrite a decision the campaign made.
-            _attach(engine, recorder)
             drill_round, campaign_rounds = rounds[0], rounds[1:]
             modes = tuple(ControlMode)
             persisted: list[Any] = []
@@ -713,7 +960,7 @@ def run_decision_persistence_qualification(
 
             # ---- 7. the held-back round: rollback, retry, concurrency, conflict -------------
             observation["rollback"] = _rollback_drill(
-                engine=engine, persist=_persist, round_id=drill_round
+                engine=live_engine, admin_engine=engine, persist=_persist, round_id=drill_round
             )
             first = _persist(drill_round, ControlMode.SAFE_BASELINE)
             retry = _persist(drill_round, ControlMode.SAFE_BASELINE)
@@ -724,7 +971,7 @@ def run_decision_persistence_qualification(
                 "same_decision_hash": retry.decision_hash == first.decision_hash,
             }
             observation["concurrency"] = _concurrent_identical_writers(
-                persist=_persist, round_id=drill_round, engine=engine
+                persist=_persist, round_id=drill_round, engine=live_engine
             )
             observation["conflict"] = _conflict_drills(
                 engine=engine,
@@ -737,12 +984,12 @@ def run_decision_persistence_qualification(
             #: the two decisions the drills legitimately added on the held-back round
             observation["drill_rows_added"] = 2
 
-            # ---- 8. the two resolvers, driven off their proven inputs ---------------------
-            with engine.connect() as conn:
+            # ---- 8. the two resolvers, driven off their proven inputs, AS THE LIVE ROLE ----
+            with live_engine.connect() as conn:
                 owned = ownership.owned(rounds[0])
                 observation["profile_binding"] = {
                     "resolved_by": "profile_id",
-                    "production_table": "profiling.bam_profiles",
+                    "lookup_surface": LIVE_PROFILE_RESOLVER,
                     "cross_checked_profile_fields": [c for c, _ in PROFILE_IDENTITY_FIELDS],
                     "cross_checked_registry_fields": [c for c, _ in REGISTRY_IDENTITY_FIELDS],
                     "resolved": bool(resolve_owned_profile_row(conn, owned=owned)),
@@ -781,6 +1028,10 @@ def run_decision_persistence_qualification(
         observation.update(sealed.content())
         observation["sql_observation"] = recorder.content()
         observation["privileges"] = _privilege_audit(engine)
+        observation["capabilities"] = _capability_audit(
+            live_engine=live_engine, admin_engine=engine
+        )
+        live_engine.dispose()
         observation["final_state"] = observed_overlay_state(target_url)
         with engine.connect() as conn:
             observation["final_row_count"] = int(
@@ -988,7 +1239,9 @@ def _conflict_drills(
     return outcome
 
 
-def _rollback_drill(*, engine: Any, persist: Any, round_id: str) -> dict[str, Any]:
+def _rollback_drill(
+    *, engine: Any, admin_engine: Any, persist: Any, round_id: str
+) -> dict[str, Any]:
     """Inject a real driver-level failure after the INSERT. Nothing may become visible."""
     from sqlalchemy import event
 
@@ -1009,7 +1262,7 @@ def _rollback_drill(*, engine: Any, persist: Any, round_id: str) -> dict[str, An
             armed["fired"] = True
             raise RuntimeError("injected failure after INSERT, before COMMIT")
 
-    with engine.connect() as probe:
+    with admin_engine.connect() as probe:
         before = int(
             probe.execute(sa.select(sa.func.count()).select_from(decisions_table)).scalar() or 0
         )
@@ -1022,7 +1275,7 @@ def _rollback_drill(*, engine: Any, persist: Any, round_id: str) -> dict[str, An
     finally:
         armed["on"] = False
         event.remove(engine, "before_cursor_execute", _poison)
-    with engine.connect() as probe:
+    with admin_engine.connect() as probe:
         after = int(
             probe.execute(sa.select(sa.func.count()).select_from(decisions_table)).scalar() or 0
         )
@@ -1085,9 +1338,7 @@ def _privilege_audit(engine: Any) -> dict[str, Any]:
                 sa.text(
                     "SELECT table_schema, table_name, privilege_type FROM "
                     "information_schema.role_table_grants WHERE grantee = 'minos_live' "
-                    "AND table_schema IN ("
-                    + ", ".join(f"'{s}'" for s in _APPLICATION_SCHEMAS)
-                    + ")"
+                    "AND table_schema IN (" + ", ".join(f"'{s}'" for s in _GRANT_SCAN_SCHEMAS) + ")"
                 )
             )
         )
@@ -1108,8 +1359,7 @@ def _privilege_audit(engine: Any) -> dict[str, Any]:
         live_can_read_profile = _permitted(
             conn,
             "minos_live",
-            "SELECT p.id FROM profiling.bam_profiles p JOIN catalog.dataset_registry r "
-            "ON r.id = p.dataset_registry_id LIMIT 1",
+            f"SELECT * FROM {LIVE_PROFILE_RESOLVER}('a-profile', 'a-round')",
         )
         denials = {
             "live_update_decisions": _denied(
@@ -1181,16 +1431,17 @@ def _privilege_audit(engine: Any) -> dict[str, Any]:
                 )
             )
         )
-        definer = int(
-            conn.execute(
+        definer = sorted(
+            str(r[0])
+            for r in conn.execute(
                 sa.text(
-                    "SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+                    "SELECT n.nspname || '.' || p.proname "
+                    "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
                     "WHERE p.prosecdef AND n.nspname IN ("
                     + ", ".join(f"'{s}'" for s in _APPLICATION_SCHEMAS)
                     + ")"
                 )
-            ).scalar()
-            or 0
+            )
         )
         owner = str(
             conn.execute(
@@ -1217,6 +1468,7 @@ def _privilege_audit(engine: Any) -> dict[str, Any]:
         "denials": dict(sorted(denials.items())),
         "public_table_grants_in_application_schemas": public,
         "security_definer_functions": definer,
+        "security_definer_function_count": len(definer),
         "decisions_table_owner": owner,
         "owner_is_superuser": owner_is_superuser,
     }
@@ -1244,7 +1496,15 @@ def derive_checks(observation: dict[str, Any]) -> dict[str, bool]:
     privileges = observation.get("privileges", {})
     sql = observation.get("sql_observation", {})
     refusals = observation.get("overlay_refusals", {})
+    capabilities = observation.get("capabilities", {})
+    resolver = capabilities.get("resolver", {})
+    probes = capabilities.get("enumeration_probe_sqlstates", {})
+    corrective = observation.get("corrective", {})
     count = int(observation.get("decision_count", 0))
+
+    def _all_refused(names: tuple[str, ...]) -> bool:
+        """Every probe must come back INSUFFICIENT PRIVILEGE -- not empty, not a constraint."""
+        return bool(names) and all(probes.get(name) == _INSUFFICIENT_PRIVILEGE for name in names)
 
     return {
         "accepted_safe_controller_frozen_gate": (
@@ -1258,6 +1518,78 @@ def derive_checks(observation: dict[str, Any]) -> dict[str, bool]:
             and str(observation.get("execution_source_commit"))
             != str(observation.get("execution_source_tree"))
         ),
+        # --- capability, not behaviour ---------------------------------------------------
+        "live_role_cannot_enumerate_profile_table": _all_refused(
+            ("profile_select_star", "profile_count", "profile_single_column", "profile_exists")
+        ),
+        "live_role_cannot_enumerate_registry_table": _all_refused(
+            ("registry_select_star", "registry_count", "registry_single_column")
+        ),
+        "live_role_cannot_read_any_partition_bearing_relation": (
+            len(capabilities.get("partition_bearing_relations_probed", [])) >= 7
+            and capabilities.get("partition_bearing_relations_readable_by_live") == []
+        ),
+        "live_role_can_resolve_one_owned_profile": (
+            bool(profile.get("resolved"))
+            and profile.get("lookup_surface") == LIVE_PROFILE_RESOLVER
+            and int(resolver.get("unknown_profile_row_count", -1)) == 0
+            and capabilities.get("campaign_connection_role") == "minos_live"
+        ),
+        "public_cannot_execute_profile_resolver": (
+            resolver.get("execute_privilege", {}).get("public") is False
+            and resolver.get("execute_privilege", {}).get("minos_live") is True
+        ),
+        "nonlive_roles_cannot_execute_profile_resolver": (
+            all(
+                resolver.get("execute_privilege", {}).get(role) is False
+                for role in ("minos_runner", "minos_evaluator", "minos_trainer")
+            )
+            and all(
+                state == _INSUFFICIENT_PRIVILEGE
+                for state in resolver.get("nonlive_execute_sqlstates", {}).values()
+            )
+            and len(resolver.get("nonlive_execute_sqlstates", {})) == 3
+        ),
+        "resolver_security_definer_is_hardened": (
+            resolver.get("owner") == "minos_admin"
+            and resolver.get("security_definer") is True
+            and resolver.get("language") == "plpgsql"
+            and resolver.get("uses_dynamic_sql") is False
+            and resolver.get("returns_at_most_one_row") is True
+            and resolver.get("refuses_absent_arguments") is True
+            and "search_path=pg_catalog, pg_temp" in str(resolver.get("search_path_setting", ""))
+            and privileges.get("owner_is_superuser") is False
+            and privileges.get("security_definer_function_count") == 1
+        ),
+        "resolver_refuses_absent_arguments": (
+            len(resolver.get("absent_argument_sqlstates", {})) == 4
+            and all(
+                state == "22004" for state in resolver.get("absent_argument_sqlstates", {}).values()
+            )
+        ),
+        "campaign_executed_under_the_live_role": (
+            capabilities.get("campaign_connection_role") == "minos_live"
+            and count > 0
+            and sql.get("relations_outside_the_allowed_set") == []
+        ),
+        "overlay_head_is_the_corrective_revision": (
+            observation.get("state_after_overlay", {}).get("overlay_revision")
+            == RUNTIME_OVERLAY_REVISION
+            and observation.get("state_after_corrective", {}).get("overlay_revision")
+            == RUNTIME_OVERLAY_HEAD_REVISION
+            and final.get("overlay_revision") == RUNTIME_OVERLAY_HEAD_REVISION
+            and corrective.get("grants_revoked")
+            == [
+                "catalog.dataset_registry:minos_live:SELECT",
+                "profiling.bam_profiles:minos_live:SELECT",
+            ]
+            and bool(corrective.get("columns_unchanged"))
+            and bool(corrective.get("constraints_unchanged"))
+            and bool(corrective.get("indexes_unchanged"))
+        ),
+        "corrective_downgrade_restores_the_prior_revision": bool(
+            downgrade.get("corrective_restores_the_prior_revision")
+        ),
         "exact_operational_schema_prerequisite": (
             before.get("main_revision") == REQUIRED_MAIN_REVISION
             and after.get("main_revision") == REQUIRED_MAIN_REVISION
@@ -1266,8 +1598,12 @@ def derive_checks(observation: dict[str, Any]) -> dict[str, bool]:
         "exact_runtime_overlay_identity": (
             before.get("overlay_revision") is None
             and after.get("overlay_revision") == RUNTIME_OVERLAY_REVISION
-            and schema.get("overlay_revision") == RUNTIME_OVERLAY_REVISION
-            and len(str(schema.get("overlay_contract_hash", ""))) == 64
+            and schema.get("overlay_head_revision") == RUNTIME_OVERLAY_HEAD_REVISION
+            and len(str(schema.get("overlay_base_contract_hash", ""))) == 64
+            and len(str(schema.get("overlay_head_contract_hash", ""))) == 64
+            and schema.get("overlay_base_contract_hash") != schema.get("overlay_head_contract_hash")
+            and [entry["identity"] for entry in schema.get("supersedes", [])]
+            == [entry["identity"] for entry in SUPERSEDED_QUALIFICATIONS]
         ),
         "overlay_refuses_a_foreign_schema": (
             len(refusals) >= 3
@@ -1297,7 +1633,7 @@ def derive_checks(observation: dict[str, Any]) -> dict[str, bool]:
         ),
         "wrong_safe_config_fails_closed": bool(config.get("wrong_parameter_space_refused")),
         "profile_resolved_from_the_production_table": (
-            profile.get("production_table") == "profiling.bam_profiles"
+            profile.get("lookup_surface") == LIVE_PROFILE_RESOLVER
             and bool(profile.get("resolved"))
             and len(profile.get("cross_checked_profile_fields", [])) >= 10
             and len(profile.get("cross_checked_registry_fields", [])) == 3
@@ -1383,18 +1719,23 @@ def derive_checks(observation: dict[str, Any]) -> dict[str, bool]:
                     "live_read_evaluation",
                 )
             )
-            # the overlay widened the matrix by EXACTLY the two reads it documents
+            # after the corrective the live role holds NO raw identity table
+            and not any(
+                grant.startswith(("catalog.dataset_registry:", "profiling.bam_profiles:"))
+                for grant in privileges.get("minos_live_grants", [])
+            )
             and sorted(
-                set(downgrade.get("grant_shape_after_overlay", []))
+                set(downgrade.get("grant_shape_after_corrective", []))
                 - set(downgrade.get("grant_shape_before", []))
             )
             == [
-                "catalog.dataset_registry:minos_live:SELECT",
-                "profiling.bam_profiles:minos_live:SELECT",
+                "public.alembic_version:minos_live:SELECT",
+                "runtime.alembic_version_runtime:minos_live:SELECT",
             ]
             and privileges.get("decisions_table_owner") == "minos_admin"
             and privileges.get("owner_is_superuser") is False
-            and int(privileges.get("security_definer_functions", -1)) == 0
+            # exactly one SECURITY DEFINER function exists, and it is the narrow lookup surface
+            and privileges.get("security_definer_functions") == [LIVE_PROFILE_RESOLVER]
         ),
         "other_roles_cannot_forge_a_decision": all(
             bool(privileges.get("denials", {}).get(name))
@@ -1413,6 +1754,7 @@ def derive_checks(observation: dict[str, Any]) -> dict[str, bool]:
             and bool(privileges.get("denials", {}).get("live_insert_profiles"))
             and sql.get("relations_outside_the_allowed_set") == []
             and sql.get("forbidden_sql_tokens_seen") == []
+            and sql.get("forbidden_relations_named") == []
         ),
         "no_sealed_partition_access": (
             int(observation.get("forbidden_sealed_path_open_attempts", -1)) == 0
