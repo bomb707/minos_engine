@@ -33,10 +33,11 @@ import re
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from minos_engine.common.canonical_json import canonical_json_str
 from minos_engine.common.errors import ContractValidationError
+from minos_engine.common.genomic_region import validate_round_identifier
 from minos_engine.common.hashing import canonical_hash
 from minos_engine.layer2.feature_registry import (
     production_eligible_fields,
@@ -87,7 +88,7 @@ class InputIntegrityAttestation(BaseModel):
     generator: str = Field(min_length=1)  # e.g. "minos-engine intake attest-input"
     generator_version: str = Field(min_length=1)
     dataset_id: str = Field(min_length=1)
-    round_id: str = Field(min_length=1, pattern=r"^[0-9a-f]+$")
+    round_id: str = Field(min_length=1)
     chromosome: str = Field(min_length=1)
     registry_snapshot_hash: str = Field(min_length=64, max_length=64)
     bam_sha256: str = Field(min_length=64, max_length=64)
@@ -100,6 +101,18 @@ class InputIntegrityAttestation(BaseModel):
     computed_reference_m5: str = Field(min_length=32, max_length=32)
     m5_status: M5Status
     attestation_hash: str = Field(default="")
+
+    @field_validator("round_id")
+    @classmethod
+    def _round_identifier(cls, v: str) -> str:
+        """Hex for the research corpus, ISO-8601 for a live platform round; nothing else.
+
+        The original ``^[0-9a-f]+$`` pattern was written when every round the engine had seen was
+        a research round. The platform issues timestamps, so that pattern made a live attestation
+        impossible to express. Every previously valid value is still valid -- hex is a strict
+        subset -- so no existing artifact changes.
+        """
+        return validate_round_identifier(v)
 
     @model_validator(mode="after")
     def _validate(self) -> InputIntegrityAttestation:

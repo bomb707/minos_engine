@@ -275,6 +275,23 @@ def safe_decision_manifest_content(
     again: a global lookup after minting could name a different checkout than the one that was
     actually verified, which is exactly the kind of seam this controller exists to close.
     """
+    # A LIVE round cannot be represented in THIS manifest version, and the failure is loud.
+    #
+    # Three fields below would silently change meaning: `profile_corpus_identity` names the fifty
+    # member corpus a decision was admitted against and a live round has no corpus at all;
+    # `profile_ownership_anchors` are the TRAIN campaign's anchors -- Phase-A authority, TRAIN
+    # schedule, split manifest, registry snapshot, baseline protocol -- none of which exist for a
+    # live round; and `dataset_id` names a registered research dataset that a live round does not
+    # have. Emitting a v1 manifest with live values in those fields would be exactly the quiet
+    # reinterpretation this engine refuses elsewhere, so a decision-manifest v2 is required and is
+    # deliberately not defined here.
+    _require(
+        getattr(ownership, "scope", "train") == "train",
+        f"{SAFE_DECISION_MANIFEST_SCHEMA} describes a decision admitted against the frozen TRAIN "
+        "corpus; a live-scoped ownership authority needs a decision-manifest v2 because "
+        "profile_corpus_identity, profile_ownership_anchors and dataset_id would otherwise change "
+        "meaning without changing name",
+    )
     proven = owned if owned is not None else ownership.require_owned_request(request)
     policy = authority.policy
     requested = request.requested_mode

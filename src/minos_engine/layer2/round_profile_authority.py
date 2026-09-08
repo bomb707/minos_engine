@@ -61,6 +61,7 @@ __all__ = [
     "PHASE_A_AUTHORITY_PATH",
     "accepted_phase_a_authority_identity",
     "PROFILE_CORPUS_ROOT",
+    "LIVE_PARTITION",
     "TRAIN_SCHEDULE_PATH",
     "OWNERSHIP_DOMAIN",
     "OWNERSHIP_SCHEMA",
@@ -68,6 +69,7 @@ __all__ = [
     "RoundProfileAuthorityError",
     "VerifiedRoundProfileAuthority",
     "load_verified_round_profile_corpus",
+    "mint_verified_ownership",
 ]
 
 OWNERSHIP_SCHEMA: Final = "l2h-round-profile-ownership-v2"
@@ -97,6 +99,11 @@ WINDOWS_ARTIFACT: Final = "window-profile-v1.parquet"
 #: never enters the corpus, a decision, or any published evidence. Widening this is a sealing
 #: decision, not a configuration one, which is why it is a constant rather than an argument.
 ADMITTED_PARTITION: Final = "train"
+
+#: The partition label a LIVE round carries. It is not a research partition and never appears in
+#: the frozen snapshot: a live round is admissible because its inputs authenticate, not because it
+#: was allocated to anything.
+LIVE_PARTITION: Final = "live"
 
 #: The ten identity keys ``validate_admission`` binds an attestation to. Reconstructing exactly
 #: these from verified bytes is what removes the caller from the trust path.
@@ -204,6 +211,15 @@ class VerifiedRoundProfileAuthority:
         self.partition = partition
 
     @property
+    def scope(self) -> str:
+        """``train`` for the frozen research corpus, ``live`` for one authenticated live round.
+
+        Derived from the partition rather than stored, so the TRAIN corpus identity -- which the
+        accepted controller qualification binds -- cannot move because a new scope exists.
+        """
+        return "live" if self.partition == LIVE_PARTITION else "train"
+
+    @property
     def anchors(self) -> dict[str, str]:
         """The already-accepted authorities this corpus hangs from."""
         return dict(self._anchors)
@@ -265,6 +281,32 @@ class VerifiedRoundProfileAuthority:
             "member_count": len(self._by_round),
             "members": [self._by_round[r].content() for r in sorted(self._by_round)],
         }
+
+
+def mint_verified_ownership(
+    *,
+    by_round: dict[str, OwnedRoundProfile],
+    anchors: dict[str, str],
+    corpus_identity: str,
+    partition: str,
+) -> VerifiedRoundProfileAuthority:
+    """Mint the ownership capability from a SECOND verifying factory.
+
+    The controller's trust in ownership is an ``isinstance`` check against a class whose
+    constructor demands a module-private token, and that stays exactly as it is: a dictionary, or
+    any object that merely implements the right methods, is still not an authority. What changes
+    is that there is now more than one way to earn the token -- the frozen TRAIN corpus loader
+    below, and the live-round factory in ``live_round_authority`` -- rather than loosening what
+    the token means. This function is the whole of that widening, and it is deliberately the only
+    export that can reach the token.
+    """
+    return VerifiedRoundProfileAuthority(
+        _CORPUS_TOKEN,
+        by_round=by_round,
+        anchors=anchors,
+        corpus_identity=corpus_identity,
+        partition=partition,
+    )
 
 
 def _read_exact(path: Path, *, expected_sha: str, expected_size: int) -> bytes:
