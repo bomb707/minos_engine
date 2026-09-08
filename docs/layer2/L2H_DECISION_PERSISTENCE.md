@@ -278,6 +278,25 @@ provenance. The pinned constants live in the commit *after* the one that ran the
 nothing identifies itself.
 
 
+## 9a. The accepted persistence authority
+
+`storage/decision_persistence_acceptance.py` (`l2h-decision-persistence-acceptance-v1`) is the
+final authority, and the one a future `Layer2Service` calls. It is production code with no
+test-only dependency, and its constants live in a commit strictly *after* the evidence they pin —
+the same non-circular pattern as `safe_controller_frozen_acceptance`.
+
+It requires: the accepted SAFE-CONTROLLER-FROZEN gate underneath; the qualification's exact bytes
+and exact identity; the qualified source commit **proved against git**, not read from the
+document; the accepted main revision, overlay head revision and both contract hashes (r0001's
+included, so its bytes can never move); the accepted live lookup surface; and, restated from the
+observation, that the campaign ran as `minos_live` and left it able to read no partition-bearing
+relation. The superseded v1 identity is refused by name, so restoring it under the accepted
+filename does not pass.
+
+**Acceptance is not activation.** The verifier returns
+`service_activation_authorised: False` and names the two open prerequisites, so no caller can
+read it as readiness.
+
 ## 10. Where the code lives
 
 `minos_engine.layer2` is the pure decision domain and is forbidden by
@@ -293,6 +312,7 @@ untouched.
 | `storage/runtime_overlay.py` | apply / revert / inspect the overlay lineage |
 | `storage/decision_persistence.py` | the write path |
 | `storage/decision_persistence_qualification.py` | the campaign and its verifier |
+| `storage/decision_persistence_acceptance.py` | the external acceptance authority |
 | `migrations_runtime/` + `alembic_runtime.ini` | the overlay lineage: `r0001` then the `r0002` privilege corrective |
 
 ## 11. What this stage does not do, and what activation still needs
