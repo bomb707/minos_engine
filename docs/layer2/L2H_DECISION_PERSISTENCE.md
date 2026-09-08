@@ -260,6 +260,24 @@ the failure drills on a fiftieth round held back for exactly that purpose, and a
 that executes every enumeration attempt as the live role and requires SQLSTATE `42501`. Forty-one checks, every one derived
 from the observation rather than recorded. No truth, no scores, no VALIDATION, no TEST.
 
+| | |
+|---|---|
+| qualification identity | `7bfd8f9f816a387653125d6be820b8cf05ccf017498009bc7e706d29fd3337b3` |
+| file SHA-256 | `1e54930d571befc9543c351fcd7cf5dbd93f3ef1ac335da716cc615e3970cf6a` (67 453 bytes) |
+| qualified source commit / tree | `c05aad9ca160f6fa975c5230e175385132362656` / `5ffe3d765b2fc8aaa4a850beb8399bfc5d34266d` |
+| overlay head revision | `r0002_l2h_live_profile_lookup` |
+| overlay head contract hash | `2af0f847037039c413c3e3b277839cacd4c10063869f7d1210aa9715c687d120` |
+| r0001 contract hash (unchanged) | `4265fe13583344ebf0f6d1404a9a2fc0e4556096122e060442e5aaf87f8fef25` |
+| accepted SAFE-CONTROLLER-FROZEN | `504e701fe77b651c919ebc015dc6911bbca880613014058979b18ab408f88add` |
+| supersedes | v1 `e88f6cf8…` (file `9bb98d51…`), `SUPERSEDED_BEFORE_SERVICE_ACTIVATION_NEVER_ACCEPTED_FOR_PROMOTION` |
+
+`verify_persistence_report` re-derives all forty-one checks and the status from the observation,
+refuses any operational value (URL, host, path, credential) anywhere in the document, and
+**proves** the qualified source commit against git rather than length-checking it — shape is not
+provenance. The pinned constants live in the commit *after* the one that ran the campaign, so
+nothing identifies itself.
+
+
 ## 10. Where the code lives
 
 `minos_engine.layer2` is the pure decision domain and is forbidden by
