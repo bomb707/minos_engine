@@ -65,79 +65,105 @@ Hex is a strict subset of what was accepted before, so **no existing artifact ch
 The TRAIN loader is **untouched** and still anchors to exactly what it anchored to before. Its
 corpus identity is still `9cc53b5d28c8a8da34c25095362c09d8cb1fb57533ff0a0b3e1fdf7000970b03`.
 
-## 3. The platform receipt is the authority — and a fixture is not the platform
+## 3. The platform receipt is the authority — sealed, not merely typed
 
-Two gaps were closed here in turn. The first attempt let a caller supply a round id, a region and
-four content hashes and checked they agreed with each other; **internal consistency is not
-provenance**. The second demanded a platform receipt but let *any* transport mint one — a fixture,
-and even `/v2/demo/round-status` — so the receipt proved "some allowed transport object returned
-this", not "the authenticated production platform returned this".
+Three rounds of correction landed here. The first attempt let a caller supply a round id, region
+and four hashes and checked they agreed with each other; **internal consistency is not
+provenance**. The second demanded a receipt but let *any* transport mint one, including a fixture
+and `/v2/demo/round-status`. The third separated fixture from production — but
+`ProductionRoundStatusTransport` was still a **public subclassing point**, so a caller could
+subclass it, return any payload, and mint a genuine production receipt. Inheritance is not
+authority.
 
-There are now two capabilities with two private tokens, and neither factory can mint the other's:
-
-| factory | transport it demands | capability | scope |
-|---|---|---|---|
-| `verify_production_round_status` | `ProductionRoundStatusTransport` **and** endpoint exactly `/v2/round-status` | `ProductionRoundStatusReceipt` | `production` |
-| `observe_fixture_round_status` | `FixtureRoundStatusTransport` | `FixtureRoundStatusReceipt` | `fixture` |
-
-Inheriting the base `RoundStatusTransport` grants nothing. `/v2/demo/round-status` is refused by
-name with the reason stated — it is a sandbox that accepts ephemeral keypairs and never writes to
-the live submissions database. Both factories share one `parse_round_status`, so the validation a
-test exercises **is** the production code; a test asserts the two produce identical parsed content.
-
-**The production client (§E).** Accepting any object with `get_round_status` and `keypair` was too
-weak. `SubnetPlatformRoundStatusTransport` now requires the class to be named
-`MinerPlatformClient`, defined in a `platform_client` module, carrying a keypair with an
-`ss58_address`, configured with an **HTTPS** base URL, and **not in demo mode**. This is a
-structural check, not a cryptographic one — it stops casual or accidental substitution, and the
-real guarantee remains that a deployment constructs the genuine client. That limit is stated in
-the module rather than implied.
-
-**What a receipt asserts, precisely.** The miner signs the **request** (`_auth_body`: hotkey
-signature over method, path, body and timestamp, plus a nonce, with `X-Minos-Auth-Version: 2`) and
-the transport is HTTPS-enforced by the subnet client's own constructor. The response body carries
-**no digital signature** — nothing in the subnet verifies one. A receipt asserts exactly: *this
-payload was returned by the configured, HTTPS-protected platform transport in answer to a request
-this miner signed.* Nothing more.
-
-## 4. Downloads are bound to the round they came from
-
-`hash_downloaded_inputs(bam_path, bai_path)` proved only that *some* local files had been hashed.
-A BAM unrelated to the round produced a valid intake and was caught much later, against the
-profile. That is too late: the intake is the scientific identity.
-
-**The engine does not download.** The official miner already does — `neurons/miner.py::_download_bam`
-reads `bam_presigned_url` / `bam_presigned_url_backup` / `bam_index_presigned_url` /
-`bam_index_presigned_url_backup`, prefers a backend via `STORAGE_PRIMARY_BACKEND`, falls back,
-verifies against a platform-published `bam_sha256` when present, and builds the index with
-samtools when no index URL is offered. Reimplementing that would duplicate maintained security
-logic and drag HTTP and S3 clients into this package.
-
-So the seam is a **handoff** that binds *this receipt* → *this URL* → *this local file* → *these
-bytes*:
+The chain is now sealed end to end, each link token-minted:
 
 ```
-accept_production_round_downloads(receipt, bam_source_url, bam_path, bai_source_url, bai_path)
+the REAL utils.platform_client.MinerPlatformClient object
+  -> verify_subnet_platform_client   -> VerifiedProductionPlatformClient
+  -> production_round_status_transport -> ProductionRoundStatusTransport  (@final, sealed)
+  -> verify_production_round_status  -> ProductionRoundStatusReceipt
 ```
 
-* `bam_source_url` must **equal a URL that receipt actually carries** for this round; a source
-  swapped after the round status was received matches no slot and is refused;
-* the file is stream-hashed here, and if the platform published a `bam_sha256` the computed hash
-  must equal it — upstream's own check, re-applied;
-* `bai_source_url=None` records `locally-indexed`, which is what the miner does when the platform
-  offers no index URL — a legitimate provenance, recorded rather than disguised;
-* the result carries `receipt_identity`, so downloads accepted for one round cannot be presented
-  for another;
-* paths must be absolute and not symlinks.
+**Type identity, not names.** `verify_subnet_platform_client` imports the real
+`utils.platform_client.MinerPlatformClient` and checks `isinstance` against **that class object**.
+The previous version matched a class *named* `MinerPlatformClient` in a module *named*
+`platform_client` — and a test constructed exactly that and was accepted. Names are not identity.
+`verify_official_miner` does the same for `neurons.miner.Miner`.
+
+**Fail closed, no fallback.** If the subnet package cannot be imported, the production path
+**refuses** with a message naming `MINOS_SUBNET_ROOT` and stating that it does not fall back to
+matching class names. There is deliberately no structural fallback, because a fallback is exactly
+the hole being closed.
+
+> **Deployment assumption, stated:** the process making live decisions must be able to import the
+> subnet package — installed, on `PYTHONPATH`, or located by `MINOS_SUBNET_ROOT`. A miner already
+> satisfies this, because it *is* the subnet process. In this repository's own environment the
+> package is **not** importable (it needs `bittensor_wallet`), so the production path fails closed
+> here and the test suite exercises that branch rather than spoofing the class.
+
+**Subclassing grants nothing.** `ProductionRoundStatusTransport` is `@final`, its constructor
+demands a module-private token, it carries a seal only that constructor sets, and
+`verify_production_round_status` checks **exact type identity plus the seal** rather than
+`isinstance`. A test dynamically synthesizes a subclass that skips `__init__`, asserts
+`isinstance(...)` *would* have passed, and requires the refusal.
+
+**Endpoint.** The sealed transport hard-codes `/v2/round-status`; it is not a parameter, and the
+class contains no demo route at all. The endpoint remains part of the receipt identity, so a
+response from any other route is a different round status.
+
+**What a receipt asserts, unchanged and not overstated.** The miner signs the **request** (hotkey
+signature over method, path, body and timestamp, plus a nonce, with `X-Minos-Auth-Version: 2`);
+HTTPS authenticates and protects the configured transport; the response body carries **no digital
+signature** — nothing in the subnet verifies one.
+
+## 4. Downloads come from the official miner, not from the caller
+
+The previous API took `bam_source_url` and `bam_path`, checked the URL against the round's offered
+URLs, and hashed whatever file it was pointed at. **Those two facts never met**: nothing proved
+the file came from that URL. A caller could copy an offered URL and hand over any file.
+
+The production API now takes **neither**:
+
+```python
+download_production_round_inputs(receipt, miner)   # exactly these two parameters
+```
+
+It hands the round's own operational data to the maintained
+`neurons.miner.Miner._download_bam`, which selects primary or backup by
+`STORAGE_PRIMARY_BACKEND`, falls back, passes the platform's `bam_sha256` to the verified
+downloader, fetches the index when one is offered and builds it with samtools when it is not — and
+the engine hashes exactly the files that operation produced, at `bam_path` and `bam_path + ".bai"`.
+None of those rules are reimplemented, and the caller chooses none of them. A test asserts the
+signature is exactly `{receipt, miner}` and that `accept_production_round_downloads` no longer
+exists.
+
+Refused: a miner that is not the real type, a download the miner reports as failed, a returned
+path that is not a file, a missing index, and a BAM that does not match the platform's published
+SHA-256.
+
+**Primary and backup URLs** are retained privately on the receipt and passed only to the official
+downloader through `_operational_round_data()`. Which slot it chose is its own decision; the
+provenance recorded is `official-miner-download`.
 
 **URLs never reach an identity (§H).** A presigned URL expires, carries a signature and varies
-between equivalent fetches. The receipt keeps the URLs privately; the download proof records only
-the **slot name** (`bam_presigned_url`, `bam_presigned_url_backup`, `locally-indexed`). A test
-asserts no `http`, `://`, `sig=` or `?` appears in the receipt content, the receipt observation,
-the download observation, the intake content or the ownership anchors.
+between equivalent fetches. A test asserts no URL value, scheme, `sig=` or `?` appears in the
+receipt content, the receipt observation, the download observation, the intake content or the
+ownership anchors. Slot **names** are published deliberately; values never are.
 
-The intake carries its **scope** end to end, and `require_production_scope` is the guard the live
-service will use; a fixture chain never passes it.
+## 4a. The receipt instance, not just its identity
+
+The scientific receipt identity is `{schema, round_id, region_source, endpoint_path}` — it
+excludes the operational URLs and the platform's expected BAM hash. So **two different responses
+for the same round, region and endpoint share one identity** even when they offer different
+download sources, and matching the identity alone would let downloads obtained under one be
+presented for the other.
+
+Each receipt therefore carries a per-instance `operational_binding` — a bare `object()`, so it
+cannot be serialized, compared across processes, or leak into evidence. Downloads carry the same
+object, and the intake requires `downloads.operational_binding is receipt.operational_binding` in
+addition to the scientific link. A test constructs exactly the ambiguous case: two receipts with
+**identical** `identity` and `content()` but different BAM URL and expected SHA, mints downloads
+under the first, confirms the scientific link alone would have passed, and requires the refusal.
 
 ## 4b. The live intake identity
 

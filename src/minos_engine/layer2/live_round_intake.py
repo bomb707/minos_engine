@@ -307,10 +307,21 @@ def _build_verified_intake(*, receipt: Any, downloads: Any, scope: str) -> Verif
     """The single implementation. Both scopes run exactly this."""
     from minos_engine.common.genomic_region import normalize_region
 
+    # the SCIENTIFIC link ...
     _require(
         downloads.receipt_identity == receipt.identity,
         "these downloads were accepted for a different round; a file fetched for one round is not "
         "evidence about another",
+    )
+    # ... and the RUNTIME one. The scientific identity excludes the operational URLs and the
+    # platform's expected BAM hash, so two responses for the same round, region and endpoint share
+    # an identity even when they offer different download sources. Matching the identity alone
+    # would let downloads obtained under one of them be presented for the other.
+    _require(
+        downloads.operational_binding is receipt.operational_binding,
+        "these downloads were obtained for a different round-status response; the scientific "
+        "identity matches but the operational source does not, and provenance is about which "
+        "response was actually served",
     )
     _require(
         downloads.scope == receipt.scope == scope,

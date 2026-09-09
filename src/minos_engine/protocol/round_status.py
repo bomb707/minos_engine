@@ -48,7 +48,7 @@ import hashlib
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, final
 
 from minos_engine.common.canonical_json import canonical_json_bytes
 from minos_engine.common.errors import MinosEngineError
@@ -60,6 +60,7 @@ __all__ = [
     "BAM_URL_SLOTS",
     "FIXTURE_SCOPE",
     "LOCALLY_INDEXED",
+    "OFFICIAL_MINER_DOWNLOAD",
     "PLATFORM_ROUND_STATUS_DOMAIN",
     "PLATFORM_ROUND_STATUS_SCHEMA",
     "PRODUCTION_ENDPOINT_PATH",
@@ -75,9 +76,15 @@ __all__ = [
     "RoundDownloads",
     "RoundStatusReceipt",
     "RoundStatusTransport",
-    "SubnetPlatformRoundStatusTransport",
+    "VerifiedOfficialMiner",
+    "VerifiedProductionPlatformClient",
     "accept_fixture_round_downloads",
-    "accept_production_round_downloads",
+    "download_production_round_inputs",
+    "production_round_status_transport",
+    "resolve_official_miner_type",
+    "resolve_official_platform_client_type",
+    "verify_official_miner",
+    "verify_subnet_platform_client",
     "observe_fixture_round_status",
     "parse_round_status",
     "verify_production_round_status",
@@ -109,6 +116,10 @@ BAI_URL_SLOTS: Final[tuple[str, ...]] = (
 #: The official miner builds the index with samtools when the platform offers none. That is a
 #: legitimate provenance and is recorded as such rather than disguised as a download.
 LOCALLY_INDEXED: Final = "locally-indexed"
+
+#: Production provenance: the maintained ``Miner._download_bam`` operation produced these bytes.
+#: Which URL slot it chose is its own decision, made by rules this engine does not duplicate.
+OFFICIAL_MINER_DOWNLOAD: Final = "official-miner-download"
 
 #: Fields the receipt identity is derived from. URLs, timings, nonces, signatures and mutation
 #: counts are deliberately absent: they are operational, per-fetch, or secret-bearing.
@@ -248,6 +259,154 @@ def parse_round_status(payload: Any, *, endpoint_path: str) -> ParsedRoundStatus
 # --------------------------------------------------------------------------- #
 # transports
 # --------------------------------------------------------------------------- #
+#: Where the official subnet code lives. The engine imports the REAL classes and checks identity
+#: against them; it does not decide what is official by reading a class name.
+OFFICIAL_CLIENT_MODULE: Final = "utils.platform_client"
+OFFICIAL_CLIENT_CLASS: Final = "MinerPlatformClient"
+OFFICIAL_MINER_MODULE: Final = "neurons.miner"
+OFFICIAL_MINER_CLASS: Final = "Miner"
+
+#: Deployment assumption, stated rather than implied: the subnet package must be importable by the
+#: process making live decisions -- installed, on ``PYTHONPATH``, or located by this variable. A
+#: miner already satisfies this, because it *is* the subnet process. If it cannot be imported the
+#: production path FAILS CLOSED; there is deliberately no structural fallback, because a fallback
+#: is exactly the hole this closes.
+SUBNET_ROOT_ENV: Final = "MINOS_SUBNET_ROOT"
+
+
+def _resolve_official_type(module_name: str, class_name: str) -> type:
+    """Import the REAL class object, or refuse. Never a name, never a duck type."""
+    import importlib
+    import os
+    import sys
+
+    root = os.environ.get(SUBNET_ROOT_ENV)
+    if root and root not in sys.path:
+        sys.path.insert(0, root)
+    try:
+        module = importlib.import_module(module_name)
+    except Exception as error:
+        raise PlatformRoundStatusError(
+            f"the official subnet module {module_name!r} cannot be imported "
+            f"({type(error).__name__}: {error}); a live decision requires the real subnet "
+            f"package to be importable, and this path does not fall back to matching class names. "
+            f"Install the subnet package or set {SUBNET_ROOT_ENV}."
+        ) from None
+    resolved = getattr(module, class_name, None)
+    if not isinstance(resolved, type):
+        raise PlatformRoundStatusError(
+            f"{module_name}.{class_name} is not a class in the installed subnet package"
+        )
+    return resolved
+
+
+def resolve_official_platform_client_type() -> type:
+    """The real ``utils.platform_client.MinerPlatformClient``."""
+    return _resolve_official_type(OFFICIAL_CLIENT_MODULE, OFFICIAL_CLIENT_CLASS)
+
+
+def resolve_official_miner_type() -> type:
+    """The real ``neurons.miner.Miner``, which owns the maintained download operation."""
+    return _resolve_official_type(OFFICIAL_MINER_MODULE, OFFICIAL_MINER_CLASS)
+
+
+_CLIENT_TOKEN: Final = object()
+_MINER_TOKEN: Final = object()
+_TRANSPORT_TOKEN: Final = object()
+
+
+@final
+class VerifiedProductionPlatformClient:
+    """The real, authenticated subnet client, verified by TYPE and by configuration.
+
+    Minted only by :func:`verify_subnet_platform_client`. The previous version accepted any object
+    whose class was *named* ``MinerPlatformClient`` in a module *named* ``platform_client`` -- and
+    a test constructed exactly that and was accepted. Names are not identity, so the real class is
+    imported and ``isinstance`` is checked against it.
+    """
+
+    __slots__ = ("_client", "_seal")
+
+    def __init__(self, token: object, *, client: Any) -> None:
+        if token is not _CLIENT_TOKEN:
+            raise PlatformRoundStatusError(
+                "a production platform client may only be minted by verifying a real one"
+            )
+        self._client = client
+        self._seal = _CLIENT_TOKEN
+
+    @property
+    def client(self) -> Any:
+        return self._client
+
+
+def verify_subnet_platform_client(client: Any) -> VerifiedProductionPlatformClient:
+    """Exact type identity first, then the conditions that make the client usable live.
+
+    Trust statement, unchanged and not overstated: the miner signs the REQUEST (hotkey signature,
+    nonce, timestamp, ``X-Minos-Auth-Version: 2``); HTTPS authenticates and protects the configured
+    transport; the response body is **not** digitally signed.
+    """
+    official = resolve_official_platform_client_type()
+    _require(
+        isinstance(client, official),
+        f"the production transport requires an actual {OFFICIAL_CLIENT_MODULE}."
+        f"{OFFICIAL_CLIENT_CLASS}; an object of type {type(client).__name__!r} is not one, "
+        "whatever it is called",
+    )
+    _require(
+        not getattr(client, "demo", False),
+        "this client is in demo mode, which routes to the sandboxed /v2/demo namespace; a live "
+        "decision may not be made from a demo round",
+    )
+    keypair = getattr(client, "keypair", None)
+    _require(
+        bool(getattr(keypair, "ss58_address", "")),
+        "the platform client has no hotkey to sign the request with",
+    )
+    base_url = str(getattr(getattr(client, "config", None), "base_url", ""))
+    _require(
+        base_url.startswith("https://"),
+        "the configured platform URL is not HTTPS; the subnet client enforces this and so does "
+        "this verification",
+    )
+    return VerifiedProductionPlatformClient(_CLIENT_TOKEN, client=client)
+
+
+@final
+class VerifiedOfficialMiner:
+    """The real ``neurons.miner.Miner``, which owns the maintained download operation."""
+
+    __slots__ = ("_miner", "_seal")
+
+    def __init__(self, token: object, *, miner: Any) -> None:
+        if token is not _MINER_TOKEN:
+            raise PlatformRoundStatusError(
+                "a production download owner may only be minted by verifying a real miner"
+            )
+        self._miner = miner
+        self._seal = _MINER_TOKEN
+
+    @property
+    def miner(self) -> Any:
+        return self._miner
+
+
+def verify_official_miner(miner: Any) -> VerifiedOfficialMiner:
+    """Exact type identity against the real Miner. An object with ``_download_bam`` is not one."""
+    official = resolve_official_miner_type()
+    _require(
+        isinstance(miner, official),
+        f"the production download integration requires an actual {OFFICIAL_MINER_MODULE}."
+        f"{OFFICIAL_MINER_CLASS}; an object of type {type(miner).__name__!r} is not one",
+    )
+    _require(
+        callable(getattr(miner, "_download_bam", None)),
+        "the official miner does not expose its download operation",
+    )
+    return VerifiedOfficialMiner(_MINER_TOKEN, miner=miner)
+
+
 class RoundStatusTransport(ABC):
     """Something that can ask for a round status. Inheriting this grants NO authority."""
 
@@ -262,64 +421,35 @@ class RoundStatusTransport(ABC):
         """Return the platform's round-status payload verbatim."""
 
 
+@final
 class ProductionRoundStatusTransport(RoundStatusTransport):
-    """A transport that reaches the real, authenticated platform.
+    """The one transport that may speak for the live platform.
 
-    Subclassing this is not a formality a caller can perform casually: the production factory also
-    requires the exact production endpoint, and the only implementation shipped here validates
-    that it was handed the subnet's own client.
+    **Inheritance is not authority.** The previous version required only
+    ``isinstance(transport, ProductionRoundStatusTransport)``, and that class was a public
+    subclassing point -- so a caller could subclass it, return whatever payload it liked from
+    ``fetch_round_status``, and mint a genuine production receipt. The class is now ``@final``, its
+    constructor demands a module-private token, it carries a seal only that constructor sets, and
+    the verifier checks **exact type identity** rather than ``isinstance``. A subclass is a
+    different type; a subclass that skips ``__init__`` has no seal; a subclass that calls
+    ``super().__init__`` needs a token it cannot reach.
+
+    The engine does not reimplement the HTTP call. Re-deriving the request signing, nonce and auth
+    headers would fork a security boundary maintained next door and would need the miner's keypair.
     """
 
-    transport_kind = "production"
-
-
-class SubnetPlatformRoundStatusTransport(ProductionRoundStatusTransport):
-    """The production transport: the subnet's own authenticated platform client.
-
-    The engine deliberately does not reimplement the HTTP call -- re-deriving the request signing,
-    nonce and auth headers would be a second implementation of a security boundary maintained next
-    door, and it would need the miner's keypair.
-
-    Accepting *any* object with two attributes was too weak, so the client is checked structurally:
-    its class must be named ``MinerPlatformClient`` and defined in a ``platform_client`` module,
-    it must carry a keypair with an ``ss58_address``, its configured base URL must be HTTPS, and it
-    must not be in demo mode. This is a structural check, not a cryptographic one -- it stops a
-    casual or accidental substitution, and the real guarantee remains that a deployment constructs
-    the genuine client. Demo mode is refused outright because that route is a sandbox.
-    """
+    __slots__ = ("_seal", "_verified_client")
 
     transport_kind = "subnet-platform-client"
 
-    def __init__(self, client: Any) -> None:
-        classes = {base.__name__ for base in type(client).__mro__}
-        _require(
-            "MinerPlatformClient" in classes,
-            "the production transport requires the subnet's MinerPlatformClient; an object that "
-            "merely exposes get_round_status is not the authenticated platform client",
-        )
-        _require(
-            type(client).__module__.split(".")[-1] == "platform_client",
-            f"the client's class comes from {type(client).__module__!r}, not a platform_client "
-            "module",
-        )
-        for required in ("get_round_status", "keypair", "config"):
-            _require(hasattr(client, required), f"the platform client does not expose {required!r}")
-        _require(
-            bool(getattr(client.keypair, "ss58_address", "")),
-            "the platform client has no hotkey to sign the request with",
-        )
-        base_url = str(getattr(client.config, "base_url", ""))
-        _require(
-            base_url.startswith("https://"),
-            f"the platform base URL {base_url!r} is not HTTPS; the subnet client enforces this and "
-            "so does this transport",
-        )
-        _require(
-            not getattr(client, "demo", False),
-            "this client is in demo mode, which routes to the sandboxed /v2/demo namespace; a live "
-            "decision may not be made from a demo round",
-        )
-        self._client = client
+    def __init__(self, token: object, *, verified_client: VerifiedProductionPlatformClient) -> None:
+        if token is not _TRANSPORT_TOKEN:
+            raise PlatformRoundStatusError(
+                "a production transport may only be minted from a verified subnet platform "
+                "client; subclassing this type grants nothing"
+            )
+        self._verified_client = verified_client
+        self._seal = _TRANSPORT_TOKEN
 
     def endpoint_path(self) -> str:
         return PRODUCTION_ENDPOINT_PATH
@@ -336,7 +466,7 @@ class SubnetPlatformRoundStatusTransport(ProductionRoundStatusTransport):
                 "the platform round status cannot be fetched from inside a running event loop"
             )
         try:
-            payload = asyncio.run(self._client.get_round_status())
+            payload = asyncio.run(self._verified_client.client.get_round_status())
         except PlatformRoundStatusError:
             raise
         except Exception as error:
@@ -346,6 +476,13 @@ class SubnetPlatformRoundStatusTransport(ProductionRoundStatusTransport):
         _require(isinstance(payload, Mapping), "the platform returned a non-object round status")
         assert isinstance(payload, Mapping)
         return payload
+
+
+def production_round_status_transport(client: Any) -> ProductionRoundStatusTransport:
+    """Verify the real subnet client, then mint the only transport production accepts."""
+    return ProductionRoundStatusTransport(
+        _TRANSPORT_TOKEN, verified_client=verify_subnet_platform_client(client)
+    )
 
 
 class FixtureRoundStatusTransport(RoundStatusTransport):
@@ -376,7 +513,7 @@ _FIXTURE_RECEIPT_TOKEN: Final = object()
 class RoundStatusReceipt:
     """Common shape. Neither subclass can be built without its own scope's token."""
 
-    __slots__ = ("_parsed", "identity", "scope")
+    __slots__ = ("_operational_binding", "_parsed", "identity", "scope")
 
     def __init__(self, token: object, *, parsed: ParsedRoundStatus, expected: object) -> None:
         if token is not expected:
@@ -385,6 +522,12 @@ class RoundStatusReceipt:
                 "its scope requires; a dictionary of round fields is not a statement by anyone"
             )
         self._parsed = parsed
+        #: A per-INSTANCE sentinel. The scientific identity deliberately excludes the operational
+        #: URLs and the platform's expected BAM hash, so two responses for the same round, region
+        #: and endpoint share one identity even when they offer different download sources. This
+        #: object distinguishes them at runtime. It is an ``object()``: it cannot be serialized,
+        #: compared across processes, or leak into evidence -- which is the point.
+        self._operational_binding = object()
         self.identity = sha256_hex(
             PLATFORM_ROUND_STATUS_DOMAIN.encode("utf-8")
             + canonical_json_bytes(parsed.identity_content())
@@ -410,6 +553,18 @@ class RoundStatusReceipt:
     def _url_for(self, slot: str) -> str | None:
         """Operational only. Kept private so a URL cannot drift into an identity or a report."""
         return self._parsed.urls.get(slot)
+
+    @property
+    def operational_binding(self) -> object:
+        """Runtime provenance only. Never serialized, never an identity, never in evidence."""
+        return self._operational_binding
+
+    def _operational_round_data(self) -> dict[str, Any]:
+        """The round fields the official downloader reads. Private, and never returned publicly."""
+        data: dict[str, Any] = dict(self._parsed.urls)
+        if self._parsed.expected_bam_sha256 is not None:
+            data["bam_sha256"] = self._parsed.expected_bam_sha256
+        return data
 
     def offered_slots(self) -> tuple[str, ...]:
         """Which URL slots this round offers -- names only, never the URLs themselves."""
@@ -445,9 +600,11 @@ class FixtureRoundStatusReceipt(RoundStatusReceipt):
 def verify_production_round_status(transport: Any) -> ProductionRoundStatusReceipt:
     """Mint a PRODUCTION receipt. Only the real transport, only the production endpoint."""
     _require(
-        isinstance(transport, ProductionRoundStatusTransport),
-        "a production live receipt requires a production transport; inheriting the base transport "
-        "or implementing its methods is not authority to speak for the platform",
+        type(transport) is ProductionRoundStatusTransport
+        and getattr(transport, "_seal", None) is _TRANSPORT_TOKEN,
+        "a production live receipt requires the sealed production transport; subclassing it, "
+        "implementing its methods, or inheriting the base transport is not authority to speak for "
+        "the platform",
     )
     endpoint_path = transport.endpoint_path()
     _require(
@@ -498,6 +655,7 @@ class RoundDownloads:
         "bam_sha256",
         "bam_source_slot",
         "byte_counts",
+        "operational_binding",
         "receipt_identity",
         "scope",
     )
@@ -509,6 +667,7 @@ class RoundDownloads:
         expected: object,
         scope: str,
         receipt_identity: str,
+        operational_binding: object,
         bam_sha256: str,
         bai_sha256: str,
         bam_source_slot: str,
@@ -522,6 +681,8 @@ class RoundDownloads:
             )
         self.scope = scope
         self.receipt_identity = receipt_identity
+        #: The exact receipt INSTANCE these files were obtained for.
+        self.operational_binding = operational_binding
         self.bam_sha256 = bam_sha256
         self.bai_sha256 = bai_sha256
         self.bam_source_slot = bam_source_slot
@@ -615,6 +776,7 @@ def _accept_downloads(
         expected=expected,
         scope=scope,
         receipt_identity=receipt.identity,
+        operational_binding=receipt.operational_binding,
         bam_sha256=bam_sha,
         bai_sha256=bai_sha,
         bam_source_slot=bam_slot,
@@ -623,36 +785,72 @@ def _accept_downloads(
     )
 
 
-def accept_production_round_downloads(
-    *,
-    receipt: Any,
-    bam_source_url: str,
-    bam_path: Any,
-    bai_path: Any,
-    bai_source_url: str | None = None,
-) -> ProductionRoundDownloads:
-    """Bind files the miner downloaded to the production round they were downloaded for.
+def download_production_round_inputs(*, receipt: Any, miner: Any) -> ProductionRoundDownloads:
+    """Have the OFFICIAL miner download this round, then hash what it produced.
 
-    ``bai_source_url`` is ``None`` when the index was built locally with samtools, which is what
-    the official miner does when the platform offers no index URL.
+    **Why there is no ``bam_source_url`` or ``bam_path`` here.** The previous API took a URL string
+    and a local path, checked the string against the round's offered URLs, and hashed whatever file
+    it was pointed at. Those two facts never met: nothing proved the file came from that URL. A
+    caller could copy an offered URL and hand over any file it liked.
+
+    So the production path takes neither. It hands the round's own operational data to
+    ``neurons.miner.Miner._download_bam`` -- the maintained operation that selects primary or
+    backup by ``STORAGE_PRIMARY_BACKEND``, falls back, passes the platform's ``bam_sha256`` to the
+    verified downloader, fetches the index when one is offered and builds it with samtools when it
+    is not -- and hashes exactly the files that operation produced. None of those rules are
+    reimplemented here, and the caller chooses none of them.
     """
     _require(
         isinstance(receipt, ProductionRoundStatusReceipt),
         "production downloads must be bound to a production receipt",
     )
-    result = _accept_downloads(
-        token=_PRODUCTION_DOWNLOAD_TOKEN,
-        expected=_PRODUCTION_DOWNLOAD_TOKEN,
-        factory=ProductionRoundDownloads,
-        scope=PRODUCTION_SCOPE,
-        receipt=receipt,
-        bam_source_url=bam_source_url,
-        bam_path=bam_path,
-        bai_path=bai_path,
-        bai_source_url=bai_source_url,
+    verified = miner if isinstance(miner, VerifiedOfficialMiner) else verify_official_miner(miner)
+
+    round_data = receipt._operational_round_data()  # noqa: SLF001 - the receipt owns this
+    try:
+        returned = verified.miner._download_bam(round_data, receipt.round_id)  # noqa: SLF001
+    except Exception as error:
+        raise PlatformRoundStatusError(
+            f"the official miner could not download this round: {type(error).__name__}"
+        ) from None
+    _require(
+        returned is not None,
+        "the official miner reported that this round's BAM could not be downloaded",
     )
-    assert isinstance(result, ProductionRoundDownloads)
-    return result
+    bam_path = Path(str(returned))
+    bai_path = Path(str(bam_path) + ".bai")
+    _require(
+        bam_path.is_file(),
+        f"the official miner returned {bam_path}, which is not a file",
+    )
+    _require(
+        bai_path.is_file(),
+        "the official miner produced no BAM index; a round cannot be profiled without one",
+    )
+
+    bam_sha, bam_size = _stream_sha256(bam_path.resolve(), label="BAM")
+    bai_sha, bai_size = _stream_sha256(bai_path.resolve(), label="BAM index")
+    _require(bam_sha != bai_sha, "the BAM and its index cannot be the same bytes")
+    expected_bam = receipt.expected_bam_sha256
+    if expected_bam is not None:
+        _require(
+            bam_sha == expected_bam,
+            "the downloaded BAM does not hash to the SHA-256 the platform published for this round",
+        )
+    # which slot the maintained downloader actually used is its own business; what is recorded is
+    # that the official operation produced these bytes for this round.
+    return ProductionRoundDownloads(
+        _PRODUCTION_DOWNLOAD_TOKEN,
+        expected=_PRODUCTION_DOWNLOAD_TOKEN,
+        scope=PRODUCTION_SCOPE,
+        receipt_identity=receipt.identity,
+        operational_binding=receipt.operational_binding,
+        bam_sha256=bam_sha,
+        bai_sha256=bai_sha,
+        bam_source_slot=OFFICIAL_MINER_DOWNLOAD,
+        bai_source_slot=OFFICIAL_MINER_DOWNLOAD,
+        byte_counts={"bam": bam_size, "bai": bai_size},
+    )
 
 
 def accept_fixture_round_downloads(

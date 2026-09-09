@@ -39,6 +39,10 @@ from minos_engine.protocol.round_status import (
     BAM_URL_SLOTS,
     FIXTURE_SCOPE,
     LOCALLY_INDEXED,
+    OFFICIAL_CLIENT_CLASS,
+    OFFICIAL_CLIENT_MODULE,
+    OFFICIAL_MINER_CLASS,
+    OFFICIAL_MINER_MODULE,
     PRODUCTION_ENDPOINT_PATH,
     PRODUCTION_SCOPE,
     FixtureRoundDownloads,
@@ -49,12 +53,16 @@ from minos_engine.protocol.round_status import (
     ProductionRoundStatusReceipt,
     ProductionRoundStatusTransport,
     RoundStatusTransport,
-    SubnetPlatformRoundStatusTransport,
     accept_fixture_round_downloads,
-    accept_production_round_downloads,
+    download_production_round_inputs,
     observe_fixture_round_status,
     parse_round_status,
+    production_round_status_transport,
+    resolve_official_miner_type,
+    resolve_official_platform_client_type,
+    verify_official_miner,
     verify_production_round_status,
+    verify_subnet_platform_client,
 )
 from tests.conftest import REPO_ROOT
 from tests.layer2_live_replay import (
@@ -140,24 +148,31 @@ def test_a_duck_typed_transport_is_refused(dataset):
         verify_production_round_status(Quacks())
 
 
+def test_the_production_transport_hard_codes_the_production_endpoint():
+    """It is not a parameter, so no caller can point production at another route."""
+    import inspect
+
+    source = inspect.getsource(ProductionRoundStatusTransport)
+    assert "def endpoint_path(self) -> str:\n        return PRODUCTION_ENDPOINT_PATH" in source
+    assert "demo" not in source, "the sealed transport has no demo route at all"
+    assert PRODUCTION_ENDPOINT_PATH == "/v2/round-status"
+
+
 @pytest.mark.parametrize(
-    "endpoint", ["/v2/demo/round-status", "/other/path", "/", "/v2/round-status/../demo", ""]
+    "endpoint", ["/v2/demo/round-status", "/other/path", "/", "/v2/round-status/../demo"]
 )
-def test_a_production_receipt_requires_exactly_the_production_endpoint(dataset, endpoint):
-    """The demo namespace is a sandbox; it may not authorise a live decision."""
-
-    class AtEndpoint(ProductionRoundStatusTransport):
-        def endpoint_path(self) -> str:
-            return endpoint
-
-        def fetch_round_status(self) -> dict[str, Any]:
-            return round_status_payload(region=dataset["region"])
-
-    with pytest.raises(PlatformRoundStatusError) as caught:
-        verify_production_round_status(AtEndpoint())
-    assert "exactly /v2/round-status" in str(caught.value)
-    if endpoint == "/v2/demo/round-status":
-        assert "sandbox" in str(caught.value)
+def test_a_receipt_from_another_endpoint_is_a_different_round_status(dataset, endpoint):
+    """Defence in depth: the endpoint is part of the receipt identity, demo included."""
+    payload = round_status_payload(region=dataset["region"])
+    live = observe_fixture_round_status(FixtureRoundStatusTransport(payload))
+    other = observe_fixture_round_status(
+        FixtureRoundStatusTransport(payload, endpoint_path=endpoint)
+    )
+    assert other.identity != live.identity
+    assert other.endpoint_path == endpoint
+    # and none of them can reach the production intake, whatever endpoint they name
+    with pytest.raises(LiveRoundIntakeError, match="production platform receipt"):
+        verify_live_round_intake(receipt=other, downloads=None)
 
 
 def test_neither_receipt_can_be_built_from_a_dictionary(replay):
@@ -167,58 +182,134 @@ def test_neither_receipt_can_be_built_from_a_dictionary(replay):
             cls(object(), parsed=parsed)
 
 
-@pytest.mark.parametrize(
-    "client,match",
-    [
-        (object(), "MinerPlatformClient"),
-        (type("MinerPlatformClient", (), {})(), "platform_client module"),
-    ],
-)
-def test_a_fake_platform_client_cannot_become_a_production_transport(client, match):
-    with pytest.raises(PlatformRoundStatusError, match=match):
-        SubnetPlatformRoundStatusTransport(client)
+def test_the_production_transport_cannot_be_subclassed_into_authority(dataset):
+    """The exact gap: inheriting the PRODUCTION transport used to be enough."""
+    forged_type = type(
+        "Forged",
+        (ProductionRoundStatusTransport,),
+        {
+            "__init__": lambda self: None,
+            "endpoint_path": lambda self: PRODUCTION_ENDPOINT_PATH,
+            "fetch_round_status": lambda self: round_status_payload(region=dataset["region"]),
+        },
+    )
+    forged = forged_type()
+    assert isinstance(forged, ProductionRoundStatusTransport), "isinstance alone would pass"
+    with pytest.raises(PlatformRoundStatusError, match="sealed production transport"):
+        verify_production_round_status(forged)
 
 
-def test_a_lookalike_platform_client_is_refused_on_every_property():
-    """Two attributes are not the authenticated, HTTPS-enforcing subnet client."""
+def test_the_production_transport_constructor_demands_a_token():
+    with pytest.raises(PlatformRoundStatusError, match="may only be minted"):
+        ProductionRoundStatusTransport(object(), verified_client=None)
+
+
+def test_a_seal_cannot_be_forged_by_attribute_assignment(dataset):
+    class Bare:
+        _seal = object()
+
+        def endpoint_path(self) -> str:
+            return PRODUCTION_ENDPOINT_PATH
+
+        def fetch_round_status(self) -> dict[str, Any]:
+            return round_status_payload(region=dataset["region"])
+
+    with pytest.raises(PlatformRoundStatusError, match="sealed production transport"):
+        verify_production_round_status(Bare())
+
+
+# --------------------------------------------------------------------------- #
+# the official client and miner are resolved BY TYPE, or the path fails closed
+# --------------------------------------------------------------------------- #
+def _subnet_importable() -> bool:
+    try:
+        resolve_official_platform_client_type()
+    except PlatformRoundStatusError:
+        return False
+    return True
+
+
+def test_the_official_types_are_named_from_the_real_subnet_layout():
+    assert OFFICIAL_CLIENT_MODULE == "utils.platform_client"
+    assert OFFICIAL_CLIENT_CLASS == "MinerPlatformClient"
+    assert OFFICIAL_MINER_MODULE == "neurons.miner"
+    assert OFFICIAL_MINER_CLASS == "Miner"
+
+
+def test_a_structurally_spoofed_client_is_refused():
+    """A class NAMED MinerPlatformClient in a module NAMED platform_client is not the class."""
     import types
 
-    module = types.ModuleType("some_pkg.platform_client")
+    spoof_type = type("MinerPlatformClient", (), {})
+    spoof_type.__module__ = "utils.platform_client"
+    spoof = spoof_type()
+    spoof.get_round_status = lambda: {}
+    spoof.keypair = types.SimpleNamespace(ss58_address="5F")
+    spoof.config = types.SimpleNamespace(base_url="https://platform.example")
+    spoof.demo = False
 
-    def make(*, base_url: str = "https://platform.example", demo: bool = False, hotkey: str = "5F"):
-        cls = type("MinerPlatformClient", (), {})
-        cls.__module__ = "some_pkg.platform_client"
-        client = cls()
-        client.get_round_status = lambda: {}
-        client.keypair = types.SimpleNamespace(ss58_address=hotkey)
-        client.config = types.SimpleNamespace(base_url=base_url)
-        client.demo = demo
-        return client
-
-    assert module  # the module object exists only to make the intent explicit
-    # the fully-shaped one is accepted -- the check is structural, and this is documented
-    SubnetPlatformRoundStatusTransport(make())
-    with pytest.raises(PlatformRoundStatusError, match="not HTTPS"):
-        SubnetPlatformRoundStatusTransport(make(base_url="http://platform.example"))
-    with pytest.raises(PlatformRoundStatusError, match="demo mode"):
-        SubnetPlatformRoundStatusTransport(make(demo=True))
-    with pytest.raises(PlatformRoundStatusError, match="no hotkey"):
-        SubnetPlatformRoundStatusTransport(make(hotkey=""))
+    with pytest.raises(PlatformRoundStatusError) as caught:
+        verify_subnet_platform_client(spoof)
+    message = str(caught.value)
+    # either the real package is absent (fail closed) or the type check refuses the spoof
+    assert ("cannot be imported" in message) or ("is not one, whatever it is called" in message)
+    assert "fall back" in message or "whatever it is called" in message
 
 
-def test_the_production_transport_reports_only_the_production_endpoint():
-    import types
+@pytest.mark.parametrize("candidate", [object(), None, "MinerPlatformClient", {}])
+def test_no_arbitrary_object_becomes_a_production_client(candidate):
+    with pytest.raises(PlatformRoundStatusError):
+        verify_subnet_platform_client(candidate)
+    with pytest.raises(PlatformRoundStatusError):
+        production_round_status_transport(candidate)
 
-    cls = type("MinerPlatformClient", (), {})
-    cls.__module__ = "utils.platform_client"
-    client = cls()
-    client.get_round_status = lambda: {}
-    client.keypair = types.SimpleNamespace(ss58_address="5F")
-    client.config = types.SimpleNamespace(base_url="https://platform.example")
-    client.demo = False
-    transport = SubnetPlatformRoundStatusTransport(client)
-    assert transport.endpoint_path() == PRODUCTION_ENDPOINT_PATH
-    assert isinstance(transport, ProductionRoundStatusTransport)
+
+@pytest.mark.parametrize("candidate", [object(), None, {}])
+def test_no_arbitrary_object_becomes_the_official_miner(candidate):
+    with pytest.raises(PlatformRoundStatusError):
+        verify_official_miner(candidate)
+
+
+def test_a_fake_miner_with_the_right_method_is_refused():
+    class Miner:
+        def _download_bam(self, round_data, round_id):
+            return "/tmp/whatever.bam"
+
+    with pytest.raises(PlatformRoundStatusError) as caught:
+        verify_official_miner(Miner())
+    message = str(caught.value)
+    assert ("cannot be imported" in message) or ("is not one" in message)
+
+
+def test_the_production_path_fails_closed_when_the_subnet_is_absent():
+    """No silent structural fallback: if the real package is missing, production refuses."""
+    if _subnet_importable():
+        pytest.skip("the subnet package is importable here; the fail-closed branch cannot be seen")
+    with pytest.raises(PlatformRoundStatusError, match="cannot be imported"):
+        resolve_official_platform_client_type()
+    with pytest.raises(PlatformRoundStatusError, match="cannot be imported"):
+        resolve_official_miner_type()
+    for message in ("does not fall back", "MINOS_SUBNET_ROOT"):
+        with pytest.raises(PlatformRoundStatusError, match=message):
+            resolve_official_platform_client_type()
+
+
+def test_the_production_download_api_takes_no_caller_url_or_path():
+    """The provenance gap: a URL string plus a local path proved nothing about either."""
+    import inspect
+
+    parameters = set(inspect.signature(download_production_round_inputs).parameters)
+    assert parameters == {"receipt", "miner"}
+    for banned in ("bam_source_url", "bai_source_url", "bam_path", "bai_path"):
+        assert banned not in parameters, banned
+    module = inspect.getmodule(download_production_round_inputs)
+    assert module is not None
+    assert not hasattr(module, "accept_production_round_downloads")
+
+
+def test_the_production_download_refuses_a_fixture_receipt(replay):
+    with pytest.raises(PlatformRoundStatusError, match="production receipt"):
+        download_production_round_inputs(receipt=replay["receipt"], miner=object())
 
 
 def test_the_two_scopes_share_one_parser(dataset):
@@ -302,6 +393,75 @@ def test_downloads_for_one_round_cannot_be_used_for_another(dataset):
         observe_fixture_live_round_intake(receipt=first["receipt"], downloads=second["downloads"])
 
 
+def test_two_responses_with_one_scientific_identity_are_distinguished_at_runtime(dataset):
+    """The gap section H names: identity excludes the URLs, so it cannot carry provenance alone."""
+    same_round = {"region": dataset["region"], "round_id": FRESH_LIVE_ROUND_ID}
+    first = observe_fixture_round_status(
+        FixtureRoundStatusTransport(round_status_payload(**same_round))
+    )
+    second = observe_fixture_round_status(
+        FixtureRoundStatusTransport(
+            round_status_payload(
+                **same_round,
+                bam_presigned_url="https://fixture.invalid/other/input.bam?sig=OTHER",
+                bam_sha256="b" * 64,
+            )
+        )
+    )
+    # identical scientific identity ...
+    assert first.identity == second.identity
+    assert first.content() == second.content()
+    # ... different operational source, and different runtime binding
+    assert first.operational_binding is not second.operational_binding
+    assert first.expected_bam_sha256 is None
+    assert second.expected_bam_sha256 == "b" * 64
+
+    downloads = accept_fixture_round_downloads(
+        receipt=first,
+        bam_source_url=FIXTURE_BAM_URL,
+        bam_path=Path(dataset["bam"]).resolve(),
+        bai_source_url=FIXTURE_BAI_URL,
+        bai_path=Path(dataset["bai"]).resolve(),
+    )
+    assert downloads.receipt_identity == second.identity, "the scientific link alone would pass"
+    with pytest.raises(LiveRoundIntakeError, match="different round-status response"):
+        observe_fixture_live_round_intake(receipt=second, downloads=downloads)
+    # and it still works with the receipt it was actually obtained for
+    assert observe_fixture_live_round_intake(receipt=first, downloads=downloads) is not None
+
+
+def test_the_operational_binding_never_reaches_evidence(replay):
+    """It is an ``object()``: it cannot be serialized, and nothing tries to."""
+    import json as _json
+
+    for surface in (
+        replay["receipt"].content(),
+        replay["receipt"].observation(),
+        replay["downloads"].observation(),
+        replay["intake"].content(),
+        replay["ownership"].anchors,
+    ):
+        blob = _json.dumps(surface)
+        assert "operational_binding" not in blob
+        assert "object at 0x" not in blob
+
+
+def test_the_receipt_never_exposes_its_url_VALUES_publicly(replay):
+    """Slot NAMES are fine and useful; the URLs themselves are operational and stay private."""
+    receipt = replay["receipt"]
+    public = json.dumps({**receipt.content(), **receipt.observation()})
+    assert FIXTURE_BAM_URL not in public
+    assert FIXTURE_BAI_URL not in public
+    for fragment in ("http", "://", "sig=", "?"):
+        assert fragment not in public, fragment
+    # slot names ARE published, deliberately
+    assert "bam_presigned_url" in receipt.observation()["offered_slots"]
+    # the values exist only behind the private accessor the official downloader uses
+    private = receipt._operational_round_data()
+    assert private["bam_presigned_url"] == FIXTURE_BAM_URL
+    assert private["bam_index_presigned_url"] == FIXTURE_BAI_URL
+
+
 def test_a_locally_built_index_is_recorded_as_such(replay, dataset):
     """The official miner builds the index with samtools when no URL is offered."""
     payload = round_status_payload(region=dataset["region"], bam_index_presigned_url=ABSENT)
@@ -339,6 +499,7 @@ def test_a_download_object_cannot_be_hand_built(replay):
                 expected=object(),
                 scope=PRODUCTION_SCOPE,
                 receipt_identity=replay["receipt"].identity,
+                operational_binding=object(),
                 bam_sha256="0" * 64,
                 bai_sha256="1" * 64,
                 bam_source_slot="bam_presigned_url",
@@ -347,10 +508,13 @@ def test_a_download_object_cannot_be_hand_built(replay):
             )
 
 
-def test_fixture_downloads_cannot_be_bound_to_a_production_receipt_and_vice_versa(replay, dataset):
-    with pytest.raises(PlatformRoundStatusError, match="production receipt"):
-        accept_production_round_downloads(
-            receipt=replay["receipt"],
+def test_the_fixture_download_route_refuses_anything_but_a_fixture_receipt(dataset):
+    class NotAReceipt:
+        identity = "0" * 64
+
+    with pytest.raises(PlatformRoundStatusError, match="fixture receipt"):
+        accept_fixture_round_downloads(
+            receipt=NotAReceipt(),
             bam_source_url=FIXTURE_BAM_URL,
             bam_path=Path(dataset["bam"]).resolve(),
             bai_path=Path(dataset["bai"]).resolve(),
