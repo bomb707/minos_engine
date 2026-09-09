@@ -18,7 +18,8 @@ and the builder is split from the authority:
 
 * :func:`canonical_live_round_content` canonicalizes and mints **nothing**;
 * :func:`verify_live_round_intake` mints and has no ``content`` parameter at all;
-* :func:`observe_fixture_live_round_intake` is the test seam — the *same* builder, its own scope.
+* :func:`observe_fixture_live_round_intake` is the test seam — the *same* builder, its own
+  capability and its own private token.
 
 so that::
 
@@ -28,8 +29,10 @@ so that::
 
 No field of a verified intake originates in a caller-chosen string, and no presigned URL — which
 expires, carries a signature and varies between equivalent fetches — enters the scientific
-identity. The intake carries its scope, so a fixture chain can never be mistaken for a live one:
-:func:`require_production_scope` is the guard the live service will use.
+identity. Production and fixture are two separate capabilities with two separate private tokens, so a
+fixture chain can never be mistaken for -- or relabelled into -- a live one:
+:func:`require_production_scope` is the guard the live service will use, and it asks for the exact
+production type and its seal, never for a string.
 
 ``parameter_space_hash`` is deliberately absent. It defines what the controller may *do*, not what
 the round *is*, and the controller already checks the request's parameter space against the
@@ -47,6 +50,10 @@ from minos_engine.common.hashing import canonical_hash, sha256_hex
 
 __all__ = [
     "ACCEPTED_REFERENCE_IDENTITIES",
+    "FixtureLiveRoundIntake",
+    "VerifiedProductionLiveRoundIntake",
+    "is_fixture_intake",
+    "is_verified_production_intake",
     "observe_fixture_live_round_intake",
     "require_production_scope",
     "LIVE_INTAKE_DOMAIN",
@@ -153,7 +160,10 @@ ACCEPTED_REFERENCE_IDENTITIES: Final[dict[str, ReferenceIdentity]] = {
 #: The chromosomes this engine profiles. A live round outside them is refused, never guessed.
 SUPPORTED_CONTIGS: Final[tuple[str, ...]] = tuple(sorted(ACCEPTED_REFERENCE_IDENTITIES))
 
-_INTAKE_TOKEN: Final = object()
+#: One token per authority domain. Production and fixture are different capabilities, not one
+#: capability wearing a label -- a label is a string, and a string can be assigned.
+_PRODUCTION_INTAKE_TOKEN: Final = object()
+_FIXTURE_INTAKE_TOKEN: Final = object()
 
 
 def live_dataset_id_for(*, chromosome: str, identity_tuple_hash: str) -> str:
@@ -249,33 +259,59 @@ class VerifiedLiveRoundIntake:
     download digests.
     """
 
-    __slots__ = ("_content", "_seal", "dataset_id", "identity", "receipt_identity", "scope")
+    __slots__ = ("_content", "_seal", "dataset_id", "identity", "receipt_identity")
 
-    def __init__(
-        self, token: object, *, content: dict[str, Any], identity: str, scope: str
-    ) -> None:
-        if token is not _INTAKE_TOKEN:
+    #: Overridden by each concrete capability. A CLASS attribute, so it cannot be reassigned into
+    #: another authority domain the way an instance attribute could.
+    scope: str = ""
+    _expected_token: Any = None
+
+    def __init__(self, token: object, *, content: dict[str, Any], identity: str) -> None:
+        if token is not type(self)._expected_token or token is None:
             raise LiveRoundIntakeError(
                 "a live round intake may only be minted from a verified platform receipt and real "
                 "download digests; canonical content has been checked against nothing"
             )
         self._content = dict(content)
-        self._seal = _INTAKE_TOKEN
         self.identity = identity
-        #: ``production`` or ``fixture``. Carried so a test chain can never be mistaken for a live
-        #: one further down, and checked by :func:`require_production_scope`.
-        self.scope = scope
         self.receipt_identity = str(content["platform_receipt_identity"])
         self.dataset_id = live_dataset_id_for(
             chromosome=str(content["chromosome"]),
             identity_tuple_hash=str(content["identity_tuple_hash"]),
         )
+        # LAST: the seal both proves the mint and freezes the object.
+        self._seal = token
 
     def __getattr__(self, name: str) -> Any:
+        # only content fields are proxied. Private names must never route here, or a lookup during
+        # construction -- before ``_content`` exists -- recurses.
+        if name.startswith("_"):
+            raise AttributeError(name)
         try:
-            return self._content[name]
+            content = object.__getattribute__(self, "_content")
+        except AttributeError:
+            raise AttributeError(name) from None
+        try:
+            return content[name]
         except KeyError:
             raise AttributeError(name) from None
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Immutable once minted. ``scope`` in particular can never be reassigned.
+
+        The previous design stored the scope as an instance attribute, so a fixture intake could
+        simply be told it was production and walk through the live guard. It is now a class
+        attribute of two distinct capabilities, and nothing on a minted intake can be rewritten.
+        """
+        try:
+            object.__getattribute__(self, "_seal")
+        except AttributeError:
+            object.__setattr__(self, name, value)
+            return
+        raise LiveRoundIntakeError(
+            f"a verified live intake is immutable; {name!r} cannot be reassigned, and its "
+            "authority domain least of all"
+        )
 
     def content(self) -> dict[str, Any]:
         return dict(self._content)
@@ -304,8 +340,50 @@ class VerifiedLiveRoundIntake:
         }
 
 
-def _build_verified_intake(*, receipt: Any, downloads: Any, scope: str) -> VerifiedLiveRoundIntake:
-    """The single implementation. Both scopes run exactly this."""
+class VerifiedProductionLiveRoundIntake(VerifiedLiveRoundIntake):
+    """The live authority. Only :func:`verify_live_round_intake` can mint one."""
+
+    __slots__ = ()
+    #: the transport's ``PRODUCTION_SCOPE``. Not imported at module scope (that import is kept
+    #: function-local throughout this module); the builder proves the two agree by requiring
+    #: ``downloads.scope == receipt.scope == factory.scope`` before anything is minted.
+    scope = "production"
+    _expected_token = _PRODUCTION_INTAKE_TOKEN
+
+
+class FixtureLiveRoundIntake(VerifiedLiveRoundIntake):
+    """The offline observation. Structurally identical, and a different capability entirely."""
+
+    __slots__ = ()
+    scope = "fixture"
+    _expected_token = _FIXTURE_INTAKE_TOKEN
+
+
+def is_verified_production_intake(candidate: Any) -> bool:
+    """Exact concrete type and private seal."""
+    return (
+        type(candidate) is VerifiedProductionLiveRoundIntake
+        and getattr(candidate, "_seal", None) is _PRODUCTION_INTAKE_TOKEN
+    )
+
+
+def is_fixture_intake(candidate: Any) -> bool:
+    return (
+        type(candidate) is FixtureLiveRoundIntake
+        and getattr(candidate, "_seal", None) is _FIXTURE_INTAKE_TOKEN
+    )
+
+
+def _build_verified_intake(
+    *, receipt: Any, downloads: Any, factory: type[VerifiedLiveRoundIntake]
+) -> VerifiedLiveRoundIntake:
+    """The single implementation. Both domains run exactly this, and mint different capabilities.
+
+    The factory carries its own scope and its own token, so the three can never be passed out of
+    agreement -- there is no argument through which a fixture could ask for a production token.
+    """
+    scope = factory.scope
+    token = factory._expected_token
     from minos_engine.common.genomic_region import normalize_region
 
     # the SCIENTIFIC link ...
@@ -356,12 +434,7 @@ def _build_verified_intake(*, receipt: Any, downloads: Any, scope: str) -> Verif
         observed == LIVE_INTAKE_FIELDS,
         f"the live intake carries {observed}, not exactly {LIVE_INTAKE_FIELDS}",
     )
-    return VerifiedLiveRoundIntake(
-        _INTAKE_TOKEN,
-        content=content,
-        identity=live_round_intake_identity(content),
-        scope=scope,
-    )
+    return factory(token, content=content, identity=live_round_intake_identity(content))
 
 
 def verify_live_round_intake(*, receipt: Any, downloads: Any) -> VerifiedLiveRoundIntake:
@@ -376,7 +449,6 @@ def verify_live_round_intake(*, receipt: Any, downloads: Any) -> VerifiedLiveRou
     :func:`observe_fixture_live_round_intake`, which runs the identical builder in its own scope.
     """
     from minos_engine.protocol.round_status import (
-        PRODUCTION_SCOPE,
         is_verified_production_downloads,
         is_verified_production_receipt,
     )
@@ -394,13 +466,14 @@ def verify_live_round_intake(*, receipt: Any, downloads: Any) -> VerifiedLiveRou
         "a production live intake requires sealed production round downloads; a subclass carrying "
         "a real receipt identity and a real operational binding is a forgery, not provenance",
     )
-    return _build_verified_intake(receipt=receipt, downloads=downloads, scope=PRODUCTION_SCOPE)
+    return _build_verified_intake(
+        receipt=receipt, downloads=downloads, factory=VerifiedProductionLiveRoundIntake
+    )
 
 
 def observe_fixture_live_round_intake(*, receipt: Any, downloads: Any) -> VerifiedLiveRoundIntake:
     """The deterministic test seam. Same builder, same refusals, different scope."""
     from minos_engine.protocol.round_status import (
-        FIXTURE_SCOPE,
         is_fixture_round_downloads,
         is_fixture_round_receipt,
     )
@@ -413,7 +486,9 @@ def observe_fixture_live_round_intake(*, receipt: Any, downloads: Any) -> Verifi
         is_fixture_round_downloads(downloads),
         "a fixture live intake requires sealed fixture round downloads",
     )
-    return _build_verified_intake(receipt=receipt, downloads=downloads, scope=FIXTURE_SCOPE)
+    return _build_verified_intake(
+        receipt=receipt, downloads=downloads, factory=FixtureLiveRoundIntake
+    )
 
 
 def require_production_scope(intake: Any) -> VerifiedLiveRoundIntake:
@@ -425,13 +500,10 @@ def require_production_scope(intake: Any) -> VerifiedLiveRoundIntake:
     from minos_engine.protocol.round_status import PRODUCTION_SCOPE
 
     _require(
-        type(intake) is VerifiedLiveRoundIntake and getattr(intake, "_seal", None) is _INTAKE_TOKEN,
-        "the live boundary accepts only a sealed verified live intake",
+        is_verified_production_intake(intake),
+        "the live boundary accepts only a sealed PRODUCTION live intake; a fixture observation is "
+        "a different capability, and no amount of relabelling turns one into the other",
     )
     verified: VerifiedLiveRoundIntake = intake
-    _require(
-        verified.scope == PRODUCTION_SCOPE,
-        f"this intake is {verified.scope!r} scope; the live boundary accepts only "
-        f"{PRODUCTION_SCOPE}",
-    )
+    assert verified.scope == PRODUCTION_SCOPE
     return verified

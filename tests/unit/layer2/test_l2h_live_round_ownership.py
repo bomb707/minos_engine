@@ -14,13 +14,24 @@ from minos_engine.layer2.contracts import ControlMode
 from minos_engine.layer2.live_round_authority import (
     LIVE_OWNERSHIP_DOMAIN,
     LIVE_OWNERSHIP_SCHEMA,
+    FixtureLiveProfileBinding,
+    FixtureRoundProfileAuthority,
     LiveRoundOwnershipError,
     VerifiedLiveProfileBinding,
+    VerifiedProductionLiveProfileBinding,
+    is_verified_production_live_binding,
     load_verified_live_round_ownership,
+    observe_fixture_live_profile_binding,
+    observe_fixture_live_round_ownership,
     verify_live_profile_binding,
 )
 from minos_engine.layer2.live_round_intake import (
+    FixtureLiveRoundIntake,
     LiveRoundIntakeError,
+    VerifiedLiveRoundIntake,
+    VerifiedProductionLiveRoundIntake,
+    is_fixture_intake,
+    is_verified_production_intake,
     observe_fixture_live_round_intake,
     require_production_scope,
     verify_live_round_intake,
@@ -28,9 +39,11 @@ from minos_engine.layer2.live_round_intake import (
 from minos_engine.layer2.round_profile_authority import (
     LIVE_PARTITION,
     TRAIN_SCHEDULE_PATH,
+    OwnedRoundCorpus,
     OwnedRoundProfile,
     RoundProfileAuthorityError,
     VerifiedRoundProfileAuthority,
+    is_verified_round_profile_authority,
     load_verified_round_profile_corpus,
     own_verified_live_round,
 )
@@ -446,7 +459,7 @@ def test_the_production_scope_guard_refuses_a_fixture_chain(replay):
     assert require_production_scope is not None
     with pytest.raises(LiveRoundIntakeError, match="fixture"):
         require_production_scope(replay["intake"])
-    with pytest.raises(LiveRoundIntakeError, match="sealed verified live intake"):
+    with pytest.raises(LiveRoundIntakeError, match="sealed PRODUCTION live intake"):
         require_production_scope(object())
 
 
@@ -809,7 +822,10 @@ def test_a_round_absent_from_the_train_schedule_can_be_owned(replay):
     assert FRESH_LIVE_ROUND_ID not in scheduled
 
     ownership = replay["ownership"]
-    assert isinstance(ownership, VerifiedRoundProfileAuthority)
+    # the offline chain ends in the fixture capability: same lookups, no production authority
+    assert type(ownership) is FixtureRoundProfileAuthority
+    assert isinstance(ownership, OwnedRoundCorpus)
+    assert not is_verified_round_profile_authority(ownership)
     assert ownership.rounds() == (FRESH_LIVE_ROUND_ID,)
     assert ownership.scope == "live"
     assert ownership.partition == LIVE_PARTITION
@@ -895,9 +911,9 @@ def test_arbitrary_owned_profiles_cannot_mint_ownership(replay):
         anchors: dict[str, str] = {}
         identity = "0" * 64
 
-    with pytest.raises(RoundProfileAuthorityError, match="verified live profile binding"):
+    with pytest.raises(RoundProfileAuthorityError, match="production live profile binding"):
         own_verified_live_round(ForgedBinding())
-    with pytest.raises(RoundProfileAuthorityError, match="verified live profile binding"):
+    with pytest.raises(RoundProfileAuthorityError, match="production live profile binding"):
         own_verified_live_round(
             {"by_round": {forged.round_id: forged}, "anchors": {}, "corpus_identity": "0" * 64}
         )
@@ -939,8 +955,14 @@ def test_a_lookalike_object_is_refused_by_the_controller(replay):
 
 
 def test_only_the_live_factory_and_the_train_loader_reach_the_token():
+    """Exactly two call sites pass the token positionally: the live mint and the train loader.
+
+    Counting every mention would now also count the seal comparison and the prose, so the
+    assertion is on call-site lines specifically.
+    """
     source = (REPO_ROOT / "src/minos_engine/layer2/round_profile_authority.py").read_text()
-    assert source.count("_CORPUS_TOKEN,") == 2
+    call_sites = [line for line in source.splitlines() if line.strip() == "_CORPUS_TOKEN,"]
+    assert len(call_sites) == 2
 
 
 # --------------------------------------------------------------------------- #
@@ -976,7 +998,7 @@ def test_an_attestation_that_does_not_hash_to_itself_is_refused(dataset):
 def test_a_profile_belonging_to_another_live_round_is_refused(dataset, replay):
     other = build_live_replay(dataset, live_round_id="2026-11-11T11:11:11+00:00")
     with pytest.raises(LiveRoundOwnershipError):
-        load_verified_live_round_ownership(
+        observe_fixture_live_round_ownership(
             intake=replay["intake"],
             profile_bytes=other["profile_bytes"],
             manifest_bytes=other["manifest_bytes"],
@@ -996,7 +1018,7 @@ def test_an_empty_artifact_is_refused(replay, artifact):
     }
     payload[f"{artifact}_bytes"] = b""
     with pytest.raises(LiveRoundOwnershipError, match="empty"):
-        load_verified_live_round_ownership(**payload)
+        observe_fixture_live_round_ownership(**payload)
 
 
 def test_tampered_artifact_bytes_are_refused(replay):
@@ -1010,12 +1032,12 @@ def test_tampered_artifact_bytes_are_refused(replay):
         }
         payload[field] = payload[field] + b"\x00"
         with pytest.raises(LiveRoundOwnershipError):
-            load_verified_live_round_ownership(**payload)
+            observe_fixture_live_round_ownership(**payload)
 
 
 def test_unparseable_artifact_bytes_are_refused(replay):
     with pytest.raises(LiveRoundOwnershipError, match="not JSON"):
-        load_verified_live_round_ownership(
+        observe_fixture_live_round_ownership(
             intake=replay["intake"],
             profile_bytes=b"{not json",
             manifest_bytes=replay["manifest_bytes"],
@@ -1025,17 +1047,20 @@ def test_unparseable_artifact_bytes_are_refused(replay):
 
 
 def test_a_binding_is_required_and_is_itself_verified(replay):
-    binding = verify_live_profile_binding(
+    binding = observe_fixture_live_profile_binding(
         intake=replay["intake"],
         profile_bytes=replay["profile_bytes"],
         manifest_bytes=replay["manifest_bytes"],
         attestation_bytes=replay["attestation_bytes"],
         windows_bytes=replay["windows_bytes"],
     )
+    assert type(binding) is FixtureLiveProfileBinding
     assert isinstance(binding, VerifiedLiveProfileBinding)
+    assert not is_verified_production_live_binding(binding)
     assert binding.owned.partition == LIVE_PARTITION
-    assert own_verified_live_round(binding).rounds() == (FRESH_LIVE_ROUND_ID,)
-    with pytest.raises(LiveRoundOwnershipError, match="verified live intake"):
+    with pytest.raises(RoundProfileAuthorityError, match="production live profile binding"):
+        own_verified_live_round(binding)
+    with pytest.raises(LiveRoundOwnershipError, match="PRODUCTION live intake"):
         verify_live_profile_binding(
             intake={"round_id": FRESH_LIVE_ROUND_ID},
             profile_bytes=replay["profile_bytes"],
@@ -1149,6 +1174,29 @@ def test_the_live_modules_never_name_a_research_authority():
 # --------------------------------------------------------------------------- #
 # H / M: manifest version, and the TRAIN authority
 # --------------------------------------------------------------------------- #
+def _production_live_authority(replay: dict[str, Any]) -> VerifiedRoundProfileAuthority:
+    """A GENUINE production live authority, minted past the gate on purpose.
+
+    The v1-manifest refusal is a property of a real production ``VerifiedRoundProfileAuthority``
+    whose partition is live, and the fixture chain can no longer produce one -- that is the whole
+    point of the capability split. A production intake needs a sealed production receipt from the
+    official miner, which cannot be constructed offline, so this helper reaches the module-private
+    mint token directly. It is the only place in the suite that does, and it exists to test what
+    the controller does with live ownership, not to claim the fixture could obtain it.
+    """
+    from minos_engine.layer2.round_profile_authority import _CORPUS_TOKEN
+
+    fixture = replay["ownership"]
+    owned = fixture.owned(FRESH_LIVE_ROUND_ID)
+    return VerifiedRoundProfileAuthority(
+        _CORPUS_TOKEN,
+        by_round={owned.round_id: owned},
+        anchors=dict(fixture.anchors),
+        corpus_identity=fixture.corpus_identity,
+        partition=LIVE_PARTITION,
+    )
+
+
 def test_a_live_authority_cannot_produce_a_v1_decision_manifest(replay):
     from minos_engine.layer2.safe_controller import (
         SafeControllerAuthorityError,
@@ -1160,8 +1208,17 @@ def test_a_live_authority_cannot_produce_a_v1_decision_manifest(replay):
     authority = load_verified_safe_baseline_authority(repo_root=REPO_ROOT)
     owned = replay["ownership"].owned(FRESH_LIVE_ROUND_ID)
     request = _request_for(owned, authority=authority, mode=ControlMode.SAFE_BASELINE)
-    with pytest.raises(SafeControllerAuthorityError, match="decision-manifest v2"):
+
+    # the fixture terminus is refused for being a fixture, before scope is ever considered
+    with pytest.raises(SafeControllerAuthorityError, match="fixture authority"):
         select_safe_baseline(request=request, authority=authority, ownership=replay["ownership"])
+
+    # a genuine live production authority gets past that and is refused for its SCOPE
+    live = _production_live_authority(replay)
+    assert is_verified_round_profile_authority(live)
+    assert live.scope == "live"
+    with pytest.raises(SafeControllerAuthorityError, match="decision-manifest v2"):
+        select_safe_baseline(request=request, authority=authority, ownership=live)
 
 
 def test_the_train_corpus_identity_has_not_moved():
@@ -1212,3 +1269,346 @@ def test_the_transport_abstraction_is_the_only_seam():
     assert issubclass(FixtureRoundStatusTransport, RoundStatusTransport)
     source = (REPO_ROOT / "src/minos_engine/protocol/round_status.py").read_text()
     assert "httpx" not in source and "requests" not in source
+
+
+# --------------------------------------------------------------------------- #
+# CAPABILITY DOMAINS: a fixture can never mint live authority, and inheritance
+# is never authority. Every case below would have PASSED an isinstance check.
+# --------------------------------------------------------------------------- #
+def test_the_two_intake_domains_are_distinct_capabilities(replay):
+    """Production and fixture are different types with different private tokens.
+
+    Not one type carrying a mutable ``scope`` string: that design let a fixture observation be
+    relabelled and walk through the live guard.
+    """
+    intake = replay["intake"]
+    assert type(intake) is FixtureLiveRoundIntake
+    assert is_fixture_intake(intake)
+    assert not is_verified_production_intake(intake)
+
+    # inheritance is shared BEHAVIOUR, never shared authority
+    assert isinstance(intake, VerifiedLiveRoundIntake)
+    assert issubclass(FixtureLiveRoundIntake, VerifiedLiveRoundIntake)
+    assert issubclass(VerifiedProductionLiveRoundIntake, VerifiedLiveRoundIntake)
+
+    # scope is a CLASS attribute of each concrete capability, not instance state
+    assert "scope" in VerifiedProductionLiveRoundIntake.__dict__
+    assert "scope" in FixtureLiveRoundIntake.__dict__
+    assert "scope" not in VerifiedLiveRoundIntake.__slots__
+
+
+def test_a_fixture_intake_cannot_be_relabelled_as_production(replay):
+    """§H, the scope-mutation attack, exactly as it was described.
+
+    Before the split this sequence produced a fixture intake that satisfied the production guard.
+    """
+    intake = replay["intake"]
+    assert intake.scope == "fixture"
+
+    with pytest.raises(LiveRoundIntakeError, match="immutable"):
+        intake.scope = "production"
+    assert intake.scope == "fixture"
+
+    # nothing else on a minted intake can be rewritten either
+    for field in ("identity", "receipt_identity", "dataset_id", "_seal"):
+        with pytest.raises(LiveRoundIntakeError, match="immutable"):
+            setattr(intake, field, "x" * 64)
+
+    # the class attribute is not a back door: rebinding it does not change this instance's type
+    assert not is_verified_production_intake(intake)
+    with pytest.raises(LiveRoundIntakeError, match="PRODUCTION"):
+        require_production_scope(intake)
+
+
+def test_a_fixture_intake_copied_into_a_production_lookalike_is_refused(replay):
+    """Copying every attribute across does not copy the capability."""
+    fixture = replay["intake"]
+
+    lookalike = object.__new__(VerifiedProductionLiveRoundIntake)
+    object.__setattr__(lookalike, "_content", fixture.content())
+    object.__setattr__(lookalike, "identity", fixture.identity)
+    object.__setattr__(lookalike, "receipt_identity", fixture.receipt_identity)
+    object.__setattr__(lookalike, "dataset_id", fixture.dataset_id)
+
+    # it IS the production type and it answers every question correctly...
+    assert isinstance(lookalike, VerifiedProductionLiveRoundIntake)
+    assert lookalike.scope == "production"
+    assert lookalike.identity == fixture.identity
+    # ...but it was never minted, so it carries no seal
+    assert not is_verified_production_intake(lookalike)
+    with pytest.raises(LiveRoundIntakeError, match="PRODUCTION"):
+        require_production_scope(lookalike)
+
+
+def test_a_subclass_of_the_production_intake_is_not_a_production_intake(replay):
+    """The subclass bypass, at the intake. ``isinstance`` would have accepted this."""
+
+    class ForgedIntake(VerifiedProductionLiveRoundIntake):
+        pass
+
+    forged = object.__new__(ForgedIntake)
+    object.__setattr__(forged, "_content", replay["intake"].content())
+    object.__setattr__(forged, "identity", replay["intake"].identity)
+
+    assert isinstance(forged, VerifiedProductionLiveRoundIntake)  # the bypass that used to work
+    assert forged.scope == "production"
+    assert not is_verified_production_intake(forged)
+    with pytest.raises(LiveRoundIntakeError, match="PRODUCTION"):
+        require_production_scope(forged)
+
+
+def test_a_fixture_intake_cannot_enter_the_production_binding_factory(replay):
+    """The seam the whole attack ran through."""
+    with pytest.raises(LiveRoundOwnershipError, match="cannot become live authority by any route"):
+        verify_live_profile_binding(
+            intake=replay["intake"],
+            profile_bytes=replay["profile_bytes"],
+            manifest_bytes=replay["manifest_bytes"],
+            attestation_bytes=replay["attestation_bytes"],
+            windows_bytes=replay["windows_bytes"],
+        )
+    with pytest.raises(LiveRoundOwnershipError, match="cannot become live authority by any route"):
+        load_verified_live_round_ownership(
+            intake=replay["intake"],
+            profile_bytes=replay["profile_bytes"],
+            manifest_bytes=replay["manifest_bytes"],
+            attestation_bytes=replay["attestation_bytes"],
+            windows_bytes=replay["windows_bytes"],
+        )
+
+
+def test_a_production_intake_cannot_enter_the_fixture_observer():
+    """The separation runs both ways, so neither domain can be spoofed by the other."""
+    lookalike = object.__new__(VerifiedProductionLiveRoundIntake)
+    object.__setattr__(lookalike, "_content", {})
+    with pytest.raises(LiveRoundOwnershipError, match="fixture live intake"):
+        observe_fixture_live_profile_binding(
+            intake=lookalike,
+            profile_bytes=b"{}",
+            manifest_bytes=b"{}",
+            attestation_bytes=b"{}",
+            windows_bytes=b"{}",
+        )
+
+
+def test_a_fixture_binding_cannot_mint_live_ownership(replay):
+    """BLOCKER 1's terminus: even a fully valid fixture binding mints nothing live."""
+    binding = observe_fixture_live_profile_binding(
+        intake=replay["intake"],
+        profile_bytes=replay["profile_bytes"],
+        manifest_bytes=replay["manifest_bytes"],
+        attestation_bytes=replay["attestation_bytes"],
+        windows_bytes=replay["windows_bytes"],
+    )
+    assert isinstance(binding, VerifiedLiveProfileBinding)  # the check that used to be enough
+    assert not is_verified_production_live_binding(binding)
+    with pytest.raises(RoundProfileAuthorityError, match="production live profile binding"):
+        own_verified_live_round(binding)
+
+
+def test_a_subclass_of_the_production_binding_cannot_mint_live_ownership(replay):
+    """BLOCKER 2, verbatim: a subclass skipping ``__init__`` and populating the fields."""
+    fixture = observe_fixture_live_profile_binding(
+        intake=replay["intake"],
+        profile_bytes=replay["profile_bytes"],
+        manifest_bytes=replay["manifest_bytes"],
+        attestation_bytes=replay["attestation_bytes"],
+        windows_bytes=replay["windows_bytes"],
+    )
+
+    class ForgedBinding(VerifiedProductionLiveProfileBinding):
+        pass
+
+    forged = object.__new__(ForgedBinding)
+    forged.owned = fixture.owned
+    forged.anchors = dict(fixture.anchors)
+    forged.identity = fixture.identity
+
+    assert isinstance(forged, VerifiedProductionLiveProfileBinding)  # the old bypass
+    assert forged.scope == "production"
+    assert not is_verified_production_live_binding(forged)
+    with pytest.raises(RoundProfileAuthorityError, match="a subclass"):
+        own_verified_live_round(forged)
+
+
+def test_a_hand_built_production_binding_cannot_mint_live_ownership(replay):
+    """The unsealed instance of the exact production type: right type, never minted."""
+    fixture = observe_fixture_live_profile_binding(
+        intake=replay["intake"],
+        profile_bytes=replay["profile_bytes"],
+        manifest_bytes=replay["manifest_bytes"],
+        attestation_bytes=replay["attestation_bytes"],
+        windows_bytes=replay["windows_bytes"],
+    )
+    hand_built = object.__new__(VerifiedProductionLiveProfileBinding)
+    hand_built.owned = fixture.owned
+    hand_built.anchors = dict(fixture.anchors)
+    hand_built.identity = fixture.identity
+
+    assert type(hand_built) is VerifiedProductionLiveProfileBinding  # exact type is not enough
+    assert not is_verified_production_live_binding(hand_built)
+    with pytest.raises(RoundProfileAuthorityError, match="production live profile binding"):
+        own_verified_live_round(hand_built)
+
+    # and the constructor itself still refuses an arbitrary token
+    with pytest.raises(LiveRoundOwnershipError, match="may only be minted by verifying"):
+        VerifiedProductionLiveProfileBinding(
+            object(), owned=fixture.owned, anchors={}, identity=fixture.identity
+        )
+    with pytest.raises(LiveRoundOwnershipError, match="may only be minted by verifying"):
+        FixtureLiveProfileBinding(None, owned=fixture.owned, anchors={}, identity=fixture.identity)
+
+
+def test_a_subclass_of_the_round_profile_authority_reaches_no_controller(replay):
+    """§F: the ownership capability itself is sealed."""
+    from minos_engine.layer2.safe_controller import (
+        SafeBaselineController,
+        SafeControllerAuthorityError,
+        load_verified_safe_baseline_authority,
+        select_safe_baseline,
+    )
+    from minos_engine.layer2.safe_controller_qualification import _request_for
+
+    train = load_verified_round_profile_corpus(root=REPO_ROOT)
+    assert is_verified_round_profile_authority(train)
+
+    class ForgedAuthority(VerifiedRoundProfileAuthority):
+        pass
+
+    forged = object.__new__(ForgedAuthority)
+    forged._anchors = dict(train.anchors)
+    forged._by_round = {r: train.owned(r) for r in train.rounds()}
+    forged.corpus_identity = train.corpus_identity
+    forged.partition = train.partition
+
+    assert isinstance(forged, VerifiedRoundProfileAuthority)  # the old bypass
+    assert forged.scope == "train"
+    assert not is_verified_round_profile_authority(forged)
+
+    authority = load_verified_safe_baseline_authority(repo_root=REPO_ROOT)
+    owned = train.owned(train.rounds()[0])
+    request = _request_for(owned, authority=authority, mode=ControlMode.SAFE_BASELINE)
+    with pytest.raises(SafeControllerAuthorityError, match="a subclass"):
+        select_safe_baseline(request=request, authority=authority, ownership=forged)
+    with pytest.raises(SafeControllerAuthorityError, match="SEALED verified profile corpus"):
+        SafeBaselineController(authority, forged)
+
+
+def test_a_subclass_of_the_safe_baseline_authority_reaches_no_controller():
+    """§G: the same hole, audited and closed on the other controller capability."""
+    from minos_engine.layer2.safe_controller import (
+        SafeBaselineController,
+        SafeControllerAuthorityError,
+        VerifiedSafeBaselineAuthority,
+        is_verified_safe_baseline_authority,
+        load_verified_safe_baseline_authority,
+        select_safe_baseline,
+    )
+    from minos_engine.layer2.safe_controller_qualification import _request_for
+
+    real = load_verified_safe_baseline_authority(repo_root=REPO_ROOT)
+    assert is_verified_safe_baseline_authority(real)
+    train = load_verified_round_profile_corpus(root=REPO_ROOT)
+
+    class ForgedAuthority(VerifiedSafeBaselineAuthority):
+        pass
+
+    forged = object.__new__(ForgedAuthority)
+    forged._policy = real.policy
+    for field in (
+        "policy_hash",
+        "baseline_config_hash",
+        "baseline_payload_sha256",
+        "baseline_uri",
+        "parameter_space_hash",
+        "entry_gate_checks",
+        "source_commit",
+        "source_tree",
+    ):
+        setattr(forged, field, getattr(real, field))
+
+    assert isinstance(forged, VerifiedSafeBaselineAuthority)  # the old bypass
+    assert forged.baseline_config_hash == real.baseline_config_hash
+    assert not is_verified_safe_baseline_authority(forged)
+
+    owned = train.owned(train.rounds()[0])
+    request = _request_for(owned, authority=real, mode=ControlMode.SAFE_BASELINE)
+    with pytest.raises(SafeControllerAuthorityError, match="a subclass"):
+        select_safe_baseline(request=request, authority=forged, ownership=train)
+    with pytest.raises(SafeControllerAuthorityError, match="SEALED verified authority"):
+        SafeBaselineController(forged, train)
+
+
+def test_the_controller_boundary_uses_no_isinstance_capability_check():
+    """The rule, asserted on the source: no capability at this boundary is an isinstance check."""
+    source = (REPO_ROOT / "src/minos_engine/layer2/safe_controller.py").read_text()
+    assert "isinstance(authority" not in source
+    assert "isinstance(ownership" not in source
+
+
+def test_fixture_ownership_reaches_neither_controller_entry_point(replay):
+    """§D's consequence: the offline chain ends outside the controller, by both doors."""
+    from minos_engine.layer2.safe_controller import (
+        SafeBaselineController,
+        SafeControllerAuthorityError,
+        load_verified_safe_baseline_authority,
+        select_safe_baseline,
+    )
+    from minos_engine.layer2.safe_controller_qualification import _request_for
+
+    authority = load_verified_safe_baseline_authority(repo_root=REPO_ROOT)
+    fixture = replay["ownership"]
+    request = _request_for(
+        fixture.owned(FRESH_LIVE_ROUND_ID), authority=authority, mode=ControlMode.SAFE_BASELINE
+    )
+    with pytest.raises(SafeControllerAuthorityError, match="fixture authority"):
+        select_safe_baseline(request=request, authority=authority, ownership=fixture)
+    with pytest.raises(SafeControllerAuthorityError, match="fixture authority is not one"):
+        SafeBaselineController(authority, fixture)
+
+
+def test_the_fixture_replay_exercises_the_shared_logic_it_cannot_mint(replay):
+    """§D: the fixture proves the arithmetic without ever becoming the authority.
+
+    It resolves ownership, answers a request, and carries the same anchors and identity a
+    production authority would -- and is still refused at the controller boundary.
+    """
+    fixture = replay["ownership"]
+    assert type(fixture) is FixtureRoundProfileAuthority
+    assert fixture.scope == "live"
+    assert fixture.partition == LIVE_PARTITION
+    assert fixture.rounds() == (FRESH_LIVE_ROUND_ID,)
+
+    owned = fixture.owned(FRESH_LIVE_ROUND_ID)
+    assert owned.round_id == FRESH_LIVE_ROUND_ID
+    assert {
+        "live_intake_identity",
+        "live_intake_scope",
+        "platform_receipt_identity",
+    } <= set(fixture.anchors)
+    # the scope is inside the anchors, so it is inside the corpus identity itself: a fixture
+    # chain's identity can never be the identity a production chain would have produced
+    assert fixture.anchors["live_intake_scope"] == "fixture"
+
+    # the identity arithmetic is the SAME arithmetic, so the replay really does test it
+    from minos_engine.layer2.live_round_authority import (
+        LIVE_OWNERSHIP_DOMAIN as domain,
+    )
+
+    assert len(fixture.corpus_identity) == 64
+    assert domain.startswith("minos:")
+
+    # and it is not the production capability, by type or by seal
+    assert not is_verified_round_profile_authority(fixture)
+    assert not isinstance(fixture, VerifiedRoundProfileAuthority)
+    assert getattr(fixture, "_seal", None) is None
+
+
+def test_the_seal_does_not_move_any_scientific_identity():
+    """§L: adding a runtime seal must be invisible to every published identity."""
+    train = load_verified_round_profile_corpus(root=REPO_ROOT)
+    assert train.corpus_identity == ACCEPTED_TRAIN_CORPUS_IDENTITY
+    assert is_verified_round_profile_authority(train)
+    # the seal is runtime capability state and is deliberately absent from the hashed content
+    assert "_seal" not in json.dumps(train.identity_content())
+    assert "seal" not in json.dumps(train.identity_content())

@@ -36,13 +36,22 @@ authority carries the field on exactly the same terms. The accepted L2-D admissi
 ``validate_admission`` is called unchanged -- not reimplemented -- and the ``registry_identity``
 it validates against is reconstructed from the verified intake, so no caller is on the trust path.
 Any mismatch raises; nothing is emitted, no config is returned, no decision is made.
+
+**Two authority domains, not one with a label.** Every stage here exists twice -- a production
+capability and a fixture capability, each with its own module-private token. The offline replay
+runs the identical validation through :func:`observe_fixture_live_profile_binding` and ends in
+:class:`FixtureRoundProfileAuthority`, which the safe controller does not accept. It previously
+ended in a genuine ``VerifiedRoundProfileAuthority(partition="live")``, because one class carried a
+mutable ``scope`` string and the guards below asked only ``isinstance``. A test fixture must never
+be able to mint live authority, so behaviour is shared through a common base and shared builders
+while authority is not shared at all.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-from typing import Final
+from typing import Any, Final
 
 from minos_engine.common.canonical_json import canonical_json_bytes
 from minos_engine.common.hashing import canonical_hash, sha256_hex
@@ -52,6 +61,7 @@ from minos_engine.layer2.live_round_intake import (
 )
 from minos_engine.layer2.round_profile_authority import (
     LIVE_PARTITION,
+    OwnedRoundCorpus,
     OwnedRoundProfile,
     VerifiedRoundProfileAuthority,
 )
@@ -59,25 +69,36 @@ from minos_engine.layer2.round_profile_authority import (
 __all__ = [
     "LIVE_OWNERSHIP_DOMAIN",
     "LIVE_OWNERSHIP_SCHEMA",
+    "FixtureLiveProfileBinding",
+    "FixtureRoundProfileAuthority",
     "LiveRoundOwnershipError",
     "VerifiedLiveProfileBinding",
+    "VerifiedProductionLiveProfileBinding",
+    "is_verified_production_live_binding",
     "load_verified_live_round_ownership",
+    "observe_fixture_live_profile_binding",
+    "observe_fixture_live_round_ownership",
     "verify_live_profile_binding",
 ]
 
-_BINDING_TOKEN: Final = object()
+#: One token per authority domain, exactly as for the intake.
+_PRODUCTION_BINDING_TOKEN: Final = object()
+_FIXTURE_BINDING_TOKEN: Final = object()
 
 
 class VerifiedLiveProfileBinding:
     """Proof that ONE live profile belongs to ONE live round.
 
-    This is the only argument ``round_profile_authority.own_verified_live_round`` accepts, and its
-    constructor demands a token held only by :func:`verify_live_profile_binding`. That is what
-    replaced the generic raw-data mint: a caller cannot assemble the input, so hand-built
-    ``OwnedRoundProfile`` maps have no route to the ownership token at all.
+    ``round_profile_authority.own_verified_live_round`` accepts only the **production** subclass,
+    by exact type and private seal. An earlier version used ``isinstance`` here, which a subclass
+    skipping ``__init__`` and populating ``owned``/``anchors``/``identity`` would have satisfied --
+    the generic raw-data mint again, through inheritance.
     """
 
-    __slots__ = ("anchors", "identity", "owned")
+    __slots__ = ("_seal", "anchors", "identity", "owned")
+
+    scope: str = ""
+    _expected_token: Any = None
 
     def __init__(
         self,
@@ -87,7 +108,7 @@ class VerifiedLiveProfileBinding:
         anchors: dict[str, str],
         identity: str,
     ) -> None:
-        if token is not _BINDING_TOKEN:
+        if token is not type(self)._expected_token or token is None:
             raise LiveRoundOwnershipError(
                 "a live profile binding may only be minted by verifying one; a map of owned "
                 "profile fields is not a proof that a profile belongs to a round"
@@ -95,6 +116,31 @@ class VerifiedLiveProfileBinding:
         self.owned = owned
         self.anchors = dict(anchors)
         self.identity = identity
+        self._seal = token
+
+
+class VerifiedProductionLiveProfileBinding(VerifiedLiveProfileBinding):
+    """The only binding production ownership will accept."""
+
+    __slots__ = ()
+    scope = "production"
+    _expected_token = _PRODUCTION_BINDING_TOKEN
+
+
+class FixtureLiveProfileBinding(VerifiedLiveProfileBinding):
+    """The offline result. It mints no ownership and reaches no controller."""
+
+    __slots__ = ()
+    scope = "fixture"
+    _expected_token = _FIXTURE_BINDING_TOKEN
+
+
+def is_verified_production_live_binding(candidate: Any) -> bool:
+    """Exact concrete type and private seal."""
+    return (
+        type(candidate) is VerifiedProductionLiveProfileBinding
+        and getattr(candidate, "_seal", None) is _PRODUCTION_BINDING_TOKEN
+    )
 
 
 LIVE_OWNERSHIP_SCHEMA: Final = "l2h-live-round-profile-ownership-v1"
@@ -112,17 +158,83 @@ def _require(condition: bool, message: str) -> None:
 
 def verify_live_profile_binding(
     *,
-    intake: VerifiedLiveRoundIntake,
+    intake: Any,
     profile_bytes: bytes,
     manifest_bytes: bytes,
     attestation_bytes: bytes,
     windows_bytes: bytes,
+) -> VerifiedProductionLiveProfileBinding:
+    """THE production entry point. A PRODUCTION intake, or nothing.
+
+    A fixture observation is refused here, before any production binding exists -- it is a
+    different capability, not a production one wearing a label. Offline replay uses
+    :func:`observe_fixture_live_profile_binding`, which shares this implementation exactly and
+    mints a fixture capability instead.
+    """
+    from minos_engine.layer2.live_round_intake import is_verified_production_intake
+
+    _require(
+        is_verified_production_intake(intake),
+        "a production live profile binding requires a sealed PRODUCTION live intake; a fixture "
+        "observation cannot become live authority by any route",
+    )
+    result = _build_live_profile_binding(
+        intake=intake,
+        profile_bytes=profile_bytes,
+        manifest_bytes=manifest_bytes,
+        attestation_bytes=attestation_bytes,
+        windows_bytes=windows_bytes,
+        factory=VerifiedProductionLiveProfileBinding,
+    )
+    assert isinstance(result, VerifiedProductionLiveProfileBinding)
+    return result
+
+
+def observe_fixture_live_profile_binding(
+    *,
+    intake: Any,
+    profile_bytes: bytes,
+    manifest_bytes: bytes,
+    attestation_bytes: bytes,
+    windows_bytes: bytes,
+) -> FixtureLiveProfileBinding:
+    """The offline seam. Identical validation, a capability that ends here."""
+    from minos_engine.layer2.live_round_intake import is_fixture_intake
+
+    _require(
+        is_fixture_intake(intake),
+        "a fixture live profile binding requires a sealed fixture live intake",
+    )
+    result = _build_live_profile_binding(
+        intake=intake,
+        profile_bytes=profile_bytes,
+        manifest_bytes=manifest_bytes,
+        attestation_bytes=attestation_bytes,
+        windows_bytes=windows_bytes,
+        factory=FixtureLiveProfileBinding,
+    )
+    assert isinstance(result, FixtureLiveProfileBinding)
+    return result
+
+
+def _build_live_profile_binding(
+    *,
+    intake: Any,
+    profile_bytes: bytes,
+    manifest_bytes: bytes,
+    attestation_bytes: bytes,
+    windows_bytes: bytes,
+    factory: type[VerifiedLiveProfileBinding],
 ) -> VerifiedLiveProfileBinding:
-    """Prove one live profile belongs to one live round, and mint the binding proof.
+    """Prove one live profile belongs to one live round. Shared by both authority domains.
 
     The four Layer 1 outputs are taken as **bytes**, not as parsed documents: a caller that hands
     over a dict has already decided what the bytes mean. Hashing happens here, and the documents
     are decoded from the exact bytes that were hashed.
+
+    The factory carries its own token, so there is no argument through which the fixture path
+    could ask for the production one. Which domain's *intake* is acceptable was already decided by
+    the caller above; this function only re-proves the science, identically for both.
     """
     from minos_engine.layer2.ingest.validation import validate_admission
 
@@ -256,20 +368,30 @@ def verify_live_profile_binding(
             }
         )
     )
-    return VerifiedLiveProfileBinding(
-        _BINDING_TOKEN, owned=owned, anchors=anchors, identity=identity
-    )
+    return factory(factory._expected_token, owned=owned, anchors=anchors, identity=identity)
+
+
+class FixtureRoundProfileAuthority(OwnedRoundCorpus):
+    """Where the offline chain ENDS.
+
+    It carries the same lookups and the same identity arithmetic as production ownership, so a
+    replay can exercise ``require_owned_request`` and the manifest refusal -- and it is a different
+    type, so ``is_verified_round_profile_authority`` rejects it and the safe controller will not
+    take it. A fixture must be able to prove the logic without ever becoming the authority.
+    """
+
+    __slots__ = ()
 
 
 def load_verified_live_round_ownership(
     *,
-    intake: VerifiedLiveRoundIntake,
+    intake: Any,
     profile_bytes: bytes,
     manifest_bytes: bytes,
     attestation_bytes: bytes,
     windows_bytes: bytes,
 ) -> VerifiedRoundProfileAuthority:
-    """Verify the binding, then have the token-owning module mint ownership from that proof."""
+    """PRODUCTION: verify the binding, then have the token-owning module mint ownership."""
     from minos_engine.layer2.round_profile_authority import own_verified_live_round
 
     return own_verified_live_round(
@@ -280,4 +402,28 @@ def load_verified_live_round_ownership(
             attestation_bytes=attestation_bytes,
             windows_bytes=windows_bytes,
         )
+    )
+
+
+def observe_fixture_live_round_ownership(
+    *,
+    intake: Any,
+    profile_bytes: bytes,
+    manifest_bytes: bytes,
+    attestation_bytes: bytes,
+    windows_bytes: bytes,
+) -> FixtureRoundProfileAuthority:
+    """FIXTURE: the same validation, ending in a capability the controller will not accept."""
+    binding = observe_fixture_live_profile_binding(
+        intake=intake,
+        profile_bytes=profile_bytes,
+        manifest_bytes=manifest_bytes,
+        attestation_bytes=attestation_bytes,
+        windows_bytes=windows_bytes,
+    )
+    return FixtureRoundProfileAuthority(
+        by_round={binding.owned.round_id: binding.owned},
+        anchors=dict(binding.anchors),
+        corpus_identity=binding.identity,
+        partition=LIVE_PARTITION,
     )
