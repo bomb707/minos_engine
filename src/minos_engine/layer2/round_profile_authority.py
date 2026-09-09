@@ -69,7 +69,7 @@ __all__ = [
     "RoundProfileAuthorityError",
     "VerifiedRoundProfileAuthority",
     "load_verified_round_profile_corpus",
-    "mint_verified_ownership",
+    "own_verified_live_round",
 ]
 
 OWNERSHIP_SCHEMA: Final = "l2h-round-profile-ownership-v2"
@@ -283,29 +283,40 @@ class VerifiedRoundProfileAuthority:
         }
 
 
-def mint_verified_ownership(
-    *,
-    by_round: dict[str, OwnedRoundProfile],
-    anchors: dict[str, str],
-    corpus_identity: str,
-    partition: str,
-) -> VerifiedRoundProfileAuthority:
-    """Mint the ownership capability from a SECOND verifying factory.
+def own_verified_live_round(binding: Any) -> VerifiedRoundProfileAuthority:
+    """Mint ownership for ONE live round, from a proof that cannot be assembled by a caller.
 
-    The controller's trust in ownership is an ``isinstance`` check against a class whose
-    constructor demands a module-private token, and that stays exactly as it is: a dictionary, or
-    any object that merely implements the right methods, is still not an authority. What changes
-    is that there is now more than one way to earn the token -- the frozen TRAIN corpus loader
-    below, and the live-round factory in ``live_round_authority`` -- rather than loosening what
-    the token means. This function is the whole of that widening, and it is deliberately the only
-    export that can reach the token.
+    **Why this shape.** An earlier version exported a generic
+    ``mint_verified_ownership(by_round, anchors, corpus_identity, partition)``. That was a public
+    wrapper around the private token: anyone could build ``OwnedRoundProfile`` values by hand, pass
+    them in, and receive an object that satisfies the controller's ``isinstance`` check. The
+    capability design was intact and the door beside it was open.
+
+    So there is no raw-data mint any more. This function accepts exactly one thing --
+    a :class:`~minos_engine.layer2.live_round_authority.VerifiedLiveProfileBinding`, whose own
+    constructor demands a token held only by the verifying live factory -- and reads the member,
+    anchors and identity off it. There is no parameter through which a hand-built map can reach
+    the token, and none of the values are trusted from the caller because the caller cannot
+    produce the argument at all.
     """
+    from minos_engine.layer2.live_round_authority import VerifiedLiveProfileBinding
+
+    _require(
+        isinstance(binding, VerifiedLiveProfileBinding),
+        "live ownership may only be minted from a verified live profile binding; a map of "
+        "owned-profile fields has been checked against nothing",
+    )
+    owned = binding.owned
+    _require(
+        isinstance(owned, OwnedRoundProfile) and owned.partition == LIVE_PARTITION,
+        "a live binding must carry a live-partition owned profile",
+    )
     return VerifiedRoundProfileAuthority(
         _CORPUS_TOKEN,
-        by_round=by_round,
-        anchors=anchors,
-        corpus_identity=corpus_identity,
-        partition=partition,
+        by_round={owned.round_id: owned},
+        anchors=dict(binding.anchors),
+        corpus_identity=binding.identity,
+        partition=LIVE_PARTITION,
     )
 
 

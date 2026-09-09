@@ -17,6 +17,7 @@ __all__ = [
     "MAX_ROUND_ID_LENGTH",
     "ONE_BASED_INCLUSIVE",
     "ZERO_BASED_HALF_OPEN",
+    "is_upstream_round_id",
     "normalize_region",
     "validate_round_identifier",
 ]
@@ -33,17 +34,48 @@ _REGION_RE: Final = re.compile(r"^([A-Za-z0-9_.]+)(:)(\d+)-(\d+)$")
 _FORBIDDEN_IN_ROUND_ID: Final[tuple[str, ...]] = ("/", "\\", "..", "\x00", " ", "\t", "\n", "\r")
 
 
+def is_upstream_round_id(value: str) -> bool:
+    """``minos_subnet.templates.tool_params.validate_round_id``, reproduced exactly.
+
+    Kept as a separate, literal transcription so a parity test can hold it to the official
+    implementation case by case. The three rules, in upstream's order:
+
+    1. a non-empty string of at most 40 characters;
+    2. ``datetime.fromisoformat``; on failure, if it ends with ``Z``, strip that one character and
+       retry -- legacy round ids carry both an offset and a trailing ``Z``, which is not valid
+       ISO-8601 but exists in the data;
+    3. **the result must be timezone-aware.** A naive timestamp is ambiguous and upstream refuses
+       it, which is the rule this engine previously failed to apply.
+    """
+    if not value or not isinstance(value, str):
+        return False
+    if len(value) > MAX_ROUND_ID_LENGTH:
+        return False
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        if not value.endswith("Z"):
+            return False
+        try:
+            parsed = datetime.fromisoformat(value[:-1])
+        except (ValueError, TypeError):
+            return False
+    return parsed.tzinfo is not None
+
+
 def validate_round_identifier(value: str) -> str:
     """Accept a round id in either shape the engine actually meets, and nothing else.
 
-    The frozen research corpus uses lowercase hex. The **platform** issues an ISO-8601 timestamp —
-    ``minos_subnet``'s own ``validate_round_id`` parses it with ``datetime.fromisoformat`` and caps
-    it at 40 characters — so a rule admitting only hex cannot describe a live round at all.
+    The frozen research corpus uses lowercase hex. The **platform** issues an ISO-8601 timestamp,
+    and the live branch is :func:`is_upstream_round_id` -- upstream's own rule, transcribed --
+    so a timestamp this engine accepts is exactly a timestamp the subnet accepts. In particular a
+    **naive** timestamp is refused: upstream requires ``tzinfo`` and so does this.
 
-    Both are accepted; anything else is refused, and so is anything carrying a separator, traversal
-    fragment or whitespace. Upstream cares because a round id reaches directory paths and container
-    mounts; this engine cares for that reason and one more: it becomes a persisted decision's join
-    key and part of a scientific identity.
+    On top of upstream's rule the engine refuses separators, traversal fragments and whitespace.
+    That is deliberately *stricter*: upstream's ``fromisoformat`` would accept a space-separated
+    timestamp, and this engine will not, because a round id becomes a persisted decision's join
+    key and part of a scientific identity as well as reaching a path. The strictness only ever
+    removes values; it never admits one upstream would reject.
     """
     text = str(value)
     if not text.strip() or text != text.strip():
@@ -55,12 +87,10 @@ def validate_round_identifier(value: str) -> str:
             raise ValueError(f"round_id may not contain {bad!r}")
     if set(text) <= _HEX_DIGITS:
         return text
-    try:
-        datetime.fromisoformat(text)
-    except (TypeError, ValueError):
+    if not is_upstream_round_id(text):
         raise ValueError(
-            f"round_id {text!r} is neither lowercase hex nor an ISO-8601 timestamp"
-        ) from None
+            f"round_id {text!r} is neither lowercase hex nor a timezone-aware ISO-8601 timestamp"
+        )
     return text
 
 

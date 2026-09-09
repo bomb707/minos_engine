@@ -54,15 +54,48 @@ from minos_engine.layer2.round_profile_authority import (
     LIVE_PARTITION,
     OwnedRoundProfile,
     VerifiedRoundProfileAuthority,
-    mint_verified_ownership,
 )
 
 __all__ = [
     "LIVE_OWNERSHIP_DOMAIN",
     "LIVE_OWNERSHIP_SCHEMA",
     "LiveRoundOwnershipError",
+    "VerifiedLiveProfileBinding",
     "load_verified_live_round_ownership",
+    "verify_live_profile_binding",
 ]
+
+_BINDING_TOKEN: Final = object()
+
+
+class VerifiedLiveProfileBinding:
+    """Proof that ONE live profile belongs to ONE live round.
+
+    This is the only argument ``round_profile_authority.own_verified_live_round`` accepts, and its
+    constructor demands a token held only by :func:`verify_live_profile_binding`. That is what
+    replaced the generic raw-data mint: a caller cannot assemble the input, so hand-built
+    ``OwnedRoundProfile`` maps have no route to the ownership token at all.
+    """
+
+    __slots__ = ("anchors", "identity", "owned")
+
+    def __init__(
+        self,
+        token: object,
+        *,
+        owned: OwnedRoundProfile,
+        anchors: dict[str, str],
+        identity: str,
+    ) -> None:
+        if token is not _BINDING_TOKEN:
+            raise LiveRoundOwnershipError(
+                "a live profile binding may only be minted by verifying one; a map of owned "
+                "profile fields is not a proof that a profile belongs to a round"
+            )
+        self.owned = owned
+        self.anchors = dict(anchors)
+        self.identity = identity
+
 
 LIVE_OWNERSHIP_SCHEMA: Final = "l2h-live-round-profile-ownership-v1"
 LIVE_OWNERSHIP_DOMAIN: Final = "minos:l2h-live-round-profile-ownership:v1\n"
@@ -77,15 +110,15 @@ def _require(condition: bool, message: str) -> None:
         raise LiveRoundOwnershipError(message)
 
 
-def load_verified_live_round_ownership(
+def verify_live_profile_binding(
     *,
     intake: VerifiedLiveRoundIntake,
     profile_bytes: bytes,
     manifest_bytes: bytes,
     attestation_bytes: bytes,
     windows_bytes: bytes,
-) -> VerifiedRoundProfileAuthority:
-    """Prove one live profile belongs to one live round, then mint round-scoped ownership.
+) -> VerifiedLiveProfileBinding:
+    """Prove one live profile belongs to one live round, and mint the binding proof.
 
     The four Layer 1 outputs are taken as **bytes**, not as parsed documents: a caller that hands
     over a dict has already decided what the bytes mean. Hashing happens here, and the documents
@@ -219,9 +252,28 @@ def load_verified_live_round_ownership(
             }
         )
     )
-    return mint_verified_ownership(
-        by_round={owned.round_id: owned},
-        anchors=anchors,
-        corpus_identity=identity,
-        partition=LIVE_PARTITION,
+    return VerifiedLiveProfileBinding(
+        _BINDING_TOKEN, owned=owned, anchors=anchors, identity=identity
+    )
+
+
+def load_verified_live_round_ownership(
+    *,
+    intake: VerifiedLiveRoundIntake,
+    profile_bytes: bytes,
+    manifest_bytes: bytes,
+    attestation_bytes: bytes,
+    windows_bytes: bytes,
+) -> VerifiedRoundProfileAuthority:
+    """Verify the binding, then have the token-owning module mint ownership from that proof."""
+    from minos_engine.layer2.round_profile_authority import own_verified_live_round
+
+    return own_verified_live_round(
+        verify_live_profile_binding(
+            intake=intake,
+            profile_bytes=profile_bytes,
+            manifest_bytes=manifest_bytes,
+            attestation_bytes=attestation_bytes,
+            windows_bytes=windows_bytes,
+        )
     )
