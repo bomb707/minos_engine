@@ -65,6 +65,37 @@ Hex is a strict subset of what was accepted before, so **no existing artifact ch
 The TRAIN loader is **untouched** and still anchors to exactly what it anchored to before. Its
 corpus identity is still `9cc53b5d28c8a8da34c25095362c09d8cb1fb57533ff0a0b3e1fdf7000970b03`.
 
+### 2a. Production and fixture are two authority DOMAINS, not one class with a label
+
+An earlier design had a single `VerifiedLiveRoundIntake`, a single private token, and an instance
+attribute `scope` set to `"production"` or `"fixture"`. That is not a capability boundary. The
+scope was mutable, the downstream binding verifier required only `isinstance`, and so a fixture
+observation could be relabelled — or simply passed through unchanged — and end as a genuine
+`VerifiedRoundProfileAuthority(partition="live")`. A test fixture could mint live authority.
+
+The two domains are now two capabilities with two module-private tokens, at every stage:
+
+| stage | production | fixture |
+|---|---|---|
+| intake | `VerifiedProductionLiveRoundIntake` | `FixtureLiveRoundIntake` |
+| binding | `VerifiedProductionLiveProfileBinding` | `FixtureLiveProfileBinding` |
+| ownership | `VerifiedRoundProfileAuthority` | `FixtureRoundProfileAuthority` |
+| entry point | `verify_live_round_intake` / `verify_live_profile_binding` / `load_verified_live_round_ownership` | `observe_fixture_*` |
+
+`scope` is now a **class** attribute of each concrete capability, and a minted intake is immutable
+— `__setattr__` refuses every reassignment once the seal is set. There is no string to change, and
+changing one would not matter, because nothing downstream reads `scope` as authority. Each guard
+asks for the exact concrete type and the private token of *its own domain*.
+
+The shared superclass carries the behaviour, and the shared `_build_*` helpers carry the
+validation, so the fixture really does exercise the production arithmetic byte for byte. What it
+never shares is a token. Inheritance is how the logic is reused; it is never how authority is
+obtained.
+
+The intake scope is also anchored *into* the ownership identity as `live_intake_scope`, so a
+fixture chain's corpus identity is not, and can never be, the identity a production chain would
+have produced for the same inputs.
+
 ## 3. The platform receipt is the authority — sealed, not merely typed
 
 Three rounds of correction landed here. The first attempt let a caller supply a round id, region
@@ -168,11 +199,23 @@ type(candidate) is ExactProductionClass  and  candidate._seal is PRIVATE_TOKEN
 ```
 
 applied to `VerifiedProductionPlatformClient`, `VerifiedOfficialMiner`,
-`ProductionRoundStatusTransport`, `ProductionRoundStatusReceipt`, `ProductionRoundDownloads` and
-the production-scope `VerifiedLiveRoundIntake`, through the private helpers
-`is_verified_production_receipt`, `is_verified_production_downloads`,
-`is_verified_official_miner` and `require_production_scope`. The tokens are module-private and
-never exported.
+`ProductionRoundStatusTransport`, `ProductionRoundStatusReceipt`, `ProductionRoundDownloads`,
+`VerifiedProductionLiveRoundIntake`, `VerifiedProductionLiveProfileBinding`,
+`VerifiedRoundProfileAuthority` and `VerifiedSafeBaselineAuthority` — the whole chain, from the
+platform response to the controller boundary, with no stage left on `isinstance`. The helpers are
+`is_verified_production_receipt`, `is_verified_production_downloads`, `is_verified_official_miner`,
+`require_production_scope` / `is_verified_production_intake`,
+`is_verified_production_live_binding`, `is_verified_round_profile_authority` and
+`is_verified_safe_baseline_authority`. The tokens are module-private and never exported.
+
+The last two matter most, because they are what the controller itself consumes.
+`select_safe_baseline` and `SafeBaselineController.__init__` previously took both capabilities on
+`isinstance`, so a subclass of either — skipping `__init__`, copying the fields from a real one —
+reached the decision core. Both are now sealed and both entry points check the seal; the source
+contains no `isinstance(authority` or `isinstance(ownership` at all, and a test asserts that.
+
+Adding a runtime seal moves no published identity: `identity_content()` hashes the corpus contents
+and anchors, never the capability state, so the TRAIN corpus identity is unchanged.
 
 The `VerifiedOfficialMiner` bypass is closed the same way: a **sealed** capability is accepted
 as-is, a raw object must earn one through `verify_official_miner`, and a *subclass of the
@@ -371,15 +414,26 @@ substituted and only the authority token scope-separated:
 ```
 FixtureRoundStatusTransport      ->  observe_fixture_round_status
 real BAM/BAI + this round's URLs ->  accept_fixture_round_downloads
-                                 ->  observe_fixture_live_round_intake   (fixture scope)
-real intake.attest_input         ->  verify_live_profile_binding
-                                 ->  own_verified_live_round
+                                 ->  observe_fixture_live_round_intake      (FixtureLiveRoundIntake)
+real intake.attest_input         ->  observe_fixture_live_profile_binding   (FixtureLiveProfileBinding)
+                                 ->  observe_fixture_live_round_ownership   (FixtureRoundProfileAuthority)
 ```
 
-The fixture scope differs from production only in which authority token is minted — the parsing,
+That last line is where the offline chain **ends**. `FixtureRoundProfileAuthority` carries the
+same lookups, the same anchors and the same identity arithmetic as production ownership — so the
+replay genuinely tests them — and it is a different type, so `is_verified_round_profile_authority`
+rejects it and neither controller entry point will take it. The fixture proves the logic without
+ever becoming the authority.
+
+The fixture domain differs from production only in which token is minted — the parsing,
 canonicalization, URL binding, hashing and every refusal are the production implementation, and a
-test asserts the two produce identical parsed content. `verify_live_round_intake` refuses a
-fixture receipt **by type**, so nothing here can reach the production path.
+test asserts the two produce identical parsed content. Every production entry point refuses a
+fixture capability **by type and seal**: `verify_live_round_intake` refuses a fixture receipt,
+`verify_live_profile_binding` refuses a fixture intake, and `own_verified_live_round` refuses a
+fixture binding. A negative matrix runs each attack — mutate the scope, copy the fields into the
+production type, subclass the production type and skip `__init__`, hand-build the exact type,
+subclass either controller capability — asserts that `isinstance` *would* have passed, and
+requires the refusal.
 
 Everything but the transport is genuine production code: `build_dataset` writes a real BAM, index,
 reference and FAI; `Layer1Service.analyze` is the real profiler; `intake.attest_input` is the real

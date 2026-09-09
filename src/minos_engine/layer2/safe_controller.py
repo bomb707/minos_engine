@@ -39,7 +39,10 @@ from minos_engine.layer2.contracts import (
     DecisionResult,
     FallbackReason,
 )
-from minos_engine.layer2.round_profile_authority import VerifiedRoundProfileAuthority
+from minos_engine.layer2.round_profile_authority import (
+    VerifiedRoundProfileAuthority,
+    is_verified_round_profile_authority,
+)
 from minos_engine.layer2.safe_controller_policy import (
     ALLOWED_MODES,
     SAFE_CONTROLLER_VERSION,
@@ -57,6 +60,7 @@ __all__ = [
     "SafeBaselineController",
     "SafeControllerAuthorityError",
     "VerifiedSafeBaselineAuthority",
+    "is_verified_safe_baseline_authority",
     "load_verified_safe_baseline_authority",
     "safe_decision_manifest_content",
     "safe_decision_manifest_identity",
@@ -90,6 +94,7 @@ class VerifiedSafeBaselineAuthority:
 
     __slots__ = (
         "_policy",
+        "_seal",
         "baseline_config_hash",
         "baseline_payload_sha256",
         "baseline_uri",
@@ -120,6 +125,10 @@ class VerifiedSafeBaselineAuthority:
                 "dictionary has not been verified against anything"
             )
         self._policy = dict(policy)
+        #: Set only here, by the constructor that demanded the private token. The controller
+        #: checks it: a subclass that skips ``__init__`` and copies the fields satisfies
+        #: ``isinstance`` and must not reach the decision core.
+        self._seal = _AUTHORITY_TOKEN
         self.policy_hash = policy_hash
         self.baseline_config_hash = baseline_config_hash
         self.baseline_payload_sha256 = baseline_payload_sha256
@@ -142,6 +151,14 @@ class VerifiedSafeBaselineAuthority:
     def selected_config(self) -> ArtifactIdentity:
         """The one and only config this controller can select."""
         return ArtifactIdentity(uri=self.baseline_uri, sha256=self.baseline_config_hash)
+
+
+def is_verified_safe_baseline_authority(candidate: Any) -> bool:
+    """Exact concrete type and private seal -- the rule every capability here crosses under."""
+    return (
+        type(candidate) is VerifiedSafeBaselineAuthority
+        and getattr(candidate, "_seal", None) is _AUTHORITY_TOKEN
+    )
 
 
 def load_verified_safe_baseline_authority(
@@ -373,13 +390,18 @@ def select_safe_baseline(
     exists. A request that cannot be traced to an owning frozen snapshot member is refused, not
     degraded.
     """
+    # exact concrete type + private seal at BOTH capability boundaries. `isinstance` would admit a
+    # subclass that skipped the token-bearing constructor, and -- since the fixture live chain ends
+    # in its own authority type -- would also admit an offline observation as live authority.
     _require(
-        isinstance(authority, VerifiedSafeBaselineAuthority),
-        "a decision may only be made from a verified safe-baseline authority",
+        is_verified_safe_baseline_authority(authority),
+        "a decision may only be made from a SEALED verified safe-baseline authority; a subclass "
+        "that copies its fields is not one",
     )
     _require(
-        isinstance(ownership, VerifiedRoundProfileAuthority),
-        "a decision may only be made against a verified round/profile corpus",
+        is_verified_round_profile_authority(ownership),
+        "a decision may only be made against a SEALED verified round/profile corpus; a fixture "
+        "authority, a subclass, or an object that merely answers the same questions is not one",
     )
     _require(
         tuple(authority.allowed_modes) == tuple(ALLOWED_MODES),
@@ -432,12 +454,13 @@ class SafeBaselineController:
         ownership: VerifiedRoundProfileAuthority,
     ) -> None:
         _require(
-            isinstance(authority, VerifiedSafeBaselineAuthority),
-            "a safe controller may only be constructed from a verified authority",
+            is_verified_safe_baseline_authority(authority),
+            "a safe controller may only be constructed from a SEALED verified authority",
         )
         _require(
-            isinstance(ownership, VerifiedRoundProfileAuthority),
-            "a safe controller may only be constructed against a verified profile corpus",
+            is_verified_round_profile_authority(ownership),
+            "a safe controller may only be constructed against a SEALED verified profile corpus; "
+            "a fixture authority is not one",
         )
         self._authority = authority
         self._ownership = ownership

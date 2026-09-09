@@ -3,16 +3,18 @@
 Only the **transport** is substituted. A deterministic :class:`FixtureRoundStatusTransport` stands
 in for the network, and its payload still goes through::
 
-    verify_platform_round_status   ->  VerifiedPlatformRoundStatus
-    hash_downloaded_inputs         ->  LocalDownloadDigests      (real files, really hashed)
-    verify_live_round_intake       ->  VerifiedLiveRoundIntake
-    verify_live_profile_binding    ->  VerifiedLiveProfileBinding
-    own_verified_live_round        ->  VerifiedRoundProfileAuthority
+    observe_fixture_round_status          ->  FixtureRoundStatusReceipt
+    accept_fixture_round_downloads        ->  FixtureRoundDownloads  (real files, really hashed)
+    observe_fixture_live_round_intake     ->  FixtureLiveRoundIntake
+    observe_fixture_live_profile_binding  ->  FixtureLiveProfileBinding
+    observe_fixture_live_round_ownership  ->  FixtureRoundProfileAuthority
 
 The parsing, canonicalization and every refusal are the production implementation -- the fixture
 scope differs only in which authority token is minted, and a test asserts the two produce
 identical parsed content. A fixture therefore cannot obtain the capability the production intake
-accepts: ``verify_live_round_intake`` refuses a fixture receipt by type.
+accepts. Each stage mints a capability of its own domain, and the chain **ends** at
+``FixtureRoundProfileAuthority`` -- which the safe controller refuses, because it is not the sealed
+production ownership type. A fixture proves the logic; it never becomes the authority.
 
 Everything else is genuine production code: ``tests.layer1_fixtures.build_dataset`` writes a real
 BAM, index, reference and FAI; ``Layer1Service.analyze`` is the real profiler; and
@@ -210,9 +212,10 @@ def build_live_replay(
 
 
 def live_ownership(replay: dict[str, Any]) -> Any:
-    from minos_engine.layer2.live_round_authority import load_verified_live_round_ownership
+    """The FIXTURE terminus. It exercises every shared proof and mints no live authority."""
+    from minos_engine.layer2.live_round_authority import observe_fixture_live_round_ownership
 
-    return load_verified_live_round_ownership(
+    return observe_fixture_live_round_ownership(
         intake=replay["intake"],
         profile_bytes=replay["profile_bytes"],
         manifest_bytes=replay["manifest_bytes"],

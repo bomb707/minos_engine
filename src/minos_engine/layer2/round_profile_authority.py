@@ -65,9 +65,11 @@ __all__ = [
     "TRAIN_SCHEDULE_PATH",
     "OWNERSHIP_DOMAIN",
     "OWNERSHIP_SCHEMA",
+    "OwnedRoundCorpus",
     "OwnedRoundProfile",
     "RoundProfileAuthorityError",
     "VerifiedRoundProfileAuthority",
+    "is_verified_round_profile_authority",
     "load_verified_round_profile_corpus",
     "own_verified_live_round",
 ]
@@ -182,29 +184,24 @@ class OwnedRoundProfile:
 _CORPUS_TOKEN: Final = object()
 
 
-class VerifiedRoundProfileAuthority:
-    """The accepted corpus of owned (round, profile) identities.
+class OwnedRoundCorpus:
+    """The shape of an owned corpus. **Carries no authority of its own.**
 
-    Minted only by :func:`load_verified_round_profile_corpus`, which verifies every member's
-    artifacts against the frozen inventory and runs the accepted admission authority over each.
+    Everything here is pure lookup and identity arithmetic, which the fixture replay needs just as
+    much as production does. Authority lives in the sealed subclass below, so sharing this base
+    shares behaviour without sharing a capability.
     """
 
     __slots__ = ("_anchors", "_by_round", "corpus_identity", "partition")
 
     def __init__(
         self,
-        token: object,
         *,
         by_round: dict[str, OwnedRoundProfile],
         anchors: dict[str, str],
         corpus_identity: str,
         partition: str = ADMITTED_PARTITION,
     ) -> None:
-        if token is not _CORPUS_TOKEN:
-            raise RoundProfileAuthorityError(
-                "an owned-profile corpus may only be minted by the verifying loader; a "
-                "dictionary has not been verified against anything"
-            )
         self._by_round = dict(by_round)
         self._anchors = dict(anchors)
         self.corpus_identity = corpus_identity
@@ -283,6 +280,52 @@ class VerifiedRoundProfileAuthority:
         }
 
 
+class VerifiedRoundProfileAuthority(OwnedRoundCorpus):
+    """THE production ownership capability the safe controller consumes.
+
+    Minted by exactly two verifying factories: the frozen TRAIN corpus loader below, and
+    :func:`own_verified_live_round` from a sealed production live-profile binding. Both go through
+    a constructor that demands ``_CORPUS_TOKEN``, and the instance retains a seal only that
+    constructor sets -- so a subclass that skips ``__init__`` and populates the fields by hand does
+    not become one, however well ``isinstance`` treats it.
+
+    The seal is a runtime attribute and is deliberately absent from :meth:`identity_content`, so
+    adding it cannot move the TRAIN corpus identity the accepted qualification binds.
+    """
+
+    __slots__ = ("_seal",)
+
+    def __init__(
+        self,
+        token: object,
+        *,
+        by_round: dict[str, OwnedRoundProfile],
+        anchors: dict[str, str],
+        corpus_identity: str,
+        partition: str = ADMITTED_PARTITION,
+    ) -> None:
+        if token is not _CORPUS_TOKEN:
+            raise RoundProfileAuthorityError(
+                "an owned-profile corpus may only be minted by the verifying loader; a "
+                "dictionary has not been verified against anything"
+            )
+        super().__init__(
+            by_round=by_round,
+            anchors=anchors,
+            corpus_identity=corpus_identity,
+            partition=partition,
+        )
+        self._seal = _CORPUS_TOKEN
+
+
+def is_verified_round_profile_authority(candidate: Any) -> bool:
+    """Exact concrete type and private seal. The rule every capability here crosses under."""
+    return (
+        type(candidate) is VerifiedRoundProfileAuthority
+        and getattr(candidate, "_seal", None) is _CORPUS_TOKEN
+    )
+
+
 def own_verified_live_round(binding: Any) -> VerifiedRoundProfileAuthority:
     """Mint ownership for ONE live round, from a proof that cannot be assembled by a caller.
 
@@ -299,12 +342,15 @@ def own_verified_live_round(binding: Any) -> VerifiedRoundProfileAuthority:
     the token, and none of the values are trusted from the caller because the caller cannot
     produce the argument at all.
     """
-    from minos_engine.layer2.live_round_authority import VerifiedLiveProfileBinding
+    from minos_engine.layer2.live_round_authority import is_verified_production_live_binding
 
+    # exact type + private seal, not isinstance: a subclass of the binding that skips __init__ and
+    # populates owned/anchors/identity by hand would otherwise reach _CORPUS_TOKEN, which is the
+    # generic raw-data mint all over again, through inheritance.
     _require(
-        isinstance(binding, VerifiedLiveProfileBinding),
-        "live ownership may only be minted from a verified live profile binding; a map of "
-        "owned-profile fields has been checked against nothing",
+        is_verified_production_live_binding(binding),
+        "live ownership may only be minted from a SEALED production live profile binding; a "
+        "subclass, a fixture binding, or a map of owned-profile fields is not one",
     )
     owned = binding.owned
     _require(
