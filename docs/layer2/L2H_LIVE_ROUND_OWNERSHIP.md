@@ -150,7 +150,35 @@ between equivalent fetches. A test asserts no URL value, scheme, `sig=` or `?` a
 receipt content, the receipt observation, the download observation, the intake content or the
 ownership anchors. Slot **names** are published deliberately; values never are.
 
-## 4a. The receipt instance, not just its identity
+## 4a. One capability rule, applied everywhere
+
+`isinstance` is not a capability check anywhere in this chain. A subclass can skip `__init__`,
+populate the slots by hand, and satisfy it without the private token ever having minted anything.
+So every production authority crosses its boundary under one rule:
+
+```python
+type(candidate) is ExactProductionClass  and  candidate._seal is PRIVATE_TOKEN
+```
+
+applied to `VerifiedProductionPlatformClient`, `VerifiedOfficialMiner`,
+`ProductionRoundStatusTransport`, `ProductionRoundStatusReceipt`, `ProductionRoundDownloads` and
+the production-scope `VerifiedLiveRoundIntake`, through the private helpers
+`is_verified_production_receipt`, `is_verified_production_downloads`,
+`is_verified_official_miner` and `require_production_scope`. The tokens are module-private and
+never exported.
+
+The `VerifiedOfficialMiner` bypass is closed the same way: a **sealed** capability is accepted
+as-is, a raw object must earn one through `verify_official_miner`, and a *subclass of the
+capability* is neither — it is refused by name, even when its `.miner` returns something with
+`_download_bam`.
+
+Tests forge each one — subclass, skip `__init__`, copy the identity, the scope and even the real
+operational binding — assert that `isinstance` *would* have passed, and require the refusal. The
+sharpest is a `ProductionRoundDownloads` subclass carrying a real receipt identity, a real
+operational binding, and attacker-chosen hashes: it is refused on the seal, before any intake
+exists.
+
+## 4b. The receipt instance, not just its identity
 
 The scientific receipt identity is `{schema, round_id, region_source, endpoint_path}` — it
 excludes the operational URLs and the platform's expected BAM hash. So **two different responses
@@ -158,14 +186,47 @@ for the same round, region and endpoint share one identity** even when they offe
 download sources, and matching the identity alone would let downloads obtained under one be
 presented for the other.
 
-Each receipt therefore carries a per-instance `operational_binding` — a bare `object()`, so it
-cannot be serialized, compared across processes, or leak into evidence. Downloads carry the same
-object, and the intake requires `downloads.operational_binding is receipt.operational_binding` in
-addition to the scientific link. A test constructs exactly the ambiguous case: two receipts with
-**identical** `identity` and `content()` but different BAM URL and expected SHA, mints downloads
-under the first, confirms the scientific link alone would have passed, and requires the refusal.
+Each receipt therefore carries a per-instance sentinel — a bare `object()`, so it cannot be
+serialized, compared across processes, or leak into evidence. It is **private**: callers ask
+`receipt_owns_downloads(receipt, downloads)` rather than fetching it, because exposing it would
+hand a forger the one ingredient a fabricated proof is missing. A test asserts neither the receipt
+nor the downloads has a public `operational_binding` attribute.
 
-## 4b. The live intake identity
+## 4c. Cached bytes must belong to this response
+
+**The finding.** `download_file_verified` returns an existing file untouched when no
+`expected_sha256` is supplied — *"Cache hit (no hash check)"* — and `_download_bam` keys its output
+directory on `round_id` alone. And the current official LIVE contract does **not** guarantee
+`bam_sha256`: `/v2/round-status` does not document it, it is documented only for the practice
+endpoint and only *"when configured"*, and both `neurons/miner.py` and `neurons/validator.py` read
+it with `.get`. So two responses for the same round with different URLs and no digest can
+legitimately return the *first* response's bytes — and the per-instance binding cannot catch it,
+because the downloads object is created after the cache hit. A test reads these facts out of the
+installed subnet source so the finding cannot go stale silently.
+
+**Not chosen:** forcing a fresh download. That would discard a cache the miner is deliberately
+keeping — the logs measure BAMs in gigabytes — and imposing that on every decision is not this
+module's call. Nothing here deletes or re-fetches anything. `minos_subnet` is not modified.
+
+**Chosen:** a provenance sidecar written beside the BAM by this integration, recording the
+`round_id`, a **digest** of the operational source set, and the resulting hashes. On each handoff
+the bytes are accepted when
+
+* the file was written during this call — provenance is this round's own fetch; or
+* the platform published a `bam_sha256` and the bytes match it — the content is authoritative
+  however it was obtained; or
+* a sidecar names this same source set and these same bytes — provenance carries over;
+
+and otherwise the handoff **fails closed** with an actionable message. Freshness compares the
+BAM's mtime against a **marker file written just before the call**, because file timestamps come
+from the kernel's coarse clock and trail `time.time_ns()` by up to a tick; both mtimes then come
+from the same clock and the comparison needs no tolerance. The sidecar stores a digest, never a
+URL — asserted by test.
+
+The BAI needs no such protection: `_download_bam` unlinks the old index before obtaining or
+rebuilding it, so it is always fresh. A test pins that upstream behaviour too.
+
+## 4d. The live intake identity
 
 `l2h-live-round-intake-v2` = `sha256("minos:l2h-live-round-intake:v2\n" + canonical_json_bytes(content))`
 over a **closed** field set — a missing field and an unknown field are both refusals.

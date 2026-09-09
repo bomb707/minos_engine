@@ -79,7 +79,14 @@ __all__ = [
     "VerifiedOfficialMiner",
     "VerifiedProductionPlatformClient",
     "accept_fixture_round_downloads",
+    "PROVENANCE_SIDECAR_SCHEMA",
     "download_production_round_inputs",
+    "is_fixture_round_downloads",
+    "is_fixture_round_receipt",
+    "is_verified_official_miner",
+    "is_verified_production_downloads",
+    "is_verified_production_receipt",
+    "receipt_owns_downloads",
     "production_round_status_transport",
     "resolve_official_miner_type",
     "resolve_official_platform_client_type",
@@ -138,6 +145,17 @@ class PlatformRoundStatusError(MinosEngineError):
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise PlatformRoundStatusError(message)
+
+
+def _is_sealed(candidate: Any, expected_type: type, token: object) -> bool:
+    """The ONE rule every production capability crosses a trust boundary under.
+
+    ``isinstance`` is not enough anywhere: a subclass can skip ``__init__``, populate the slots by
+    hand, and satisfy it without the private token ever having minted anything. So the check is
+    **exact concrete type** -- a subclass is a different type -- **and** the private seal, which
+    only the real constructor sets and which a caller cannot obtain.
+    """
+    return type(candidate) is expected_type and getattr(candidate, "_seal", None) is token
 
 
 # --------------------------------------------------------------------------- #
@@ -392,6 +410,11 @@ class VerifiedOfficialMiner:
         return self._miner
 
 
+def is_verified_official_miner(candidate: Any) -> bool:
+    """Exact type and seal. A subclass of the capability is not the capability."""
+    return _is_sealed(candidate, VerifiedOfficialMiner, _MINER_TOKEN)
+
+
 def verify_official_miner(miner: Any) -> VerifiedOfficialMiner:
     """Exact type identity against the real Miner. An object with ``_download_bam`` is not one."""
     official = resolve_official_miner_type()
@@ -513,7 +536,7 @@ _FIXTURE_RECEIPT_TOKEN: Final = object()
 class RoundStatusReceipt:
     """Common shape. Neither subclass can be built without its own scope's token."""
 
-    __slots__ = ("_operational_binding", "_parsed", "identity", "scope")
+    __slots__ = ("_operational_binding", "_parsed", "_seal", "identity", "scope")
 
     def __init__(self, token: object, *, parsed: ParsedRoundStatus, expected: object) -> None:
         if token is not expected:
@@ -528,6 +551,8 @@ class RoundStatusReceipt:
         #: object distinguishes them at runtime. It is an ``object()``: it cannot be serialized,
         #: compared across processes, or leak into evidence -- which is the point.
         self._operational_binding = object()
+        #: Set only here, by the constructor a caller cannot reach.
+        self._seal = expected
         self.identity = sha256_hex(
             PLATFORM_ROUND_STATUS_DOMAIN.encode("utf-8")
             + canonical_json_bytes(parsed.identity_content())
@@ -554,10 +579,14 @@ class RoundStatusReceipt:
         """Operational only. Kept private so a URL cannot drift into an identity or a report."""
         return self._parsed.urls.get(slot)
 
-    @property
-    def operational_binding(self) -> object:
-        """Runtime provenance only. Never serialized, never an identity, never in evidence."""
-        return self._operational_binding
+    def _owns_downloads(self, downloads: Any) -> bool:
+        """Does this exact receipt INSTANCE own those downloads?
+
+        The sentinel is deliberately not a public attribute. Exposing it would hand a caller the
+        one ingredient a fabricated proof is missing, and nothing outside this module needs to
+        hold it -- callers ask the question instead of fetching the answer.
+        """
+        return getattr(downloads, "_operational_binding", None) is self._operational_binding
 
     def _operational_round_data(self) -> dict[str, Any]:
         """The round fields the official downloader reads. Private, and never returned publicly."""
@@ -597,6 +626,31 @@ class FixtureRoundStatusReceipt(RoundStatusReceipt):
         object.__setattr__(self, "scope", FIXTURE_SCOPE)
 
 
+def is_verified_production_receipt(candidate: Any) -> bool:
+    """Exact type and seal. A ``ProductionRoundStatusReceipt`` subclass is refused."""
+    return _is_sealed(candidate, ProductionRoundStatusReceipt, _PRODUCTION_RECEIPT_TOKEN)
+
+
+def is_verified_production_downloads(candidate: Any) -> bool:
+    """Exact type and seal. The most important one: a hand-populated subclass carrying a real
+    receipt identity and a real operational binding must still be refused."""
+    return _is_sealed(candidate, ProductionRoundDownloads, _PRODUCTION_DOWNLOAD_TOKEN)
+
+
+def is_fixture_round_receipt(candidate: Any) -> bool:
+    return _is_sealed(candidate, FixtureRoundStatusReceipt, _FIXTURE_RECEIPT_TOKEN)
+
+
+def is_fixture_round_downloads(candidate: Any) -> bool:
+    return _is_sealed(candidate, FixtureRoundDownloads, _FIXTURE_DOWNLOAD_TOKEN)
+
+
+def receipt_owns_downloads(receipt: Any, downloads: Any) -> bool:
+    """Ask the receipt whether it owns those downloads, without handing out the sentinel."""
+    owner = getattr(receipt, "_owns_downloads", None)
+    return bool(callable(owner) and owner(downloads))
+
+
 def verify_production_round_status(transport: Any) -> ProductionRoundStatusReceipt:
     """Mint a PRODUCTION receipt. Only the real transport, only the production endpoint."""
     _require(
@@ -624,7 +678,7 @@ def verify_production_round_status(transport: Any) -> ProductionRoundStatusRecei
 def observe_fixture_round_status(transport: Any) -> FixtureRoundStatusReceipt:
     """Mint a FIXTURE observation. Same parsing, deliberately different authority."""
     _require(
-        isinstance(transport, FixtureRoundStatusTransport),
+        type(transport) is FixtureRoundStatusTransport,
         "a fixture observation requires a fixture transport",
     )
     parsed = parse_round_status(
@@ -654,8 +708,9 @@ class RoundDownloads:
         "bai_source_slot",
         "bam_sha256",
         "bam_source_slot",
+        "_operational_binding",
+        "_seal",
         "byte_counts",
-        "operational_binding",
         "receipt_identity",
         "scope",
     )
@@ -679,10 +734,12 @@ class RoundDownloads:
                 "round downloads may only be minted by handing over the exact source each file "
                 "came from; two local paths are not provenance"
             )
+        self._seal = expected
         self.scope = scope
         self.receipt_identity = receipt_identity
-        #: The exact receipt INSTANCE these files were obtained for.
-        self.operational_binding = operational_binding
+        #: The exact receipt INSTANCE these files were obtained for. Private: see
+        #: ``RoundStatusReceipt._owns_downloads``.
+        self._operational_binding = operational_binding
         self.bam_sha256 = bam_sha256
         self.bai_sha256 = bai_sha256
         self.bam_source_slot = bam_source_slot
@@ -776,7 +833,7 @@ def _accept_downloads(
         expected=expected,
         scope=scope,
         receipt_identity=receipt.identity,
-        operational_binding=receipt.operational_binding,
+        operational_binding=receipt._operational_binding,  # noqa: SLF001
         bam_sha256=bam_sha,
         bai_sha256=bai_sha,
         bam_source_slot=bam_slot,
@@ -785,28 +842,103 @@ def _accept_downloads(
     )
 
 
+#: Written by this integration beside the BAM the official miner produced. It is the engine's own
+#: record and does not modify the subnet: nothing upstream reads it.
+PROVENANCE_SIDECAR_SUFFIX: Final = ".minos-provenance.json"
+PROVENANCE_SIDECAR_SCHEMA: Final = "l2h-live-download-provenance-v1"
+
+
+def _operational_source_digest(receipt: RoundStatusReceipt) -> str:
+    """A digest of the exact operational sources this round offered.
+
+    A digest, not the URLs: the sidecar must be able to say "the same sources as before" without
+    ever writing a presigned URL, its signature or its query string to disk.
+    """
+    return sha256_hex(
+        b"minos:l2h-live-download-source-set:v1\n"
+        + canonical_json_bytes(receipt._operational_round_data())  # noqa: SLF001
+    )
+
+
+def _sidecar_path(bam_path: Path) -> Path:
+    return Path(str(bam_path) + PROVENANCE_SIDECAR_SUFFIX)
+
+
+def _coarse_clock_now_ns() -> int:
+    """ "Now", as the filesystem would stamp it.
+
+    File mtimes come from the kernel's coarse real-time clock, which trails ``time.time_ns()`` by
+    up to one tick. Comparing an mtime against the system clock therefore reports every freshly
+    written file as stale. Writing a marker and reading its own mtime samples the same clock the
+    BAM's mtime will come from, so the later comparison is exact rather than approximate.
+    """
+    import os
+    import tempfile
+
+    handle, staged = tempfile.mkstemp(prefix=".minos-clock.")
+    try:
+        os.close(handle)
+        return int(Path(staged).stat().st_mtime_ns)
+    finally:
+        Path(staged).unlink(missing_ok=True)
+
+
 def download_production_round_inputs(*, receipt: Any, miner: Any) -> ProductionRoundDownloads:
-    """Have the OFFICIAL miner download this round, then hash what it produced.
+    """Have the OFFICIAL miner download this round, then prove the bytes are this round's.
 
-    **Why there is no ``bam_source_url`` or ``bam_path`` here.** The previous API took a URL string
+    **Why there is no ``bam_source_url`` or ``bam_path`` here.** An earlier API took a URL string
     and a local path, checked the string against the round's offered URLs, and hashed whatever file
-    it was pointed at. Those two facts never met: nothing proved the file came from that URL. A
-    caller could copy an offered URL and hand over any file it liked.
+    it was pointed at. Those two facts never met. So the production path takes neither: it hands
+    the round's own operational data to ``neurons.miner.Miner._download_bam`` -- the maintained
+    operation that selects primary or backup by ``STORAGE_PRIMARY_BACKEND``, falls back, passes the
+    platform's ``bam_sha256`` to the verified downloader, fetches the index when one is offered and
+    builds it with samtools when it is not -- and hashes exactly what that operation produced.
 
-    So the production path takes neither. It hands the round's own operational data to
-    ``neurons.miner.Miner._download_bam`` -- the maintained operation that selects primary or
-    backup by ``STORAGE_PRIMARY_BACKEND``, falls back, passes the platform's ``bam_sha256`` to the
-    verified downloader, fetches the index when one is offered and builds it with samtools when it
-    is not -- and hashes exactly the files that operation produced. None of those rules are
-    reimplemented here, and the caller chooses none of them.
+    **The cache problem, and why a sidecar closes it.** ``download_file_verified`` returns an
+    existing file untouched when no ``expected_sha256`` is supplied ("Cache hit (no hash check)"),
+    and ``_download_bam`` keys its output directory on ``round_id`` alone. The current official
+    LIVE contract does **not** guarantee ``bam_sha256``: ``/v2/round-status`` does not document it,
+    it is documented only for the practice endpoint and only "when configured", and both the miner
+    and the validator read it with ``.get``. So two round-status responses for the same round with
+    different URLs and no digest can legitimately return the *first* response's bytes.
+
+    Nothing here deletes or re-downloads to force the issue -- that would discard a possibly
+    multi-gigabyte cache the miner is deliberately keeping, and the operational consequences of
+    doing that on every decision are not this module's to impose. Instead each authoritative
+    handoff records, beside the BAM, which operational source set produced those bytes. On a later
+    handoff:
+
+    * the file was written during this call -- provenance is this round's fetch, record it;
+    * the platform published a ``bam_sha256`` and the bytes match it -- the content is
+      authoritative regardless of which fetch produced it, record it;
+    * a sidecar names this same source set and the same bytes -- provenance carries over;
+    * otherwise the bytes on disk cannot be shown to have come from this response, and the handoff
+      **fails closed** with an actionable message rather than guessing.
+
+    Freshness is decided by comparing the BAM's mtime against a **marker file written just before
+    the call**, not against ``time.time_ns()``: file timestamps come from the kernel's coarse
+    clock, which lags the system clock by up to a tick, so a wall-clock comparison marks every
+    freshly written file as cached. Both mtimes come from the same coarse clock, so the comparison
+    needs no tolerance -- and a tolerance would be a window, not a fix.
     """
     _require(
-        isinstance(receipt, ProductionRoundStatusReceipt),
-        "production downloads must be bound to a production receipt",
+        is_verified_production_receipt(receipt),
+        "production downloads must be bound to a sealed production receipt; a subclass that "
+        "populates the same fields is not one",
     )
-    verified = miner if isinstance(miner, VerifiedOfficialMiner) else verify_official_miner(miner)
+    if is_verified_official_miner(miner):
+        verified = miner
+    else:
+        _require(
+            not isinstance(miner, VerifiedOfficialMiner),
+            "this is a subclass of the verified-miner capability, not the capability; a forged "
+            "wrapper does not become the official miner by inheriting from its proof",
+        )
+        verified = verify_official_miner(miner)
 
     round_data = receipt._operational_round_data()  # noqa: SLF001 - the receipt owns this
+    source_digest = _operational_source_digest(receipt)
+    started_ns = _coarse_clock_now_ns()
     try:
         returned = verified.miner._download_bam(round_data, receipt.round_id)  # noqa: SLF001
     except Exception as error:
@@ -817,40 +949,117 @@ def download_production_round_inputs(*, receipt: Any, miner: Any) -> ProductionR
         returned is not None,
         "the official miner reported that this round's BAM could not be downloaded",
     )
-    bam_path = Path(str(returned))
+    bam_path = Path(str(returned)).resolve()
     bai_path = Path(str(bam_path) + ".bai")
-    _require(
-        bam_path.is_file(),
-        f"the official miner returned {bam_path}, which is not a file",
-    )
+    _require(bam_path.is_file(), f"the official miner returned {bam_path}, which is not a file")
     _require(
         bai_path.is_file(),
         "the official miner produced no BAM index; a round cannot be profiled without one",
     )
 
-    bam_sha, bam_size = _stream_sha256(bam_path.resolve(), label="BAM")
-    bai_sha, bai_size = _stream_sha256(bai_path.resolve(), label="BAM index")
+    bam_sha, bam_size = _stream_sha256(bam_path, label="BAM")
+    bai_sha, bai_size = _stream_sha256(bai_path, label="BAM index")
     _require(bam_sha != bai_sha, "the BAM and its index cannot be the same bytes")
+
     expected_bam = receipt.expected_bam_sha256
     if expected_bam is not None:
         _require(
             bam_sha == expected_bam,
             "the downloaded BAM does not hash to the SHA-256 the platform published for this round",
         )
-    # which slot the maintained downloader actually used is its own business; what is recorded is
-    # that the official operation produced these bytes for this round.
+
+    freshly_written = bam_path.stat().st_mtime_ns >= started_ns
+    if not (freshly_written or expected_bam is not None):
+        _require_cached_bytes_belong_to_this_round(
+            bam_path, source_digest=source_digest, bam_sha256=bam_sha
+        )
+    _write_provenance_sidecar(
+        bam_path,
+        source_digest=source_digest,
+        round_id=receipt.round_id,
+        bam_sha256=bam_sha,
+        bai_sha256=bai_sha,
+    )
+
     return ProductionRoundDownloads(
         _PRODUCTION_DOWNLOAD_TOKEN,
         expected=_PRODUCTION_DOWNLOAD_TOKEN,
         scope=PRODUCTION_SCOPE,
         receipt_identity=receipt.identity,
-        operational_binding=receipt.operational_binding,
+        operational_binding=receipt._operational_binding,  # noqa: SLF001
         bam_sha256=bam_sha,
         bai_sha256=bai_sha,
         bam_source_slot=OFFICIAL_MINER_DOWNLOAD,
         bai_source_slot=OFFICIAL_MINER_DOWNLOAD,
         byte_counts={"bam": bam_size, "bai": bai_size},
     )
+
+
+def _require_cached_bytes_belong_to_this_round(
+    bam_path: Path, *, source_digest: str, bam_sha256: str
+) -> None:
+    """A cache hit only carries provenance if a sidecar says these bytes came from these sources."""
+    import json
+
+    sidecar = _sidecar_path(bam_path)
+    _require(
+        sidecar.is_file(),
+        "the official miner returned a cached BAM, this round published no bam_sha256, and no "
+        "provenance record exists beside the file -- so these bytes cannot be shown to have come "
+        "from this round's download sources. Remove the cached BAM to force an authoritative "
+        "fetch, or run a round whose status carries bam_sha256.",
+    )
+    _require(not sidecar.is_symlink(), f"{sidecar} is a symlink")
+    try:
+        record = json.loads(sidecar.read_bytes())
+    except json.JSONDecodeError:
+        raise PlatformRoundStatusError(
+            "the download provenance record beside the cached BAM is not readable"
+        ) from None
+    _require(
+        isinstance(record, dict) and record.get("schema_version") == PROVENANCE_SIDECAR_SCHEMA,
+        "the download provenance record is not one this engine wrote",
+    )
+    assert isinstance(record, dict)
+    _require(
+        str(record.get("operational_source_digest")) == source_digest,
+        "the cached BAM was obtained under a DIFFERENT round-status response; the same round and "
+        "region can be served from different sources, and bytes fetched under one response are "
+        "not provenance for another",
+    )
+    _require(
+        str(record.get("bam_sha256")) == bam_sha256,
+        "the cached BAM no longer hashes to what its provenance record states",
+    )
+
+
+def _write_provenance_sidecar(
+    bam_path: Path, *, source_digest: str, round_id: str, bam_sha256: str, bai_sha256: str
+) -> None:
+    """Record which operational source set produced these bytes. Digest only, never a URL."""
+    import os
+    import tempfile
+
+    payload = canonical_json_bytes(
+        {
+            "schema_version": PROVENANCE_SIDECAR_SCHEMA,
+            "round_id": round_id,
+            "operational_source_digest": source_digest,
+            "bam_sha256": bam_sha256,
+            "bai_sha256": bai_sha256,
+        }
+    )
+    sidecar = _sidecar_path(bam_path)
+    handle, staged = tempfile.mkstemp(dir=str(sidecar.parent), prefix=".minos-prov.")
+    try:
+        with os.fdopen(handle, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(staged, sidecar)
+    except BaseException:
+        Path(staged).unlink(missing_ok=True)
+        raise
 
 
 def accept_fixture_round_downloads(
@@ -863,8 +1072,8 @@ def accept_fixture_round_downloads(
 ) -> FixtureRoundDownloads:
     """The same binding, in the fixture scope. Never accepted on the production path."""
     _require(
-        isinstance(receipt, FixtureRoundStatusReceipt),
-        "fixture downloads must be bound to a fixture receipt",
+        is_fixture_round_receipt(receipt),
+        "fixture downloads must be bound to a sealed fixture receipt",
     )
     result = _accept_downloads(
         token=_FIXTURE_DOWNLOAD_TOKEN,

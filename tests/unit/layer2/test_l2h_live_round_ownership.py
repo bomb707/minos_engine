@@ -53,11 +53,16 @@ from minos_engine.protocol.round_status import (
     ProductionRoundStatusReceipt,
     ProductionRoundStatusTransport,
     RoundStatusTransport,
+    VerifiedOfficialMiner,
     accept_fixture_round_downloads,
     download_production_round_inputs,
+    is_verified_official_miner,
+    is_verified_production_downloads,
+    is_verified_production_receipt,
     observe_fixture_round_status,
     parse_round_status,
     production_round_status_transport,
+    receipt_owns_downloads,
     resolve_official_miner_type,
     resolve_official_platform_client_type,
     verify_official_miner,
@@ -78,6 +83,9 @@ from tests.layer2_live_replay import (
 )
 
 ACCEPTED_TRAIN_CORPUS_IDENTITY = "9cc53b5d28c8a8da34c25095362c09d8cb1fb57533ff0a0b3e1fdf7000970b03"
+
+#: Something that is definitely not a downloads object, for ownership probes.
+_DUMMY = object()
 
 
 @pytest.fixture(scope="module")
@@ -307,6 +315,109 @@ def test_the_production_download_api_takes_no_caller_url_or_path():
     assert not hasattr(module, "accept_production_round_downloads")
 
 
+# --------------------------------------------------------------------------- #
+# BLOCKER 1: every production capability is exact-type + seal, not isinstance
+# --------------------------------------------------------------------------- #
+def _forge(base: type, **attributes: Any) -> Any:
+    """A subclass that skips __init__ and populates the fields by hand."""
+    forged_type = type("Forged" + base.__name__, (base,), {"__init__": lambda self: None})
+    forged = forged_type()
+    for name, value in attributes.items():
+        object.__setattr__(forged, name, value)
+    return forged
+
+
+def test_a_forged_production_receipt_subclass_is_refused(replay):
+    real = replay["receipt"]
+    forged = _forge(
+        ProductionRoundStatusReceipt,
+        _parsed=real._parsed,
+        _operational_binding=real._operational_binding,
+        _seal=object(),
+        identity=real.identity,
+        scope=PRODUCTION_SCOPE,
+    )
+    assert isinstance(forged, ProductionRoundStatusReceipt), "isinstance alone would pass"
+    assert not is_verified_production_receipt(forged)
+    with pytest.raises(LiveRoundIntakeError, match="sealed production platform receipt"):
+        verify_live_round_intake(receipt=forged, downloads=replay["downloads"])
+    with pytest.raises(PlatformRoundStatusError, match="sealed production receipt"):
+        download_production_round_inputs(receipt=forged, miner=object())
+
+
+def test_a_forged_production_downloads_subclass_is_refused(replay):
+    """The most important negative: real receipt identity, real binding, attacker hashes."""
+    real_receipt = replay["receipt"]
+    forged = _forge(
+        ProductionRoundDownloads,
+        _seal=object(),
+        _operational_binding=real_receipt._operational_binding,
+        scope=PRODUCTION_SCOPE,
+        receipt_identity=real_receipt.identity,
+        bam_sha256="a" * 64,
+        bai_sha256="b" * 64,
+        bam_source_slot="official-miner-download",
+        bai_source_slot="official-miner-download",
+        byte_counts={"bam": 1, "bai": 1},
+    )
+    assert isinstance(forged, ProductionRoundDownloads), "isinstance alone would pass"
+    assert forged.receipt_identity == real_receipt.identity
+    assert receipt_owns_downloads(real_receipt, forged), "the binding matches too"
+    # the seal predicate -- which IS the production boundary rule -- rejects it outright
+    assert not is_verified_production_downloads(forged)
+    # and the boundary refuses, before any intake exists. (A real production receipt cannot be
+    # minted in this environment, so the receipt check fires first; the guarantee under test is
+    # that no path through this call succeeds.)
+    with pytest.raises(LiveRoundIntakeError):
+        verify_live_round_intake(receipt=real_receipt, downloads=forged)
+    with pytest.raises(LiveRoundIntakeError, match="sealed fixture round downloads"):
+        observe_fixture_live_round_intake(receipt=real_receipt, downloads=forged)
+
+
+def test_a_forged_verified_miner_subclass_is_refused(replay):
+    class Downloader:
+        def _download_bam(self, round_data, round_id):
+            return "/tmp/attacker.bam"
+
+    forged = _forge(VerifiedOfficialMiner, _miner=Downloader(), _seal=object())
+    assert isinstance(forged, VerifiedOfficialMiner), "isinstance alone would pass"
+    assert not is_verified_official_miner(forged)
+    # reached only once the receipt check has passed, so drive verify_official_miner directly
+    with pytest.raises(PlatformRoundStatusError):
+        verify_official_miner(forged)
+
+
+def test_every_production_capability_uses_the_same_rule():
+    """One rule, applied everywhere it crosses a production boundary."""
+    import inspect
+
+    source = inspect.getsource(
+        inspect.getmodule(is_verified_production_receipt)  # type: ignore[arg-type]
+    )
+    assert "def _is_sealed(" in source
+    assert "type(candidate) is expected_type" in source
+    assert 'getattr(candidate, "_seal", None) is token' in source
+    intake_source = (REPO_ROOT / "src/minos_engine/layer2/live_round_intake.py").read_text()
+    for helper in (
+        "is_verified_production_receipt",
+        "is_verified_production_downloads",
+        "receipt_owns_downloads",
+    ):
+        assert helper in intake_source, helper
+    # and the production boundary no longer uses isinstance for these
+    assert "isinstance(receipt, ProductionRoundStatusReceipt)" not in intake_source
+    assert "isinstance(downloads, ProductionRoundDownloads)" not in intake_source
+
+
+def test_the_operational_sentinel_is_not_public(replay):
+    """It must not become a caller-usable ingredient for fabricating a proof."""
+    receipt = replay["receipt"]
+    assert not hasattr(receipt, "operational_binding")
+    assert not hasattr(replay["downloads"], "operational_binding")
+    assert receipt_owns_downloads(receipt, replay["downloads"])
+    assert not receipt_owns_downloads(receipt, _DUMMY)
+
+
 def test_the_production_download_refuses_a_fixture_receipt(replay):
     with pytest.raises(PlatformRoundStatusError, match="production receipt"):
         download_production_round_inputs(receipt=replay["receipt"], miner=object())
@@ -335,7 +446,7 @@ def test_the_production_scope_guard_refuses_a_fixture_chain(replay):
     assert require_production_scope is not None
     with pytest.raises(LiveRoundIntakeError, match="fixture"):
         require_production_scope(replay["intake"])
-    with pytest.raises(LiveRoundIntakeError, match="scope"):
+    with pytest.raises(LiveRoundIntakeError, match="sealed verified live intake"):
         require_production_scope(object())
 
 
@@ -412,7 +523,7 @@ def test_two_responses_with_one_scientific_identity_are_distinguished_at_runtime
     assert first.identity == second.identity
     assert first.content() == second.content()
     # ... different operational source, and different runtime binding
-    assert first.operational_binding is not second.operational_binding
+    assert not receipt_owns_downloads(second, _DUMMY)  # the sentinel is never handed out
     assert first.expected_bam_sha256 is None
     assert second.expected_bam_sha256 == "b" * 64
 

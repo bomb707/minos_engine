@@ -249,7 +249,7 @@ class VerifiedLiveRoundIntake:
     download digests.
     """
 
-    __slots__ = ("_content", "dataset_id", "identity", "receipt_identity", "scope")
+    __slots__ = ("_content", "_seal", "dataset_id", "identity", "receipt_identity", "scope")
 
     def __init__(
         self, token: object, *, content: dict[str, Any], identity: str, scope: str
@@ -260,6 +260,7 @@ class VerifiedLiveRoundIntake:
                 "download digests; canonical content has been checked against nothing"
             )
         self._content = dict(content)
+        self._seal = _INTAKE_TOKEN
         self.identity = identity
         #: ``production`` or ``fixture``. Carried so a test chain can never be mistaken for a live
         #: one further down, and checked by :func:`require_production_scope`.
@@ -316,9 +317,12 @@ def _build_verified_intake(*, receipt: Any, downloads: Any, scope: str) -> Verif
     # ... and the RUNTIME one. The scientific identity excludes the operational URLs and the
     # platform's expected BAM hash, so two responses for the same round, region and endpoint share
     # an identity even when they offer different download sources. Matching the identity alone
-    # would let downloads obtained under one of them be presented for the other.
+    # would let downloads obtained under one of them be presented for the other. The receipt is
+    # ASKED whether it owns them; the sentinel is never handed out.
+    from minos_engine.protocol.round_status import receipt_owns_downloads
+
     _require(
-        downloads.operational_binding is receipt.operational_binding,
+        receipt_owns_downloads(receipt, downloads),
         "these downloads were obtained for a different round-status response; the scientific "
         "identity matches but the operational source does not, and provenance is about which "
         "response was actually served",
@@ -373,18 +377,22 @@ def verify_live_round_intake(*, receipt: Any, downloads: Any) -> VerifiedLiveRou
     """
     from minos_engine.protocol.round_status import (
         PRODUCTION_SCOPE,
-        ProductionRoundDownloads,
-        ProductionRoundStatusReceipt,
+        is_verified_production_downloads,
+        is_verified_production_receipt,
     )
 
+    # exact type AND private seal, at every production boundary. `isinstance` would let a subclass
+    # that skips __init__ and populates the slots by hand walk straight through.
     _require(
-        isinstance(receipt, ProductionRoundStatusReceipt),
-        "a production live intake requires a production platform receipt; a fixture observation, "
-        "a demo round or a dictionary is not the platform speaking about a live round",
+        is_verified_production_receipt(receipt),
+        "a production live intake requires a sealed production platform receipt; a fixture "
+        "observation, a demo round, a dictionary or a subclass of the receipt is not the platform "
+        "speaking about a live round",
     )
     _require(
-        isinstance(downloads, ProductionRoundDownloads),
-        "a production live intake requires production round downloads bound to that receipt",
+        is_verified_production_downloads(downloads),
+        "a production live intake requires sealed production round downloads; a subclass carrying "
+        "a real receipt identity and a real operational binding is a forgery, not provenance",
     )
     return _build_verified_intake(receipt=receipt, downloads=downloads, scope=PRODUCTION_SCOPE)
 
@@ -393,28 +401,37 @@ def observe_fixture_live_round_intake(*, receipt: Any, downloads: Any) -> Verifi
     """The deterministic test seam. Same builder, same refusals, different scope."""
     from minos_engine.protocol.round_status import (
         FIXTURE_SCOPE,
-        FixtureRoundDownloads,
-        FixtureRoundStatusReceipt,
+        is_fixture_round_downloads,
+        is_fixture_round_receipt,
     )
 
     _require(
-        isinstance(receipt, FixtureRoundStatusReceipt),
-        "a fixture live intake requires a fixture round-status observation",
+        is_fixture_round_receipt(receipt),
+        "a fixture live intake requires a sealed fixture round-status observation",
     )
     _require(
-        isinstance(downloads, FixtureRoundDownloads),
-        "a fixture live intake requires fixture round downloads",
+        is_fixture_round_downloads(downloads),
+        "a fixture live intake requires sealed fixture round downloads",
     )
     return _build_verified_intake(receipt=receipt, downloads=downloads, scope=FIXTURE_SCOPE)
 
 
-def require_production_scope(capability: Any) -> Any:
-    """The guard the live service will use. A fixture-scoped chain never passes it."""
+def require_production_scope(intake: Any) -> VerifiedLiveRoundIntake:
+    """The guard the live service will use. Exact type, private seal, production scope.
+
+    A fixture-scoped chain never passes, and neither does a subclass of the intake that copies the
+    scope string: the seal is set only by the constructor a caller cannot reach.
+    """
     from minos_engine.protocol.round_status import PRODUCTION_SCOPE
 
-    scope = getattr(capability, "scope", None)
     _require(
-        scope == PRODUCTION_SCOPE,
-        f"this capability is {scope!r} scope; the live boundary accepts only {PRODUCTION_SCOPE}",
+        type(intake) is VerifiedLiveRoundIntake and getattr(intake, "_seal", None) is _INTAKE_TOKEN,
+        "the live boundary accepts only a sealed verified live intake",
     )
-    return capability
+    verified: VerifiedLiveRoundIntake = intake
+    _require(
+        verified.scope == PRODUCTION_SCOPE,
+        f"this intake is {verified.scope!r} scope; the live boundary accepts only "
+        f"{PRODUCTION_SCOPE}",
+    )
+    return verified
