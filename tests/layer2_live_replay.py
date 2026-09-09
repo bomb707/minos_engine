@@ -9,8 +9,10 @@ in for the network, and its payload still goes through::
     verify_live_profile_binding    ->  VerifiedLiveProfileBinding
     own_verified_live_round        ->  VerifiedRoundProfileAuthority
 
-exactly as production would. No step is bypassed, so a fixture cannot obtain a capability the
-network could not.
+The parsing, canonicalization and every refusal are the production implementation -- the fixture
+scope differs only in which authority token is minted, and a test asserts the two produce
+identical parsed content. A fixture therefore cannot obtain the capability the production intake
+accepts: ``verify_live_round_intake`` refuses a fixture receipt by type.
 
 Everything else is genuine production code: ``tests.layer1_fixtures.build_dataset`` writes a real
 BAM, index, reference and FAI; ``Layer1Service.analyze`` is the real profiler; and
@@ -35,14 +37,19 @@ from typing import Any
 from minos_engine.layer2.live_round_intake import (
     ACCEPTED_REFERENCE_IDENTITIES,
     ReferenceIdentity,
-    hash_downloaded_inputs,
     live_dataset_id_for,
-    verify_live_round_intake,
+    observe_fixture_live_round_intake,
 )
 from minos_engine.protocol.round_status import (
     FixtureRoundStatusTransport,
-    verify_platform_round_status,
+    accept_fixture_round_downloads,
+    observe_fixture_round_status,
 )
+
+#: The URLs the fixture round "offers". They are matched by exact string, exactly as production
+#: matches the platform's real presigned URLs, and never enter any identity.
+FIXTURE_BAM_URL = "https://fixture.invalid/round/input.bam?sig=FIXTURE"
+FIXTURE_BAI_URL = "https://fixture.invalid/round/input.bam.bai?sig=FIXTURE"
 
 #: A platform-shaped round id: a timezone-aware ISO-8601 timestamp, as `/v2/round-status` issues.
 FRESH_LIVE_ROUND_ID = "2026-09-08T12:00:00+00:00"
@@ -67,8 +74,8 @@ def round_status_payload(
         "round_id": round_id,
         "status": "open",
         "region": region,
-        "bam_presigned_url": "https://platform.example/bam?sig=REDACTED",
-        "bam_index_presigned_url": "https://platform.example/bai?sig=REDACTED",
+        "bam_presigned_url": FIXTURE_BAM_URL,
+        "bam_index_presigned_url": FIXTURE_BAI_URL,
         "num_mutations": 120,
         "downsampled_coverage": 30,
         "time_remaining_seconds": 1800,
@@ -149,10 +156,16 @@ def build_live_replay(
     if payload_override is not None:
         payload = {**payload, **payload_override}
         payload = {k: v for k, v in payload.items() if v is not ABSENT}
-    receipt = verify_platform_round_status(FixtureRoundStatusTransport(payload))
+    receipt = observe_fixture_round_status(FixtureRoundStatusTransport(payload))
 
-    downloads = hash_downloaded_inputs(bam_path=dataset["bam"], bai_path=dataset["bai"])
-    intake = verify_live_round_intake(receipt=receipt, downloads=downloads)
+    downloads = accept_fixture_round_downloads(
+        receipt=receipt,
+        bam_source_url=FIXTURE_BAM_URL,
+        bam_path=Path(dataset["bam"]).resolve(),
+        bai_source_url=FIXTURE_BAI_URL,
+        bai_path=Path(dataset["bai"]).resolve(),
+    )
+    intake = observe_fixture_live_round_intake(receipt=receipt, downloads=downloads)
 
     registry_record = {
         **intake.registry_identity(),

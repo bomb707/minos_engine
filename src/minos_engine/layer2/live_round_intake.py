@@ -1,26 +1,35 @@
 """``l2h-live-round-intake-v2`` — what LIVE challenge the engine is servicing, and on what bytes.
 
-**What v1 got wrong.** v1 let a caller supply a round id, a region and four content hashes, checked
-that they were internally consistent, and minted the capability. Internal consistency is not
-provenance: anyone able to invent a plausible ISO timestamp and four hex strings could invent a
-round. Canonicalizing something does not make it true.
+**What the first attempt got wrong, and what the second still got wrong.** The first let a caller
+supply a round id, a region and four content hashes, checked they agreed with each other, and
+minted the capability — internal consistency is not provenance. The second fixed that by demanding
+a platform receipt, but any transport could mint one (a fixture, and even the demo endpoint), and
+the download digests proved only that *some* local files had been hashed, not that those bytes
+came from this round's own sources.
 
-v2 separates the two jobs the specification names:
+So authority now arrives as two proofs, each scope-separated and each round-bound:
 
-* :func:`canonical_live_round_content` still canonicalizes, and now mints **nothing**. It returns
-  ordinary untrusted content and is used for hashing and for tests.
-* :func:`verify_live_round_intake` mints, and it will not accept content at all. It takes a
-  :class:`~minos_engine.protocol.round_status.VerifiedPlatformRoundStatus` and a
-  :class:`LocalDownloadDigests`, and builds the content itself.
+* a **production** platform receipt, which only the authenticated subnet transport at exactly
+  ``/v2/round-status`` can mint;
+* **production round downloads**, minted only by handing over the exact URL each file came from,
+  which must be a URL that receipt actually carries.
+
+and the builder is split from the authority:
+
+* :func:`canonical_live_round_content` canonicalizes and mints **nothing**;
+* :func:`verify_live_round_intake` mints and has no ``content`` parameter at all;
+* :func:`observe_fixture_live_round_intake` is the test seam — the *same* builder, its own scope.
 
 so that::
 
     the platform proves WHICH ROUND and WHICH REGION were offered
-    local hashing proves WHICH BYTES were downloaded
+    round-bound downloads prove WHICH BYTES came from that round's own sources
     the accepted reference table proves WHICH REFERENCE this engine profiles against
 
-and no field of a verified intake originates in a caller-chosen string. Presigned URLs never enter
-the scientific identity; nothing about the fetch does.
+No field of a verified intake originates in a caller-chosen string, and no presigned URL — which
+expires, carries a signature and varies between equivalent fetches — enters the scientific
+identity. The intake carries its scope, so a fixture chain can never be mistaken for a live one:
+:func:`require_production_scope` is the guard the live service will use.
 
 ``parameter_space_hash`` is deliberately absent. It defines what the controller may *do*, not what
 the round *is*, and the controller already checks the request's parameter space against the
@@ -30,8 +39,6 @@ moved even though the inputs had not.
 
 from __future__ import annotations
 
-import hashlib
-from pathlib import Path
 from typing import Any, Final
 
 from minos_engine.common.canonical_json import canonical_json_bytes
@@ -40,16 +47,16 @@ from minos_engine.common.hashing import canonical_hash, sha256_hex
 
 __all__ = [
     "ACCEPTED_REFERENCE_IDENTITIES",
+    "observe_fixture_live_round_intake",
+    "require_production_scope",
     "LIVE_INTAKE_DOMAIN",
     "LIVE_INTAKE_FIELDS",
     "LIVE_INTAKE_SCHEMA",
     "SUPPORTED_CONTIGS",
     "LiveRoundIntakeError",
-    "LocalDownloadDigests",
     "ReferenceIdentity",
     "VerifiedLiveRoundIntake",
     "canonical_live_round_content",
-    "hash_downloaded_inputs",
     "live_dataset_id_for",
     "live_round_intake_identity",
     "verify_live_round_intake",
@@ -146,57 +153,7 @@ ACCEPTED_REFERENCE_IDENTITIES: Final[dict[str, ReferenceIdentity]] = {
 #: The chromosomes this engine profiles. A live round outside them is refused, never guessed.
 SUPPORTED_CONTIGS: Final[tuple[str, ...]] = tuple(sorted(ACCEPTED_REFERENCE_IDENTITIES))
 
-_DOWNLOAD_TOKEN: Final = object()
 _INTAKE_TOKEN: Final = object()
-
-
-class LocalDownloadDigests:
-    """Proof of what the miner actually downloaded, obtained by hashing it.
-
-    Minted only by :func:`hash_downloaded_inputs`, which reads real files. A caller cannot state a
-    BAM hash: it has to possess bytes that hash that way. That is what makes "the downloaded BAM
-    hash was substituted" a refusal rather than a different self-consistent story.
-    """
-
-    __slots__ = ("bai_sha256", "bam_sha256", "byte_counts")
-
-    def __init__(
-        self, token: object, *, bam_sha256: str, bai_sha256: str, byte_counts: dict[str, int]
-    ) -> None:
-        if token is not _DOWNLOAD_TOKEN:
-            raise LiveRoundIntakeError(
-                "download digests may only be minted by hashing the downloaded files; a declared "
-                "hash is a claim about bytes nobody read"
-            )
-        self.bam_sha256 = bam_sha256
-        self.bai_sha256 = bai_sha256
-        self.byte_counts = dict(byte_counts)
-
-
-def _stream_sha256(path: Path, *, label: str) -> tuple[str, int]:
-    _require(path.is_file(), f"the downloaded {label} is missing: {path}")
-    _require(not path.is_symlink(), f"the downloaded {label} is a symlink: {path}")
-    digest = hashlib.sha256()
-    size = 0
-    with path.open("rb") as handle:
-        while chunk := handle.read(1 << 20):
-            digest.update(chunk)
-            size += len(chunk)
-    _require(size > 0, f"the downloaded {label} is empty: {path}")
-    return digest.hexdigest(), size
-
-
-def hash_downloaded_inputs(*, bam_path: Any, bai_path: Any) -> LocalDownloadDigests:
-    """Stream-hash the alignment and its index. The only way to obtain download digests."""
-    bam_sha, bam_size = _stream_sha256(Path(bam_path), label="BAM")
-    bai_sha, bai_size = _stream_sha256(Path(bai_path), label="BAI")
-    _require(bam_sha != bai_sha, "the BAM and its index cannot be the same bytes")
-    return LocalDownloadDigests(
-        _DOWNLOAD_TOKEN,
-        bam_sha256=bam_sha,
-        bai_sha256=bai_sha,
-        byte_counts={"bam": bam_size, "bai": bai_size},
-    )
 
 
 def live_dataset_id_for(*, chromosome: str, identity_tuple_hash: str) -> str:
@@ -292,9 +249,11 @@ class VerifiedLiveRoundIntake:
     download digests.
     """
 
-    __slots__ = ("_content", "dataset_id", "identity", "receipt_identity")
+    __slots__ = ("_content", "dataset_id", "identity", "receipt_identity", "scope")
 
-    def __init__(self, token: object, *, content: dict[str, Any], identity: str) -> None:
+    def __init__(
+        self, token: object, *, content: dict[str, Any], identity: str, scope: str
+    ) -> None:
         if token is not _INTAKE_TOKEN:
             raise LiveRoundIntakeError(
                 "a live round intake may only be minted from a verified platform receipt and real "
@@ -302,6 +261,9 @@ class VerifiedLiveRoundIntake:
             )
         self._content = dict(content)
         self.identity = identity
+        #: ``production`` or ``fixture``. Carried so a test chain can never be mistaken for a live
+        #: one further down, and checked by :func:`require_production_scope`.
+        self.scope = scope
         self.receipt_identity = str(content["platform_receipt_identity"])
         self.dataset_id = live_dataset_id_for(
             chromosome=str(content["chromosome"]),
@@ -341,30 +303,19 @@ class VerifiedLiveRoundIntake:
         }
 
 
-def verify_live_round_intake(
-    *, receipt: Any, downloads: LocalDownloadDigests
-) -> VerifiedLiveRoundIntake:
-    """Mint the live intake from proofs, never from content.
-
-    There is no ``content`` parameter and there is no way to supply one. The round id and region
-    come from the platform receipt; the BAM and BAI identities come from files that were actually
-    hashed; the reference and its index come from the accepted per-contig table. A caller
-    contributes nothing that ends up in the identity.
-    """
-    from minos_engine.protocol.round_status import VerifiedPlatformRoundStatus
-
-    _require(
-        isinstance(receipt, VerifiedPlatformRoundStatus),
-        "a live intake requires a verified platform round-status receipt; a dictionary or a "
-        "lookalike is not a statement by the platform about which round is open",
-    )
-    _require(
-        isinstance(downloads, LocalDownloadDigests),
-        "a live intake requires digests of the files that were actually downloaded; a declared "
-        "hash is a claim about bytes nobody read",
-    )
+def _build_verified_intake(*, receipt: Any, downloads: Any, scope: str) -> VerifiedLiveRoundIntake:
+    """The single implementation. Both scopes run exactly this."""
     from minos_engine.common.genomic_region import normalize_region
 
+    _require(
+        downloads.receipt_identity == receipt.identity,
+        "these downloads were accepted for a different round; a file fetched for one round is not "
+        "evidence about another",
+    )
+    _require(
+        downloads.scope == receipt.scope == scope,
+        f"the receipt and its downloads must both be {scope} scope",
+    )
     try:
         contig, _start0, _end0 = normalize_region(receipt.region_source, _ONE_BASED)
     except ValueError as error:  # pragma: no cover - the receipt already normalized it
@@ -391,5 +342,68 @@ def verify_live_round_intake(
         f"the live intake carries {observed}, not exactly {LIVE_INTAKE_FIELDS}",
     )
     return VerifiedLiveRoundIntake(
-        _INTAKE_TOKEN, content=content, identity=live_round_intake_identity(content)
+        _INTAKE_TOKEN,
+        content=content,
+        identity=live_round_intake_identity(content),
+        scope=scope,
     )
+
+
+def verify_live_round_intake(*, receipt: Any, downloads: Any) -> VerifiedLiveRoundIntake:
+    """THE production entry point. Production receipt and production downloads, or nothing.
+
+    There is no ``content`` parameter and there is no way to supply one. The round id and region
+    come from the platform receipt; the BAM and BAI identities come from files bound to that
+    receipt's own download sources; the reference and its index come from the accepted per-contig
+    table. A caller contributes nothing that ends up in the identity.
+
+    A fixture receipt or fixture downloads are refused here by type. Tests use
+    :func:`observe_fixture_live_round_intake`, which runs the identical builder in its own scope.
+    """
+    from minos_engine.protocol.round_status import (
+        PRODUCTION_SCOPE,
+        ProductionRoundDownloads,
+        ProductionRoundStatusReceipt,
+    )
+
+    _require(
+        isinstance(receipt, ProductionRoundStatusReceipt),
+        "a production live intake requires a production platform receipt; a fixture observation, "
+        "a demo round or a dictionary is not the platform speaking about a live round",
+    )
+    _require(
+        isinstance(downloads, ProductionRoundDownloads),
+        "a production live intake requires production round downloads bound to that receipt",
+    )
+    return _build_verified_intake(receipt=receipt, downloads=downloads, scope=PRODUCTION_SCOPE)
+
+
+def observe_fixture_live_round_intake(*, receipt: Any, downloads: Any) -> VerifiedLiveRoundIntake:
+    """The deterministic test seam. Same builder, same refusals, different scope."""
+    from minos_engine.protocol.round_status import (
+        FIXTURE_SCOPE,
+        FixtureRoundDownloads,
+        FixtureRoundStatusReceipt,
+    )
+
+    _require(
+        isinstance(receipt, FixtureRoundStatusReceipt),
+        "a fixture live intake requires a fixture round-status observation",
+    )
+    _require(
+        isinstance(downloads, FixtureRoundDownloads),
+        "a fixture live intake requires fixture round downloads",
+    )
+    return _build_verified_intake(receipt=receipt, downloads=downloads, scope=FIXTURE_SCOPE)
+
+
+def require_production_scope(capability: Any) -> Any:
+    """The guard the live service will use. A fixture-scoped chain never passes it."""
+    from minos_engine.protocol.round_status import PRODUCTION_SCOPE
+
+    scope = getattr(capability, "scope", None)
+    _require(
+        scope == PRODUCTION_SCOPE,
+        f"this capability is {scope!r} scope; the live boundary accepts only {PRODUCTION_SCOPE}",
+    )
+    return capability

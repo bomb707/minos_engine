@@ -65,69 +65,100 @@ Hex is a strict subset of what was accepted before, so **no existing artifact ch
 The TRAIN loader is **untouched** and still anchors to exactly what it anchored to before. Its
 corpus identity is still `9cc53b5d28c8a8da34c25095362c09d8cb1fb57533ff0a0b3e1fdf7000970b03`.
 
-## 3. The platform receipt is the authority
+## 3. The platform receipt is the authority — and a fixture is not the platform
 
-An earlier version of this work let a caller supply a round id, a region and four content hashes,
-checked that they were internally consistent, and minted the capability. **Internal consistency is
-not provenance.** Anyone able to invent a plausible ISO timestamp and four hex strings could
-invent a round. Canonicalizing something does not make it true.
+Two gaps were closed here in turn. The first attempt let a caller supply a round id, a region and
+four content hashes and checked they agreed with each other; **internal consistency is not
+provenance**. The second demanded a platform receipt but let *any* transport mint one — a fixture,
+and even `/v2/demo/round-status` — so the receipt proved "some allowed transport object returned
+this", not "the authenticated production platform returned this".
 
-`protocol/round_status.py` fixes that. `VerifiedPlatformRoundStatus` exists only because a
-transport went and asked the platform:
+There are now two capabilities with two private tokens, and neither factory can mint the other's:
 
-| | |
-|---|---|
-| seam | `RoundStatusTransport` — the **transport**, never the authority |
-| production | `SubnetPlatformRoundStatusTransport`, wrapping the subnet's own `MinerPlatformClient` |
-| tests | `FixtureRoundStatusTransport` — deterministic, and still goes through the same verification |
-| mint | `verify_platform_round_status` only; the constructor demands a private token |
+| factory | transport it demands | capability | scope |
+|---|---|---|---|
+| `verify_production_round_status` | `ProductionRoundStatusTransport` **and** endpoint exactly `/v2/round-status` | `ProductionRoundStatusReceipt` | `production` |
+| `observe_fixture_round_status` | `FixtureRoundStatusTransport` | `FixtureRoundStatusReceipt` | `fixture` |
 
-**What a receipt asserts, precisely.** Read from the subnet source: the miner **signs the
-request** (`_auth_body` adds a hotkey signature over method, path, body and timestamp, plus a
-nonce, sent with `X-Minos-Auth-Version: 2`), and the transport is **HTTPS-enforced**
-(`PlatformClient.__init__` refuses a non-HTTPS base URL outside localhost). The response is
-**plain JSON with no digital signature** — nothing in the subnet verifies one. So a receipt
-asserts exactly: *this payload was returned by the configured, HTTPS-protected platform transport
-in answer to a request this miner signed.* It is a transport-authenticated receipt, not a signed
-document, and it is not described as one anywhere.
+Inheriting the base `RoundStatusTransport` grants nothing. `/v2/demo/round-status` is refused by
+name with the reason stated — it is a sandbox that accepts ephemeral keypairs and never writes to
+the live submissions database. Both factories share one `parse_round_status`, so the validation a
+test exercises **is** the production code; a test asserts the two produce identical parsed content.
 
-The engine deliberately does **not** reimplement the HTTP call. Re-deriving the request signing,
-nonce and auth headers here would be a second implementation of a security boundary that already
-exists and is maintained next door, and it would need the miner's keypair.
+**The production client (§E).** Accepting any object with `get_round_status` and `keypair` was too
+weak. `SubnetPlatformRoundStatusTransport` now requires the class to be named
+`MinerPlatformClient`, defined in a `platform_client` module, carrying a keypair with an
+`ss58_address`, configured with an **HTTPS** base URL, and **not in demo mode**. This is a
+structural check, not a cryptographic one — it stops casual or accidental substitution, and the
+real guarantee remains that a deployment constructs the genuine client. That limit is stated in
+the module rather than implied.
 
-A receipt is refused unless the platform reports an **active, open** round with a usable round id
-and region. `pending`, `scoring` and `completed` are not rounds to decide for. A client in demo
-mode — which routes to the sandboxed `/v2/demo` namespace — is refused for a live decision.
+**What a receipt asserts, precisely.** The miner signs the **request** (`_auth_body`: hotkey
+signature over method, path, body and timestamp, plus a nonce, with `X-Minos-Auth-Version: 2`) and
+the transport is HTTPS-enforced by the subnet client's own constructor. The response body carries
+**no digital signature** — nothing in the subnet verifies one. A receipt asserts exactly: *this
+payload was returned by the configured, HTTPS-protected platform transport in answer to a request
+this miner signed.* Nothing more.
 
-## 4. The live intake identity
+## 4. Downloads are bound to the round they came from
+
+`hash_downloaded_inputs(bam_path, bai_path)` proved only that *some* local files had been hashed.
+A BAM unrelated to the round produced a valid intake and was caught much later, against the
+profile. That is too late: the intake is the scientific identity.
+
+**The engine does not download.** The official miner already does — `neurons/miner.py::_download_bam`
+reads `bam_presigned_url` / `bam_presigned_url_backup` / `bam_index_presigned_url` /
+`bam_index_presigned_url_backup`, prefers a backend via `STORAGE_PRIMARY_BACKEND`, falls back,
+verifies against a platform-published `bam_sha256` when present, and builds the index with
+samtools when no index URL is offered. Reimplementing that would duplicate maintained security
+logic and drag HTTP and S3 clients into this package.
+
+So the seam is a **handoff** that binds *this receipt* → *this URL* → *this local file* → *these
+bytes*:
+
+```
+accept_production_round_downloads(receipt, bam_source_url, bam_path, bai_source_url, bai_path)
+```
+
+* `bam_source_url` must **equal a URL that receipt actually carries** for this round; a source
+  swapped after the round status was received matches no slot and is refused;
+* the file is stream-hashed here, and if the platform published a `bam_sha256` the computed hash
+  must equal it — upstream's own check, re-applied;
+* `bai_source_url=None` records `locally-indexed`, which is what the miner does when the platform
+  offers no index URL — a legitimate provenance, recorded rather than disguised;
+* the result carries `receipt_identity`, so downloads accepted for one round cannot be presented
+  for another;
+* paths must be absolute and not symlinks.
+
+**URLs never reach an identity (§H).** A presigned URL expires, carries a signature and varies
+between equivalent fetches. The receipt keeps the URLs privately; the download proof records only
+the **slot name** (`bam_presigned_url`, `bam_presigned_url_backup`, `locally-indexed`). A test
+asserts no `http`, `://`, `sig=` or `?` appears in the receipt content, the receipt observation,
+the download observation, the intake content or the ownership anchors.
+
+The intake carries its **scope** end to end, and `require_production_scope` is the guard the live
+service will use; a fixture chain never passes it.
+
+## 4b. The live intake identity
 
 `l2h-live-round-intake-v2` = `sha256("minos:l2h-live-round-intake:v2\n" + canonical_json_bytes(content))`
 over a **closed** field set — a missing field and an unknown field are both refusals.
 
-The two jobs the specification separates are separated:
-
-* `canonical_live_round_content(...)` still canonicalizes and **mints nothing**. It returns
-  ordinary untrusted content.
-* `verify_live_round_intake(receipt, downloads)` mints, and **has no content parameter at all**.
-
-so that no field of a verified intake originates in a caller-chosen string:
+The builder is split from the authority: `canonical_live_round_content(...)` canonicalizes and
+**mints nothing**; `verify_live_round_intake(receipt, downloads)` mints and has **no `content`
+parameter at all**. No field of a verified intake originates in a caller-chosen string:
 
 | field | comes from |
 |---|---|
-| `round_id`, `region_source`, `platform_receipt_identity` | the **platform receipt** |
-| `bam_sha256`, `bai_sha256` | `hash_downloaded_inputs`, which **reads real files** |
+| `round_id`, `region_source`, `platform_receipt_identity` | the **production platform receipt** |
+| `bam_sha256`, `bai_sha256` | **round-bound downloads**, hashed from files tied to that receipt's own URLs |
 | `reference_sha256`, `fai_sha256` | the **accepted per-contig reference table** |
 | region bounds, `region_hash`, `identity_tuple_hash` | derived |
-
-`LocalDownloadDigests` is likewise token-minted: a caller cannot *state* a BAM hash, it has to
-possess bytes that hash that way. That is what makes "the downloaded BAM hash was substituted" a
-refusal rather than a different self-consistent story.
 
 `ACCEPTED_REFERENCE_IDENTITIES` pins one reference FASTA + FAI + M5 per contig, so a live round is
 never profiled against the wrong genome build. A unit test cross-checks every entry against the
 frozen L2-D corpus attestations, where all fifty members agree on one reference per chromosome.
 
-Presigned URLs, timings, nonces, signatures and `num_mutations` never enter any identity.
 `parameter_space_hash` is deliberately absent: it defines what the controller may *do*, not what
 the round *is*, and binding it here would break the profile binding whenever the parameter space
 moved even though the inputs had not.
@@ -140,30 +171,6 @@ it can never be mistaken for a registry-backed research id.
 registry, and the document registering what its inputs are *is* the intake — so the intake's
 identity takes that role. The field still means "the identity of the registered input set this
 attestation was checked against"; only which document registers it differs.
-
-## 4. The profile binding
-
-`load_verified_live_round_ownership` takes the four Layer 1 outputs as **bytes** — a caller
-handing over a dict has already decided what the bytes mean — and proves, recomputing each link:
-
-```
-verified live intake
-    == the attestation's declared inputs      (all ten registry-identity fields)
-    == the profile manifest's region and artifact byte hashes
-    == the profile document's own identity     (via validate_admission, unchanged)
-    == the DecisionRequest's profile reference (via require_owned_request)
-```
-
-The attestation must hash to its own `attestation_hash` and its identity tuple must recompute.
-The accepted L2-D admission authority `validate_admission` is **called unchanged, not
-reimplemented**, and the `registry_identity` it validates against is reconstructed from the
-verified intake, so no caller is on the trust path. Any mismatch raises; nothing is emitted.
-
-**One stated exception.** The manifest's `fingerprint_hash` cannot be re-derived here: rebuilding
-it needs L1's sampling-plan and read-filter-policy identities, and Layer 2 may not import
-`layer1.fingerprint` at all (the boundary the leakage suite enforces). What *is* re-derived is
-`profile_manifest_sha256`, the exact bytes of the manifest that declared it. The frozen TRAIN
-authority carries the field on exactly the same terms.
 
 ## 5. Round-scoped, and no door beside the capability
 
@@ -243,16 +250,21 @@ worse than reporting it.
 ## 8. What is proved
 
 A fresh platform-shaped round id — `2026-09-08T12:00:00+00:00`, absent from the fifty-row TRAIN
-schedule — reaches the ownership capability through the **whole production chain**, with only the
-transport substituted:
+schedule — reaches the ownership capability through the **whole chain**, with only the transport
+substituted and only the authority token scope-separated:
 
 ```
-FixtureRoundStatusTransport  ->  verify_platform_round_status  ->  VerifiedPlatformRoundStatus
-real BAM/BAI on disk         ->  hash_downloaded_inputs        ->  LocalDownloadDigests
-                                 verify_live_round_intake      ->  VerifiedLiveRoundIntake
-real intake.attest_input     ->  verify_live_profile_binding   ->  VerifiedLiveProfileBinding
-                                 own_verified_live_round       ->  VerifiedRoundProfileAuthority
+FixtureRoundStatusTransport      ->  observe_fixture_round_status
+real BAM/BAI + this round's URLs ->  accept_fixture_round_downloads
+                                 ->  observe_fixture_live_round_intake   (fixture scope)
+real intake.attest_input         ->  verify_live_profile_binding
+                                 ->  own_verified_live_round
 ```
+
+The fixture scope differs from production only in which authority token is minted — the parsing,
+canonicalization, URL binding, hashing and every refusal are the production implementation, and a
+test asserts the two produce identical parsed content. `verify_live_round_intake` refuses a
+fixture receipt **by type**, so nothing here can reach the production path.
 
 Everything but the transport is genuine production code: `build_dataset` writes a real BAM, index,
 reference and FAI; `Layer1Service.analyze` is the real profiler; `intake.attest_input` is the real

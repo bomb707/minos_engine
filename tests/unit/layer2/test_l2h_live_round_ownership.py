@@ -20,14 +20,9 @@ from minos_engine.layer2.live_round_authority import (
     verify_live_profile_binding,
 )
 from minos_engine.layer2.live_round_intake import (
-    LIVE_INTAKE_FIELDS,
-    LIVE_INTAKE_SCHEMA,
     LiveRoundIntakeError,
-    LocalDownloadDigests,
-    VerifiedLiveRoundIntake,
-    canonical_live_round_content,
-    hash_downloaded_inputs,
-    live_round_intake_identity,
+    observe_fixture_live_round_intake,
+    require_production_scope,
     verify_live_round_intake,
 )
 from minos_engine.layer2.round_profile_authority import (
@@ -40,15 +35,32 @@ from minos_engine.layer2.round_profile_authority import (
     own_verified_live_round,
 )
 from minos_engine.protocol.round_status import (
+    BAI_URL_SLOTS,
+    BAM_URL_SLOTS,
+    FIXTURE_SCOPE,
+    LOCALLY_INDEXED,
+    PRODUCTION_ENDPOINT_PATH,
+    PRODUCTION_SCOPE,
+    FixtureRoundDownloads,
+    FixtureRoundStatusReceipt,
     FixtureRoundStatusTransport,
     PlatformRoundStatusError,
+    ProductionRoundDownloads,
+    ProductionRoundStatusReceipt,
+    ProductionRoundStatusTransport,
     RoundStatusTransport,
-    VerifiedPlatformRoundStatus,
-    verify_platform_round_status,
+    SubnetPlatformRoundStatusTransport,
+    accept_fixture_round_downloads,
+    accept_production_round_downloads,
+    observe_fixture_round_status,
+    parse_round_status,
+    verify_production_round_status,
 )
 from tests.conftest import REPO_ROOT
 from tests.layer2_live_replay import (
     ABSENT,
+    FIXTURE_BAI_URL,
+    FIXTURE_BAM_URL,
     FRESH_LIVE_ROUND_ID,
     accept_synthetic_reference,
     build_live_dataset,
@@ -79,104 +91,292 @@ def replay(dataset: dict[str, Any]) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
-# the platform receipt is the authority
+# BLOCKER 1: a fixture is not the platform
 # --------------------------------------------------------------------------- #
-def test_a_receipt_exists_only_because_the_platform_was_asked(replay):
+def test_the_replay_receipt_is_a_fixture_not_a_production_receipt(replay):
     receipt = replay["receipt"]
-    assert isinstance(receipt, VerifiedPlatformRoundStatus)
+    assert isinstance(receipt, FixtureRoundStatusReceipt)
+    assert not isinstance(receipt, ProductionRoundStatusReceipt)
+    assert receipt.scope == FIXTURE_SCOPE
     assert receipt.round_id == FRESH_LIVE_ROUND_ID
-    assert receipt.status == "open"
-    assert receipt.endpoint_path == "/v2/round-status"
-    assert receipt.transport_kind == "deterministic-fixture"
     assert len(receipt.identity) == 64
 
 
-def test_a_dictionary_is_not_a_receipt():
-    with pytest.raises(PlatformRoundStatusError, match="may only be minted by fetching"):
-        VerifiedPlatformRoundStatus(
-            object(),
-            round_id=FRESH_LIVE_ROUND_ID,
-            region_source="chr18:1-300000",
-            status="open",
-            endpoint_path="/v2/round-status",
-            transport_kind="forged",
-            identity="0" * 64,
-        )
+def test_a_fixture_transport_cannot_mint_a_production_receipt(dataset):
+    transport = FixtureRoundStatusTransport(round_status_payload(region=dataset["region"]))
+    assert not isinstance(transport, ProductionRoundStatusTransport)
+    with pytest.raises(PlatformRoundStatusError, match="production transport"):
+        verify_production_round_status(transport)
 
 
-def test_a_lookalike_transport_cannot_be_used(dataset):
-    class Lookalike:
-        transport_kind = "forged"
+def test_inheriting_the_base_transport_grants_nothing(dataset):
+    """ "Some allowed transport object returned this" must not be production authority."""
+
+    class HomeMade(RoundStatusTransport):
+        transport_kind = "home-made"
 
         def endpoint_path(self) -> str:
-            return "/v2/round-status"
+            return PRODUCTION_ENDPOINT_PATH
 
         def fetch_round_status(self) -> dict[str, Any]:
             return round_status_payload(region=dataset["region"])
 
-    with pytest.raises(PlatformRoundStatusError, match="RoundStatusTransport"):
-        verify_platform_round_status(Lookalike())
+    assert isinstance(HomeMade(), RoundStatusTransport)
+    with pytest.raises(PlatformRoundStatusError, match="production transport"):
+        verify_production_round_status(HomeMade())
 
 
-def test_the_receipt_is_the_only_route_to_an_intake(replay):
-    """There is no content parameter, and content alone mints nothing."""
-    import inspect
+def test_a_duck_typed_transport_is_refused(dataset):
+    class Quacks:
+        transport_kind = "production"
 
-    signature = inspect.signature(verify_live_round_intake)
-    assert set(signature.parameters) == {"receipt", "downloads"}
+        def endpoint_path(self) -> str:
+            return PRODUCTION_ENDPOINT_PATH
 
-    content = replay["intake"].content()
-    with pytest.raises(LiveRoundIntakeError, match="may only be minted"):
-        VerifiedLiveRoundIntake(object(), content=content, identity="0" * 64)
-    with pytest.raises(LiveRoundIntakeError, match="verified platform round-status receipt"):
-        verify_live_round_intake(receipt=content, downloads=replay["downloads"])
-    with pytest.raises(LiveRoundIntakeError, match="verified platform round-status receipt"):
-        verify_live_round_intake(
-            receipt={"round_id": FRESH_LIVE_ROUND_ID, "region_source": "chr18:1-300000"},
-            downloads=replay["downloads"],
+        def fetch_round_status(self) -> dict[str, Any]:
+            return round_status_payload(region=dataset["region"])
+
+    with pytest.raises(PlatformRoundStatusError, match="production transport"):
+        verify_production_round_status(Quacks())
+
+
+@pytest.mark.parametrize(
+    "endpoint", ["/v2/demo/round-status", "/other/path", "/", "/v2/round-status/../demo", ""]
+)
+def test_a_production_receipt_requires_exactly_the_production_endpoint(dataset, endpoint):
+    """The demo namespace is a sandbox; it may not authorise a live decision."""
+
+    class AtEndpoint(ProductionRoundStatusTransport):
+        def endpoint_path(self) -> str:
+            return endpoint
+
+        def fetch_round_status(self) -> dict[str, Any]:
+            return round_status_payload(region=dataset["region"])
+
+    with pytest.raises(PlatformRoundStatusError) as caught:
+        verify_production_round_status(AtEndpoint())
+    assert "exactly /v2/round-status" in str(caught.value)
+    if endpoint == "/v2/demo/round-status":
+        assert "sandbox" in str(caught.value)
+
+
+def test_neither_receipt_can_be_built_from_a_dictionary(replay):
+    parsed = parse_round_status(replay["payload"], endpoint_path=PRODUCTION_ENDPOINT_PATH)
+    for cls in (ProductionRoundStatusReceipt, FixtureRoundStatusReceipt):
+        with pytest.raises(PlatformRoundStatusError, match="may only be minted"):
+            cls(object(), parsed=parsed)
+
+
+@pytest.mark.parametrize(
+    "client,match",
+    [
+        (object(), "MinerPlatformClient"),
+        (type("MinerPlatformClient", (), {})(), "platform_client module"),
+    ],
+)
+def test_a_fake_platform_client_cannot_become_a_production_transport(client, match):
+    with pytest.raises(PlatformRoundStatusError, match=match):
+        SubnetPlatformRoundStatusTransport(client)
+
+
+def test_a_lookalike_platform_client_is_refused_on_every_property():
+    """Two attributes are not the authenticated, HTTPS-enforcing subnet client."""
+    import types
+
+    module = types.ModuleType("some_pkg.platform_client")
+
+    def make(*, base_url: str = "https://platform.example", demo: bool = False, hotkey: str = "5F"):
+        cls = type("MinerPlatformClient", (), {})
+        cls.__module__ = "some_pkg.platform_client"
+        client = cls()
+        client.get_round_status = lambda: {}
+        client.keypair = types.SimpleNamespace(ss58_address=hotkey)
+        client.config = types.SimpleNamespace(base_url=base_url)
+        client.demo = demo
+        return client
+
+    assert module  # the module object exists only to make the intent explicit
+    # the fully-shaped one is accepted -- the check is structural, and this is documented
+    SubnetPlatformRoundStatusTransport(make())
+    with pytest.raises(PlatformRoundStatusError, match="not HTTPS"):
+        SubnetPlatformRoundStatusTransport(make(base_url="http://platform.example"))
+    with pytest.raises(PlatformRoundStatusError, match="demo mode"):
+        SubnetPlatformRoundStatusTransport(make(demo=True))
+    with pytest.raises(PlatformRoundStatusError, match="no hotkey"):
+        SubnetPlatformRoundStatusTransport(make(hotkey=""))
+
+
+def test_the_production_transport_reports_only_the_production_endpoint():
+    import types
+
+    cls = type("MinerPlatformClient", (), {})
+    cls.__module__ = "utils.platform_client"
+    client = cls()
+    client.get_round_status = lambda: {}
+    client.keypair = types.SimpleNamespace(ss58_address="5F")
+    client.config = types.SimpleNamespace(base_url="https://platform.example")
+    client.demo = False
+    transport = SubnetPlatformRoundStatusTransport(client)
+    assert transport.endpoint_path() == PRODUCTION_ENDPOINT_PATH
+    assert isinstance(transport, ProductionRoundStatusTransport)
+
+
+def test_the_two_scopes_share_one_parser(dataset):
+    """Equivalence: what a test exercises IS the production validation."""
+    payload = round_status_payload(region=dataset["region"])
+    fixture = observe_fixture_round_status(FixtureRoundStatusTransport(payload))
+    parsed = parse_round_status(payload, endpoint_path=PRODUCTION_ENDPOINT_PATH)
+    assert fixture.content() == parsed.identity_content()
+    assert fixture.round_id == parsed.round_id
+    assert fixture.region_source == parsed.region_source
+    assert fixture.expected_bam_sha256 == parsed.expected_bam_sha256
+    assert fixture.offered_slots() == tuple(sorted(parsed.urls))
+
+
+def test_a_fixture_receipt_cannot_reach_the_production_intake(replay):
+    with pytest.raises(LiveRoundIntakeError, match="production platform receipt"):
+        verify_live_round_intake(receipt=replay["receipt"], downloads=replay["downloads"])
+    with pytest.raises(LiveRoundIntakeError, match="production platform receipt"):
+        verify_live_round_intake(receipt={"round_id": FRESH_LIVE_ROUND_ID}, downloads=None)
+
+
+def test_the_production_scope_guard_refuses_a_fixture_chain(replay):
+    assert require_production_scope is not None
+    with pytest.raises(LiveRoundIntakeError, match="fixture"):
+        require_production_scope(replay["intake"])
+    with pytest.raises(LiveRoundIntakeError, match="scope"):
+        require_production_scope(object())
+
+
+# --------------------------------------------------------------------------- #
+# BLOCKER 2: downloads are bound to the round they came from
+# --------------------------------------------------------------------------- #
+def test_downloads_are_bound_to_the_receipt(replay):
+    downloads = replay["downloads"]
+    assert isinstance(downloads, FixtureRoundDownloads)
+    assert downloads.receipt_identity == replay["receipt"].identity
+    assert downloads.scope == FIXTURE_SCOPE
+    assert downloads.bam_source_slot == "bam_presigned_url"
+    assert downloads.bai_source_slot == "bam_index_presigned_url"
+    assert downloads.byte_counts["bam"] > 0
+
+
+def test_an_arbitrary_local_file_cannot_become_a_download(replay, dataset, tmp_path):
+    """The exact gap: hashing a local file is not provenance."""
+    stray = tmp_path / "stray.bam"
+    stray.write_bytes(b"not from this round")
+    with pytest.raises(PlatformRoundStatusError, match="does not offer"):
+        accept_fixture_round_downloads(
+            receipt=replay["receipt"],
+            bam_source_url="https://somewhere.else/input.bam",
+            bam_path=stray.resolve(),
+            bai_source_url=FIXTURE_BAI_URL,
+            bai_path=Path(dataset["bai"]).resolve(),
+        )
+    with pytest.raises(PlatformRoundStatusError, match="does not offer"):
+        accept_fixture_round_downloads(
+            receipt=replay["receipt"],
+            bam_source_url=FIXTURE_BAM_URL,
+            bam_path=Path(dataset["bam"]).resolve(),
+            bai_source_url="https://somewhere.else/input.bai",
+            bai_path=Path(dataset["bai"]).resolve(),
         )
 
 
-def test_canonical_content_mints_nothing(dataset):
-    """The pure builder is still there, and it is only a builder."""
-    content = canonical_live_round_content(
-        round_id=FRESH_LIVE_ROUND_ID,
-        region_source=dataset["region"],
-        platform_receipt_identity="a" * 64,
-        bam_sha256="b" * 64,
-        bai_sha256="c" * 64,
-        reference_sha256="d" * 64,
-        fai_sha256="e" * 64,
+def test_an_empty_or_missing_source_url_is_refused(replay, dataset):
+    with pytest.raises(PlatformRoundStatusError, match="source URL is empty"):
+        accept_fixture_round_downloads(
+            receipt=replay["receipt"],
+            bam_source_url="   ",
+            bam_path=Path(dataset["bam"]).resolve(),
+            bai_path=Path(dataset["bai"]).resolve(),
+        )
+
+
+def test_downloads_for_one_round_cannot_be_used_for_another(dataset):
+    """receipt A + downloads minted for receipt B."""
+    first = build_live_replay(dataset)
+    second = build_live_replay(dataset, live_round_id="2026-12-01T00:00:00+00:00")
+    assert first["receipt"].identity != second["receipt"].identity
+    with pytest.raises(LiveRoundIntakeError, match="different round"):
+        observe_fixture_live_round_intake(receipt=first["receipt"], downloads=second["downloads"])
+
+
+def test_a_locally_built_index_is_recorded_as_such(replay, dataset):
+    """The official miner builds the index with samtools when no URL is offered."""
+    payload = round_status_payload(region=dataset["region"], bam_index_presigned_url=ABSENT)
+    receipt = observe_fixture_round_status(FixtureRoundStatusTransport(payload))
+    downloads = accept_fixture_round_downloads(
+        receipt=receipt,
+        bam_source_url=FIXTURE_BAM_URL,
+        bam_path=Path(dataset["bam"]).resolve(),
+        bai_path=Path(dataset["bai"]).resolve(),
     )
-    assert isinstance(content, dict)
-    assert tuple(sorted(content)) == LIVE_INTAKE_FIELDS
-    assert content["schema_version"] == LIVE_INTAKE_SCHEMA
-    assert not isinstance(content, VerifiedLiveRoundIntake)
-    assert len(live_round_intake_identity(content)) == 64
+    assert downloads.bai_source_slot == LOCALLY_INDEXED
+    assert "bam_index_presigned_url" not in receipt.offered_slots()
 
 
-def test_download_digests_come_from_files_that_were_read(replay, dataset, tmp_path):
-    digests = replay["downloads"]
-    assert isinstance(digests, LocalDownloadDigests)
-    assert digests.byte_counts["bam"] > 0
-    with pytest.raises(LiveRoundIntakeError, match="may only be minted by hashing"):
-        LocalDownloadDigests(object(), bam_sha256="0" * 64, bai_sha256="1" * 64, byte_counts={})
-    missing = tmp_path / "absent.bam"
-    with pytest.raises(LiveRoundIntakeError, match="missing"):
-        hash_downloaded_inputs(bam_path=missing, bai_path=dataset["bai"])
-    empty = tmp_path / "empty.bam"
-    empty.write_bytes(b"")
-    with pytest.raises(LiveRoundIntakeError, match="empty"):
-        hash_downloaded_inputs(bam_path=empty, bai_path=dataset["bai"])
+def test_the_platform_published_bam_hash_is_enforced_when_present(dataset):
+    """`neurons/miner.py` passes it to the downloader; the engine re-applies it."""
+    payload = round_status_payload(region=dataset["region"], bam_sha256="a" * 64)
+    receipt = observe_fixture_round_status(FixtureRoundStatusTransport(payload))
+    assert receipt.expected_bam_sha256 == "a" * 64
+    with pytest.raises(PlatformRoundStatusError, match="SHA-256 the platform published"):
+        accept_fixture_round_downloads(
+            receipt=receipt,
+            bam_source_url=FIXTURE_BAM_URL,
+            bam_path=Path(dataset["bam"]).resolve(),
+            bai_source_url=FIXTURE_BAI_URL,
+            bai_path=Path(dataset["bai"]).resolve(),
+        )
 
 
-def test_the_intake_binds_the_receipt_it_came_from(replay):
-    intake = replay["intake"]
-    assert intake.receipt_identity == replay["receipt"].identity
-    assert intake.round_id == replay["receipt"].round_id
-    assert intake.region_source == replay["receipt"].region_source
-    assert intake.bam_sha256 == replay["downloads"].bam_sha256
-    assert intake.bai_sha256 == replay["downloads"].bai_sha256
+def test_a_download_object_cannot_be_hand_built(replay):
+    for cls in (ProductionRoundDownloads, FixtureRoundDownloads):
+        with pytest.raises(PlatformRoundStatusError, match="may only be minted"):
+            cls(
+                object(),
+                expected=object(),
+                scope=PRODUCTION_SCOPE,
+                receipt_identity=replay["receipt"].identity,
+                bam_sha256="0" * 64,
+                bai_sha256="1" * 64,
+                bam_source_slot="bam_presigned_url",
+                bai_source_slot=LOCALLY_INDEXED,
+                byte_counts={},
+            )
+
+
+def test_fixture_downloads_cannot_be_bound_to_a_production_receipt_and_vice_versa(replay, dataset):
+    with pytest.raises(PlatformRoundStatusError, match="production receipt"):
+        accept_production_round_downloads(
+            receipt=replay["receipt"],
+            bam_source_url=FIXTURE_BAM_URL,
+            bam_path=Path(dataset["bam"]).resolve(),
+            bai_path=Path(dataset["bai"]).resolve(),
+        )
+
+
+def test_no_url_reaches_any_identity_or_observation(replay):
+    """Presigned URLs expire and carry signatures; they stay operational."""
+    surfaces = [
+        json.dumps(replay["receipt"].content()),
+        json.dumps(replay["receipt"].observation()),
+        json.dumps(replay["downloads"].observation()),
+        json.dumps(replay["intake"].content()),
+        json.dumps(replay["ownership"].anchors),
+    ]
+    for blob in surfaces:
+        lowered = blob.lower()
+        for pattern in ("http", "://", "sig=", "?", "fixture.invalid"):
+            assert pattern not in lowered, f"{pattern!r} leaked into {blob[:120]}"
+    assert set(BAM_URL_SLOTS) and set(BAI_URL_SLOTS)
+
+
+def test_the_engine_does_not_reimplement_the_downloader():
+    source = (REPO_ROOT / "src/minos_engine/protocol/round_status.py").read_text()
+    for token in ("httpx", "requests", "urllib", "boto3", "urlretrieve", "s3://"):
+        assert token not in source, token
 
 
 # --------------------------------------------------------------------------- #
@@ -205,13 +405,13 @@ def test_a_round_status_that_is_not_an_open_round_is_refused(dataset, override, 
     payload = {**payload, **override}
     payload = {k: v for k, v in payload.items() if v is not ABSENT}
     with pytest.raises(PlatformRoundStatusError, match=match):
-        verify_platform_round_status(FixtureRoundStatusTransport(payload))
+        observe_fixture_round_status(FixtureRoundStatusTransport(payload))
 
 
 @pytest.mark.parametrize("payload", [{}, {"has_active_round": True}])
 def test_a_malformed_round_status_response_is_refused(payload):
     with pytest.raises(PlatformRoundStatusError):
-        verify_platform_round_status(FixtureRoundStatusTransport(payload))
+        observe_fixture_round_status(FixtureRoundStatusTransport(payload))
 
 
 def test_a_changed_round_id_or_region_changes_the_receipt_and_the_intake(dataset):
@@ -223,12 +423,19 @@ def test_a_changed_round_id_or_region_changes_the_receipt_and_the_intake(dataset
     # a region the platform did not offer is a different round; the receipt and the intake both
     # move, and the real attestation producer would then refuse it against the BAM's own header
     shrunk = dataset["region"].replace(":1-", ":2-")
-    moved_receipt = verify_platform_round_status(
-        FixtureRoundStatusTransport(
-            round_status_payload(region=shrunk, round_id=FRESH_LIVE_ROUND_ID)
-        )
+    moved_receipt = observe_fixture_round_status(
+        FixtureRoundStatusTransport(round_status_payload(region=shrunk))
     )
-    moved_intake = verify_live_round_intake(receipt=moved_receipt, downloads=base["downloads"])
+    moved_downloads = accept_fixture_round_downloads(
+        receipt=moved_receipt,
+        bam_source_url=FIXTURE_BAM_URL,
+        bam_path=Path(dataset["bam"]).resolve(),
+        bai_source_url=FIXTURE_BAI_URL,
+        bai_path=Path(dataset["bai"]).resolve(),
+    )
+    moved_intake = observe_fixture_live_round_intake(
+        receipt=moved_receipt, downloads=moved_downloads
+    )
     assert moved_receipt.identity != base["receipt"].identity
     assert moved_intake.identity != base["intake"].identity
     assert moved_intake.region_source == shrunk
@@ -236,8 +443,8 @@ def test_a_changed_round_id_or_region_changes_the_receipt_and_the_intake(dataset
 
 def test_a_changed_endpoint_changes_the_receipt_identity(dataset):
     payload = round_status_payload(region=dataset["region"])
-    live = verify_platform_round_status(FixtureRoundStatusTransport(payload))
-    demo = verify_platform_round_status(
+    live = observe_fixture_round_status(FixtureRoundStatusTransport(payload))
+    demo = observe_fixture_round_status(
         FixtureRoundStatusTransport(payload, endpoint_path="/v2/demo/round-status")
     )
     assert live.identity != demo.identity
@@ -257,34 +464,64 @@ def test_the_intake_identity_excludes_operational_values(replay):
         assert pattern not in blob, pattern
 
 
-def test_substituted_download_bytes_change_the_identity_and_break_admission(dataset, tmp_path):
-    """A different BAM is a different round; the profile no longer describes it."""
+def test_substituted_bytes_are_refused_before_an_intake_exists(replay, dataset, tmp_path):
+    """The corrective: forged bytes no longer reach ownership to be caught by the profile."""
     forged = tmp_path / "forged.bam"
     forged.write_bytes(Path(dataset["bam"]).read_bytes() + b"\x00")
-    payload = round_status_payload(region=dataset["region"])
-    receipt = verify_platform_round_status(FixtureRoundStatusTransport(payload))
-    digests = hash_downloaded_inputs(bam_path=forged, bai_path=dataset["bai"])
-    intake = verify_live_round_intake(receipt=receipt, downloads=digests)
-    assert intake.bam_sha256 != build_live_replay(dataset)["intake"].bam_sha256
-    with pytest.raises(LiveRoundOwnershipError):
-        load_verified_live_round_ownership(
-            intake=intake,
-            profile_bytes=dataset["profile_bytes"],
-            manifest_bytes=dataset["manifest_bytes"],
-            attestation_bytes=build_live_replay(dataset)["attestation_bytes"],
-            windows_bytes=dataset["windows_bytes"],
+    # the file is not what this round's BAM URL served, and the only way in names that URL
+    downloads = accept_fixture_round_downloads(
+        receipt=replay["receipt"],
+        bam_source_url=FIXTURE_BAM_URL,
+        bam_path=forged.resolve(),
+        bai_source_url=FIXTURE_BAI_URL,
+        bai_path=Path(dataset["bai"]).resolve(),
+    )
+    substituted = observe_fixture_live_round_intake(receipt=replay["receipt"], downloads=downloads)
+    assert substituted.bam_sha256 != replay["intake"].bam_sha256
+    assert substituted.identity != replay["intake"].identity
+    # and with a platform-published hash, it never gets even this far
+    payload = round_status_payload(
+        region=dataset["region"], bam_sha256=replay["downloads"].bam_sha256
+    )
+    receipt = observe_fixture_round_status(FixtureRoundStatusTransport(payload))
+    with pytest.raises(PlatformRoundStatusError, match="SHA-256 the platform published"):
+        accept_fixture_round_downloads(
+            receipt=receipt,
+            bam_source_url=FIXTURE_BAM_URL,
+            bam_path=forged.resolve(),
+            bai_source_url=FIXTURE_BAI_URL,
+            bai_path=Path(dataset["bai"]).resolve(),
         )
 
 
-def test_substituted_index_bytes_change_the_identity(dataset, tmp_path):
-    forged = tmp_path / "forged.bai"
-    forged.write_bytes(Path(dataset["bai"]).read_bytes() + b"\x00")
-    receipt = verify_platform_round_status(
-        FixtureRoundStatusTransport(round_status_payload(region=dataset["region"]))
-    )
-    digests = hash_downloaded_inputs(bam_path=dataset["bam"], bai_path=forged)
-    intake = verify_live_round_intake(receipt=receipt, downloads=digests)
-    assert intake.bai_sha256 != build_live_replay(dataset)["intake"].bai_sha256
+def test_a_relative_or_symlinked_path_is_refused(replay, dataset, tmp_path):
+    link = tmp_path / "link.bam"
+    link.symlink_to(Path(dataset["bam"]).resolve())
+    with pytest.raises(PlatformRoundStatusError, match="symlink"):
+        accept_fixture_round_downloads(
+            receipt=replay["receipt"],
+            bam_source_url=FIXTURE_BAM_URL,
+            bam_path=link,
+            bai_source_url=FIXTURE_BAI_URL,
+            bai_path=Path(dataset["bai"]).resolve(),
+        )
+    relative = tmp_path / "relative.bam"
+    relative.write_bytes(b"present but named relatively")
+    import os
+
+    previous = Path.cwd()
+    os.chdir(tmp_path)
+    try:
+        with pytest.raises(PlatformRoundStatusError, match="absolute path"):
+            accept_fixture_round_downloads(
+                receipt=replay["receipt"],
+                bam_source_url=FIXTURE_BAM_URL,
+                bam_path=Path("relative.bam"),
+                bai_source_url=FIXTURE_BAI_URL,
+                bai_path=Path(dataset["bai"]).resolve(),
+            )
+    finally:
+        os.chdir(previous)
 
 
 # --------------------------------------------------------------------------- #

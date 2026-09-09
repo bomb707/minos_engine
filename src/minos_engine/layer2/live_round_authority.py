@@ -236,6 +236,10 @@ def verify_live_profile_binding(
     anchors = {
         "live_intake_identity": intake.identity,
         "live_intake_schema": str(intake.schema_version),
+        # carried so a fixture-scoped chain is visible in the ownership identity itself and can
+        # never be mistaken downstream for a production one
+        "live_intake_scope": str(intake.scope),
+        "platform_receipt_identity": str(intake.receipt_identity),
         "profile_manifest_sha256": manifest_sha,
         "profile_sha256": profile_sha,
         "windows_sha256": windows_sha,
