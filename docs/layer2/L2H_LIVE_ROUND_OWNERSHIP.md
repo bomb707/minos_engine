@@ -84,11 +84,18 @@ the REAL utils.platform_client.MinerPlatformClient object
   -> verify_production_round_status  -> ProductionRoundStatusReceipt
 ```
 
-**Type identity, not names.** `verify_subnet_platform_client` imports the real
-`utils.platform_client.MinerPlatformClient` and checks `isinstance` against **that class object**.
-The previous version matched a class *named* `MinerPlatformClient` in a module *named*
-`platform_client` — and a test constructed exactly that and was accepted. Names are not identity.
-`verify_official_miner` does the same for `neurons.miner.Miner`.
+**Type identity, not names — and exact, not `isinstance`.** `verify_subnet_platform_client`
+imports the real `utils.platform_client.MinerPlatformClient` and requires
+`type(client) is that class`. An earlier version matched a class *named* `MinerPlatformClient` in
+a module *named* `platform_client` (a test constructed exactly that and was accepted); the next
+used `isinstance`, which a **subclass overriding `get_round_status`** would have satisfied while
+returning anything it liked. `verify_official_miner` applies the same exact rule to
+`neurons.miner.Miner`, where a subclass could override `_download_bam`. Both are now consistent
+with the seal rule used everywhere else.
+
+Tests prove this independently of whether the subnet's dependencies are installed: the resolver
+itself is monkeypatched to a stand-in official class, the genuine instance is accepted, and a real
+subclass of it is refused — with an assertion that `isinstance` *would* have passed.
 
 **Fail closed, no fallback.** If the subnet package cannot be imported, the production path
 **refuses** with a message naming `MINOS_SUBNET_ROOT` and stating that it does not fall back to
@@ -212,16 +219,37 @@ module's call. Nothing here deletes or re-fetches anything. `minos_subnet` is no
 `round_id`, a **digest** of the operational source set, and the resulting hashes. On each handoff
 the bytes are accepted when
 
-* the file was written during this call — provenance is this round's own fetch; or
+* this call demonstrably wrote the file; or
 * the platform published a `bam_sha256` and the bytes match it — the content is authoritative
   however it was obtained; or
 * a sidecar names this same source set and these same bytes — provenance carries over;
 
-and otherwise the handoff **fails closed** with an actionable message. Freshness compares the
-BAM's mtime against a **marker file written just before the call**, because file timestamps come
-from the kernel's coarse clock and trail `time.time_ns()` by up to a tick; both mtimes then come
-from the same clock and the comparison needs no tolerance. The sidecar stores a digest, never a
-URL — asserted by test.
+and otherwise the handoff **fails closed** with an actionable message. The sidecar stores a
+digest, never a URL — asserted by test.
+
+**Freshness is inode state, not a clock.** An earlier version compared the BAM's mtime against a
+marker written just before the call and treated `mtime >= marker` as proof of a write. Equality is
+ambiguous: a coarse filesystem clock can stamp a file written moments earlier with exactly the
+marker's value, so a cache hit could be declared fresh and skip sidecar validation — a fail-open
+boundary, and one no tolerance window fixes, since a window only widens the ambiguity.
+
+The file is now *observed* instead. Its path is derived from the official miner's own `BASE_DIR`
+and `utils.path_utils.safe_round_dir_name` — nothing about backend selection, fallback,
+downloading or indexing is reimplemented, only *where the file lands* — and its inode state
+(device, inode, size, mtime, ctime) is snapshotted before the call and compared after:
+
+| before → after | verdict |
+|---|---|
+| absent → present | this call created it — **fresh** |
+| present, state **changed** | this call rewrote it — **fresh** |
+| present, state **unchanged** | the downloader cached — **not fresh** |
+| path underivable, or a path the layout does not predict | unknown — **not fresh** |
+
+Timestamps decide nothing on their own, so an **equal** mtime and a **future** mtime both land in
+"unchanged", which is the safe answer; filesystem metadata never becomes caller-controlled
+authority. A false negative costs a refusal and a retry, and there is no false positive to trade
+it against. Tests cover both, plus a genuine re-fetch that *restores* the old mtime — still
+correctly fresh, because `ctime` moves.
 
 The BAI needs no such protection: `_download_bam` unlinks the old index before obtaining or
 rebuilding it, so it is always fresh. A test pins that upstream behaviour too.

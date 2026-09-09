@@ -366,11 +366,14 @@ def verify_subnet_platform_client(client: Any) -> VerifiedProductionPlatformClie
     transport; the response body is **not** digitally signed.
     """
     official = resolve_official_platform_client_type()
+    # EXACT type, like every other authority here. A subclass of the official client can override
+    # get_round_status and would otherwise earn a genuine sealed capability -- and a subclass is
+    # not the runtime integration object this authority claims to authenticate.
     _require(
-        isinstance(client, official),
+        type(client) is official,
         f"the production transport requires an actual {OFFICIAL_CLIENT_MODULE}."
         f"{OFFICIAL_CLIENT_CLASS}; an object of type {type(client).__name__!r} is not one, "
-        "whatever it is called",
+        "whatever it is called or inherits from",
     )
     _require(
         not getattr(client, "demo", False),
@@ -412,16 +415,18 @@ class VerifiedOfficialMiner:
 
 def is_verified_official_miner(candidate: Any) -> bool:
     """Exact type and seal. A subclass of the capability is not the capability."""
-    return _is_sealed(candidate, VerifiedOfficialMiner, _MINER_TOKEN)
+    return bool(_is_sealed(candidate, VerifiedOfficialMiner, _MINER_TOKEN))
 
 
 def verify_official_miner(miner: Any) -> VerifiedOfficialMiner:
     """Exact type identity against the real Miner. An object with ``_download_bam`` is not one."""
     official = resolve_official_miner_type()
+    # EXACT type: a subclass could override _download_bam and hand back any file it liked.
     _require(
-        isinstance(miner, official),
+        type(miner) is official,
         f"the production download integration requires an actual {OFFICIAL_MINER_MODULE}."
-        f"{OFFICIAL_MINER_CLASS}; an object of type {type(miner).__name__!r} is not one",
+        f"{OFFICIAL_MINER_CLASS}; an object of type {type(miner).__name__!r} is not one, "
+        "whatever it inherits from",
     )
     _require(
         callable(getattr(miner, "_download_bam", None)),
@@ -864,23 +869,73 @@ def _sidecar_path(bam_path: Path) -> Path:
     return Path(str(bam_path) + PROVENANCE_SIDECAR_SUFFIX)
 
 
-def _coarse_clock_now_ns() -> int:
-    """ "Now", as the filesystem would stamp it.
+def _official_output_bam_path(round_id: str) -> Path | None:
+    """Where the official miner will put this round's BAM, derived from ITS OWN values.
 
-    File mtimes come from the kernel's coarse real-time clock, which trails ``time.time_ns()`` by
-    up to one tick. Comparing an mtime against the system clock therefore reports every freshly
-    written file as stale. Writing a marker and reading its own mtime samples the same clock the
-    BAM's mtime will come from, so the later comparison is exact rather than approximate.
+    ``Miner._download_bam`` computes ``BASE_DIR / "output" / safe_round_dir_name(round_id) /
+    "input.bam"``. Both halves are read from the official modules -- ``BASE_DIR`` as imported into
+    ``neurons.miner``, and ``safe_round_dir_name`` from ``utils.path_utils`` -- so nothing about
+    backend selection, fallback, downloading or indexing is reimplemented. Only *where the file
+    lands* is derived, and only so its state can be observed before the call.
+
+    Returns ``None`` when the layout cannot be read; the caller then treats freshness as unknown
+    rather than guessing.
     """
-    import os
-    import tempfile
+    import importlib
 
-    handle, staged = tempfile.mkstemp(prefix=".minos-clock.")
     try:
-        os.close(handle)
-        return int(Path(staged).stat().st_mtime_ns)
-    finally:
-        Path(staged).unlink(missing_ok=True)
+        miner_module = importlib.import_module(OFFICIAL_MINER_MODULE)
+        path_utils = importlib.import_module("utils.path_utils")
+        base_dir = miner_module.BASE_DIR
+        safe_name = path_utils.safe_round_dir_name
+    except Exception:
+        return None
+    try:
+        return Path(base_dir) / "output" / str(safe_name(round_id)) / "input.bam"
+    except Exception:
+        return None
+
+
+class _FileState:
+    """Enough of a file's inode state to tell "rewritten" from "left alone"."""
+
+    __slots__ = ("ctime_ns", "device", "inode", "mtime_ns", "size")
+
+    inode: int
+    device: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+
+    def __init__(self, stat: Any) -> None:
+        self.inode = int(stat.st_ino)
+        self.device = int(stat.st_dev)
+        self.size = int(stat.st_size)
+        self.mtime_ns = int(stat.st_mtime_ns)
+        self.ctime_ns = int(stat.st_ctime_ns)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, _FileState):
+            return NotImplemented
+        return (
+            self.inode == other.inode
+            and self.device == other.device
+            and self.size == other.size
+            and self.mtime_ns == other.mtime_ns
+            and self.ctime_ns == other.ctime_ns
+        )
+
+    def __hash__(self) -> int:  # pragma: no cover - equality is the point
+        return hash((self.inode, self.device, self.size, self.mtime_ns, self.ctime_ns))
+
+
+def _observe(path: Path | None) -> _FileState | None:
+    if path is None:
+        return None
+    try:
+        return _FileState(path.stat())
+    except OSError:
+        return None
 
 
 def download_production_round_inputs(*, receipt: Any, miner: Any) -> ProductionRoundDownloads:
@@ -915,11 +970,26 @@ def download_production_round_inputs(*, receipt: Any, miner: Any) -> ProductionR
     * otherwise the bytes on disk cannot be shown to have come from this response, and the handoff
       **fails closed** with an actionable message rather than guessing.
 
-    Freshness is decided by comparing the BAM's mtime against a **marker file written just before
-    the call**, not against ``time.time_ns()``: file timestamps come from the kernel's coarse
-    clock, which lags the system clock by up to a tick, so a wall-clock comparison marks every
-    freshly written file as cached. Both mtimes come from the same coarse clock, so the comparison
-    needs no tolerance -- and a tolerance would be a window, not a fix.
+    **Freshness is decided by pre/post inode state, not by a clock.** An earlier version compared
+    the BAM's mtime against a marker written just before the call and treated ``mtime >= marker``
+    as proof of a write. Equality is ambiguous -- a coarse filesystem clock can stamp a file
+    written moments earlier with exactly the marker's value -- so a cache hit could be declared
+    fresh and skip sidecar validation. That is a fail-open boundary, and no tolerance window fixes
+    it, because a window only makes ambiguity larger.
+
+    So the file is *observed* instead. Its path is derived from the official miner's own
+    ``BASE_DIR`` and ``safe_round_dir_name`` -- nothing about downloading, fallback or indexing is
+    reimplemented -- and its inode state (device, inode, size, mtime, ctime) is snapshotted before
+    the call and compared after:
+
+    * absent before, present after      -> this call created it: fresh;
+    * present and state CHANGED         -> this call rewrote it: fresh;
+    * present and state UNCHANGED       -> the downloader cached: NOT fresh;
+    * path underivable or unexpected    -> unknown, therefore NOT fresh.
+
+    Timestamps never decide anything on their own, so an equal mtime and a future mtime both land
+    in "unchanged", which is the safe answer. A false negative costs a refusal and a retry; there
+    is no false positive to trade it against.
     """
     _require(
         is_verified_production_receipt(receipt),
@@ -938,7 +1008,8 @@ def download_production_round_inputs(*, receipt: Any, miner: Any) -> ProductionR
 
     round_data = receipt._operational_round_data()  # noqa: SLF001 - the receipt owns this
     source_digest = _operational_source_digest(receipt)
-    started_ns = _coarse_clock_now_ns()
+    expected_path = _official_output_bam_path(receipt.round_id)
+    before = _observe(expected_path)
     try:
         returned = verified.miner._download_bam(round_data, receipt.round_id)  # noqa: SLF001
     except Exception as error:
@@ -968,7 +1039,9 @@ def download_production_round_inputs(*, receipt: Any, miner: Any) -> ProductionR
             "the downloaded BAM does not hash to the SHA-256 the platform published for this round",
         )
 
-    freshly_written = bam_path.stat().st_mtime_ns >= started_ns
+    freshly_written = _written_during_this_call(
+        bam_path, expected_path=expected_path, before=before
+    )
     if not (freshly_written or expected_bam is not None):
         _require_cached_bytes_belong_to_this_round(
             bam_path, source_digest=source_digest, bam_sha256=bam_sha
@@ -993,6 +1066,30 @@ def download_production_round_inputs(*, receipt: Any, miner: Any) -> ProductionR
         bai_source_slot=OFFICIAL_MINER_DOWNLOAD,
         byte_counts={"bam": bam_size, "bai": bai_size},
     )
+
+
+def _written_during_this_call(
+    returned: Path, *, expected_path: Path | None, before: _FileState | None
+) -> bool:
+    """Did THIS call write the file? Answered from inode state, never from a clock.
+
+    Unknowable cases -- the official layout could not be read, or the miner returned a path other
+    than the one that layout predicts -- answer ``False``. A file this call did not demonstrably
+    write must then prove itself through a provenance record or a published digest.
+    """
+    if expected_path is None:
+        return False
+    try:
+        if returned.resolve() != expected_path.resolve():
+            return False
+    except OSError:  # pragma: no cover - resolve on a live file
+        return False
+    after = _observe(returned)
+    if after is None:  # pragma: no cover - the caller already required a file
+        return False
+    if before is None:
+        return True  # it did not exist before this call, and does now
+    return after != before
 
 
 def _require_cached_bytes_belong_to_this_round(
