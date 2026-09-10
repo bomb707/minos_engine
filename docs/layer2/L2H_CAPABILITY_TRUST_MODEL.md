@@ -81,15 +81,79 @@ The wrapper is frozen; the wrapped object is not, and cannot be. The engine's ho
 
 * the **wrapper** is sealed and immutable, so the binding between "this was verified" and "this
   object" cannot be re-pointed;
-* the security-relevant **configuration** that verification actually checked — the client's base
-  URL and its HTTPS/non-demo status — is *snapshotted at verification time* into the frozen
-  wrapper, so a later mutation of the live client cannot retroactively change what was attested;
+* the security-relevant **configuration** that verification actually checked is *snapshotted at
+  verification time* into the frozen wrapper — base URL, hotkey SS58, round-status path, and the
+  demo flag — as engine-owned `str`/`bool` primitives, never as references to the external
+  object's own values;
+* that snapshot is **re-checked against the live object immediately before and immediately after
+  every production request** (§4a);
 * the live object is still used for its behaviour (`get_round_status`, `_download_bam`), and its
   behaviour is not frozen. What that behaviour *produced* is then verified on its own merits —
   the response is parsed and bound, the downloaded bytes are hashed, the provenance sidecar is
   checked — so nothing downstream trusts the external object's word about anything.
 
+### 4a. Snapshotting alone was not enough: the check must happen at use
+
+Recording what was true at verification time closes nothing on its own, because the official
+client reads its own mutable state **at request time**:
+
+| upstream field | read when | decides |
+|---|---|---|
+| `self.demo` | each call, via the `_round_status_path` property | `/v2/round-status` vs `/v2/demo/round-status` |
+| `self.config.base_url` | each call, in `_get_client()` | which host the request goes to |
+| `self.keypair.ss58_address` | **each retry attempt**, in `_auth_body` | which hotkey signs the request |
+
+`PlatformConfig` is a plain mutable dataclass, and upstream enforces HTTPS only in
+`PlatformClient.__init__` — so a later write to `config.base_url` is not re-checked by anyone.
+
+So a client verified as live and HTTPS could afterwards be flipped to demo and still mint a
+**sealed `ProductionRoundStatusReceipt`**, with the engine's `endpoint_path()` continuing to
+report `/v2/round-status`. That is a time-of-check/time-of-use defect, and a snapshot that is
+never compared is just a comment.
+
+`VerifiedProductionPlatformClient.require_binding_unchanged()` re-resolves the official type,
+re-reads the live configuration, requires it to be independently valid for a live round, and
+requires it to equal the snapshot field for field. `ProductionRoundStatusTransport.fetch_round_status`
+calls it **twice**: before the request, so there is no network authority under changed
+configuration; and after it, because the object stays mutable while the request is in flight and
+upstream re-reads the hotkey on every retry — if anything moved, the payload is discarded rather
+than returned.
+
+Both conditions are required, and the second matters on its own: swapping one accepted HTTPS
+platform for another is still not the client that was verified.
+
+The engine's own `endpoint_path()` constant stays as defense in depth. It is what MINOS_ENGINE
+*expects*, and by itself it proves nothing about where the external client actually sent the
+request — the client's own `_round_status_path` is what establishes that.
+
+As everywhere else here: this closes ordinary persistent and concurrent mutation. It does not
+claim to detect a concurrent mutation that is reverted before the next read, which is outside the
+model described in §1.
+
 That is the boundary. It is documented rather than papered over.
+
+## 4b. Accepted authorities that live in source
+
+`ACCEPTED_REFERENCE_IDENTITIES` decides which genome this engine accepts as GRCh38 chr18–chr22,
+and the chosen `reference_sha256`/`fai_sha256` enter the live intake's scientific identity. It was
+an ordinary `dict` of writable objects, so ordinary code could rewrite the accepted reference
+authority without touching source:
+
+```python
+ACCEPTED_REFERENCE_IDENTITIES["chr20"].reference_sha256 = ...  # accepted
+ACCEPTED_REFERENCE_IDENTITIES["chr20"] = another_reference  # accepted
+del ACCEPTED_REFERENCE_IDENTITIES["chr22"]  # accepted
+ACCEPTED_REFERENCE_IDENTITIES["chr23"] = ...  # accepted
+```
+
+`typing.Final` is a type-checker annotation and enforces nothing at runtime. `ReferenceIdentity`
+is now a frozen slotted dataclass and the table is a read-only mapping, so the accepted set can be
+changed only by changing this source. `accepted_reference_set_identity()` gives the set a
+deterministic name for audit and regression — deliberately **not** a field of `LIVE_INTAKE_SCHEMA`,
+since the intake already records the per-round reference it was actually profiled against.
+
+The test seam substitutes the module attribute with a *different read-only table*; it does not
+edit the accepted one. That distinction is the point.
 
 ## 5. White-box test seams
 

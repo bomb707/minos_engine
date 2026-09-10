@@ -130,9 +130,17 @@ def build_live_dataset(tmp: Path, *, contig: str = LIVE_CONTIG) -> dict[str, Any
 
 
 def accept_synthetic_reference(monkeypatch: Any, dataset: dict[str, Any]) -> ReferenceIdentity:
-    """Point the accepted reference table at the synthetic genome, for this contig only."""
+    """Point the accepted reference table at the synthetic genome, for this contig only.
+
+    The table is a read-only mapping, so this REPLACES the module attribute with a different
+    read-only table rather than editing the accepted one. That distinction is the point: a test
+    may substitute what the module looks at, and no code -- test or otherwise -- may edit the
+    accepted reference authority in place.
+    """
+    from minos_engine.common.frozen_state import frozen_map
     from minos_engine.common.hashing import sha256_hex
     from minos_engine.intake.attestation import compute_reference_contig_m5
+    from minos_engine.layer2 import live_round_intake as intake_module
 
     reference = ReferenceIdentity(
         contig=dataset["contig"],
@@ -140,7 +148,8 @@ def accept_synthetic_reference(monkeypatch: Any, dataset: dict[str, Any]) -> Ref
         fai_sha256=sha256_hex(Path(dataset["fai"]).read_bytes()),
         reference_m5=compute_reference_contig_m5(Path(dataset["reference"]), dataset["contig"])[0],
     )
-    monkeypatch.setitem(ACCEPTED_REFERENCE_IDENTITIES, dataset["contig"], reference)
+    substituted = frozen_map({**ACCEPTED_REFERENCE_IDENTITIES, dataset["contig"]: reference})
+    monkeypatch.setattr(intake_module, "ACCEPTED_REFERENCE_IDENTITIES", substituted)
     return reference
 
 

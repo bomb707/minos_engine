@@ -42,6 +42,8 @@ moved even though the inputs had not.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Final
 
 from minos_engine.common.canonical_json import canonical_json_bytes
@@ -51,6 +53,10 @@ from minos_engine.common.hashing import canonical_hash, sha256_hex
 
 __all__ = [
     "ACCEPTED_REFERENCE_IDENTITIES",
+    "ACCEPTED_REFERENCE_SET_DOMAIN",
+    "ACCEPTED_REFERENCE_SET_SCHEMA",
+    "accepted_reference_set_content",
+    "accepted_reference_set_identity",
     "FixtureLiveRoundIntake",
     "VerifiedProductionLiveRoundIntake",
     "is_fixture_intake",
@@ -106,18 +112,31 @@ def _require(condition: bool, message: str) -> None:
         raise LiveRoundIntakeError(message)
 
 
+@dataclass(frozen=True, slots=True)
 class ReferenceIdentity:
-    """The reference FASTA and index this engine profiles a given contig against."""
+    """The reference FASTA and index this engine profiles a given contig against.
 
-    __slots__ = ("contig", "fai_sha256", "reference_m5", "reference_sha256")
+    **Immutable.** This is an accepted authority, not a configuration record: a live round's
+    reference identity decides which genome the round is profiled against, and it enters the
+    scientific identity. It used to be writable field by field, so ordinary code could do
+    ``ACCEPTED_REFERENCE_IDENTITIES["chr20"].reference_sha256 = ...`` and change what this engine
+    accepts as GRCh38 chr20 without touching source. ``typing.Final`` is a type-checker
+    annotation and enforces nothing at runtime.
+    """
 
-    def __init__(
-        self, *, contig: str, reference_sha256: str, fai_sha256: str, reference_m5: str
-    ) -> None:
-        self.contig = contig
-        self.reference_sha256 = reference_sha256
-        self.fai_sha256 = fai_sha256
-        self.reference_m5 = reference_m5
+    contig: str
+    reference_sha256: str
+    fai_sha256: str
+    reference_m5: str
+
+    def content(self) -> dict[str, str]:
+        """Canonical, field-ordered. The audit representation; no runtime state in it."""
+        return {
+            "contig": self.contig,
+            "fai_sha256": self.fai_sha256,
+            "reference_m5": self.reference_m5,
+            "reference_sha256": self.reference_sha256,
+        }
 
 
 #: Accepted per-contig reference identities. These are not caller input: a live round's reference
@@ -125,7 +144,7 @@ class ReferenceIdentity:
 #: reference is a different build the round is refused rather than profiled against the wrong
 #: genome. A unit test cross-checks every entry against the frozen L2-D corpus attestations, which
 #: is where they come from -- all fifty members agree, one reference per chromosome.
-ACCEPTED_REFERENCE_IDENTITIES: Final[dict[str, ReferenceIdentity]] = {
+_ACCEPTED_REFERENCE_IDENTITIES: Final[dict[str, ReferenceIdentity]] = {
     "chr18": ReferenceIdentity(
         contig="chr18",
         reference_sha256="4c37db9609b3e865e35128fb065f61eea1c83c815386c4631b03820f9b8265d2",
@@ -158,8 +177,45 @@ ACCEPTED_REFERENCE_IDENTITIES: Final[dict[str, ReferenceIdentity]] = {
     ),
 }
 
+#: Read-only. Insertion, deletion and replacement all raise, so the set of contigs this engine
+#: accepts -- and which reference each one means -- can be changed only by changing this source.
+ACCEPTED_REFERENCE_IDENTITIES: Final[Mapping[str, ReferenceIdentity]] = frozen_map(
+    _ACCEPTED_REFERENCE_IDENTITIES
+)
+
 #: The chromosomes this engine profiles. A live round outside them is refused, never guessed.
 SUPPORTED_CONTIGS: Final[tuple[str, ...]] = tuple(sorted(ACCEPTED_REFERENCE_IDENTITIES))
+
+#: Audit only. A deterministic name for "the reference set this engine accepts", so a change to
+#: it is visible in a test and in a review. Deliberately NOT a field of ``LIVE_INTAKE_SCHEMA``:
+#: the intake already carries the per-round ``reference_sha256`` and ``fai_sha256`` it was
+#: actually profiled against, and adding a set-wide identity to the schema would change what a
+#: live intake means for no scientific reason.
+ACCEPTED_REFERENCE_SET_SCHEMA: Final = "l2h-accepted-reference-set-v1"
+ACCEPTED_REFERENCE_SET_DOMAIN: Final = "minos:l2h-accepted-reference-set:v1\n"
+
+
+def accepted_reference_set_content(
+    table: Mapping[str, ReferenceIdentity] | None = None,
+) -> dict[str, Any]:
+    """The accepted reference set as canonical data."""
+    entries = ACCEPTED_REFERENCE_IDENTITIES if table is None else table
+    return {
+        "schema_version": ACCEPTED_REFERENCE_SET_SCHEMA,
+        "contig_count": len(entries),
+        "contigs": [entries[contig].content() for contig in sorted(entries)],
+    }
+
+
+def accepted_reference_set_identity(
+    table: Mapping[str, ReferenceIdentity] | None = None,
+) -> str:
+    """Domain-separated identity of the accepted reference set. For audit and regression only."""
+    return sha256_hex(
+        ACCEPTED_REFERENCE_SET_DOMAIN.encode("utf-8")
+        + canonical_json_bytes(accepted_reference_set_content(table))
+    )
+
 
 #: One token per authority domain. Production and fixture are different capabilities, not one
 #: capability wearing a label -- a label is a string, and a string can be assigned.

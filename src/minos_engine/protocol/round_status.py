@@ -368,9 +368,9 @@ class VerifiedProductionPlatformClient(FrozenAfterMint):
     _frozen_error = PlatformRoundStatusError
     _frozen_noun = "production platform client"
 
-    __slots__ = ("_client", "_frozen", "_seal", "verified_base_url")
+    __slots__ = ("_binding", "_client", "_frozen", "_seal")
 
-    def __init__(self, token: object, *, client: Any, base_url: str) -> None:
+    def __init__(self, token: object, *, client: Any, binding: Mapping[str, Any]) -> None:
         if token is not _CLIENT_TOKEN:
             raise PlatformRoundStatusError(
                 "a production platform client may only be minted by verifying a real one"
@@ -378,10 +378,10 @@ class VerifiedProductionPlatformClient(FrozenAfterMint):
         self._client = client
         #: SNAPSHOT of the security-relevant configuration verification actually checked. The
         #: client is an externally-owned, mutable ``minos_subnet`` object and the engine cannot
-        #: freeze it; what it can do is record what was true at verification time, so a later
-        #: mutation of the live client cannot retroactively change what this capability attests.
+        #: freeze it; what it can do is record what was true at verification time and require the
+        #: live object to still agree at the moment of use.
         #: See ``docs/layer2/L2H_CAPABILITY_TRUST_MODEL.md`` section 4.
-        self.verified_base_url = base_url
+        self._binding = frozen_map(dict(binding))
         self._seal = _CLIENT_TOKEN
         self._freeze()
 
@@ -389,11 +389,130 @@ class VerifiedProductionPlatformClient(FrozenAfterMint):
     def client(self) -> Any:
         """The live external object, used for its BEHAVIOUR only.
 
-        Everything it produces is verified on its own merits downstream -- the response is parsed
-        and bound, the bytes are hashed, the provenance sidecar is checked -- so nothing trusts
-        this object's word about anything.
+        Reaching for it does NOT authorise a request: :meth:`require_binding_unchanged` is what
+        the transport must call, before and after. Everything this object produces is verified on
+        its own merits downstream -- the response is parsed and bound, the bytes are hashed, the
+        provenance sidecar is checked -- so nothing trusts its word about anything.
         """
         return self._client
+
+    @property
+    def verified_base_url(self) -> str:
+        return str(self._binding["base_url"])
+
+    @property
+    def verified_hotkey_ss58(self) -> str:
+        return str(self._binding["hotkey_ss58"])
+
+    @property
+    def verified_round_status_path(self) -> str:
+        return str(self._binding["round_status_path"])
+
+    @property
+    def verified_demo(self) -> bool:
+        return bool(self._binding["demo"])
+
+    def verified_binding(self) -> dict[str, Any]:
+        """The snapshot, as a detached plain dict. OPERATIONAL ONLY.
+
+        Never enters a scientific identity: a base URL and a hotkey describe how this engine
+        reached the platform, not what the round scientifically is.
+        """
+        return dict(self._binding)
+
+    def require_binding_unchanged(self) -> None:
+        """Re-read the live client and require it to still be exactly what was verified.
+
+        The external object stays mutable after verification, and the official client reads
+        ``self.demo``, ``self.config.base_url`` and ``self.keypair`` **at request time** -- so a
+        capability minted against an HTTPS live client could be used to fetch from the demo
+        namespace, or over cleartext, or signed by a different hotkey. Verifying once and trusting
+        the wrapper thereafter is a time-of-check/time-of-use gap, and this closes it.
+
+        Two conditions, both required: the current configuration must be independently valid for
+        a live round, AND it must be identical to the snapshot. The second matters on its own --
+        a swap from one accepted HTTPS platform to another is still not the client that was
+        verified.
+
+        This does not claim to stop a concurrent mutation that is reverted before the next read;
+        that is outside the documented in-process threat model. It closes ordinary persistent and
+        concurrent mutation.
+        """
+        official = resolve_official_platform_client_type()
+        _require(
+            type(self._client) is official,
+            "the platform client is no longer the official subnet client it was verified as",
+        )
+        observed = _observe_client_binding(self._client)
+        _require_live_client_binding(observed)
+        for field in CLIENT_BINDING_FIELDS:
+            _require(
+                observed[field] == self._binding[field],
+                f"the platform client's {field} changed after it was verified "
+                f"({self._binding[field]!r} -> {observed[field]!r}); the verified snapshot is the "
+                "authority and this request is refused",
+            )
+
+
+#: The security-relevant configuration of the external client. Snapshotted at verification time
+#: and re-checked immediately before and immediately after every production request.
+CLIENT_BINDING_FIELDS: Final[tuple[str, ...]] = (
+    "base_url",
+    "demo",
+    "hotkey_ss58",
+    "round_status_path",
+)
+
+
+def _observe_client_binding(client: Any) -> dict[str, Any]:
+    """Read the live configuration into ENGINE-OWNED primitives. Observes; judges nothing.
+
+    Every value is coerced to a ``str`` or ``bool`` the engine constructed, so what gets
+    snapshotted and compared is never a reference to an object whose ``__eq__`` could lie about
+    having changed.
+
+    ``_round_status_path`` is private upstream, and reading it is the point: the official client
+    derives its own path from ``self.demo`` at request time, so this is the only way to learn
+    which endpoint it will actually use. A client that does not expose it is refused.
+    """
+    config = getattr(client, "config", None)
+    keypair = getattr(client, "keypair", None)
+    try:
+        raw_path: Any = client._round_status_path  # noqa: SLF001 - see docstring
+    except Exception:
+        raw_path = None
+    return {
+        "base_url": str(getattr(config, "base_url", "")),
+        # absent means "cannot prove it is not a demo client", which fails closed below
+        "demo": bool(getattr(client, "demo", True)),
+        "hotkey_ss58": str(getattr(keypair, "ss58_address", "")),
+        "round_status_path": None if raw_path is None else str(raw_path),
+    }
+
+
+def _require_live_client_binding(observed: Mapping[str, Any]) -> None:
+    """The conditions that make an external client usable for a LIVE round."""
+    _require(
+        observed["demo"] is False,
+        "this client is in demo mode, which routes to the sandboxed /v2/demo namespace; a live "
+        "decision may not be made from a demo round",
+    )
+    _require(
+        observed["round_status_path"] == PRODUCTION_ENDPOINT_PATH,
+        f"this client's round-status path is {observed['round_status_path']!r}, not "
+        f"{PRODUCTION_ENDPOINT_PATH!r}; the engine's own constant is what it expects, not proof "
+        "of where the client will actually send the request",
+    )
+    _require(
+        bool(observed["hotkey_ss58"]),
+        "the platform client has no hotkey to sign the request with",
+    )
+    _require(
+        observed["base_url"].startswith("https://"),
+        "the configured platform URL is not HTTPS; the subnet client enforces this at "
+        "construction only, and its config is a mutable dataclass, so this verification enforces "
+        "it again at the moment of use",
+    )
 
 
 def verify_subnet_platform_client(client: Any) -> VerifiedProductionPlatformClient:
@@ -413,24 +532,11 @@ def verify_subnet_platform_client(client: Any) -> VerifiedProductionPlatformClie
         f"{OFFICIAL_CLIENT_CLASS}; an object of type {type(client).__name__!r} is not one, "
         "whatever it is called or inherits from",
     )
-    _require(
-        not getattr(client, "demo", False),
-        "this client is in demo mode, which routes to the sandboxed /v2/demo namespace; a live "
-        "decision may not be made from a demo round",
-    )
-    keypair = getattr(client, "keypair", None)
-    _require(
-        bool(getattr(keypair, "ss58_address", "")),
-        "the platform client has no hotkey to sign the request with",
-    )
-    base_url = str(getattr(getattr(client, "config", None), "base_url", ""))
-    _require(
-        base_url.startswith("https://"),
-        "the configured platform URL is not HTTPS; the subnet client enforces this and so does "
-        "this verification",
-    )
-    # the verified base URL is snapshotted into the capability, not re-read later
-    return VerifiedProductionPlatformClient(_CLIENT_TOKEN, client=client, base_url=base_url)
+    observed = _observe_client_binding(client)
+    _require_live_client_binding(observed)
+    # the COMPLETE security-relevant binding is snapshotted into the capability, and re-checked
+    # against the live object before and after every request
+    return VerifiedProductionPlatformClient(_CLIENT_TOKEN, client=client, binding=observed)
 
 
 @final
@@ -529,6 +635,14 @@ class ProductionRoundStatusTransport(FrozenAfterMint, RoundStatusTransport):
         self._freeze()
 
     def endpoint_path(self) -> str:
+        """What the ENGINE requires. Defense in depth, and not by itself proof of anything.
+
+        The official client picks its own path from ``self.demo`` at request time, so a constant
+        returned here cannot establish where the request actually went. That is established by
+        :meth:`VerifiedProductionPlatformClient.require_binding_unchanged`, which reads the
+        client's own ``_round_status_path`` before and after the call. This constant stays as a
+        second, independent check of the same requirement.
+        """
         return PRODUCTION_ENDPOINT_PATH
 
     def fetch_round_status(self) -> Mapping[str, Any]:
@@ -542,14 +656,25 @@ class ProductionRoundStatusTransport(FrozenAfterMint, RoundStatusTransport):
             raise PlatformRoundStatusError(
                 "the platform round status cannot be fetched from inside a running event loop"
             )
+        verified = self._verified_client
+        # BEFORE: no network authority unless the live client still matches its verified snapshot
+        verified.require_binding_unchanged()
         try:
-            payload = asyncio.run(self._verified_client.client.get_round_status())
+            payload = asyncio.run(verified.client.get_round_status())
         except PlatformRoundStatusError:
             raise
         except Exception as error:
             raise PlatformRoundStatusError(
                 f"the platform round status could not be retrieved: {type(error).__name__}"
             ) from None
+        # AFTER: the object stayed mutable while the request was in flight, and the official
+        # client re-reads the hotkey on every retry attempt. If anything moved, the payload is
+        # discarded rather than returned -- it may have come from somewhere else entirely.
+        verified.require_binding_unchanged()
+        _require(
+            self.endpoint_path() == PRODUCTION_ENDPOINT_PATH,
+            "the production transport must speak to the production endpoint",
+        )
         _require(isinstance(payload, Mapping), "the platform returned a non-object round status")
         assert isinstance(payload, Mapping)
         return payload

@@ -270,7 +270,37 @@ own capability class and its own private token explicitly. Two consequences: the
 through which a fixture path could ask for a production token, and the `assert isinstance(result,
 ...)` narrowings that the generic return type required are gone with it.
 
-### 4a-iv. Externally-owned objects
+### 4a-iv. The verified client snapshot is enforced at the moment of use
+
+Verification checked the exact official type, `demo`, the hotkey and an HTTPS base URL, then
+sealed a wrapper around the *live* object. The official client reads that state **at request
+time** — `self.demo` picks `/v2/round-status` or `/v2/demo/round-status`, `self.config.base_url`
+builds the httpx client, and `self.keypair` signs each retry attempt — and `PlatformConfig` is a
+mutable dataclass whose HTTPS check upstream runs only in `__init__`. So:
+
+```
+verify client as live + HTTPS  ->  flip client.demo = True  ->  fetch through the sealed wrapper
+   ->  a sealed ProductionRoundStatusReceipt, from the /v2/demo namespace
+```
+
+The wrapper now snapshots the complete security binding — base URL, hotkey SS58, round-status
+path, demo flag — as engine-owned primitives, and `require_binding_unchanged()` re-resolves the
+official type, re-reads the live configuration, requires it to be independently valid, and
+requires it to equal the snapshot field for field. `fetch_round_status` calls it **before** the
+request (no network authority under changed configuration) and **after** it (the object stays
+mutable in flight; if anything moved the payload is discarded, not returned). `endpoint_path()`
+stays as defense in depth — it is what the engine expects, never proof of where the client went.
+
+Details and the threat boundary: `docs/layer2/L2H_CAPABILITY_TRUST_MODEL.md` §4/§4a.
+
+### 4a-v. The accepted reference table is an authority, not configuration
+
+`ACCEPTED_REFERENCE_IDENTITIES` was a mutable dict of writable objects, so which genome this
+engine accepts as GRCh38 chr20 could be rewritten at runtime. `ReferenceIdentity` is now a frozen
+dataclass and the table a read-only mapping; `accepted_reference_set_identity()` names the set for
+audit without entering `LIVE_INTAKE_SCHEMA`. No accepted value changed.
+
+### 4a-vi. Externally-owned objects
 
 `MinerPlatformClient` and `Miner` belong to `minos_subnet`; the engine cannot freeze them and does
 not claim to. The **wrappers** are frozen, so the binding between "this was verified" and "this

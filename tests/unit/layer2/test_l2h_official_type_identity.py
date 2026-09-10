@@ -28,13 +28,21 @@ from minos_engine.protocol.round_status import (
 
 
 class OfficialClient:
-    """Stands in for the real ``utils.platform_client.MinerPlatformClient``."""
+    """Stands in for the real ``utils.platform_client.MinerPlatformClient``.
 
-    demo = False
+    ``_round_status_path`` mirrors upstream exactly: it is a **property** derived from the live
+    ``self.demo``, read at request time. A stub with a constant path would not exercise the
+    time-of-check/time-of-use gap this suite exists to close.
+    """
 
     def __init__(self, *, base_url: str = "https://platform.example", hotkey: str = "5F") -> None:
         self.keypair = types.SimpleNamespace(ss58_address=hotkey)
         self.config = types.SimpleNamespace(base_url=base_url)
+        self.demo = False
+
+    @property
+    def _round_status_path(self) -> str:
+        return "/v2/demo/round-status" if self.demo else "/v2/round-status"
 
     async def get_round_status(self) -> dict[str, Any]:
         return {}

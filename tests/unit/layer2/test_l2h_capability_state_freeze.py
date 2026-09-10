@@ -442,8 +442,17 @@ def test_downloads_cannot_be_edited_after_minting(replay) -> None:
 
 def test_the_external_client_wrapper_snapshots_what_was_verified() -> None:
     """§E: the engine cannot freeze a ``minos_subnet`` object, so it records what it checked."""
-    assert "verified_base_url" in VerifiedProductionPlatformClient.__slots__
+    assert "_binding" in VerifiedProductionPlatformClient.__slots__
     assert "_frozen" in VerifiedProductionPlatformClient.__slots__
+    # the snapshot is exposed read-only, never as a writable attribute
+    for name in (
+        "verified_base_url",
+        "verified_hotkey_ss58",
+        "verified_round_status_path",
+        "verified_demo",
+    ):
+        accessor = getattr(VerifiedProductionPlatformClient, name)
+        assert isinstance(accessor, property) and accessor.fset is None
     assert "_frozen" in VerifiedOfficialMiner.__slots__
     # the live object is still reachable for its behaviour, and only through a read accessor
     assert isinstance(VerifiedProductionPlatformClient.client, property)

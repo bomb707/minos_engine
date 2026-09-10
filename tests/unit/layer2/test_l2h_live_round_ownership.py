@@ -171,12 +171,28 @@ def test_a_duck_typed_transport_is_refused(dataset):
 
 def test_the_production_transport_hard_codes_the_production_endpoint():
     """It is not a parameter, so no caller can point production at another route."""
+    import ast
     import inspect
+    import textwrap
 
     source = inspect.getsource(ProductionRoundStatusTransport)
-    assert "def endpoint_path(self) -> str:\n        return PRODUCTION_ENDPOINT_PATH" in source
-    assert "demo" not in source, "the sealed transport has no demo route at all"
     assert PRODUCTION_ENDPOINT_PATH == "/v2/round-status"
+
+    # Compare EXECUTABLE code, with every docstring removed. The transport's prose now discusses
+    # `demo` -- it explains that the engine's own constant cannot prove where the external client
+    # sent the request -- but no branch of its code may route anywhere but the production path.
+    tree = ast.parse(textwrap.dedent(source))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef) and (
+            node.body
+            and isinstance(node.body[0], ast.Expr)
+            and isinstance(node.body[0].value, ast.Constant)
+            and isinstance(node.body[0].value.value, str)
+        ):
+            node.body.pop(0)
+    code = ast.unparse(tree)
+    assert "demo" not in code, "the sealed transport has no demo route at all"
+    assert "return PRODUCTION_ENDPOINT_PATH" in code
 
 
 @pytest.mark.parametrize(
