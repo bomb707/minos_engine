@@ -317,6 +317,57 @@ def _fallback_reason(requested: ControlMode) -> FallbackReason:
     return FallbackReason.SAFE_BASELINE_FORCED
 
 
+def _require_manifest_authorities(authority: Any, ownership: Any) -> None:
+    """BOTH sealed capabilities, before either one is read.
+
+    The manifest builders are exported and may be called directly -- by the persistence writer,
+    by the qualification harness, by a future service. Relying on ``select_safe_baseline`` having
+    checked first is relying on a caller, and every one of these functions then reads
+    ``authority.policy``, ``authority.baseline_config_hash``, ``authority.source_commit`` and the
+    rest straight into a scientific document. An object that merely carries those attribute names
+    would have had its values published as though an accepted authority had produced them.
+    """
+    _require(
+        is_verified_safe_baseline_authority(authority),
+        "a decision manifest may only be built from a SEALED verified safe-baseline authority; a "
+        "dictionary, a lookalike carrying the same field names, or a subclass that copies them is "
+        "not one",
+    )
+    _require(
+        is_verified_round_profile_authority(ownership),
+        "a decision manifest may only be built against a SEALED verified round/profile corpus; a "
+        "fixture authority, a subclass, or an object that merely answers the same questions is "
+        "not one",
+    )
+
+
+def _proven_member(*, request: DecisionRequest, ownership: Any, owned: Any) -> Any:
+    """THE owned member, always proved against the request. ``owned`` is never an authority.
+
+    ``OwnedRoundProfile`` is deliberately a public, constructible value object -- immutable once
+    built, but immutability is not provenance. The previous form,
+    ``owned if owned is not None else ownership.require_owned_request(request)``, therefore let a
+    caller skip the proof entirely: a fabricated member could be handed in beside a *genuine*
+    sealed live authority, and the manifest would combine real ownership anchors and a real intake
+    identity with attacker-chosen ``profile_id``, ``profile_sha256`` and ``round_id``.
+
+    So the request is proved unconditionally, and a supplied ``owned`` is accepted only when it
+    **is** the object the sealed authority holds. Object identity rather than field equality:
+    ``ownership.owned(...)`` returns the frozen member itself, so identity is available and is the
+    strongest available statement of provenance -- an equal-looking copy is not the corpus member.
+
+    The parameter is kept rather than removed because ``storage/decision_persistence.py`` passes
+    it and that module is byte-locked; it is now a redundancy check rather than a shortcut.
+    """
+    proven = ownership.require_owned_request(request)
+    if owned is not None and owned is not proven:
+        raise SafeControllerAuthorityError(
+            "the supplied owned profile is not the member this authority owns for this request; a "
+            "profile that merely looks like the owned one has been proved against nothing"
+        )
+    return proven
+
+
 def safe_decision_manifest_content(
     *,
     request: DecisionRequest,
@@ -344,14 +395,15 @@ def safe_decision_manifest_content(
     # have. Emitting a v1 manifest with live values in those fields would be exactly the quiet
     # reinterpretation this engine refuses elsewhere, so a decision-manifest v2 is required and is
     # deliberately not defined here.
+    _require_manifest_authorities(authority, ownership)
     _require(
-        getattr(ownership, "scope", "train") == "train",
+        ownership.scope == TRAIN_OWNERSHIP_SCOPE,
         f"{SAFE_DECISION_MANIFEST_SCHEMA} describes a decision admitted against the frozen TRAIN "
         "corpus; a live-scoped ownership authority needs a decision-manifest v2 because "
         "profile_corpus_identity, profile_ownership_anchors and dataset_id would otherwise change "
         "meaning without changing name",
     )
-    proven = owned if owned is not None else ownership.require_owned_request(request)
+    proven = _proven_member(request=request, ownership=ownership, owned=owned)
     return {
         "schema_version": SAFE_DECISION_MANIFEST_SCHEMA,
         # the TRAIN authority block. These four names mean *frozen research campaign* things and
@@ -469,12 +521,7 @@ def live_safe_decision_manifest_content(
     how this engine reached the platform, not scientific facts about what the round is, and two
     identical rounds must produce one identity or the identity means nothing.
     """
-    _require(
-        is_verified_round_profile_authority(ownership),
-        f"{SAFE_DECISION_MANIFEST_V2_SCHEMA} may only be built from a SEALED verified "
-        "round/profile authority; a fixture authority, a subclass, or an object that merely "
-        "answers the same questions is not one",
-    )
+    _require_manifest_authorities(authority, ownership)
     # v2 is LIVE-only, exactly as v1 is TRAIN-only. Neither is a generic schema.
     _require(
         ownership.scope == LIVE_OWNERSHIP_SCOPE,
@@ -503,7 +550,7 @@ def live_safe_decision_manifest_content(
             f"{SAFE_DECISION_MANIFEST_V2_SCHEMA}",
         )
 
-    proven = owned if owned is not None else ownership.require_owned_request(request)
+    proven = _proven_member(request=request, ownership=ownership, owned=owned)
     _require(
         proven.partition == LIVE_PARTITION,
         f"the owned profile is partitioned {proven.partition!r}, not {LIVE_PARTITION!r}",
@@ -562,12 +609,7 @@ def safe_decision_manifest_for(
     not a partition, not a mode, not any metadata -- selects the contract a decision is recorded
     under; a caller that could pick the schema could pick which meanings its values are read with.
     """
-    _require(
-        is_verified_round_profile_authority(ownership),
-        "a decision manifest may only be built against a SEALED verified round/profile corpus; a "
-        "fixture authority, a subclass, or an object that merely answers the same questions is "
-        "not one",
-    )
+    _require_manifest_authorities(authority, ownership)
     scope = ownership.scope
     if scope == TRAIN_OWNERSHIP_SCOPE:
         return safe_decision_manifest_content(

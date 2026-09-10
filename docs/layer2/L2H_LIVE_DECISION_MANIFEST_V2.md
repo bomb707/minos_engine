@@ -106,6 +106,59 @@ Separation is strict in both directions:
 | `safe_decision_manifest_content` (v1) | PASS | REFUSE |
 | `live_safe_decision_manifest_content` (v2) | REFUSE | PASS |
 
+## 5a. Two preconditions every public builder enforces
+
+The manifest builders are exported and may be called directly -- by the persistence writer, by
+the qualification harness, by a future service. Relying on `select_safe_baseline` having checked
+first is relying on a caller, so both preconditions live in the builders themselves.
+
+### Both sealed authorities, before either is read
+
+`_require_manifest_authorities` demands `is_verified_safe_baseline_authority(authority)` **and**
+`is_verified_round_profile_authority(ownership)` at every public entry -- v1, v2 and the
+dispatcher. Without it, the manifest API read `authority.policy`,
+`authority.baseline_config_hash`, `authority.parameter_space_hash`, `authority.source_commit` and
+the rest straight into a scientific document, so an object that merely carried those attribute
+names had its values published as though an accepted authority had produced them -- including
+`selected_config_hash`. A test drives a lookalike whose every attribute access is recorded and
+asserts that **nothing** was read before the refusal.
+
+### The owned member is always proved
+
+`OwnedRoundProfile` is deliberately a public, constructible value object. It is immutable once
+built, and immutability is not provenance. The builders used to read:
+
+```python
+proven = owned if owned is not None else ownership.require_owned_request(request)
+```
+
+so supplying `owned` skipped `require_owned_request` outright. A fabricated member could then be
+handed in beside a **genuine sealed live authority**, and the manifest combined real ownership
+anchors and a real intake identity with attacker-chosen `profile_id`, `profile_sha256` and
+`round_id`.
+
+`_proven_member` now proves the request unconditionally and accepts a supplied `owned` only when
+it **is** the object the sealed authority holds:
+
+```python
+proven = ownership.require_owned_request(request)
+if owned is not None and owned is not proven:
+    raise ...
+return proven
+```
+
+Object identity rather than field equality: `ownership.owned(...)` returns the frozen member
+itself, so identity is available and is the strongest available statement of provenance -- an
+equal-looking copy is not the corpus member, and a test proves that a byte-identical twin is
+refused. The parameter is kept rather than removed because `storage/decision_persistence.py`
+passes it and that module is byte-locked; it is now a redundancy check rather than a shortcut,
+and valid calls produce identical bytes with or without it.
+
+The identity hashers stay pure. `safe_decision_manifest_identity`,
+`live_safe_decision_manifest_identity` and `safe_decision_identity_for` hash an already-built
+canonical document and perform no authority or repository lookup; the obligation belongs at
+document construction. A test asserts their bodies contain no loader.
+
 ## 6. What v2 does **not** change
 
 The decision is identical. Every valid live request selects exactly
