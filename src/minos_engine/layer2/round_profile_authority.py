@@ -48,6 +48,7 @@ from typing import Any, Final
 
 from minos_engine.common.canonical_json import canonical_json_bytes
 from minos_engine.common.errors import MinosEngineError
+from minos_engine.common.frozen_state import FrozenAfterMint, frozen_map
 from minos_engine.common.hashing import sha256_hex
 from minos_engine.layer2.prerequisites import (
     PROFILE_SNAPSHOT_1_REGISTRY_SNAPSHOT_HASH as ACCEPTED_REGISTRY_SNAPSHOT_HASH,
@@ -132,10 +133,43 @@ def _require(condition: bool, message: str) -> None:
         raise RoundProfileAuthorityError(message)
 
 
-class OwnedRoundProfile:
-    """One member's identity, as its owning documents actually record it."""
+#: The identity fields, in the order ``content()`` has always emitted them. Held explicitly
+#: rather than read off ``__slots__``, because ``__slots__`` now also carries the runtime
+#: ``_frozen`` marker -- and a runtime marker must never reach a scientific identity.
+OWNED_PROFILE_FIELDS: Final[tuple[str, ...]] = (
+    "attestation_hash",
+    "bai_sha256",
+    "bam_sha256",
+    "chromosome",
+    "dataset_id",
+    "fai_sha256",
+    "fingerprint_hash",
+    "identity_tuple_hash",
+    "integrity_degraded",
+    "partition",
+    "profile_id",
+    "profile_manifest_sha256",
+    "profile_sha256",
+    "reference_sha256",
+    "region_hash",
+    "registry_snapshot_hash",
+    "round_id",
+)
+
+
+class OwnedRoundProfile(FrozenAfterMint):
+    """One member's identity, as its owning documents actually record it.
+
+    **Immutable after construction.** An authority hands these out by reference, so a writable
+    field here was a writable field on the authority: ``authority.owned(r).bam_sha256 = "0" * 64``
+    edited the verified corpus in place while every seal check still passed.
+    """
+
+    _frozen_error = RoundProfileAuthorityError
+    _frozen_noun = "owned round profile"
 
     __slots__ = (
+        "_frozen",
         "attestation_hash",
         "bai_sha256",
         "bam_sha256",
@@ -174,25 +208,35 @@ class OwnedRoundProfile:
     round_id: str
 
     def __init__(self, **fields: Any) -> None:
-        for name in self.__slots__:
+        for name in OWNED_PROFILE_FIELDS:
             setattr(self, name, fields[name])
+        self._freeze()
 
     def content(self) -> dict[str, Any]:
-        return {name: getattr(self, name) for name in sorted(self.__slots__)}
+        """Unchanged: exactly the identity fields, sorted, and never the runtime marker."""
+        return {name: getattr(self, name) for name in sorted(OWNED_PROFILE_FIELDS)}
 
 
 _CORPUS_TOKEN: Final = object()
 
 
-class OwnedRoundCorpus:
+class OwnedRoundCorpus(FrozenAfterMint):
     """The shape of an owned corpus. **Carries no authority of its own.**
 
     Everything here is pure lookup and identity arithmetic, which the fixture replay needs just as
     much as production does. Authority lives in the sealed subclass below, so sharing this base
     shares behaviour without sharing a capability.
+
+    **Immutable after construction, containers included.** Refusing ``corpus.partition = "live"``
+    while a property handed out the live ``_by_round`` dict would have been a longer route to the
+    same edit, so both internal mappings are read-only views over defensive copies and the members
+    they hold are frozen in their own right.
     """
 
-    __slots__ = ("_anchors", "_by_round", "corpus_identity", "partition")
+    _frozen_error = RoundProfileAuthorityError
+    _frozen_noun = "owned round corpus"
+
+    __slots__ = ("_anchors", "_by_round", "_frozen", "corpus_identity", "partition")
 
     def __init__(
         self,
@@ -202,10 +246,11 @@ class OwnedRoundCorpus:
         corpus_identity: str,
         partition: str = ADMITTED_PARTITION,
     ) -> None:
-        self._by_round = dict(by_round)
-        self._anchors = dict(anchors)
+        self._by_round = frozen_map(by_round)
+        self._anchors = frozen_map(anchors)
         self.corpus_identity = corpus_identity
         self.partition = partition
+        self._freeze()
 
     @property
     def scope(self) -> str:
@@ -218,7 +263,13 @@ class OwnedRoundCorpus:
 
     @property
     def anchors(self) -> dict[str, str]:
-        """The already-accepted authorities this corpus hangs from."""
+        """The already-accepted authorities this corpus hangs from.
+
+        A plain ``dict`` copy: callers may do what they like with it, and nothing they do reaches
+        the corpus. ``dict`` rather than the internal read-only view because the value is
+        canonicalized into scientific identities, where a ``MappingProxyType`` would not serialize
+        the same way.
+        """
         return dict(self._anchors)
 
     @property
@@ -309,13 +360,15 @@ class VerifiedRoundProfileAuthority(OwnedRoundCorpus):
                 "an owned-profile corpus may only be minted by the verifying loader; a "
                 "dictionary has not been verified against anything"
             )
+        # the seal is set BEFORE delegating, because the base assigns the corpus fields and then
+        # freezes the instance -- after that nothing can be written, the seal included.
+        self._seal = _CORPUS_TOKEN
         super().__init__(
             by_round=by_round,
             anchors=anchors,
             corpus_identity=corpus_identity,
             partition=partition,
         )
-        self._seal = _CORPUS_TOKEN
 
 
 def is_verified_round_profile_authority(candidate: Any) -> bool:

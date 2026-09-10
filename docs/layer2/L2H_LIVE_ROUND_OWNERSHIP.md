@@ -208,6 +208,77 @@ platform response to the controller boundary, with no stage left on `isinstance`
 `is_verified_production_live_binding`, `is_verified_round_profile_authority` and
 `is_verified_safe_baseline_authority`. The tokens are module-private and never exported.
 
+### 4a-i. A seal attests to STATE, so the state is frozen
+
+Exact type plus a seal proves an object *was minted by a verifier*. It does not, on its own, prove
+the object still holds what the verifier checked. Every capability above was writable after
+minting, so a legitimately loaded, correctly sealed authority accepted this:
+
+```python
+authority = load_verified_round_profile_corpus(root=REPO_ROOT)
+authority.partition = "live"  # accepted
+authority.corpus_identity = "forged..."  # accepted
+authority._by_round["fake"] = ...  # accepted
+authority.owned(round).bam_sha256 = "0" * 64  # accepted
+is_verified_round_profile_authority(authority)  # -> still True
+```
+
+The same held for the binding (`owned`, `identity`, `anchors[...]`) and for the safe-baseline
+authority (`baseline_config_hash`, `baseline_uri`, `parameter_space_hash`, `source_commit`,
+`_policy[...]`, `entry_gate_checks[...]`).
+
+Every capability in the chain is now frozen at the end of its own constructor, via
+`minos_engine.common.frozen_state.FrozenAfterMint`. Assignment and deletion raise the owning
+module's own error type. Freezing reaches nested state too — refusing `authority.anchors = {...}`
+while a property handed out the live internal dict would only have been a longer route to the same
+edit — so the internal mappings are read-only views over defensive copies, `OwnedRoundProfile` is
+frozen field by field, and the controller policy is deep-frozen. Public accessors return plain
+detached `dict`/`list` copies, because those values are canonicalized into scientific identities
+and a `MappingProxyType` or `tuple` would not serialize the way a `dict` or `list` does.
+
+The runtime markers `_seal` and `_frozen` are excluded from every canonical document, so nothing
+here moves an identity: the TRAIN corpus identity is unchanged and the v1 decision manifests are
+byte-identical.
+
+### 4a-ii. No exported class carries its mint token
+
+The capability-domain split held the expected token in a class attribute, `_expected_token`. That
+published it:
+
+```python
+token = VerifiedProductionLiveRoundIntake._expected_token  # the real production token
+forged = VerifiedProductionLiveRoundIntake(token, content=fixture.content(), identity=...)
+require_production_scope(forged)  # accepted
+```
+
+Reading two class attributes turned a fixture chain into a genuine
+`VerifiedRoundProfileAuthority(partition="live")` — the entire production/fixture separation was
+ornamental. Each mint token now lives in a module-private table keyed by **exact type**, so
+reading an exported class yields nothing and a subclass is absent rather than inheriting.
+
+`RoundDownloads` had a related defect: its constructor took `token` and `expected` from the *same*
+caller and compared them, so handing one object in twice satisfied the check. Only the downstream
+seal predicate caught the result. The expected token is now looked up by exact type and cannot be
+supplied.
+
+### 4a-iii. Shared validation no longer mints
+
+The generic `factory` / `factory._expected_token` dispatch is gone. Shared functions
+(`_validated_intake_content`, `_validated_live_profile_binding`, `_validated_download_binding`)
+return ordinary validated data and mint nothing; each scope-specific entry point then names its
+own capability class and its own private token explicitly. Two consequences: there is no argument
+through which a fixture path could ask for a production token, and the `assert isinstance(result,
+...)` narrowings that the generic return type required are gone with it.
+
+### 4a-iv. Externally-owned objects
+
+`MinerPlatformClient` and `Miner` belong to `minos_subnet`; the engine cannot freeze them and does
+not claim to. The **wrappers** are frozen, so the binding between "this was verified" and "this
+object" cannot be re-pointed, and the security-relevant configuration verification actually
+checked — the client's base URL — is snapshotted into the wrapper at verification time. The live
+objects are still used for their behaviour, and everything that behaviour produces is verified on
+its own merits afterwards. `docs/layer2/L2H_CAPABILITY_TRUST_MODEL.md` states the boundary.
+
 The last two matter most, because they are what the controller itself consumes.
 `select_safe_baseline` and `SafeBaselineController.__init__` previously took both capabilities on
 `isinstance`, so a subclass of either — skipping `__init__`, copying the fields from a real one —

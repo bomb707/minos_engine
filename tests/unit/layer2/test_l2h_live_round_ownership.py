@@ -371,7 +371,9 @@ def test_a_forged_production_downloads_subclass_is_refused(replay):
         bai_sha256="b" * 64,
         bam_source_slot="official-miner-download",
         bai_source_slot="official-miner-download",
-        byte_counts={"bam": 1, "bai": 1},
+        # the private name: `byte_counts` is a read-only view now, so even the forgery has to
+        # write past the accessor
+        _byte_counts={"bam": 1, "bai": 1},
     )
     assert isinstance(forged, ProductionRoundDownloads), "isinstance alone would pass"
     assert forged.receipt_identity == real_receipt.identity
@@ -616,20 +618,29 @@ def test_the_platform_published_bam_hash_is_enforced_when_present(dataset):
 
 
 def test_a_download_object_cannot_be_hand_built(replay):
+    """The constructor's token check used to be vacuous.
+
+    It took ``token`` and ``expected`` from the same caller and compared them, so passing one
+    object twice satisfied it; only the downstream seal predicate caught the result. The expected
+    token is now looked up by exact type and cannot be supplied.
+    """
+    fields: dict[str, Any] = {
+        "scope": PRODUCTION_SCOPE,
+        "receipt_identity": replay["receipt"].identity,
+        "operational_binding": object(),
+        "bam_sha256": "0" * 64,
+        "bai_sha256": "1" * 64,
+        "bam_source_slot": "bam_presigned_url",
+        "bai_source_slot": LOCALLY_INDEXED,
+        "byte_counts": {},
+    }
     for cls in (ProductionRoundDownloads, FixtureRoundDownloads):
         with pytest.raises(PlatformRoundStatusError, match="may only be minted"):
-            cls(
-                object(),
-                expected=object(),
-                scope=PRODUCTION_SCOPE,
-                receipt_identity=replay["receipt"].identity,
-                operational_binding=object(),
-                bam_sha256="0" * 64,
-                bai_sha256="1" * 64,
-                bam_source_slot="bam_presigned_url",
-                bai_source_slot=LOCALLY_INDEXED,
-                byte_counts={},
-            )
+            cls(object(), **fields)
+        # the old bypass: one object handed in as both the token and the expectation
+        one_object = object()
+        with pytest.raises(TypeError):
+            cls(one_object, expected=one_object, **fields)
 
 
 def test_the_fixture_download_route_refuses_anything_but_a_fixture_receipt(dataset):
@@ -1174,15 +1185,20 @@ def test_the_live_modules_never_name_a_research_authority():
 # --------------------------------------------------------------------------- #
 # H / M: manifest version, and the TRAIN authority
 # --------------------------------------------------------------------------- #
-def _production_live_authority(replay: dict[str, Any]) -> VerifiedRoundProfileAuthority:
-    """A GENUINE production live authority, minted past the gate on purpose.
+def _white_box_forged_live_authority(replay: dict[str, Any]) -> VerifiedRoundProfileAuthority:
+    """A **WHITE-BOX FORGED** live authority. NOT a qualified production authority.
 
-    The v1-manifest refusal is a property of a real production ``VerifiedRoundProfileAuthority``
-    whose partition is live, and the fixture chain can no longer produce one -- that is the whole
-    point of the capability split. A production intake needs a sealed production receipt from the
-    official miner, which cannot be constructed offline, so this helper reaches the module-private
-    mint token directly. It is the only place in the suite that does, and it exists to test what
-    the controller does with live ownership, not to claim the fixture could obtain it.
+    This helper reaches past the mint gate: it imports the module-private ``_CORPUS_TOKEN`` and
+    constructs the capability directly. It is the only place in the suite that does so.
+
+    It exists for exactly one purpose -- proving that decision-manifest v1 refuses a live-scoped
+    ownership -- and it proves nothing whatsoever about the mint gate it stepped around. A
+    production intake needs a sealed production receipt fetched through the authenticated subnet
+    transport by the official miner, which cannot be constructed offline.
+
+    **It must never be cited as evidence that the production LIVE authority chain is qualified.**
+    A future LIVE qualification has to drive an approved production-equivalent authority seam end
+    to end. See ``docs/layer2/L2H_CAPABILITY_TRUST_MODEL.md`` section 5.
     """
     from minos_engine.layer2.round_profile_authority import _CORPUS_TOKEN
 
@@ -1213,8 +1229,9 @@ def test_a_live_authority_cannot_produce_a_v1_decision_manifest(replay):
     with pytest.raises(SafeControllerAuthorityError, match="fixture authority"):
         select_safe_baseline(request=request, authority=authority, ownership=replay["ownership"])
 
-    # a genuine live production authority gets past that and is refused for its SCOPE
-    live = _production_live_authority(replay)
+    # a WHITE-BOX FORGED live authority gets past that and is refused for its SCOPE. It is
+    # forged precisely because the fixture chain can no longer reach live authority at all.
+    live = _white_box_forged_live_authority(replay)
     assert is_verified_round_profile_authority(live)
     assert live.scope == "live"
     with pytest.raises(SafeControllerAuthorityError, match="decision-manifest v2"):
@@ -1420,8 +1437,9 @@ def test_a_subclass_of_the_production_binding_cannot_mint_live_ownership(replay)
         pass
 
     forged = object.__new__(ForgedBinding)
+    # the forgery now has to write the private names, because `anchors` is a read-only view
     forged.owned = fixture.owned
-    forged.anchors = dict(fixture.anchors)
+    forged._anchors = dict(fixture.anchors)
     forged.identity = fixture.identity
 
     assert isinstance(forged, VerifiedProductionLiveProfileBinding)  # the old bypass
@@ -1442,7 +1460,7 @@ def test_a_hand_built_production_binding_cannot_mint_live_ownership(replay):
     )
     hand_built = object.__new__(VerifiedProductionLiveProfileBinding)
     hand_built.owned = fixture.owned
-    hand_built.anchors = dict(fixture.anchors)
+    hand_built._anchors = dict(fixture.anchors)
     hand_built.identity = fixture.identity
 
     assert type(hand_built) is VerifiedProductionLiveProfileBinding  # exact type is not enough
@@ -1515,13 +1533,13 @@ def test_a_subclass_of_the_safe_baseline_authority_reaches_no_controller():
 
     forged = object.__new__(ForgedAuthority)
     forged._policy = real.policy
+    forged._entry_gate_checks = real.entry_gate_checks
     for field in (
         "policy_hash",
         "baseline_config_hash",
         "baseline_payload_sha256",
         "baseline_uri",
         "parameter_space_hash",
-        "entry_gate_checks",
         "source_commit",
         "source_tree",
     ):

@@ -52,6 +52,7 @@ from typing import Any, Final, final
 
 from minos_engine.common.canonical_json import canonical_json_bytes
 from minos_engine.common.errors import MinosEngineError
+from minos_engine.common.frozen_state import FrozenAfterMint, frozen_map
 from minos_engine.common.hashing import sha256_hex
 
 __all__ = [
@@ -161,14 +162,28 @@ def _is_sealed(candidate: Any, expected_type: type, token: object) -> bool:
 # --------------------------------------------------------------------------- #
 # shared parsing: identical for every scope, so a test exercises production code
 # --------------------------------------------------------------------------- #
-class ParsedRoundStatus:
+class ParsedRoundStatus(FrozenAfterMint):
     """The validated content of a round-status payload. Carries **no authority**.
 
     Producing one says the payload is well formed and describes an open round. It says nothing
     about who returned it, which is exactly why it is not a capability.
+
+    **Immutable even so**, because a receipt is a thin sealed wrapper around one of these: leaving
+    it writable would have left every field the receipt attests to writable through
+    ``receipt._parsed``.
     """
 
-    __slots__ = ("endpoint_path", "expected_bam_sha256", "region_source", "round_id", "urls")
+    _frozen_error = PlatformRoundStatusError
+    _frozen_noun = "parsed round status"
+
+    __slots__ = (
+        "_frozen",
+        "_urls",
+        "endpoint_path",
+        "expected_bam_sha256",
+        "region_source",
+        "round_id",
+    )
 
     def __init__(
         self,
@@ -182,9 +197,16 @@ class ParsedRoundStatus:
         self.round_id = round_id
         self.region_source = region_source
         self.endpoint_path = endpoint_path
-        #: Operational only. Never enters an identity, a report or a decision.
-        self.urls = dict(urls)
+        #: Operational only. Never enters an identity, a report or a decision. Read-only, so the
+        #: download sources a receipt was verified against cannot be swapped afterwards.
+        self._urls = frozen_map(urls)
         self.expected_bam_sha256 = expected_bam_sha256
+        self._freeze()
+
+    @property
+    def urls(self) -> dict[str, str]:
+        """A plain ``dict`` copy. Editing it does not change where this round's files come from."""
+        return dict(self._urls)
 
     def identity_content(self) -> dict[str, Any]:
         return {
@@ -334,7 +356,7 @@ _TRANSPORT_TOKEN: Final = object()
 
 
 @final
-class VerifiedProductionPlatformClient:
+class VerifiedProductionPlatformClient(FrozenAfterMint):
     """The real, authenticated subnet client, verified by TYPE and by configuration.
 
     Minted only by :func:`verify_subnet_platform_client`. The previous version accepted any object
@@ -343,18 +365,34 @@ class VerifiedProductionPlatformClient:
     imported and ``isinstance`` is checked against it.
     """
 
-    __slots__ = ("_client", "_seal")
+    _frozen_error = PlatformRoundStatusError
+    _frozen_noun = "production platform client"
 
-    def __init__(self, token: object, *, client: Any) -> None:
+    __slots__ = ("_client", "_frozen", "_seal", "verified_base_url")
+
+    def __init__(self, token: object, *, client: Any, base_url: str) -> None:
         if token is not _CLIENT_TOKEN:
             raise PlatformRoundStatusError(
                 "a production platform client may only be minted by verifying a real one"
             )
         self._client = client
+        #: SNAPSHOT of the security-relevant configuration verification actually checked. The
+        #: client is an externally-owned, mutable ``minos_subnet`` object and the engine cannot
+        #: freeze it; what it can do is record what was true at verification time, so a later
+        #: mutation of the live client cannot retroactively change what this capability attests.
+        #: See ``docs/layer2/L2H_CAPABILITY_TRUST_MODEL.md`` section 4.
+        self.verified_base_url = base_url
         self._seal = _CLIENT_TOKEN
+        self._freeze()
 
     @property
     def client(self) -> Any:
+        """The live external object, used for its BEHAVIOUR only.
+
+        Everything it produces is verified on its own merits downstream -- the response is parsed
+        and bound, the bytes are hashed, the provenance sidecar is checked -- so nothing trusts
+        this object's word about anything.
+        """
         return self._client
 
 
@@ -391,22 +429,29 @@ def verify_subnet_platform_client(client: Any) -> VerifiedProductionPlatformClie
         "the configured platform URL is not HTTPS; the subnet client enforces this and so does "
         "this verification",
     )
-    return VerifiedProductionPlatformClient(_CLIENT_TOKEN, client=client)
+    # the verified base URL is snapshotted into the capability, not re-read later
+    return VerifiedProductionPlatformClient(_CLIENT_TOKEN, client=client, base_url=base_url)
 
 
 @final
-class VerifiedOfficialMiner:
+class VerifiedOfficialMiner(FrozenAfterMint):
     """The real ``neurons.miner.Miner``, which owns the maintained download operation."""
 
-    __slots__ = ("_miner", "_seal")
+    _frozen_error = PlatformRoundStatusError
+    _frozen_noun = "official miner capability"
+
+    __slots__ = ("_frozen", "_miner", "_seal")
 
     def __init__(self, token: object, *, miner: Any) -> None:
         if token is not _MINER_TOKEN:
             raise PlatformRoundStatusError(
                 "a production download owner may only be minted by verifying a real miner"
             )
+        #: The wrapper is frozen; the wrapped ``Miner`` is externally owned and is not. What it
+        #: downloads is hashed and bound afterwards, so its mutability grants nothing.
         self._miner = miner
         self._seal = _MINER_TOKEN
+        self._freeze()
 
     @property
     def miner(self) -> Any:
@@ -450,7 +495,7 @@ class RoundStatusTransport(ABC):
 
 
 @final
-class ProductionRoundStatusTransport(RoundStatusTransport):
+class ProductionRoundStatusTransport(FrozenAfterMint, RoundStatusTransport):
     """The one transport that may speak for the live platform.
 
     **Inheritance is not authority.** The previous version required only
@@ -466,7 +511,10 @@ class ProductionRoundStatusTransport(RoundStatusTransport):
     headers would fork a security boundary maintained next door and would need the miner's keypair.
     """
 
-    __slots__ = ("_seal", "_verified_client")
+    _frozen_error = PlatformRoundStatusError
+    _frozen_noun = "production round-status transport"
+
+    __slots__ = ("_frozen", "_seal", "_verified_client")
 
     transport_kind = "subnet-platform-client"
 
@@ -478,6 +526,7 @@ class ProductionRoundStatusTransport(RoundStatusTransport):
             )
         self._verified_client = verified_client
         self._seal = _TRANSPORT_TOKEN
+        self._freeze()
 
     def endpoint_path(self) -> str:
         return PRODUCTION_ENDPOINT_PATH
@@ -538,10 +587,18 @@ _PRODUCTION_RECEIPT_TOKEN: Final = object()
 _FIXTURE_RECEIPT_TOKEN: Final = object()
 
 
-class RoundStatusReceipt:
-    """Common shape. Neither subclass can be built without its own scope's token."""
+class RoundStatusReceipt(FrozenAfterMint):
+    """Common shape. Neither subclass can be built without its own scope's token.
 
-    __slots__ = ("_operational_binding", "_parsed", "_seal", "identity", "scope")
+    **Immutable after minting**, ``_parsed`` included: the receipt's identity, round id, region,
+    endpoint and expected BAM hash are what verification attested, and none of them may be
+    replaced between the fetch and the download that is bound to it.
+    """
+
+    _frozen_error = PlatformRoundStatusError
+    _frozen_noun = "round-status receipt"
+
+    __slots__ = ("_frozen", "_operational_binding", "_parsed", "_seal", "identity", "scope")
 
     def __init__(self, token: object, *, parsed: ParsedRoundStatus, expected: object) -> None:
         if token is not expected:
@@ -563,6 +620,8 @@ class RoundStatusReceipt:
             + canonical_json_bytes(parsed.identity_content())
         )
         self.scope = ""
+        # NOT frozen here: each concrete subclass sets its scope and freezes itself, so `scope`
+        # is written exactly once, by the constructor that knew which domain it was minting.
 
     @property
     def round_id(self) -> str:
@@ -618,7 +677,8 @@ class ProductionRoundStatusReceipt(RoundStatusReceipt):
 
     def __init__(self, token: object, *, parsed: ParsedRoundStatus) -> None:
         super().__init__(token, parsed=parsed, expected=_PRODUCTION_RECEIPT_TOKEN)
-        object.__setattr__(self, "scope", PRODUCTION_SCOPE)
+        self.scope = PRODUCTION_SCOPE
+        self._freeze()
 
 
 class FixtureRoundStatusReceipt(RoundStatusReceipt):
@@ -628,7 +688,8 @@ class FixtureRoundStatusReceipt(RoundStatusReceipt):
 
     def __init__(self, token: object, *, parsed: ParsedRoundStatus) -> None:
         super().__init__(token, parsed=parsed, expected=_FIXTURE_RECEIPT_TOKEN)
-        object.__setattr__(self, "scope", FIXTURE_SCOPE)
+        self.scope = FIXTURE_SCOPE
+        self._freeze()
 
 
 def is_verified_production_receipt(candidate: Any) -> bool:
@@ -699,7 +760,7 @@ _PRODUCTION_DOWNLOAD_TOKEN: Final = object()
 _FIXTURE_DOWNLOAD_TOKEN: Final = object()
 
 
-class RoundDownloads:
+class RoundDownloads(FrozenAfterMint):
     """Proof that these bytes came from THIS round's own download sources.
 
     Bound to the receipt identity, so downloads accepted for one round cannot be presented for
@@ -708,14 +769,18 @@ class RoundDownloads:
     URL expires, carries a signature, and varies between equivalent fetches.
     """
 
+    _frozen_error = PlatformRoundStatusError
+    _frozen_noun = "round downloads"
+
     __slots__ = (
+        "_byte_counts",
+        "_frozen",
+        "_operational_binding",
+        "_seal",
         "bai_sha256",
         "bai_source_slot",
         "bam_sha256",
         "bam_source_slot",
-        "_operational_binding",
-        "_seal",
-        "byte_counts",
         "receipt_identity",
         "scope",
     )
@@ -724,7 +789,6 @@ class RoundDownloads:
         self,
         token: object,
         *,
-        expected: object,
         scope: str,
         receipt_identity: str,
         operational_binding: object,
@@ -734,7 +798,12 @@ class RoundDownloads:
         bai_source_slot: str,
         byte_counts: dict[str, int],
     ) -> None:
-        if token is not expected:
+        # The expected token is looked up by EXACT type. It used to be a second parameter supplied
+        # by the same caller as ``token``, which made the check vacuous -- passing one object
+        # twice satisfied it. Only the downstream seal predicates caught that; the constructor now
+        # refuses it outright, and a subclass is absent from the table rather than inheriting.
+        expected = _DOWNLOAD_MINT_TOKENS.get(type(self))
+        if expected is None or token is not expected:
             raise PlatformRoundStatusError(
                 "round downloads may only be minted by handing over the exact source each file "
                 "came from; two local paths are not provenance"
@@ -749,7 +818,13 @@ class RoundDownloads:
         self.bai_sha256 = bai_sha256
         self.bam_source_slot = bam_source_slot
         self.bai_source_slot = bai_source_slot
-        self.byte_counts = dict(byte_counts)
+        self._byte_counts = frozen_map(byte_counts)
+        self._freeze()
+
+    @property
+    def byte_counts(self) -> dict[str, int]:
+        """A plain ``dict`` copy. What a caller does to it does not reach the capability."""
+        return dict(self._byte_counts)
 
     def observation(self) -> dict[str, Any]:
         """Slot NAMES only. No URL, no query string, no signature."""
@@ -758,7 +833,7 @@ class RoundDownloads:
             "receipt_identity": self.receipt_identity,
             "bam_source_slot": self.bam_source_slot,
             "bai_source_slot": self.bai_source_slot,
-            "byte_counts": dict(self.byte_counts),
+            "byte_counts": dict(self._byte_counts),
         }
 
 
@@ -768,6 +843,14 @@ class ProductionRoundDownloads(RoundDownloads):
 
 class FixtureRoundDownloads(RoundDownloads):
     __slots__ = ()
+
+
+#: Which token each concrete downloads capability demands, keyed by EXACT type. Module-private,
+#: and never a class attribute -- an exported class must not hand out its own mint token.
+_DOWNLOAD_MINT_TOKENS: Final[dict[type, object]] = {
+    ProductionRoundDownloads: _PRODUCTION_DOWNLOAD_TOKEN,
+    FixtureRoundDownloads: _FIXTURE_DOWNLOAD_TOKEN,
+}
 
 
 def _stream_sha256(path: Path, *, label: str) -> tuple[str, int]:
@@ -803,18 +886,15 @@ def _match_slot(
     )
 
 
-def _accept_downloads(
+def _validated_download_binding(
     *,
-    token: object,
-    expected: object,
-    factory: type[RoundDownloads],
-    scope: str,
     receipt: RoundStatusReceipt,
     bam_source_url: str,
     bam_path: Any,
     bai_path: Any,
     bai_source_url: str | None,
-) -> RoundDownloads:
+) -> dict[str, Any]:
+    """Bind files to the receipt's own sources and hash them. Validates; **mints nothing**."""
     bam_slot = _match_slot(receipt, source_url=bam_source_url, slots=BAM_URL_SLOTS, label="BAM")
     if bai_source_url is None:
         # the official miner builds the index with samtools when the platform offers none
@@ -833,18 +913,15 @@ def _accept_downloads(
             bam_sha == expected_bam,
             "the downloaded BAM does not hash to the SHA-256 the platform published for this round",
         )
-    return factory(
-        token,
-        expected=expected,
-        scope=scope,
-        receipt_identity=receipt.identity,
-        operational_binding=receipt._operational_binding,  # noqa: SLF001
-        bam_sha256=bam_sha,
-        bai_sha256=bai_sha,
-        bam_source_slot=bam_slot,
-        bai_source_slot=bai_slot,
-        byte_counts={"bam": bam_size, "bai": bai_size},
-    )
+    return {
+        "receipt_identity": receipt.identity,
+        "operational_binding": receipt._operational_binding,  # noqa: SLF001
+        "bam_sha256": bam_sha,
+        "bai_sha256": bai_sha,
+        "bam_source_slot": bam_slot,
+        "bai_source_slot": bai_slot,
+        "byte_counts": {"bam": bam_size, "bai": bai_size},
+    }
 
 
 #: Written by this integration beside the BAM the official miner produced. It is the engine's own
@@ -1056,7 +1133,6 @@ def download_production_round_inputs(*, receipt: Any, miner: Any) -> ProductionR
 
     return ProductionRoundDownloads(
         _PRODUCTION_DOWNLOAD_TOKEN,
-        expected=_PRODUCTION_DOWNLOAD_TOKEN,
         scope=PRODUCTION_SCOPE,
         receipt_identity=receipt.identity,
         operational_binding=receipt._operational_binding,  # noqa: SLF001
@@ -1172,16 +1248,11 @@ def accept_fixture_round_downloads(
         is_fixture_round_receipt(receipt),
         "fixture downloads must be bound to a sealed fixture receipt",
     )
-    result = _accept_downloads(
-        token=_FIXTURE_DOWNLOAD_TOKEN,
-        expected=_FIXTURE_DOWNLOAD_TOKEN,
-        factory=FixtureRoundDownloads,
-        scope=FIXTURE_SCOPE,
+    bound = _validated_download_binding(
         receipt=receipt,
         bam_source_url=bam_source_url,
         bam_path=bam_path,
         bai_path=bai_path,
         bai_source_url=bai_source_url,
     )
-    assert isinstance(result, FixtureRoundDownloads)
-    return result
+    return FixtureRoundDownloads(_FIXTURE_DOWNLOAD_TOKEN, scope=FIXTURE_SCOPE, **bound)

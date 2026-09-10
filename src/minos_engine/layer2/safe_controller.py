@@ -30,6 +30,7 @@ from typing import Any, Final
 
 from minos_engine.common.canonical_json import canonical_json_bytes
 from minos_engine.common.errors import MinosEngineError
+from minos_engine.common.frozen_state import FrozenAfterMint, deep_plain, frozen_deep
 from minos_engine.common.hashing import sha256_hex
 from minos_engine.layer2.contracts import (
     ArtifactIdentity,
@@ -83,7 +84,7 @@ def _require(condition: bool, message: str) -> None:
 _AUTHORITY_TOKEN: Final = object()
 
 
-class VerifiedSafeBaselineAuthority:
+class VerifiedSafeBaselineAuthority(FrozenAfterMint):
     """Proof that everything the controller needs was checked before any decision was made.
 
     Minted only by :func:`load_verified_safe_baseline_authority`. The pure core takes this rather
@@ -92,13 +93,17 @@ class VerifiedSafeBaselineAuthority:
     the config is still legal under the CURRENT parameter space.
     """
 
+    _frozen_error = SafeControllerAuthorityError
+    _frozen_noun = "safe-baseline authority"
+
     __slots__ = (
+        "_entry_gate_checks",
+        "_frozen",
         "_policy",
         "_seal",
         "baseline_config_hash",
         "baseline_payload_sha256",
         "baseline_uri",
-        "entry_gate_checks",
         "parameter_space_hash",
         "policy_hash",
         "source_commit",
@@ -124,7 +129,11 @@ class VerifiedSafeBaselineAuthority:
                 "a safe-baseline authority may only be minted by the verifying loader; a "
                 "dictionary has not been verified against anything"
             )
-        self._policy = dict(policy)
+        # deep-frozen: refusing ``authority.baseline_config_hash = ...`` while
+        # ``authority._policy["baseline_selected_identity"] = ...`` still worked would have been a
+        # longer route to the same forged decision manifest.
+        self._policy = frozen_deep(policy)
+        self._entry_gate_checks = frozen_deep(entry_gate_checks)
         #: Set only here, by the constructor that demanded the private token. The controller
         #: checks it: a subclass that skips ``__init__`` and copies the fields satisfies
         #: ``isinstance`` and must not reach the decision core.
@@ -134,15 +143,30 @@ class VerifiedSafeBaselineAuthority:
         self.baseline_payload_sha256 = baseline_payload_sha256
         self.baseline_uri = baseline_uri
         self.parameter_space_hash = parameter_space_hash
-        self.entry_gate_checks = dict(entry_gate_checks)
         # minted from the SAME root that was verified, so nothing downstream needs to look a
         # repository up again -- a later global lookup could name a different checkout entirely
         self.source_commit = source_commit
         self.source_tree = source_tree
+        # LAST: every field above is now final.
+        self._freeze()
 
     @property
     def policy(self) -> dict[str, Any]:
-        return dict(self._policy)
+        """An ordinary deep ``dict``/``list`` copy, detached from the authority.
+
+        Deep, not shallow: a shallow copy still shared the nested containers, so a caller could
+        edit the verified policy through the dict it was handed. Plain rather than the frozen
+        representation, because the values are canonicalized into decision identities and a
+        ``MappingProxyType``/``tuple`` would not serialize the way a ``dict``/``list`` does.
+        """
+        result: dict[str, Any] = deep_plain(self._policy)
+        return result
+
+    @property
+    def entry_gate_checks(self) -> dict[str, bool]:
+        """The entry-gate result this authority was minted against. A deep copy, as above."""
+        result: dict[str, bool] = deep_plain(self._entry_gate_checks)
+        return result
 
     @property
     def allowed_modes(self) -> tuple[str, ...]:

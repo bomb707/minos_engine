@@ -46,6 +46,7 @@ from typing import Any, Final
 
 from minos_engine.common.canonical_json import canonical_json_bytes
 from minos_engine.common.errors import MinosEngineError
+from minos_engine.common.frozen_state import FrozenAfterMint, frozen_map
 from minos_engine.common.hashing import canonical_hash, sha256_hex
 
 __all__ = [
@@ -251,36 +252,49 @@ def canonical_live_round_content(
     }
 
 
-class VerifiedLiveRoundIntake:
+class VerifiedLiveRoundIntake(FrozenAfterMint):
     """Proof that the platform offered this round and that these are the bytes it names.
 
-    Minted only by :func:`verify_live_round_intake`. Canonical content alone cannot produce one:
-    the constructor demands a private token, and the only holder needs a platform receipt and real
-    download digests.
+    Abstract: it has no token of its own and cannot be constructed. The two concrete capabilities
+    below each demand their own module-private token, named directly in their own constructor.
+
+    An earlier version held the expected token in a class attribute, ``_expected_token``, so
+    ``VerifiedProductionLiveRoundIntake._expected_token`` handed the real production mint token to
+    any caller that asked -- which made the whole production/fixture separation ornamental. No
+    exported class carries its token any more; see :mod:`docs/layer2/L2H_CAPABILITY_TRUST_MODEL`
+    for what that does and does not claim.
     """
 
-    __slots__ = ("_content", "_seal", "dataset_id", "identity", "receipt_identity")
+    _frozen_error = LiveRoundIntakeError
+    _frozen_noun = "live round intake"
+
+    __slots__ = ("_content", "_frozen", "_seal", "dataset_id", "identity", "receipt_identity")
 
     #: Overridden by each concrete capability. A CLASS attribute, so it cannot be reassigned into
     #: another authority domain the way an instance attribute could.
     scope: str = ""
-    _expected_token: Any = None
 
     def __init__(self, token: object, *, content: dict[str, Any], identity: str) -> None:
-        if token is not type(self)._expected_token or token is None:
+        # ``_mint_token`` is a module-level lookup keyed by exact type, not a class attribute, so
+        # reading the class gives a caller nothing.
+        expected = _mint_token(type(self))
+        if expected is None or token is not expected:
             raise LiveRoundIntakeError(
                 "a live round intake may only be minted from a verified platform receipt and real "
                 "download digests; canonical content has been checked against nothing"
             )
-        self._content = dict(content)
+        # a read-only view over a defensive copy: refusing ``intake.field = ...`` while internal
+        # code could still write ``intake._content[...]`` would not be immutability.
+        self._content = frozen_map(content)
         self.identity = identity
         self.receipt_identity = str(content["platform_receipt_identity"])
         self.dataset_id = live_dataset_id_for(
             chromosome=str(content["chromosome"]),
             identity_tuple_hash=str(content["identity_tuple_hash"]),
         )
-        # LAST: the seal both proves the mint and freezes the object.
         self._seal = token
+        # LAST: nothing above can be rewritten from here on.
+        self._freeze()
 
     def __getattr__(self, name: str) -> Any:
         # only content fields are proxied. Private names must never route here, or a lookup during
@@ -296,24 +310,8 @@ class VerifiedLiveRoundIntake:
         except KeyError:
             raise AttributeError(name) from None
 
-    def __setattr__(self, name: str, value: Any) -> None:
-        """Immutable once minted. ``scope`` in particular can never be reassigned.
-
-        The previous design stored the scope as an instance attribute, so a fixture intake could
-        simply be told it was production and walk through the live guard. It is now a class
-        attribute of two distinct capabilities, and nothing on a minted intake can be rewritten.
-        """
-        try:
-            object.__getattribute__(self, "_seal")
-        except AttributeError:
-            object.__setattr__(self, name, value)
-            return
-        raise LiveRoundIntakeError(
-            f"a verified live intake is immutable; {name!r} cannot be reassigned, and its "
-            "authority domain least of all"
-        )
-
     def content(self) -> dict[str, Any]:
+        """A plain ``dict`` copy. Canonicalized downstream, so it must not be the frozen view."""
         return dict(self._content)
 
     def registry_identity(self) -> dict[str, Any]:
@@ -346,9 +344,8 @@ class VerifiedProductionLiveRoundIntake(VerifiedLiveRoundIntake):
     __slots__ = ()
     #: the transport's ``PRODUCTION_SCOPE``. Not imported at module scope (that import is kept
     #: function-local throughout this module); the builder proves the two agree by requiring
-    #: ``downloads.scope == receipt.scope == factory.scope`` before anything is minted.
+    #: ``downloads.scope == receipt.scope == <this class>.scope`` before anything is minted.
     scope = "production"
-    _expected_token = _PRODUCTION_INTAKE_TOKEN
 
 
 class FixtureLiveRoundIntake(VerifiedLiveRoundIntake):
@@ -356,7 +353,19 @@ class FixtureLiveRoundIntake(VerifiedLiveRoundIntake):
 
     __slots__ = ()
     scope = "fixture"
-    _expected_token = _FIXTURE_INTAKE_TOKEN
+
+
+#: Which token each concrete capability demands. A module-private mapping keyed by exact type:
+#: reading an exported class yields nothing, and a subclass is absent rather than inheriting.
+_MINT_TOKENS: Final[dict[type, object]] = {
+    VerifiedProductionLiveRoundIntake: _PRODUCTION_INTAKE_TOKEN,
+    FixtureLiveRoundIntake: _FIXTURE_INTAKE_TOKEN,
+}
+
+
+def _mint_token(cls: type) -> object | None:
+    """The token for an EXACT class. Never inherited -- a subclass gets ``None`` and is refused."""
+    return _MINT_TOKENS.get(cls)
 
 
 def is_verified_production_intake(candidate: Any) -> bool:
@@ -374,16 +383,15 @@ def is_fixture_intake(candidate: Any) -> bool:
     )
 
 
-def _build_verified_intake(
-    *, receipt: Any, downloads: Any, factory: type[VerifiedLiveRoundIntake]
-) -> VerifiedLiveRoundIntake:
-    """The single implementation. Both domains run exactly this, and mint different capabilities.
+def _validated_intake_content(*, receipt: Any, downloads: Any, scope: str) -> dict[str, Any]:
+    """The single scientific implementation. It validates, and it **mints nothing**.
 
-    The factory carries its own scope and its own token, so the three can never be passed out of
-    agreement -- there is no argument through which a fixture could ask for a production token.
+    Shared validation and authority minting used to be one generic function that took a factory
+    and read the factory's own token off it. That put the mint token one attribute access away
+    from any caller. They are separate concerns and are now separate functions: this one returns
+    ordinary validated data, and the two scope-specific entry points below each name their own
+    capability class and their own private token explicitly.
     """
-    scope = factory.scope
-    token = factory._expected_token
     from minos_engine.common.genomic_region import normalize_region
 
     # the SCIENTIFIC link ...
@@ -434,7 +442,7 @@ def _build_verified_intake(
         observed == LIVE_INTAKE_FIELDS,
         f"the live intake carries {observed}, not exactly {LIVE_INTAKE_FIELDS}",
     )
-    return factory(token, content=content, identity=live_round_intake_identity(content))
+    return content
 
 
 def verify_live_round_intake(*, receipt: Any, downloads: Any) -> VerifiedLiveRoundIntake:
@@ -466,8 +474,13 @@ def verify_live_round_intake(*, receipt: Any, downloads: Any) -> VerifiedLiveRou
         "a production live intake requires sealed production round downloads; a subclass carrying "
         "a real receipt identity and a real operational binding is a forgery, not provenance",
     )
-    return _build_verified_intake(
-        receipt=receipt, downloads=downloads, factory=VerifiedProductionLiveRoundIntake
+    content = _validated_intake_content(
+        receipt=receipt, downloads=downloads, scope=VerifiedProductionLiveRoundIntake.scope
+    )
+    return VerifiedProductionLiveRoundIntake(
+        _PRODUCTION_INTAKE_TOKEN,
+        content=content,
+        identity=live_round_intake_identity(content),
     )
 
 
@@ -486,8 +499,13 @@ def observe_fixture_live_round_intake(*, receipt: Any, downloads: Any) -> Verifi
         is_fixture_round_downloads(downloads),
         "a fixture live intake requires sealed fixture round downloads",
     )
-    return _build_verified_intake(
-        receipt=receipt, downloads=downloads, factory=FixtureLiveRoundIntake
+    content = _validated_intake_content(
+        receipt=receipt, downloads=downloads, scope=FixtureLiveRoundIntake.scope
+    )
+    return FixtureLiveRoundIntake(
+        _FIXTURE_INTAKE_TOKEN,
+        content=content,
+        identity=live_round_intake_identity(content),
     )
 
 
@@ -505,5 +523,10 @@ def require_production_scope(intake: Any) -> VerifiedLiveRoundIntake:
         "a different capability, and no amount of relabelling turns one into the other",
     )
     verified: VerifiedLiveRoundIntake = intake
-    assert verified.scope == PRODUCTION_SCOPE
+    # explicit, not `assert`: `python -O` removes asserts, and the production/fixture boundary may
+    # not depend on whether the interpreter was started with optimizations.
+    _require(
+        verified.scope == PRODUCTION_SCOPE,
+        f"this intake reports {verified.scope!r} scope, not {PRODUCTION_SCOPE!r}",
+    )
     return verified

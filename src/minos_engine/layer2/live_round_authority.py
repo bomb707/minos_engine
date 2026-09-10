@@ -54,6 +54,7 @@ import json
 from typing import Any, Final
 
 from minos_engine.common.canonical_json import canonical_json_bytes
+from minos_engine.common.frozen_state import FrozenAfterMint, frozen_map
 from minos_engine.common.hashing import canonical_hash, sha256_hex
 from minos_engine.layer2.live_round_intake import (
     LiveRoundIntakeError,
@@ -81,24 +82,44 @@ __all__ = [
     "verify_live_profile_binding",
 ]
 
+
+class LiveRoundOwnershipError(LiveRoundIntakeError):
+    """A live profile cannot be proved to belong to its live round. Emit nothing."""
+
+
+def _require(condition: bool, message: str) -> None:
+    if not condition:
+        raise LiveRoundOwnershipError(message)
+
+
 #: One token per authority domain, exactly as for the intake.
 _PRODUCTION_BINDING_TOKEN: Final = object()
 _FIXTURE_BINDING_TOKEN: Final = object()
 
 
-class VerifiedLiveProfileBinding:
+class VerifiedLiveProfileBinding(FrozenAfterMint):
     """Proof that ONE live profile belongs to ONE live round.
 
     ``round_profile_authority.own_verified_live_round`` accepts only the **production** subclass,
     by exact type and private seal. An earlier version used ``isinstance`` here, which a subclass
     skipping ``__init__`` and populating ``owned``/``anchors``/``identity`` would have satisfied --
     the generic raw-data mint again, through inheritance.
+
+    **Immutable after minting.** A verified binding used to accept ``binding.owned = ...``,
+    ``binding.identity = ...`` and ``binding.anchors[...] = ...`` between verification and
+    ``own_verified_live_round``, so the profile that got owned need not have been the profile that
+    was proved. The owned profile it holds is frozen in its own right.
+
+    Abstract: it has no token and cannot be constructed. Each concrete capability demands its own,
+    looked up by exact type -- no class attribute hands a token to a caller.
     """
 
-    __slots__ = ("_seal", "anchors", "identity", "owned")
+    _frozen_error = LiveRoundOwnershipError
+    _frozen_noun = "live profile binding"
+
+    __slots__ = ("_anchors", "_frozen", "_seal", "identity", "owned")
 
     scope: str = ""
-    _expected_token: Any = None
 
     def __init__(
         self,
@@ -108,15 +129,22 @@ class VerifiedLiveProfileBinding:
         anchors: dict[str, str],
         identity: str,
     ) -> None:
-        if token is not type(self)._expected_token or token is None:
+        expected = _mint_token(type(self))
+        if expected is None or token is not expected:
             raise LiveRoundOwnershipError(
                 "a live profile binding may only be minted by verifying one; a map of owned "
                 "profile fields is not a proof that a profile belongs to a round"
             )
         self.owned = owned
-        self.anchors = dict(anchors)
+        self._anchors = frozen_map(anchors)
         self.identity = identity
         self._seal = token
+        self._freeze()
+
+    @property
+    def anchors(self) -> dict[str, str]:
+        """A plain ``dict`` copy. What a caller does to it does not reach the binding."""
+        return dict(self._anchors)
 
 
 class VerifiedProductionLiveProfileBinding(VerifiedLiveProfileBinding):
@@ -124,7 +152,6 @@ class VerifiedProductionLiveProfileBinding(VerifiedLiveProfileBinding):
 
     __slots__ = ()
     scope = "production"
-    _expected_token = _PRODUCTION_BINDING_TOKEN
 
 
 class FixtureLiveProfileBinding(VerifiedLiveProfileBinding):
@@ -132,7 +159,17 @@ class FixtureLiveProfileBinding(VerifiedLiveProfileBinding):
 
     __slots__ = ()
     scope = "fixture"
-    _expected_token = _FIXTURE_BINDING_TOKEN
+
+
+#: Keyed by EXACT type, module-private. A subclass is absent rather than inheriting a token.
+_MINT_TOKENS: Final[dict[type, object]] = {
+    VerifiedProductionLiveProfileBinding: _PRODUCTION_BINDING_TOKEN,
+    FixtureLiveProfileBinding: _FIXTURE_BINDING_TOKEN,
+}
+
+
+def _mint_token(cls: type) -> object | None:
+    return _MINT_TOKENS.get(cls)
 
 
 def is_verified_production_live_binding(candidate: Any) -> bool:
@@ -145,15 +182,6 @@ def is_verified_production_live_binding(candidate: Any) -> bool:
 
 LIVE_OWNERSHIP_SCHEMA: Final = "l2h-live-round-profile-ownership-v1"
 LIVE_OWNERSHIP_DOMAIN: Final = "minos:l2h-live-round-profile-ownership:v1\n"
-
-
-class LiveRoundOwnershipError(LiveRoundIntakeError):
-    """A live profile cannot be proved to belong to its live round. Emit nothing."""
-
-
-def _require(condition: bool, message: str) -> None:
-    if not condition:
-        raise LiveRoundOwnershipError(message)
 
 
 def verify_live_profile_binding(
@@ -178,16 +206,16 @@ def verify_live_profile_binding(
         "a production live profile binding requires a sealed PRODUCTION live intake; a fixture "
         "observation cannot become live authority by any route",
     )
-    result = _build_live_profile_binding(
+    owned, anchors, identity = _validated_live_profile_binding(
         intake=intake,
         profile_bytes=profile_bytes,
         manifest_bytes=manifest_bytes,
         attestation_bytes=attestation_bytes,
         windows_bytes=windows_bytes,
-        factory=VerifiedProductionLiveProfileBinding,
     )
-    assert isinstance(result, VerifiedProductionLiveProfileBinding)
-    return result
+    return VerifiedProductionLiveProfileBinding(
+        _PRODUCTION_BINDING_TOKEN, owned=owned, anchors=anchors, identity=identity
+    )
 
 
 def observe_fixture_live_profile_binding(
@@ -205,36 +233,35 @@ def observe_fixture_live_profile_binding(
         is_fixture_intake(intake),
         "a fixture live profile binding requires a sealed fixture live intake",
     )
-    result = _build_live_profile_binding(
+    owned, anchors, identity = _validated_live_profile_binding(
         intake=intake,
         profile_bytes=profile_bytes,
         manifest_bytes=manifest_bytes,
         attestation_bytes=attestation_bytes,
         windows_bytes=windows_bytes,
-        factory=FixtureLiveProfileBinding,
     )
-    assert isinstance(result, FixtureLiveProfileBinding)
-    return result
+    return FixtureLiveProfileBinding(
+        _FIXTURE_BINDING_TOKEN, owned=owned, anchors=anchors, identity=identity
+    )
 
 
-def _build_live_profile_binding(
+def _validated_live_profile_binding(
     *,
     intake: Any,
     profile_bytes: bytes,
     manifest_bytes: bytes,
     attestation_bytes: bytes,
     windows_bytes: bytes,
-    factory: type[VerifiedLiveProfileBinding],
-) -> VerifiedLiveProfileBinding:
+) -> tuple[OwnedRoundProfile, dict[str, str], str]:
     """Prove one live profile belongs to one live round. Shared by both authority domains.
 
     The four Layer 1 outputs are taken as **bytes**, not as parsed documents: a caller that hands
     over a dict has already decided what the bytes mean. Hashing happens here, and the documents
     are decoded from the exact bytes that were hashed.
 
-    The factory carries its own token, so there is no argument through which the fixture path
-    could ask for the production one. Which domain's *intake* is acceptable was already decided by
-    the caller above; this function only re-proves the science, identically for both.
+    It returns ordinary validated data and **mints nothing**. Which domain's *intake* is
+    acceptable was decided by the caller above; this function only re-proves the science,
+    identically for both, and each caller then names its own capability and its own token.
     """
     from minos_engine.layer2.ingest.validation import validate_admission
 
@@ -368,7 +395,7 @@ def _build_live_profile_binding(
             }
         )
     )
-    return factory(factory._expected_token, owned=owned, anchors=anchors, identity=identity)
+    return owned, anchors, identity
 
 
 class FixtureRoundProfileAuthority(OwnedRoundCorpus):
