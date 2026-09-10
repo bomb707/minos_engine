@@ -118,6 +118,9 @@ def build_live_dataset(tmp: Path, *, contig: str = LIVE_CONTIG) -> dict[str, Any
     assert result.status is ProfileStatus.COMPLETE, result
     return {
         "contig": contig,
+        #: the temp root this dataset was built in, so a production-equivalent miner stand-in has
+        #: somewhere of its own to write
+        "root": tmp,
         "region": f"{contig}:1-{CONTIG_LENGTH}",
         "bam": dataset.bam,
         "bai": dataset.bai,
@@ -231,3 +234,153 @@ def live_ownership(replay: dict[str, Any]) -> Any:
         attestation_bytes=replay["attestation_bytes"],
         windows_bytes=replay["windows_bytes"],
     )
+
+
+# --------------------------------------------------------------------------- #
+# PRODUCTION-EQUIVALENT SEAM
+#
+# Everything above this line is the FIXTURE domain: it ends in
+# `FixtureRoundProfileAuthority` and can never mint live authority.
+#
+# What follows drives the REAL production verifiers -- `verify_production_round_status`,
+# `download_production_round_inputs`, `verify_live_round_intake`, `verify_live_profile_binding`,
+# `own_verified_live_round` -- and therefore produces a genuine sealed
+# `VerifiedRoundProfileAuthority(scope="live")`.
+#
+# The ONLY substitutions are the two official type resolvers, monkeypatched to stand-in classes
+# that mirror the upstream contract, plus the accepted reference table (a synthetic genome cannot
+# hash to real GRCh38). NO private mint token is imported and no capability is hand-built: every
+# seal here was earned by passing the production verifier that owns it. That is what makes this a
+# production-EQUIVALENT seam rather than a white-box forgery.
+#
+# It is still a test seam, and it is not qualification evidence.
+# --------------------------------------------------------------------------- #
+PRODUCTION_BASE_URL = "https://platform.example"
+PRODUCTION_HOTKEY = "5FakeHotkeyAddressForTests"
+
+
+class StandInOfficialClient:
+    """Mirrors ``utils.platform_client.MinerPlatformClient`` where the engine touches it.
+
+    ``_round_status_path`` is a property over the live ``self.demo``, and ``config`` is mutable --
+    exactly as upstream, so the client TOCTOU checks are genuinely exercised rather than bypassed.
+    """
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        import types
+
+        self._payload = dict(payload)
+        self.keypair = types.SimpleNamespace(ss58_address=PRODUCTION_HOTKEY)
+        self.config = types.SimpleNamespace(base_url=PRODUCTION_BASE_URL)
+        self.demo = False
+
+    @property
+    def _round_status_path(self) -> str:
+        return "/v2/demo/round-status" if self.demo else "/v2/round-status"
+
+    async def get_round_status(self) -> dict[str, Any]:
+        return dict(self._payload)
+
+
+class StandInOfficialMiner:
+    """Mirrors ``neurons.miner.Miner._download_bam``: writes into its own per-round output dir.
+
+    The engine does not reimplement downloading; it hands the round's operational data over and
+    hashes exactly what came back. This stand-in does the same thing with local bytes.
+    """
+
+    def __init__(self, root: Any, *, bam: Any, bai: Any) -> None:
+        self.root = Path(root)
+        self._bam = Path(bam)
+        self._bai = Path(bai)
+
+    def _download_bam(self, round_data: dict[str, Any], round_id: str) -> str:
+        import shutil
+
+        out = self.root / "output" / str(round_id).replace(":", "-")
+        out.mkdir(parents=True, exist_ok=True)
+        target = out / "input.bam"
+        shutil.copyfile(self._bam, target)
+        shutil.copyfile(self._bai, Path(str(target) + ".bai"))
+        return str(target)
+
+
+def build_production_live_round(
+    monkeypatch: Any,
+    dataset: dict[str, Any],
+    *,
+    live_round_id: str = FRESH_LIVE_ROUND_ID,
+    payload_override: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Drive the PRODUCTION chain end to end and return a real live ownership authority.
+
+    receipt -> downloads -> intake -> real L1 attestation -> binding -> ownership, every step
+    through the production verifier that owns it.
+    """
+    import json as _json
+
+    from minos_engine.common.hashing import sha256_hex
+    from minos_engine.intake.attestation import attest_input
+    from minos_engine.layer2.live_round_authority import verify_live_profile_binding
+    from minos_engine.layer2.live_round_intake import verify_live_round_intake
+    from minos_engine.layer2.round_profile_authority import own_verified_live_round
+    from minos_engine.protocol import round_status as rs
+
+    accept_synthetic_reference(monkeypatch, dataset)
+
+    payload = round_status_payload(round_id=live_round_id, region=dataset["region"])
+    # the platform's published BAM digest, which upstream documents as optional; supplying it
+    # exercises the authoritative-content branch of the cache-provenance rule
+    payload["bam_sha256"] = sha256_hex(Path(dataset["bam"]).read_bytes())
+    if payload_override is not None:
+        payload = {**payload, **payload_override}
+        payload = {k: v for k, v in payload.items() if v is not ABSENT}
+
+    monkeypatch.setattr(rs, "resolve_official_platform_client_type", lambda: StandInOfficialClient)
+    monkeypatch.setattr(rs, "resolve_official_miner_type", lambda: StandInOfficialMiner)
+
+    client = StandInOfficialClient(payload)
+    transport = rs.production_round_status_transport(client)
+    receipt = rs.verify_production_round_status(transport)
+
+    miner = StandInOfficialMiner(
+        Path(dataset["root"]) / f"miner-{live_round_id.replace(':', '-')}",
+        bam=dataset["bam"],
+        bai=dataset["bai"],
+    )
+    downloads = rs.download_production_round_inputs(receipt=receipt, miner=miner)
+    intake = verify_live_round_intake(receipt=receipt, downloads=downloads)
+
+    registry_record = {
+        **intake.registry_identity(),
+        "region_start0": int(intake.region_start0),
+        "region_end0_exclusive": int(intake.region_end0_exclusive),
+    }
+    registry_record.pop("registry_snapshot_hash", None)
+    attestation = _json.loads(
+        attest_input(
+            bam_path=Path(dataset["bam"]),
+            bai_path=Path(dataset["bai"]),
+            reference_path=Path(dataset["reference"]),
+            fai_path=Path(dataset["fai"]),
+            registry_record=registry_record,
+            registry_snapshot_hash=intake.identity,
+        ).model_dump_json()
+    )
+    binding = verify_live_profile_binding(
+        intake=intake,
+        profile_bytes=dataset["profile_bytes"],
+        manifest_bytes=dataset["manifest_bytes"],
+        attestation_bytes=_json.dumps(attestation, sort_keys=True).encode(),
+        windows_bytes=dataset["windows_bytes"],
+    )
+    return {
+        "client": client,
+        "receipt": receipt,
+        "downloads": downloads,
+        "intake": intake,
+        "binding": binding,
+        "ownership": own_verified_live_round(binding),
+        "payload": payload,
+        "dataset": dataset,
+    }

@@ -1245,13 +1245,19 @@ def test_a_live_authority_cannot_produce_a_v1_decision_manifest(replay):
     with pytest.raises(SafeControllerAuthorityError, match="fixture authority"):
         select_safe_baseline(request=request, authority=authority, ownership=replay["ownership"])
 
-    # a WHITE-BOX FORGED live authority gets past that and is refused for its SCOPE. It is
-    # forged precisely because the fixture chain can no longer reach live authority at all.
+    # a WHITE-BOX FORGED live authority gets past that, and the V1 BUILDER refuses it for its
+    # scope. It is forged precisely because the fixture chain can no longer reach live authority.
+    #
+    # `select_safe_baseline` is deliberately NOT used here any more: the controller now dispatches
+    # a live authority to decision-manifest v2, so it would no longer be the v1 builder answering.
+    # The property under test is v1's own refusal, which §L requires to survive the dispatcher.
+    from minos_engine.layer2.safe_controller import safe_decision_manifest_content
+
     live = _white_box_forged_live_authority(replay)
     assert is_verified_round_profile_authority(live)
     assert live.scope == "live"
     with pytest.raises(SafeControllerAuthorityError, match="decision-manifest v2"):
-        select_safe_baseline(request=request, authority=authority, ownership=live)
+        safe_decision_manifest_content(request=request, authority=authority, ownership=live)
 
 
 def test_the_train_corpus_identity_has_not_moved():

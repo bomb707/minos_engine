@@ -41,6 +41,7 @@ from minos_engine.layer2.contracts import (
     FallbackReason,
 )
 from minos_engine.layer2.round_profile_authority import (
+    LIVE_PARTITION,
     VerifiedRoundProfileAuthority,
     is_verified_round_profile_authority,
 )
@@ -58,18 +59,35 @@ from minos_engine.models.config_table import CONFIG_PAYLOAD_ROOT
 __all__ = [
     "SAFE_DECISION_MANIFEST_DOMAIN",
     "SAFE_DECISION_MANIFEST_SCHEMA",
+    "SAFE_DECISION_MANIFEST_V2_DOMAIN",
+    "SAFE_DECISION_MANIFEST_V2_SCHEMA",
     "SafeBaselineController",
     "SafeControllerAuthorityError",
     "VerifiedSafeBaselineAuthority",
     "is_verified_safe_baseline_authority",
     "load_verified_safe_baseline_authority",
+    "live_safe_decision_manifest_content",
+    "live_safe_decision_manifest_identity",
+    "safe_decision_identity_for",
     "safe_decision_manifest_content",
+    "safe_decision_manifest_for",
     "safe_decision_manifest_identity",
     "select_safe_baseline",
 ]
 
+#: v1 -- a decision admitted against the frozen 50-round TRAIN corpus. Historical and unchanged.
 SAFE_DECISION_MANIFEST_SCHEMA: Final = "l2h-safe-decision-manifest-v1"
 SAFE_DECISION_MANIFEST_DOMAIN: Final = "minos:l2h-safe-decision-manifest:v1\n"
+
+#: v2 -- a decision admitted against ONE authenticated live round. A separate schema and a
+#: separate hashing domain, so a v1 identity and a v2 identity can never collide even if the two
+#: documents were somehow byte-equal, and so no reader can mistake one contract for the other.
+SAFE_DECISION_MANIFEST_V2_SCHEMA: Final = "l2h-safe-decision-manifest-v2"
+SAFE_DECISION_MANIFEST_V2_DOMAIN: Final = "minos:l2h-safe-decision-manifest:v2\n"
+
+#: The two ownership domains the controller can decide for. Read from the SEALED capability only.
+TRAIN_OWNERSHIP_SCOPE: Final = "train"
+LIVE_OWNERSHIP_SCOPE: Final = "live"
 
 
 class SafeControllerAuthorityError(MinosEngineError):
@@ -334,18 +352,42 @@ def safe_decision_manifest_content(
         "meaning without changing name",
     )
     proven = owned if owned is not None else ownership.require_owned_request(request)
+    return {
+        "schema_version": SAFE_DECISION_MANIFEST_SCHEMA,
+        # the TRAIN authority block. These four names mean *frozen research campaign* things and
+        # are exactly why a live round cannot be described here: see the refusal above.
+        "dataset_id": proven.dataset_id,
+        "registry_snapshot_hash": proven.registry_snapshot_hash,
+        "profile_corpus_identity": ownership.corpus_identity,
+        "profile_ownership_anchors": dict(sorted(ownership.anchors.items())),
+        **_common_safe_decision_science(request=request, authority=authority, proven=proven),
+    }
+
+
+def _common_safe_decision_science(
+    *,
+    request: DecisionRequest,
+    authority: VerifiedSafeBaselineAuthority,
+    proven: Any,
+) -> dict[str, Any]:
+    """The fields whose meaning is IDENTICAL in TRAIN and in LIVE.
+
+    Audited field by field for this task rather than copied. Each one describes either the round's
+    own genomic input, the controller's own accepted authority, or the decision the controller
+    made -- none of them describes a research campaign, a split, a schedule or a registry, so none
+    of them changes meaning when the round comes from the platform instead of the frozen corpus.
+
+    Every identity is the OWNED one, proven against the authority the capability carries. The
+    request's own values had to equal these to get this far, so binding the proven side means the
+    scientific identity never depends on a value a caller merely asserted. ``profile_manifest_hash``
+    is deliberately absent: it has no canonical definition in this engine (see
+    ``Layer1ProfileReference``), and an unauthenticated opaque value has no place in an identity.
+    """
     policy = authority.policy
     requested = request.requested_mode
     return {
-        "schema_version": SAFE_DECISION_MANIFEST_SCHEMA,
-        # every identity here is the OWNED one, proven against the frozen snapshot. The request's
-        # own values had to equal these to get this far, so binding the proven side means the
-        # scientific identity never depends on a value a caller merely asserted. Note that
-        # `profile_manifest_hash` is deliberately absent: it has no canonical definition in this
-        # engine (see Layer1ProfileReference), and an unauthenticated opaque value has no place
-        # in a scientific identity.
+        # --- the round's own genomic input; identical semantics in both domains --------------- #
         "round_id": proven.round_id,
-        "dataset_id": proven.dataset_id,
         "chromosome": proven.chromosome,
         "profile_id": proven.profile_id,
         "profile_sha256": proven.profile_sha256,
@@ -353,10 +395,8 @@ def safe_decision_manifest_content(
         "profile_fingerprint_hash": proven.fingerprint_hash,
         "profile_identity_tuple_hash": proven.identity_tuple_hash,
         "attestation_hash": proven.attestation_hash,
-        "registry_snapshot_hash": proven.registry_snapshot_hash,
-        "profile_corpus_identity": ownership.corpus_identity,
-        "profile_ownership_anchors": dict(sorted(ownership.anchors.items())),
         "region_hash": proven.region_hash,
+        # --- the controller's own accepted authority; nothing round-specific ------------------ #
         "parameter_space_hash": authority.parameter_space_hash,
         "caller": request.parameter_space.caller,
         "baseline_authority_identity": policy["baseline_selected_identity"],
@@ -367,6 +407,7 @@ def safe_decision_manifest_content(
         "controller_policy_hash": authority.policy_hash,
         "controller_version": SAFE_CONTROLLER_VERSION,
         "request_controller_version": request.controller_version,
+        # --- the decision itself ------------------------------------------------------------- #
         "requested_mode": requested.value,
         "actual_mode": ControlMode.SAFE_BASELINE.value,
         "fallback_reason": _fallback_reason(requested).value,
@@ -393,8 +434,166 @@ def safe_decision_manifest_content(
 
 
 def safe_decision_manifest_identity(content: dict[str, Any]) -> str:
-    """Domain-separated identity of a safe-controller decision manifest."""
+    """Domain-separated identity of a **v1** safe-controller decision manifest."""
     return sha256_hex(SAFE_DECISION_MANIFEST_DOMAIN.encode("utf-8") + canonical_json_bytes(content))
+
+
+def live_safe_decision_manifest_content(
+    *,
+    request: DecisionRequest,
+    authority: VerifiedSafeBaselineAuthority,
+    ownership: VerifiedRoundProfileAuthority,
+    owned: Any = None,
+) -> dict[str, Any]:
+    """``l2h-safe-decision-manifest-v2`` -- one SAFE decision against ONE authenticated LIVE round.
+
+    **Why this is a new schema rather than v1 with different values.** Four v1 fields describe the
+    frozen research campaign and have no live counterpart: ``dataset_id`` names a registered
+    research dataset; ``registry_snapshot_hash`` names the frozen registry snapshot an attestation
+    was matched against; ``profile_corpus_identity`` names the fifty-member corpus a decision was
+    admitted against; ``profile_ownership_anchors`` are the TRAIN campaign's anchors -- Phase-A
+    authority, TRAIN schedule, split manifest, baseline protocol. Emitting live values under those
+    names would be a reinterpretation without a rename, which is the one thing this engine refuses
+    everywhere else. So v2 drops all four and publishes the live authorities under their own names.
+
+    **Where every authority value comes from.** The sealed ownership capability and nothing else.
+    A live ``VerifiedRoundProfileAuthority`` can only have been minted by
+    ``own_verified_live_round`` from a sealed ``VerifiedProductionLiveProfileBinding``, which
+    required a sealed production intake, which required a sealed production receipt and sealed
+    production downloads. No caller-supplied intake identity, receipt identity, ownership anchor or
+    input-set id is read here; the request's profile assertions had to *equal* the owned values via
+    ``require_owned_request`` before this point, and the proven side is what gets bound.
+
+    **What is deliberately not here.** No timestamp, duration, PID, hostname, temp path, presigned
+    URL, hotkey, base URL, cache path or provenance-sidecar path. Those are operational facts about
+    how this engine reached the platform, not scientific facts about what the round is, and two
+    identical rounds must produce one identity or the identity means nothing.
+    """
+    _require(
+        is_verified_round_profile_authority(ownership),
+        f"{SAFE_DECISION_MANIFEST_V2_SCHEMA} may only be built from a SEALED verified "
+        "round/profile authority; a fixture authority, a subclass, or an object that merely "
+        "answers the same questions is not one",
+    )
+    # v2 is LIVE-only, exactly as v1 is TRAIN-only. Neither is a generic schema.
+    _require(
+        ownership.scope == LIVE_OWNERSHIP_SCOPE,
+        f"{SAFE_DECISION_MANIFEST_V2_SCHEMA} describes a decision admitted against ONE "
+        f"authenticated live round; a {ownership.scope!r}-scoped authority belongs in "
+        f"{SAFE_DECISION_MANIFEST_SCHEMA}",
+    )
+    _require(
+        len(ownership) == 1,
+        "a live ownership authority owns exactly one round; a multi-member corpus is a research "
+        "corpus and cannot be described by this schema",
+    )
+    anchors = dict(sorted(ownership.anchors.items()))
+    # the ownership identity records which domain the chain ran in, and a LIVE decision may only
+    # describe a production one. The fixture terminus is a different type and never reaches the
+    # controller at all; this is the second, independent statement of the same requirement.
+    _require(
+        anchors.get("live_intake_scope") == "production",
+        "a live decision manifest requires a production-scoped live intake; this ownership "
+        f"records {anchors.get('live_intake_scope')!r}",
+    )
+    for anchor in ("live_intake_identity", "live_intake_schema", "platform_receipt_identity"):
+        _require(
+            bool(anchors.get(anchor)),
+            f"the live ownership authority carries no {anchor}; it cannot be described by "
+            f"{SAFE_DECISION_MANIFEST_V2_SCHEMA}",
+        )
+
+    proven = owned if owned is not None else ownership.require_owned_request(request)
+    _require(
+        proven.partition == LIVE_PARTITION,
+        f"the owned profile is partitioned {proven.partition!r}, not {LIVE_PARTITION!r}",
+    )
+    # `registry_snapshot_hash` exists on the owned profile because the accepted L2-D admission
+    # interface expects that shape, and for a live round it holds the intake identity rather than
+    # any registry snapshot. It is an internal compatibility field, so it is NOT published under
+    # that misleading name -- but the two must agree, or the compatibility shim and the published
+    # authority would be describing different things.
+    _require(
+        proven.registry_snapshot_hash == anchors["live_intake_identity"],
+        "the owned profile's registry-compatibility field disagrees with the live intake identity "
+        "this ownership is anchored to",
+    )
+    return {
+        "schema_version": SAFE_DECISION_MANIFEST_V2_SCHEMA,
+        # --- the LIVE authority block ------------------------------------------------------- #
+        #: stated explicitly rather than inferred, so a reader never has to know that v2 implies
+        #: live and v1 implies train
+        "ownership_scope": LIVE_OWNERSHIP_SCOPE,
+        #: content-addressed from the AUTHENTICATED live input set (`live-<chrom>-<identity>`).
+        #: NOT a research split allocation and NOT a `catalog.dataset_registry` identity -- which
+        #: is exactly why it is not called `dataset_id`.
+        "live_input_set_id": proven.dataset_id,
+        #: the `l2h-live-round-intake-v2` document that authenticated this round's inputs. This is
+        #: the live analogue of "the registered input set the attestation was checked against",
+        #: and it is published under its own name rather than as `registry_snapshot_hash`.
+        "live_intake_identity": anchors["live_intake_identity"],
+        "live_intake_schema": anchors["live_intake_schema"],
+        #: the platform round-status response this round came from
+        "platform_receipt_identity": anchors["platform_receipt_identity"],
+        #: `l2h-live-round-profile-ownership-v1`: the proof that this profile belongs to this round
+        "live_profile_ownership_identity": ownership.corpus_identity,
+        "live_profile_ownership_anchors": anchors,
+        **_common_safe_decision_science(request=request, authority=authority, proven=proven),
+    }
+
+
+def live_safe_decision_manifest_identity(content: dict[str, Any]) -> str:
+    """Domain-separated identity of a **v2** live safe-controller decision manifest."""
+    return sha256_hex(
+        SAFE_DECISION_MANIFEST_V2_DOMAIN.encode("utf-8") + canonical_json_bytes(content)
+    )
+
+
+def safe_decision_manifest_for(
+    *,
+    request: DecisionRequest,
+    authority: VerifiedSafeBaselineAuthority,
+    ownership: VerifiedRoundProfileAuthority,
+    owned: Any = None,
+) -> dict[str, Any]:
+    """Build the manifest THIS ownership domain calls for. The schema is never caller input.
+
+    Dispatch is on the scope of the **sealed** capability, checked first. Nothing on the request --
+    not a partition, not a mode, not any metadata -- selects the contract a decision is recorded
+    under; a caller that could pick the schema could pick which meanings its values are read with.
+    """
+    _require(
+        is_verified_round_profile_authority(ownership),
+        "a decision manifest may only be built against a SEALED verified round/profile corpus; a "
+        "fixture authority, a subclass, or an object that merely answers the same questions is "
+        "not one",
+    )
+    scope = ownership.scope
+    if scope == TRAIN_OWNERSHIP_SCOPE:
+        return safe_decision_manifest_content(
+            request=request, authority=authority, ownership=ownership, owned=owned
+        )
+    if scope == LIVE_OWNERSHIP_SCOPE:
+        return live_safe_decision_manifest_content(
+            request=request, authority=authority, ownership=ownership, owned=owned
+        )
+    # fail closed: a scope this controller has no scientific contract for is not a decision it
+    # is entitled to make, and guessing a schema would be the reinterpretation v2 exists to avoid
+    raise SafeControllerAuthorityError(
+        f"there is no decision-manifest contract for ownership scope {scope!r}"
+    )
+
+
+def safe_decision_identity_for(content: dict[str, Any]) -> str:
+    """Identity of a manifest, under the domain of the schema the manifest itself declares."""
+    schema = content.get("schema_version")
+    if schema == SAFE_DECISION_MANIFEST_SCHEMA:
+        return safe_decision_manifest_identity(content)
+    if schema == SAFE_DECISION_MANIFEST_V2_SCHEMA:
+        return live_safe_decision_manifest_identity(content)
+    raise SafeControllerAuthorityError(
+        f"{schema!r} is not a safe-controller decision manifest schema this engine can identify"
+    )
 
 
 def select_safe_baseline(
@@ -445,10 +644,12 @@ def select_safe_baseline(
     )
 
     owned = ownership.require_owned_request(request)
-    manifest = safe_decision_manifest_content(
+    # the ownership DOMAIN chooses the contract, after the seal check above. TRAIN decisions are
+    # recorded as v1 exactly as they always were; a live round gets v2.
+    manifest = safe_decision_manifest_for(
         request=request, authority=authority, ownership=ownership, owned=owned
     )
-    manifest_hash = safe_decision_manifest_identity(manifest)
+    manifest_hash = safe_decision_identity_for(manifest)
     return DecisionResult(
         decision=DecisionIdentity(
             decision_id=manifest_hash,
@@ -503,6 +704,6 @@ class SafeBaselineController:
         )
 
     def manifest(self, request: DecisionRequest) -> dict[str, Any]:
-        return safe_decision_manifest_content(
+        return safe_decision_manifest_for(
             request=request, authority=self._authority, ownership=self._ownership
         )
